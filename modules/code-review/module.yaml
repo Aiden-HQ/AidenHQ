@@ -3,7 +3,7 @@ description: "Code Review: reviews pull requests on the repos you list, or one P
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
 # internal read (as this module, never /mcp), decides which head gets which combos (triggers, `@aiden review …` from someone with
-# write access now, debounce, supersede, daily caps, month caps reserved before a run starts), runs each review as the kernel's
+# write access now, debounce, supersede, day caps reserved before a run starts), runs each review as the kernel's
 # check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's reservation), hands the
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
 requires:
@@ -37,11 +37,11 @@ facts:
 stages:
   - { name: review, label: Code review, from: review.started, to: review.ended }
 settings:
-  # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, month_usd: 50, ignore: [globs],
-  # max_nits: 5, per_author_day: 10, per_repo_day: 60 }]. A combo is { engine: codex|claude-code|codegenie, model (an OpenRouter
+  # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, day_usd: 100, ignore: [globs],
+  # max_nits: 5 }]. A combo is { engine: codex|claude-code|codegenie, model (an OpenRouter
   # id), effort (the engine's: codex minimal-xhigh, the others low-max), run_usd (what one run may spend: its reservation and its
   # model token's cap; default codex and codegenie $1, claude-code $2) }; each moment runs every combo it lists (at most 4, each its
-  # own review), [] none. on_push reviews only the new changes. month_usd: the instance-wide cap across repos. Read by the service
+  # own review), [] none. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's. Read by the service
   # (service/src/config.ts).
   code_review:
     type: object
@@ -51,8 +51,8 @@ settings:
     # engine or model, more run cap, one more combo: what changes what a review costs or how it judges), or a repo's ignore globs
     # (what would quietly weaken reviews).
     owner:
-      - { path: month_usd, raise: true }
-      - { path: "repos.*.month_usd", raise: true, default: 50 }
+      - { path: day_usd, raise: true }
+      - { path: "repos.*.day_usd", raise: true, default: 100 }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
       - { path: "repos.*.repo", new: true, before: "/" }
@@ -61,7 +61,7 @@ settings:
       - { path: "repos.*.ignore", change: true, default: [] }
     default:
       repos: []
-      month_usd: 200
+      day_usd: 100
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no

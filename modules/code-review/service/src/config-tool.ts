@@ -22,8 +22,8 @@ export interface Change {
   watch?: Dict[];
   /** Repos to stop watching. */
   unwatch?: string[];
-  /** The monthly cap across repos, USD. */
-  month_usd?: number;
+  /** The daily cap across repos, USD. */
+  day_usd?: number;
 }
 
 /**
@@ -31,7 +31,7 @@ export interface Change {
  * the owner-readable reason when the result wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: string[] } {
-  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], month_usd: raw.month_usd ?? 200 };
+  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], day_usd: raw.day_usd ?? 100 };
   let repos = value.repos as Dict[];
   const summary: string[] = [];
   const key = (r: unknown) => String(r).toLowerCase();
@@ -58,11 +58,11 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
     }
   }
   value.repos = repos;
-  if (ch.month_usd !== undefined) {
-    value.month_usd = ch.month_usd;
-    summary.push(`monthly cap $${ch.month_usd}`);
+  if (ch.day_usd !== undefined) {
+    value.day_usd = ch.day_usd;
+    summary.push(`daily cap $${ch.day_usd}`);
   }
-  if (!summary.length) throw new Error("say what to change: watch, unwatch or month_usd");
+  if (!summary.length) throw new Error("say what to change: watch, unwatch or day_usd");
   const checked = readConfig(JSON.stringify(value));
   if (checked.errors.length) throw new Error(`that setting wouldn't work: ${checked.errors.join("; ")}`);
   return { value, summary };
@@ -99,7 +99,7 @@ const REPO_ENTRY = {
     on_push: { ...COMBOS, description: `on each push, only the new changes (default codex, ~deepseek/deepseek-flash-latest, low). ${COMBOS.description}` },
     drafts: { type: "boolean" },
     forks: { type: "string", enum: ["manual", "auto"] },
-    month_usd: { type: "number" },
+    day_usd: { type: "number" },
     ignore: { type: "array", items: { type: "string" } },
     max_nits: { type: "integer" },
   },
@@ -109,7 +109,7 @@ const REPO_ENTRY = {
 export function configTools(d: {
   /** settings.code_review as instance.yaml holds it (the module's defaults not merged in). */
   raw: () => Dict;
-  /** The service's view: watched repos with month spend. */
+  /** The service's view: watched repos with today spend. */
   repos: () => unknown;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
@@ -139,7 +139,7 @@ export function configTools(d: {
     {
       name: "code_review_config",
       roles: ["reviewer-manager"],
-      description: "What code review is set to: the watched repos (each moment's combos, caps, this month's spend), the engines a combo may name (efforts, offered models), the monthly cap across repos, and any problem with the setting.",
+      description: "What code review is set to: the watched repos (each moment's combos, caps, today's spend), the engines a combo may name (efforts, offered models), the daily cap across repos, and any problem with the setting.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async () => ({ setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors, repos: d.repos(), engines: ENGINES }),
     },
@@ -147,13 +147,13 @@ export function configTools(d: {
       name: "code_review_configure",
       roles: ["reviewer-manager"],
       description:
-        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked, $50 a month; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching; month_usd: the cap across repos. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Raising spend, reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine, model or run cap; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
+        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked, $50 a month; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching; day_usd: the cap across repos. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Raising spend, reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine, model or run cap; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
       inputSchema: {
         type: "object",
         properties: {
           watch: { type: "array", items: REPO_ENTRY },
           unwatch: { type: "array", items: { type: "string" } },
-          month_usd: { type: "number" },
+          day_usd: { type: "number" },
         },
         additionalProperties: false,
       },

@@ -27,7 +27,7 @@ Rules that bind (owner and design):
 
 ```yaml
 code_review:
-  month_usd: 200                 # instance-wide monthly cap across repos
+  day_usd: 100                 # instance-wide daily cap across repos (UTC day)
   repos:
     - repo: acme/payments
       on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
@@ -36,11 +36,9 @@ code_review:
         - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 1 }
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
-      month_usd: 50
+      day_usd: 100
       ignore: ["**/generated/**"]
       max_nits: 5
-      per_author_day: 10         # automatic reviews a day per PR author / per repo (one per moment, however many combos)
-      per_repo_day: 60
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex minimal to xhigh; claude-code and
@@ -75,11 +73,11 @@ PR state, not config.
 
 The service polls the watched repos (`code_review_poll_seconds`, default 60). A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 3 minutes (a burst is one batch; another push replaces the
-queued batch). One trigger is a batch: one run per combo, each posting its own review; the batch counts once against the daily
-limits, and only its first run rechecks the PR's still-open findings (whichever combo found them). A run is reserved against the
-repo's and the instance's month caps in one transaction before it starts; a run whose PR moved on or closed while it ran is
+queued batch). One trigger is a batch: one run per combo, each posting its own review; only its
+first run rechecks the PR's still-open findings (whichever combo found them). A run is reserved against the
+repo's and the instance's day caps in one transaction before it starts; a run whose PR moved on or closed while it ran is
 superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
-silent: draft, fork, daily limit, budget, closed, stopped, superseded.
+silent: draft, fork, budget, closed, stopped, superseded.
 
 Commands in a PR comment (`service/src/commands.ts`; only a command line counts, never a quoted line, a code block or our own
 post; the commenter needs write access now):
@@ -130,7 +128,7 @@ bounded by the Tier 2 rules above and PR text is data, never instructions.
 
 Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
-Over `month_usd` a run is skipped with a comment saying why.
+Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is the runs' billed `cost_usd`; a run in flight counts at its `run_usd` reservation until it ends, then its real cost replaces it.
 
 For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 1)
 keeps plain columns: `runs` has each run's `engine`, `model`, `effort`, `cost_usd` (the kernel's billing of its model token,
@@ -148,4 +146,4 @@ then one screen with the defaults: each moment's combos as rows of engine, model
 link for a one-off review (the same picker, prefilled with the repo's `on_open` combos; Review again on a review does the same).
 Reviews: open and recent runs per repo (PR, combo, findings by severity, cost, tokens, duration, status), each opening its
 findings, with their outcomes, and links to the GitHub comments.
-Repos: per-repo month spend against its cap. Titles and findings are shown as plain text, never as links.
+Repos: per-repo spend today against its cap. Titles and findings are shown as plain text, never as links.

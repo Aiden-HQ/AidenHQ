@@ -69,8 +69,7 @@
     "unchanged",
     "ignored",
     "too_large",
-    "no_access",
-    "daily_limit"
+    "no_access"
    ]
   },
   "important": {

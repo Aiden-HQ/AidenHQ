@@ -2,9 +2,8 @@
 //
 // Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is reviewed with each of the repo's
 // on_open combos, a push with each on_push combo (incrementally), and `@aiden review …` from someone with write access now does
-// what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; the batch counts
-// once against the daily limits, and only its first run rechecks the PR's still-open findings. Queued runs start when due, each
-// reserving its combo's run_usd against the repo's and the instance's month caps in one transaction; running ones are polled, and
+// what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; only its first run rechecks the PR's still-open findings. Queued runs start when due, each
+// reserving its combo's run_usd against the repo's and the instance's day caps in one transaction; running ones are polled, and
 // a finished one is posted (Poster) unless its PR has moved on (superseded). Every run starts and ends with a flow fact on its PR.
 //
 // Each run keeps what an analysis of reviewers needs as plain columns: engine, model, effort, the kernel's billed cost and the
@@ -12,7 +11,7 @@
 // open_at_merge or open_at_close (still open when the PR closed).
 //
 // A PR open at the first look at a repo (or seen before any run existed) gets its on_open batch like a new one: every open,
-// non-draft PR is reviewed once. The daily limits bound a repo with many open PRs.
+// non-draft PR is reviewed once. Only the day budget bounds how many.
 // A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason (a budget skip once per head), never silent.
 import type { DatabaseSync } from "node:sqlite";
@@ -23,7 +22,6 @@ import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner }
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 3 * 60_000;
-const DAY = 24 * 3600_000;
 /** A run that couldn't run is tried this many times in all, on the same reservation. */
 const ATTEMPTS = 2;
 const WRITERS = new Set(["admin", "maintain", "write"]);
@@ -71,7 +69,7 @@ CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
 CREATE TABLE IF NOT EXISTS seen (repo TEXT NOT NULL, comment TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
- * this month's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
+ * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
 export const DATA_VERSION = 1;
 
 type Log = (msg: string, f?: Record<string, unknown>) => void;
@@ -87,7 +85,7 @@ export class RequestError extends Error {
 /** A read GitHub answered with a refusal (a 4xx bar 408 and 429): retrying won't change it. */
 const permanent = (e: unknown) => { const s = (e as { status?: number }).status; return typeof s === "number" && s >= 400 && s < 500 && s !== 408 && s !== 429; };
 
-const month = (ms: number) => new Date(ms).toISOString().slice(0, 7);
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export function createEngine(d: EngineDeps) {
   const { db } = d;
@@ -157,11 +155,11 @@ export function createEngine(d: EngineDeps) {
     void ack({ repo: p.repo, number: p.number, head: p.head, state: "skipped", run: id, combo: c, why });
   }
 
-  /** Spent this month (ended runs' cost) plus what running ones hold, for one repo or the whole instance. */
+  /** Spent today (UTC) (ended runs' cost) plus what running ones hold, for one repo or the whole instance. */
   function spent(repo?: string) {
-    const m = month(now());
+    const m = day(now());
     const where = repo ? " AND repo = ?" : "";
-    const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 7) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
+    const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
     const held = one<{ s: number }>(`SELECT COALESCE(SUM(reserved_usd), 0) s FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []))!.s;
     return { spent: ended, reserved: held, total: ended + held };
   }
@@ -176,10 +174,10 @@ export function createEngine(d: EngineDeps) {
     const why = tx(() => {
       const cfg = repoCfg(r.repo);
       const inst = spent();
-      if (inst.total + want > c.month_usd) return `budget: the instance has $${Math.max(0, c.month_usd - inst.total).toFixed(2)} of its $${c.month_usd} left this month; this review may spend $${want.toFixed(2)}`;
+      if (inst.total + want > c.day_usd) return `budget: the instance has $${Math.max(0, c.day_usd - inst.total).toFixed(2)} of its $${c.day_usd} left today; this review may spend $${want.toFixed(2)}`;
       if (cfg) {
         const mine = spent(r.repo);
-        if (mine.total + want > cfg.month_usd) return `budget: ${r.repo} has $${Math.max(0, cfg.month_usd - mine.total).toFixed(2)} of its $${cfg.month_usd} left this month; this review may spend $${want.toFixed(2)}`;
+        if (mine.total + want > cfg.day_usd) return `budget: ${r.repo} has $${Math.max(0, cfg.day_usd - mine.total).toFixed(2)} of its $${cfg.day_usd} left today; this review may spend $${want.toFixed(2)}`;
       }
       run("UPDATE runs SET status = 'running', reserved_usd = ?, started = ? WHERE id = ? AND status = 'queued'", want, iso(), r.id);
       return undefined;
@@ -272,8 +270,8 @@ export function createEngine(d: EngineDeps) {
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
-      run("UPDATE runs SET cost_usd = ?, reserved_usd = 0, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ? WHERE id = ?",
-        cost, count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), r.id);
+      run("UPDATE runs SET cost_usd = ?, reserved_usd = 0, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ? WHERE id = ?",
+        cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), r.id);
       for (const f of review.findings) run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title);
       // What the recheck found gone at this head: fixed, wherever it was found (and not found again by this run).
       const again = new Set(review.findings.map((f) => f.id));
@@ -323,10 +321,6 @@ export function createEngine(d: EngineDeps) {
 
   // ---- triggers and commands ------------------------------------------------------------------------------------------------
 
-  /** Automatic reviews in the last day, per repo (and author): one per batch, however many combos it ran. */
-  const authoredToday = (repo: string, author?: string) =>
-    one<{ n: number }>(`SELECT COUNT(DISTINCT batch) n FROM runs WHERE repo = ? AND kind = 'auto' AND status IN ('running', 'done', 'failed') AND created > ?${author ? " AND author = ?" : ""}`, repo, now() - DAY, ...(author ? [author] : []))!.n;
-
   /** The repo's trigger for a new PR (`open`) or a push (`push`): a batch of its combos for that moment. */
   function trigger(cfg: Repo, p: PullRequest, which: "open" | "push") {
     const row = prRow(p.repo, p.number)!;
@@ -336,8 +330,6 @@ export function createEngine(d: EngineDeps) {
     if (!list.length) return;
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
     if (p.fork && cfg.forks === "manual") return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`@aiden review`)");
-    if (authoredToday(p.repo, p.author.toLowerCase()) >= cfg.per_author_day) return skip(p, list[0]!, "auto", `daily limit: ${p.author} has had ${cfg.per_author_day} automatic reviews today; ask with \`@aiden review\``, true);
-    if (authoredToday(p.repo) >= cfg.per_repo_day) return skip(p, list[0]!, "auto", `daily limit: ${p.repo} has had ${cfg.per_repo_day} automatic reviews today; ask with \`@aiden review\``, true);
     queue(p, list, "auto", { due: which === "push" ? now() + DEBOUNCE : now(), focus: row.focus });
   }
 
@@ -504,12 +496,12 @@ export function createEngine(d: EngineDeps) {
     repos() {
       const c = d.config();
       const inst = spent();
-      return { month_usd: c.month_usd, month_spent_usd: round(inst.spent), month_reserved_usd: round(inst.reserved), errors: c.errors,
+      return { day_usd: c.day_usd, day_spent_usd: round(inst.spent), day_reserved_usd: round(inst.reserved), errors: c.errors,
         repos: c.repos.map((r) => {
           const s = spent(r.repo);
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
-          return { ...r, month_spent_usd: round(s.spent), month_reserved_usd: round(s.reserved), error: errors.get(r.repo) ?? null, identity };
+          return { ...r, day_spent_usd: round(s.spent), day_reserved_usd: round(s.reserved), error: errors.get(r.repo) ?? null, identity };
         }) };
     },
     /** Repos the GitHub identity can read whose name holds q (the board's picker). */

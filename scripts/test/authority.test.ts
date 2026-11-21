@@ -275,7 +275,7 @@ test("a setting's writers are authority: a role added is the owner's, and kernel
   assert.deepEqual(authorityDiff("acme-crm", s(["closer"]), s(["closer", "boss"]), false, undefined, {}, {}, true).changes.map((c) => c.what), ["lets roles boss write setting cr"]);
   assert.deepEqual(authorityDiff("acme-crm", s(["closer"]), s([]), false).changes, [{ what: "text only", owner: false }]);
   assert.deepEqual(authorityDiff("acme-crm", s(), with_({ settings: { cr: { default: { a: 1 } }, poll: { default: 30 } } }), false).changes, [{ what: "text only", owner: false }]);
-  const ruled = with_({ settings: { cr: { default: {}, writers: ["closer"], owner: [{ path: "month_usd", raise: true }] }, poll: { default: 60 } } });
+  const ruled = with_({ settings: { cr: { default: {}, writers: ["closer"], owner: [{ path: "day_usd", raise: true }] }, poll: { default: 60 } } });
   assert.deepEqual(authorityDiff("acme-crm", ruled, s(["closer"]), false, undefined, {}, {}, true).changes.map((c) => c.what), ["changes what agents may change in setting cr without the owner"]);
   const req = { ...s(["closer"]), roles: { requests: ["kernel.settings"] } };
   assert.ok(authorityDiff("acme-crm", base, req, false).changes.some((c) => c.what === "requests role kernel.settings (files its agents' changes to the settings its module names them writers of, as reviewed applies: cr by closer)"));

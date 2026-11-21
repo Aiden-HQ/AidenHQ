@@ -1,5 +1,5 @@
 // settings.code_review (instance.yaml), as the module's service reads it (CODE_REVIEW_SETTINGS, the setting as JSON): the watched
-// repos, each with the combos (engine, model, effort) each moment runs, their caps, and the instance-wide month cap. Defaults live
+// repos, each with the combos (engine, model, effort) each moment runs, their caps, and the instance-wide day cap. Defaults live
 // here and in module.yaml; a repo that doesn't validate is dropped loudly (its error is listed), never half-used.
 
 // The recipe's values (recipe/engines.ts runs the review in its own box: no shared import across that image boundary).
@@ -27,19 +27,17 @@ export type Repo = {
   drafts: boolean;
   /** manual: a fork PR is reviewed only when someone with write access asks; auto: like any other. */
   forks: "manual" | "auto";
-  month_usd: number; ignore: string[]; max_nits: number;
-  /** Automatic reviews a day (one per moment, however many combos), per PR author and per repo: past either, a PR waits for someone to ask. */
-  per_author_day: number; per_repo_day: number;
+  day_usd: number; ignore: string[]; max_nits: number;
 };
-export type Config = { repos: Repo[]; month_usd: number; errors: string[] };
+export type Config = { repos: Repo[]; day_usd: number; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
   on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 1 }],
   on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 1 }],
-  drafts: false, forks: "manual", month_usd: 50, ignore: [], max_nits: 5, per_author_day: 10, per_repo_day: 60,
+  drafts: false, forks: "manual", day_usd: 100, ignore: [], max_nits: 5,
 };
-export const INSTANCE_MONTH_USD = 200;
+export const INSTANCE_DAY_USD = 100;
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
 
@@ -90,7 +88,7 @@ function repo(raw: unknown): Repo | { error: string } {
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
-  for (const k of ["month_usd", "max_nits", "per_author_day", "per_repo_day"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
+  for (const k of ["day_usd", "max_nits"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };
   return out;
 }
@@ -113,7 +111,7 @@ export function readConfig(text: string | undefined): Config {
     else if (twice.has(v.repo)) errors.push(`repos[${i}]: ${v.repo} is listed more than once`);
     else repos.push(v);
   }
-  const month_usd = num(raw.month_usd, INSTANCE_MONTH_USD);
-  if (Number.isNaN(month_usd)) errors.push("month_usd is a number");
-  return { repos, month_usd: Number.isNaN(month_usd) ? INSTANCE_MONTH_USD : month_usd, errors };
+  const day_usd = num(raw.day_usd, INSTANCE_DAY_USD);
+  if (Number.isNaN(day_usd)) errors.push("day_usd is a number");
+  return { repos, day_usd: Number.isNaN(day_usd) ? INSTANCE_DAY_USD : day_usd, errors };
 }
