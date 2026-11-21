@@ -321,7 +321,14 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const l = c.label ? await label(i, c.label) : undefined;
       const ids = labelIds(i);
       await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
-    } else await unlabel(i, c);
+    } else {
+      // Another check still holds the task: this one's label goes, and its comment with it, the status stays.
+      const l = c.label ? await label(i, c.label) : undefined;
+      const ids = labelIds(i);
+      const drop = l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {};
+      const say = others ? comment : {};
+      if (Object.keys(drop).length || Object.keys(say).length) await patch(i, { ...drop, ...say });
+    }
     // The hold ends with its verdict's fact; `release` is one too: the check hands the decision to the task's delegator
     // (grading's escalation), so task state reads the task, still in review, as waiting on its delegator.
     // A release with `before` deletes only a hold placed by then: a finish that held the task again meanwhile keeps its hold
