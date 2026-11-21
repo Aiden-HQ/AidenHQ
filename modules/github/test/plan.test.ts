@@ -44,6 +44,24 @@ describe("plan: the product repo", () => {
     assert.equal(planParts("push", { ...engineer, branches: [branch(["kernel/src/a.ts"])] })[0][0].reject, true);
   });
 
+  it("the platform line's refusal is one stable code naming its remedy, for a .github PR and a bare push alike", () => {
+    for (const [action, files, rule] of [["pr", [".github/x.ts"], "product-pr-workflow"], ["push", ["kernel/src/a.ts"], "product-push"]]) {
+      const p = planParts(action, { ...engineer, branches: [branch(files)] })[0][0];
+      assert.equal(p.reject, true);
+      assert.equal(p.rule, rule, `${action} keeps its own rule name`);
+      assert.equal(p.code, "platform-only", `${action} carries the rule's fixed code`);
+      assert.match(p.reason, /file this change on a task the owner, the Agent Architect or the Fleet Steward filed/, "the reason names the way out");
+    }
+    // The plan's refusal carries the same code as a caller reads it (the executor's 422 answers it).
+    const thrown = (() => { try { plan({ kind: "github.pr", args: {} }, { ...engineer, branches: [branch([".github/x.ts"])] }, { diff: "" }); } catch (e) { return e as Error & { rule?: string; code?: string }; } })();
+    assert.deepEqual([thrown?.rule, thrown?.code], ["product-pr-workflow", "platform-only"]);
+    // A platform requester's same PR is still an ordinary Tier 1 product PR, and so is a non-.github one from a non-platform job.
+    const platform = { ...s, requester: { platform: true } };
+    assert.deepEqual(rules("pr", platform, branch([".github/x.ts"])), [[1, "product-pr"]]);
+    const ordinary = plan({ kind: "github.pr", args: {} }, { ...engineer, branches: [branch(["kernel/src/a.ts"])] }, { diff: "" });
+    assert.deepEqual([ordinary.raise?.tier, ordinary.raise?.rule], [1, "product-pr"]);
+  });
+
   it("a job without the platform role pushes only its own task's branches, on the product repo and outside the agents org", () => {
     assert.deepEqual(rules("pr", engineer, branch(["kernel/src/a.ts"], "fix/x")), [[2, "branch-namespace"]]);
     assert.deepEqual(rules("pr", engineer, branch(["kernel/src/a.ts"], "agent/ACME-8/fix")), [[2, "branch-namespace"]]);

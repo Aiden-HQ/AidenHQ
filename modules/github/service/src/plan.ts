@@ -9,7 +9,7 @@
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
-interface Part { tier: 0 | 1 | 2; rule: string; reason: string; panel?: boolean; reject?: boolean }
+interface Part { tier: 0 | 1 | 2; rule: string; reason: string; panel?: boolean; reject?: boolean; code?: string }
 interface Check { ok?: boolean; pending?: boolean; skipped?: boolean }
 interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
 interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; platformHead?: boolean; pushedBy?: string; dependabot?: boolean; head?: string; base?: string }
@@ -33,6 +33,15 @@ const T = (tier: 0 | 1 | 2, rule: string, reason: string): Part => ({ tier, rule
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
 const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true });
+/**
+ * The platform line's refusals: a product PR that changes `.github/`, and a bare product push. No job without the
+ * platform-engineer role may fix one by retrying — the task's provenance decides the role (kernel admission.ts) — so both
+ * carry one fixed code (`PLATFORM_ONLY`) beside their own rule name. A caller matches the code, never the message's prose, to
+ * record the refusal on the task instead of drawing another run that ends the same way. Widening who may publish is the
+ * owner's call, never a retry's.
+ */
+export const PLATFORM_ONLY = "platform-only";
+const PLATFORM = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true, code: PLATFORM_ONLY });
 const same = (a: unknown, b: unknown) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const orgOf = (repo: unknown) => String(repo).split("/")[0];
 const GITHUB = /(^|\/)\.github\//;
@@ -74,7 +83,7 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
     // A PR is a proposal: any job that may file one (an Engineer's) opens it, on any task, and may ask to merge it
     // (productMergePart). A bare branch push, or a PR that changes `.github/`, stays the platform line's.
     const workflow = b.files.find((f) => GITHUB.test(f));
-    if (!s.requester?.platform && (action !== "pr" || workflow)) return [REJECT(action === "pr" ? "product-pr-workflow" : "product-push", `only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) ${action === "pr" ? `opens a product PR that changes ${workflow}` : "pushes a branch to the product repo without a PR"}`)];
+    if (!s.requester?.platform && (action !== "pr" || workflow)) return [PLATFORM(action === "pr" ? "product-pr-workflow" : "product-push", `only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) ${action === "pr" ? `opens a product PR that changes ${workflow}` : "pushes a branch to the product repo without a PR"}; file this change on a task the owner, the Agent Architect or the Fleet Steward filed`)];
     if (foreign) return [namespace()];
     return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo${s.requester?.platform ? " from the Platform Engineer's line" : ", not from the Platform Engineer's line"}`)];
   }
@@ -226,7 +235,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const parts = planParts(action, state).flat();
   if (!parts.length) throw Object.assign(new Error("nothing recognised in the request"), { rule: "unrecognised" });
   const refused = parts.find((p) => p.reject);
-  if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule });
+  if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule, ...(refused.code ? { code: refused.code } : {}) });
   const top = parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
   const targets = action === "merge" || action === "close"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
