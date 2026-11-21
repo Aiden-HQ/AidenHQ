@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { bound, history, review } from "../recipe/review.ts";
+import { bound, history, review, scrub } from "../recipe/review.ts";
 import { argsProblem, page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
 import { asker, callOf, nativeFindings, nativeReview, plan, runEngine } from "../recipe/engines.ts";
@@ -312,12 +312,14 @@ test("the codex-native engine: codex's own review in the checkout, read-only san
 
   const bin = mkdtempSync(join(tmpdir(), "cr-native-"));
   const repo = mkdtempSync(join(tmpdir(), "cr-native-repo-"));
-  const run = (rollout) => {
+  const blind = join(bin, "blind.jsonl"); // the same run, its git diff refused (no diff printed)
+  writeFileSync(blind, readFileSync(join(fx, "events.jsonl"), "utf8").replaceAll("diff --git", "fatal: not a git repository"));
+  const run = (rollout, events = join(fx, "events.jsonl")) => {
     writeFileSync(join(bin, "codex"), `#!/bin/sh
 { pwd; env | sort; for a in "$@"; do echo "ARG:$a"; done; cat "$CODEX_HOME/config.toml"; } > "${bin}/seen"
 mkdir -p "$CODEX_HOME/sessions/2026/11/21"
 ${rollout ? `sed "s#/workspace#$PWD#g" "${join(fx, "rollout.jsonl")}" > "$CODEX_HOME/sessions/2026/11/21/rollout.jsonl"` : ""}
-cat "${join(fx, "events.jsonl")}"
+cat "${events}"
 `);
     chmodSync(join(bin, "codex"), 0o755);
     const old = { ...process.env };
@@ -334,9 +336,28 @@ cat "${join(fx, "events.jsonl")}"
   assert.match(seen, new RegExp(`ARG:exec\nARG:review\nARG:--base\nARG:${B}\nARG:--ignore-rules\n`));
   assert.match(seen, /^CI_REVIEW_KEY=ahqj_run$/m);
   assert.ok(!/OPENROUTER_API_KEY/.test(seen), "only the model key, under codex's own name");
-  for (const line of ['sandbox_mode = "read-only"', 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "core"', "hooks = false"]) assert.ok(seen.includes(line), line);
+  for (const line of ['sandbox_mode = "read-only"', 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "none"', 'exclude = ["CI_REVIEW_KEY"', "hooks = false"]) assert.ok(seen.includes(line), line);
   // A run with no review in its rollout (codex couldn't read the model's answer) is no review, never a clean one.
   assert.deepEqual(await run(false), { message: "", read: true, cause: "codex review gave no review" });
+  // A review whose commands never printed the diff didn't read it (the recipe counts it as no answer).
+  assert.equal((await run(true, blind)).read, false);
+});
+
+test("every engine's output loses the run's token and key-shaped text before it is mapped, the finding kept", async () => {
+  const tok = "ahqj_eyJydW4iOiJ4In0.c2lnbmF0dXJl";
+  const leak = (t) => JSON.stringify({ findings: [F({ why: `env has CI_REVIEW_KEY=${t} and sk-or-v1-0123456789abcdef0123`, evidence: t })], stale_guidance: [] });
+  const r = scrub({ message: leak(tok), read: true, cause: `refused ${tok}` }, [tok]);
+  assert.ok(!r.message.includes(tok) && !r.message.includes("sk-or-v1") && !r.cause.includes(tok));
+  assert.match(JSON.parse(r.message).findings[0].why, /CI_REVIEW_KEY=\[redacted\] and \[redacted\]/);
+  // In a review, through the one shared point: the posted finding carries none of it.
+  const { ws, out } = box({ head: { "src/pay.js": "a\nb\n" }, base: { "src/pay.js": "a\n" } });
+  const old = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = "opaque-run-token-123";
+  try {
+    const res = await review({ spec: spec({ combo: combo({ engine: "codex-native", effort: "low" }) }), ws, out, run: async () => ({ message: leak("opaque-run-token-123"), read: true }) });
+    assert.equal(res.findings.length, 1);
+    assert.ok(!JSON.stringify(res).includes("opaque-run-token-123") && !JSON.stringify(res).includes("sk-or-v1"));
+  } finally { if (old === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = old; }
 });
 
 test("a review whose finders didn't page through a big file's diff is incomplete and names it; read to the end, it isn't", async () => {

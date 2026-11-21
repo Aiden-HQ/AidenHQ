@@ -18,8 +18,8 @@
 //   the same model.
 // codex-native: OpenAI's built-in reviewer, `codex exec review --base <base>` (its own prompt; the brief as its developer
 //   instructions), in the box's checkout (review.ts history: base, head), through the gateway like codex. It reads the change with
-//   git through its shell, which runs under codex's read-only sandbox (no writes, no network), with only the core environment
-//   (never the run's token); project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project
+//   git through its shell, which runs under codex's read-only sandbox (no writes, no network), with no inherited environment
+//   but PATH (never the run's token; a command that reads it from the process tree anyway is scrubbed: review.ts scrub); project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project
 //   never trusted (so none of the PR's .codex config loads). Its review (the rollout's ExitedReviewMode) is mapped to ours; it
 //   doesn't use our repo tools, so which parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
 import { execFileSync, spawn } from "node:child_process";
@@ -212,7 +212,7 @@ async function codegenie({ model, effort, root, base, minutes, scratch, own, tru
 /** codex review's own output (its ReviewOutputEvent), as far as the mapping reads it. */
 type NativeFinding = { title?: string; body?: string; priority?: number; code_location?: { absolute_file_path?: string; line_range?: { start?: number; end?: number } } };
 export type NativeReview = { findings?: NativeFinding[]; overall_correctness?: string; overall_explanation?: string };
-type NativeEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; command?: string; exit_code?: number | null } };
+type NativeEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; aggregated_output?: string } };
 
 /** The review in codex's session rollouts (JSONL): the last ExitedReviewMode item's output, or undefined. */
 export function nativeReview(rollouts: string[]): NativeReview | undefined {
@@ -268,7 +268,9 @@ memories = false
 include_instructions = false
 
 [shell_environment_policy]
-inherit = "core"
+inherit = "none"
+exclude = ["CI_REVIEW_KEY", "*KEY*", "*TOKEN*", "*SECRET*"]
+set = { PATH = ${q(process.env.PATH)} }
 
 [analytics]
 enabled = false
@@ -288,8 +290,8 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
     cwd: root, minutes, env: { PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") },
   });
   const events: NativeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  // It read the change: a git diff it ran that succeeded (inside the sandbox).
-  const read = events.some((e) => e.type === "item.completed" && e.item?.type === "command_execution" && e.item.exit_code === 0 && /\bgit\b[^|;&]*\bdiff\b/.test(String(e.item.command)));
+  // It read the change: a command it ran (inside the sandbox) printed a diff. Not its exit code: codex chains commands.
+  const read = events.some((e) => e.type === "item.completed" && e.item?.type === "command_execution" && /^diff --git /m.test(String(e.item.aggregated_output ?? "")));
   let rollouts: string[] = [];
   try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
   const v = nativeReview(rollouts);
