@@ -104,7 +104,7 @@ describe("rendering model text", () => {
 /** A fake GitHub for one pull request: records writes, keeps the ack comment and threads. Everyone posts as the owner. */
 function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: string; merged?: boolean } } = {}) {
   const calls: { method: string; path: string; auth: string; body?: any }[] = [];
-  const state = { ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
+  const state = { status: undefined as { context: string; state: string; description: string; target_url?: string } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
   const impl = (async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -114,7 +114,7 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     const ok = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status });
     if (url.pathname === "/user") return ok({ login: "owner1", id: 1 });
     if (url.pathname === "/graphql") {
-      if (String(body.query).includes("resolveReviewThread")) return ok({ data: { resolveReviewThread: { thread: { id: body.variables.thread, isResolved: true } } } });
+      if (String(body.query).includes("resolveReviewThread")) return ok({ data: Object.fromEntries(Object.values(body.variables).map((id, i) => [`t${i}`, { thread: { id, isResolved: true } }])) });
       return ok({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: state.threads } } } } });
     }
     if (method === "GET" && url.pathname.endsWith("/pulls/12")) return ok({ state: "open", ...opts.pr, head: { sha: opts.headSha ?? HEAD }, base: { sha: BASE } });
@@ -124,10 +124,12 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     if (method === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(url.pathname)) return ok((state.reviews[0]?.comments ?? []).map((c: { body: string }, i: number) => ({ id: 501 + i, html_url: `https://github.com/acme/payments/pull/12#discussion_r${501 + i}`, body: c.body })));
     if (method === "PUT" && /\/pulls\/12\/reviews\/\d+$/.test(url.pathname)) { state.reviews[0]!.body = body.body; return ok(state.reviews[0]); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/comments")) return ok({ id: 601, html_url: "https://github.com/acme/payments/pull/12#discussion_r601" }, 201);
-    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) return ok({}, 201);
+    if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status$/.test(url.pathname)) return ok({ statuses: state.status ? [state.status] : [] });
+    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description, target_url: body.target_url }; return ok({}, 201); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/reviews")) { const r = { id: 9, body: body.body, comments: body.comments ?? [], user: { login: "owner1" }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" }; state.reviews.push(r); return ok(r); }
     if (method === "GET" && url.pathname.endsWith("/issues/12/comments")) return ok(state.ack ? [{ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7", user: { login: "owner1" } }] : []);
     if (method === "POST" && url.pathname.endsWith("/issues/12/comments")) { state.ack = { id: 7, body: body.body }; return ok({ id: 7, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }, 201); }
+    if (method === "GET" && url.pathname.endsWith("/issues/comments/7")) return state.ack ? ok({ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }) : new Response("Not Found", { status: 404 });
     if (method === "PATCH" && url.pathname.endsWith("/issues/comments/7")) { state.ack = { id: 7, body: body.body }; return ok({}); }
     if (method === "POST" && /\/pulls\/12\/comments\/\d+\/replies$/.test(url.pathname)) return ok({ id: 77 }, 201);
     return new Response("Not Found", { status: 404 });
@@ -205,8 +207,8 @@ describe("posting", () => {
     const out = JSON.parse((await p.execute("post", postArgs(review([]), { resolve: ["f_fixed_1", "f_forged_1", "f_owner_1"], own: [41] }))).text);
     expect(out.resolved).toBe(1);
     const resolves = w.calls.filter((c) => c.path === "/graphql" && String(c.body.query).includes("resolveReviewThread"));
-    expect(resolves.map((c) => c.body.variables.thread)).toEqual(["T_ours"]);
-
+    expect(resolves).toHaveLength(1);
+    expect(Object.values(resolves[0]!.body.variables)).toEqual(["T_ours"]);
   });
 
   it("an answer is visible: the author's reply on a finding thread (both as the owner's login) comes back as a reply", async () => {
@@ -230,6 +232,28 @@ describe("posting", () => {
     const w = world();
     await poster(w).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "findings", important: 2 });
     expect(w.calls.find((c) => c.path.includes("/statuses/"))!.body).toEqual({ state: "failure", context: "aidenhq/review", description: "2 important findings open: fix and push, or answer on its thread (fixed / disputed …)", target_url: "https://github.com/acme/payments/pull/12" });
+  });
+
+  it("writes nothing for a status or a notice that is already what GitHub shows", async () => {
+    const w = world();
+    const p = poster(w);
+    const st = { repo: "acme/payments", pr: 12, head: HEAD, reason: "findings", important: 2 };
+    await p.execute("status", st);
+    await p.execute("status", st);
+    expect(w.calls.filter((c) => c.path.includes("/statuses/"))).toHaveLength(1);
+    await p.execute("status", { ...st, important: 3 });
+    expect(w.calls.filter((c) => c.path.includes("/statuses/"))).toHaveLength(2);
+    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
+    const out = JSON.parse((await p.execute("notice", n)).text);
+    await p.execute("notice", { ...n, ack: out.ack_id });
+    await p.execute("notice", { ...n, ack: out.ack_id });
+    expect(w.calls.filter((c) => c.method !== "GET" && c.path.includes("/issues/"))).toHaveLength(1);
+  });
+
+  it("a clean review is one write: no summary update when no finding has a thread to link", async () => {
+    const w = world();
+    await poster(w).execute("post", postArgs(review([])));
+    expect(w.calls.filter((c) => c.method !== "GET" && c.path !== "/graphql")).toHaveLength(1);
   });
 
   it("previews the text it posts (the fixed Commands help named) and binds the record to the head", () => {

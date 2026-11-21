@@ -152,10 +152,11 @@ export function createEngine(d: EngineDeps) {
   /** Notices filed and not settled yet (write id: its PR), and the latest notice waiting behind one (by PR). */
   const acking = new Map<string, { repo: string; number: number }>();
   const ackNext = new Map<string, Ack>();
+  const acking_ = (repo: string, n: number) => [...acking.values()].some((t) => t.repo === repo && t.number === n);
   // The notice is the only path that makes the acknowledgement: one at a time per PR until its comment's id is known (two in
   // flight would each make one); a notice meanwhile waits, the latest replacing an earlier one, and goes once it is known.
   const ack = (a: Ack): Promise<void> => {
-    if (!ackOf(a.repo, a.number) && [...acking.values()].some((t) => t.repo === a.repo && t.number === a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
+    if (!ackOf(a.repo, a.number) && acking_(a.repo, a.number)) return void ackNext.set(`${a.repo}#${a.number}`, a), Promise.resolve();
     // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
     const slot = `slot:${randomBytes(6).toString("hex")}`;
     acking.set(slot, { repo: a.repo, number: a.number });
@@ -317,7 +318,6 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE runs SET attempts = attempts + 1 WHERE id = ?", r.id);
     if (!r.attempts) {
       d.emit?.({ type: "review.started", subject: subject(r.repo, r.number), version: r.id, at: iso(), data: { ...comboOf(r), kind: r.kind, head: r.head, run: r.id } });
-      if (r.kind === "command") void ack({ repo: r.repo, number: r.number, head: r.head, state: "running", run: r.id, combo: comboOf(r) });
     }
     try {
       // The merge base is what a full review diffs against (the PR's own, not its stale base sha). The baseline counts only while it is still an
@@ -496,8 +496,9 @@ export function createEngine(d: EngineDeps) {
       for (const c of o.comments ?? []) run("INSERT OR IGNORE INTO comments (repo, number, comment, run) VALUES (?, ?, ?, ?)", r.repo, r.number, c, r.id);
       run("UPDATE runs SET review_url = ?, resolved = ?, identity = ? WHERE id = ?", o.url ?? null, o.resolved ?? null, o.identity ?? null, r.id);
       landed(r);
-      // The acknowledgement names the review of the PR's current head (a review of an older one leaves it to the newer one's).
-      if (prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd) }, ...(o.url ? { review: o.url } : {}) });
+      // The review's own summary says what the acknowledgement would, so a PR with no acknowledgement yet (an automatic review) gets
+      // none; one already asked for (a command's queued notice) is updated with the outcome. A review of an older head leaves it to the newer one's.
+      if ((ackOf(r.repo, r.number) || acking_(r.repo, r.number)) && prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd) }, ...(o.url ? { review: o.url } : {}) });
     }
     if (r.write_id && ownTask(r)) void d.poster.close(r.repo, r.number, "The one-off review's post is settled.", r.id).catch((e) => log("review task not closed", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
   }
@@ -730,6 +731,7 @@ export function createEngine(d: EngineDeps) {
   /** Status writes filed and not settled yet, by repo and head: the key is saved only once GitHub has it. */
   const statusFiled = new Map<string, { key: string; write: string }>();
   const STATUS_RETRY = 5 * 60_000;
+  const PENDING = new Set(["queued", "running", "not_started", "moved"]);
   /**
    * Mirrors each gated repo's open PRs' verdict to their head's commit status, written only when it changes (prs.status_key):
    * the only writer of aidenhq/review. A draft gets none (it isn't merged).
@@ -747,7 +749,7 @@ export function createEngine(d: EngineDeps) {
       // A status is per commit: PRs sharing a head get one, the least ready of their verdicts (failure, then pending, then pass).
       const prs = all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo);
       const heads = new Map<string, Mirror>();
-      const rank = (m: Mirror) => (m.reason === "pass" ? 2 : ["queued", "running", "not_started", "moved"].includes(m.reason) ? 1 : 0);
+      const rank = (m: Mirror) => (m.reason === "pass" ? 2 : PENDING.has(m.reason) ? 1 : 0);
       for (const p of prs) { const m = mirrored(cfg.repo, p.number, p.head), had = heads.get(p.head); if (!had || rank(m) < rank(had)) heads.set(p.head, m); }
       for (const p of prs) {
         const id = `${cfg.repo}@${p.head}`;
@@ -769,6 +771,12 @@ export function createEngine(d: EngineDeps) {
           if (statusFiled.has(id)) continue;
         }
         const s = heads.get(p.head)!;
+        // One status per head: its verdict. The stages before it (queued, reviewing) are not written, unless the head shows an earlier
+        // verdict (red or green) that is being reviewed again: that one pending write replaces it; an unreported check already waits.
+        // (the saved verdict may be an earlier head's: upsertPr moves the head and keeps the key)
+        const saved_ = p.status_key?.startsWith("{") ? (JSON.parse(p.status_key) as Mirror) : undefined;
+        const shown = saved_?.head === p.head ? saved_.reason : undefined;
+        if (PENDING.has(s.reason) && (!shown || PENDING.has(shown))) continue;
         const key = JSON.stringify(s), failed = statusFailed.get(id);
         if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
         saved(key, await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) })));
