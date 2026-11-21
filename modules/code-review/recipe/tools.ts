@@ -100,13 +100,18 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
   const order = Object.entries(options).sort(([, a], [, b]) => Number(!!a.runs_code) - Number(!!b.runs_code));
   for (const [id, o] of order) {
     const fail = (why: string, stderr = "") => { const tail = redact(stderr.trim()).slice(-TAIL); failed.push({ id, why: `${why}${tail ? `: ${tail}` : ""}`.slice(0, 700) }); };
-    const left = Math.min(minutes * 60_000, deadline - Date.now());
-    if (left < 1000) { fail(`not run: the run's ${totalMinutes} minutes were used up`); continue; }
+    const timeLeft = () => Math.min(minutes * 60_000, deadline - Date.now());
+    const usedUp = () => fail(`not run: the run's ${totalMinutes} minutes were used up`);
+    if (timeLeft() < 1000) { usedUp(); continue; }
     // Each tool gets its own copy of the checkout (regular files and folders only), so one that writes beside the code, or runs the
-    // repo's code, never changes what the next one scans; findings are placed against the checkout itself.
+    // repo's code, never changes what the next one scans; findings are placed against the checkout itself. A copy the tool left
+    // unremovable stays behind: the box is thrown away, and the next tool gets a folder of its own.
     const work = join(tmp, `work-${Object.keys(counts).length + failed.length}`);
+    const drop = () => { try { rmSync(work, { recursive: true, force: true }); } catch {} };
     cpSync(ws, work, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory(); } });
-    const r = await exec(o.cmd, work, toolEnvVars, tmp, left).finally(() => rmSync(work, { recursive: true, force: true }));
+    const left = timeLeft(); // the copy took time too
+    if (left < 1000) { drop(); usedUp(); continue; }
+    const r = await exec(o.cmd, work, toolEnvVars, tmp, left).finally(drop);
     if (r.timedOut) { fail(`timed out after ${Math.round(left / 60_000)} minutes`, r.stderr); continue; }
     if (r.error) { fail(r.error, r.stderr); continue; }
     if (!(o.exits ?? [0]).includes(r.exit!)) { fail(`exit ${r.exit}${r.stdout.trim() ? "" : " with no output"}`, r.stderr); continue; }
