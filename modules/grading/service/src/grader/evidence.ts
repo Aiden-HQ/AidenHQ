@@ -24,14 +24,6 @@ export const cardAction = (a: any) => String(a?.action ?? "").replace(/^(runner|
 const cardOutcome = (a: any) => String(a?.outcomeText || a?.outcome_text || "");
 
 /**
- * A card still live, so nothing on its task is graded yet: undecided (review or owner), approved and not yet run, or claimed,
- * the board's `running` (a record the kernel holds while its executor works it, its wait reason on the card), which kernel-loop's
- * recordsOn passes through as the kernel's own `claimed`. `used` with no outcome is the same live record as the board spelled
- * it before `running`, kept so a card that still says it is never read as a consumed one.
- */
-export const openCard = (a: any) => ["pending", "approved", "running", "claimed"].includes(a?.state) || (a?.state === "used" && !a?.outcome);
-
-/**
  * The newest of a task's cards by when it was filed, whatever order the caller's list is in (/v1/work sends newest first, the
  * board's cards oldest first): a task that re-filed its apply is graded on the card it filed last, not the first it ever filed.
  */

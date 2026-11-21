@@ -8,7 +8,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GRADER_MARKER, appEvidence, applyEvidence, citedEvidence, citedIds, deploysOf, fileEvidence, issueEvidence, namedTasks, openCard, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
+import { GRADER_MARKER, appEvidence, applyEvidence, citedEvidence, citedIds, deploysOf, fileEvidence, issueEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
+import { openCard } from "./cards.ts";
 import { findPrs, stripRubric } from "./text.ts";
 import { GLM, LUNA } from "../aidenhq-sdk/judge.ts";
 import { dataBlock as fence } from "../aidenhq-sdk/fence.ts";
