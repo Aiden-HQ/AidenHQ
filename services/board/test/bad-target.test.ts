@@ -17,8 +17,11 @@ describe("request targets the URL parser rejects", () => {
     const app = createApp({ work, paperclip: {} as never, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => null });
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
     const port = (app.address() as AddressInfo).port;
-    for (const target of ["//[", "http://[::1", "//"]) expect(await status(port, target)).toBe(400);
-    expect(await status(port, "/healthz")).toBe(200);
-    app.close();
+    try {
+      for (const target of ["//[", "http://[::1", "//"]) expect(await status(port, target)).toBe(400);
+      expect(await status(port, "/healthz")).toBe(200);
+    } finally {
+      app.close();
+    }
   });
 });
