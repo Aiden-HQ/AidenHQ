@@ -76,13 +76,7 @@ RUN npm i -g --before=2026-11-14 oxlint@1.93.0 knip@6.45.1 jscpd@5.4.3 fallow@3.
 # govulncheck v1.9.0 (2026-10-11), built with the image's Go from the module proxy (go.sum and the checksum database verify it).
 RUN GOTOOLCHAIN=local CGO_ENABLED=0 GOBIN=/usr/local/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 \
     && chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /tmp/gocache && govulncheck -version | grep -q v1.9.0
-# actionlint 1.7.12, osv-scanner 2.7.1, zizmor 1.32.0, trivy 0.76.2, scc 4.1.0 and squawk 2.72.0: release binaries.
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) a=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 file=actionlint_1.7.12_linux_amd64.tar.gz ;; \
-      arm64) a=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 file=actionlint_1.7.12_linux_arm64.tar.gz ;; \
-    esac \
-    && curl -fsSLo /tmp/al.tgz "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$file" && echo "$a  /tmp/al.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/al.tgz -C /usr/local/bin actionlint && rm /tmp/al.tgz && actionlint -version | head -n1 | grep -qx 1.7.12
+# osv-scanner 2.7.1, zizmor 1.32.0, trivy 0.76.2, scc 4.1.0 and squawk 2.72.0: release binaries.
 RUN case "$(dpkg --print-architecture)" in \
       amd64) a=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 file=osv-scanner_linux_amd64 ;; \
       arm64) a=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 file=osv-scanner_linux_arm64 ;; \
