@@ -260,13 +260,15 @@ for reading only.
 (`check_jobs.code-review.model.max_usd`); both check jobs time out at 180 minutes (the compiler's ceiling). An agent's repo
 review stays at an offered model and at most $25; more is the owner's, from the board.
 
-**deepsec.** deepsec scans when the commit has any `.deepsec/` file, and runs `init` only when it has none. Its set-up files
-(`.deepsec/data/*/INFO.md`, `deepsec.config.ts`, `generated-matchers.ts`, `package.json` and its lockfile) are asked for as one
-setup PR through the kernel's `POST /v1/codehost/setup` under this module's `codehost.setup` grant, which lists exactly those
-paths: github files its own Tier 1 `github.setup` write (the AI reviewer reads every file whole, and any change the branch
+**deepsec.** deepsec scans when the commit has any `.deepsec/` file, and runs `init` only when it has none. It always runs the
+image's deepsec from a scratch folder with a config we write: a repo's own deepsec config, matchers or binary never run (its
+INFO.md is read as text), so scans use deepsec's built-in matchers. Its set-up files (`.deepsec/data/*/INFO.md`,
+`deepsec.config.ts`, `generated-matchers.ts`, `package.json`; the grant also admits a lockfile, which the run leaves out for size)
+are asked for as one setup PR through the kernel's `POST /v1/codehost/setup` under this module's `codehost.setup` grant, which
+lists exactly those paths: github files its own Tier 1 `github.setup` write (the AI reviewer reads every file whole, and any change the branch
 already carries) and, once approved, makes one commit of the missing files on `aidenhq/deepsec-setup` off the default
 branch's head and opens its PR; it never overwrites a file and never merges. It is asked for at most once a day per repo, on
-the repo's repo-reviews task; while the branch exists later runs scan with its files. deepsec's spend cap is the check's
+the repo's repo-reviews task; while the branch exists later runs scan with its files, read as data. deepsec's spend cap is the check's
 `budget_usd`.
 
 **The report.** `report.ts` renders it from the stored reviews, never a model: the verdict (blocked: an important security
