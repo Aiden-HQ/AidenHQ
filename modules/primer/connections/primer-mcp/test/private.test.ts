@@ -24,7 +24,7 @@ function primer(o: { shared?: Set<string>; collaborators?: Record<string, string
     throw new Error(name);
   };
   const reports = memoryReports();
-  const ex = publisher(call, noOwners, { makePrivate: async (id) => void privates.push(id), reports });
+  const ex = publisher(call, noOwners, { makePrivate: async (id, title) => void privates.push(`${id}:${title}`), reports });
   const file = (a: object, id: string) => ex.execute({ id, kind: "primer.publish", args: a, digest: "d", idempotency_key: id });
   return { ex, file, calls, privates, reports };
 }
@@ -36,9 +36,11 @@ describe("a module's private report (primer.publish with private)", () => {
     expect(plan.raise).toBeUndefined();
     expect(plan.card?.changes).toContain("only its owner can read it");
     expect((await p.file(plan.args as object, "k-0000000000000001")).text).toMatch(/^New version v\d on Primer \(document doc-1-aaaa/);
-    expect(p.privates).toEqual(["doc-1-aaaa"]);
+    expect(p.privates).toEqual(["doc-1-aaaa:Repo review: acme/widgets"]);
     // The report reaches Primer only after the document is private: created with a placeholder, then the report as a version.
     expect(p.calls.find((c) => c[0] === "primer_create_document")?.[1].content).not.toContain("Verdict");
+    // Created under a title that names no repo (the report's own is set once the document is private).
+    expect(p.calls.find((c) => c[0] === "primer_create_document")?.[1].title).toBe("Repo review");
     expect(p.calls.filter((c) => c[0] === "primer_add_version")).toHaveLength(1);
     expect(p.reports.get("acme/widgets")).toBe("doc-1-aaaa");
     const v = await p.ex.plan({ kind: "primer.publish", args: args({ documentId: "doc-1-aaaa" }), requester: codeReview, task: "T-1" });
@@ -46,7 +48,7 @@ describe("a module's private report (primer.publish with private)", () => {
     const out = await p.file(v.args as object, "k-0000000000000002");
     expect(out.text).toMatch(/^New version v\d on Primer \(document doc-1-aaaa/);
     expect(p.calls.at(-1)).toEqual(["primer_add_version", expect.objectContaining({ documentId: "doc-1-aaaa", versionNote: "abc1234" })]);
-    expect(p.privates).toEqual(["doc-1-aaaa"]);
+    expect(p.privates).toEqual(["doc-1-aaaa:Repo review: acme/widgets"]);
   });
 
   it("is a version of the repo's own document only: a document the caller names, or one an agent files, never gets it", async () => {
@@ -70,7 +72,7 @@ describe("a module's private report (primer.publish with private)", () => {
     const out = await p.file(args(), "k-0000000000000006");
     expect(out.text).toContain("(document doc-2-aaaa");
     expect(out.text).toContain("the earlier report doc-1-aaaa is shared wider");
-    expect(p.privates).toEqual(["doc-1-aaaa", "doc-2-aaaa"]);
+    expect(p.privates.map((x) => x.split(":")[0])).toEqual(["doc-1-aaaa", "doc-2-aaaa"]);
     expect(p.reports.get("acme/widgets")).toBe("doc-2-aaaa");
     const q = primer({ collaborators: { "doc-1-aaaa": ["someone"] } });
     await q.file(args(), "k-0000000000000007");

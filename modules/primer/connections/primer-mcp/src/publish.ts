@@ -66,7 +66,9 @@ export function versionResult(documentId: string, text: string): string {
 const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agent && task ? { agent: r.agent, task } : undefined);
 
 /** What publishing a private report needs of Primer beyond its MCP tools: narrowing a new document to the owner, and the repo→document map. */
-export interface Private { makePrivate(documentId: string): Promise<void>; reports: Reports }
+export interface Private { makePrivate(documentId: string, title: string): Promise<void>; reports: Reports }
+/** A report's document is created with this title, before it is private: it names no repo. Its real title is set once private. */
+export const NEUTRAL_TITLE = "Repo review";
 
 /**
  * Whether a document is private to its owner alone: private, and no collaborator. A read that fails throws (the publish fails
@@ -137,17 +139,17 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       if (!a.private) return write(a, by);
       // A private report: the repo's one document (never a document the caller names), a new version of it while it is still
       // private to the owner alone, else a new private document in its place; first publications on a repo_key are serialised.
-      return serial(a.repo_key!, async () => {
+      return serial(a.repo_key!.toLowerCase(), async () => {
         const known = priv.reports.get(a.repo_key!);
         if (known !== undefined && (await ownerOnly(call, known))) return write({ ...a, documentId: known }, undefined);
         // A new document: created with a placeholder, made private, and only then given the report, so the report is never
         // readable by the organization, not even for a moment.
-        const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", description: undefined, title: a.title ?? `Repo review: ${a.repo_key}` }, undefined);
+        const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", description: undefined, title: NEUTRAL_TITLE }, undefined);
         if (!made.ok) return made;
         const id = /\(document ([A-Za-z0-9-]+)\)/.exec(made.text)?.[1];
         if (!id) return { ok: false, text: `${made.text}: its id wasn't in Primer's answer, so the report wasn't added` };
         try {
-          await priv.makePrivate(id);
+          await priv.makePrivate(id, a.title ?? `Repo review: ${a.repo_key}`);
         } catch (e) {
           return { ok: false, text: `${made.text} (a placeholder), but it couldn't be made private (${(e as Error).message.slice(0, 200)}), so the report wasn't added` };
         }

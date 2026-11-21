@@ -41,9 +41,14 @@ const send = (name: string, args: Record<string, unknown>, document?: string) =>
     return { text: (res.content as { text?: string }[]).map((c) => c.text ?? "").join("\n"), isError: Boolean(res.isError) };
   }, document);
 // A new private report document becomes the owner's alone (Primer's REST PATCH, with the sign-in the tools use).
-const makePrivate = async (documentId: string) => {
-  const r = await fetch(`${selfHost ? local : url ? new URL(url).origin : ""}/api/documents/${encodeURIComponent(documentId)}`, { method: "PATCH", headers: { ...(await auth.headers()), "content-type": "application/json" }, body: JSON.stringify({ visibility: "private" }), signal: AbortSignal.timeout(15_000) });
+const patchDoc = async (documentId: string, body: object) => {
+  const r = await fetch(`${selfHost ? local : url ? new URL(url).origin : ""}/api/documents/${encodeURIComponent(documentId)}`, { method: "PATCH", headers: { ...(await auth.headers()), "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
   if (!r.ok) throw new Error(`Primer answered ${r.status}`);
+};
+// Private first, then its real title: the document is created under a neutral title that names no repo.
+const makePrivate = async (documentId: string, title: string) => {
+  await patchDoc(documentId, { visibility: "private" });
+  await patchDoc(documentId, { title }).catch((e: Error) => log.warn({ err: e.message }, "the report document keeps its neutral title"));
 };
 const publish = publisher(send, undefined, { makePrivate, reports: fileReports(stateDir) });
 const reply = replier(send);

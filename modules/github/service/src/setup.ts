@@ -7,7 +7,7 @@
 import { withFooter, withTrailer } from "./aidenhq-sdk/attribution.ts";
 
 export type Api = (method: string, path: string, body?: unknown) => Promise<any>;
-export type SetupArgs = { repo: string; branch: string; expected_tip: string | null; files: Record<string, string>; allow: string[]; title: string; body: string };
+export type SetupArgs = { repo: string; branch: string; expected_tip: string | null; files: Record<string, string>; allow: string[]; title: string; body: string; base_head?: string };
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 const enc = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const SHA = /^[0-9a-f]{40}$/;
@@ -22,6 +22,7 @@ export function check(a: SetupArgs): SetupArgs {
   if (!/^[\w.-]+\/[\w.-]+$/.test(String(a.repo))) throw fail(400, `${String(a.repo)} is not owner/name`);
   if (!/^aidenhq\/[\w.-]{1,80}$/.test(String(a.branch))) throw fail(400, "the branch is aidenhq/<name>");
   if (a.expected_tip !== null && !SHA.test(String(a.expected_tip))) throw fail(400, "expected_tip is a commit sha or null");
+  if (a.base_head !== undefined && !SHA.test(String(a.base_head))) throw fail(400, "base_head is a commit sha");
   const paths = Object.keys(a.files ?? {});
   if (!paths.length || paths.length > 8 || !Array.isArray(a.allow) || !a.allow.length) throw fail(400, "files is 1 to 8 paths, with the grant's allowlist");
   if (Buffer.byteLength(JSON.stringify(a.files)) > SETUP_BYTES) throw fail(413, `the setup files are at most ${SETUP_BYTES} bytes in all`);
@@ -32,6 +33,7 @@ export function check(a: SetupArgs): SetupArgs {
 
 /** The repo's default branch and its head, the branch's tip (null: no such branch) and which files the parent lacks. */
 async function read(api: Api, a: SetupArgs) {
+  const owner = a.repo.split("/")[0]!;
   const def = String((await api("GET", `/repos/${a.repo}`)).default_branch ?? "");
   if (!def) throw fail(502, `${a.repo} has no default branch`);
   if (def === a.branch) throw fail(409, `${a.branch} is ${a.repo}'s default branch: a setup only opens a pull request into it`);
@@ -46,14 +48,22 @@ async function read(api: Api, a: SetupArgs) {
     const cmp = await api("GET", `/repos/${a.repo}/compare/${encodeURIComponent(def)}...${tip}`);
     const files = (cmp.files ?? []) as typeof carried;
     if (files.length >= 300) throw fail(409, `${a.branch}'s diff is too large to verify`);
+    // Every file reaching a box is read by the reviewer: one GitHub gives no text for (binary, too large, a bare rename) can't be, so
+    // the branch is refused until it is reset.
+    const unread = files.find((f) => typeof f.patch !== "string");
+    if (unread) throw fail(409, `${a.branch} carries ${unread.filename} with no text diff the reviewer could read: reset the branch (delete it) and ask again`);
     carried.push(...files);
   }
+  // Any open PR from the branch must be into the default branch: one into another base refuses, never reused or sidestepped.
+  const open = tip ? ((await api("GET", `/repos/${a.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`)) as { html_url: string; base?: { ref?: string } }[]) : [];
+  const other = open.find((p) => p.base?.ref !== def);
+  if (other) throw fail(409, `${a.branch} already has a pull request into ${other.base?.ref ?? "another branch"}, not ${def}: ${other.html_url}`);
   const missing: string[] = [];
   for (const p of Object.keys(a.files)) {
     const has = await api("GET", `/repos/${a.repo}/contents/${enc(p)}?ref=${parent}`).then(() => true, (e: Error) => { if (/ 404\b/.test(e.message)) return false; throw e; });
     if (!has) missing.push(p);
   }
-  return { def, head, tip, parent, missing, carried };
+  return { def, head, tip, parent, missing, carried, into: open[0] };
 }
 
 /** The plan: what the reviewer reads (the files to add, whole) and what the record binds (the branch's tip and the base's head). */
@@ -63,12 +73,16 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
   const bad = leak?.(`${a.title}\n${a.body}`);
   if (bad) throw fail(422, `Not done: the PR title or description mentions "${bad}"; reword it and ask again.`);
   const add = s.missing;
+  // The reviewed default-branch head goes into the record's args: what runs is off exactly that head, or it refuses.
+  const bound: SetupArgs = { ...a, base_head: s.head };
   const diff = [
     ...s.carried.map((f) => `--- already on ${a.branch}: ${f.filename} (${f.status ?? "changed"}${f.previous_filename ? `, from ${f.previous_filename}` : ""}) ---\n${f.patch ?? "(no text diff)"}`),
     ...add.map((p) => `--- new file ${p} ---\n${a.files[p]}`),
   ].join("\n\n");
   return {
-    args: a,
+    args: bound,
+    // The files this changes, as push and PR plans return them: the kernel raises the tier by the path inventory.
+    paths: [{ repo: a.repo, files: [...new Set([...s.carried.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean) as string[]), ...add])].map((path) => ({ path })) }],
     targets: { [`${a.repo} ${a.branch}`]: { repo: a.repo, ref: a.branch, commit: s.tip, base_sha: s.head } },
     facts: {
       target: `${a.repo} ${a.branch}`,
@@ -86,16 +100,13 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
 export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promise<{ ok: boolean; text: string; objects?: string[] }> {
   const a = check(input);
   const s = await read(api, a);
+  if (a.base_head !== s.head) throw fail(409, `${s.def} moved from the ${a.base_head ? a.base_head.slice(0, 12) : "unrecorded"} head the setup was reviewed on to ${s.head.slice(0, 12)}: ask again`);
   const ok = globs(a.allow);
   // The PR's whole diff against the default branch: what the branch already carries plus what this commit adds.
   const carried = s.carried.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean) as string[]);
   const out = [...carried, ...s.missing].find((p) => !ok.some((re) => re.test(p)));
   if (out) return { ok: false, text: `Refused: the pull request would change ${out}, which isn't an allowed setup path.` };
-  // Only a PR into the default branch the plan read is reused; one into another base refuses before anything is pushed.
-  const owner = a.repo.split("/")[0]!;
-  const open = s.tip ? ((await api("GET", `/repos/${a.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`)) as { html_url: string; base?: { ref?: string } }[]) : [];
-  const into = open.find((p) => p.base?.ref === s.def);
-  if (open.length && !into) return { ok: false, text: `Refused: ${a.branch} already has a pull request into ${open[0]!.base?.ref ?? "another branch"}, not ${s.def}: ${open[0]!.html_url}` };
+  const into = s.into;
   let tip = s.tip;
   if (s.missing.length) {
     const base = await api("GET", `/repos/${a.repo}/commits/${s.parent}`);

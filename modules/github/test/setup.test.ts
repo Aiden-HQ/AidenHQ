@@ -14,6 +14,9 @@ const TIP = "c".repeat(40), HEAD = "a".repeat(40);
 const ALLOW = [".deepsec/data/*/INFO.md", ".deepsec/deepsec.config.ts", ".deepsec/package.json"];
 const args = (over = {}) => ({ repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: { ".deepsec/data/w/INFO.md": "# widgets\n", ".deepsec/deepsec.config.ts": "export default {};\n" }, allow: ALLOW, title: "Add deepsec", body: "Setup.", ...over });
 
+/** The record's args as the plan binds them (it adds the reviewed default-branch head). */
+const runOf = (api: any, a: any) => setup.run(api, { base_head: HEAD, ...a });
+
 /** A fake GitHub: the default branch, the setup branch's tip, the files each commit has, what the branch's diff carries, the open PRs. */
 function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string; base?: { ref: string } }[] } = {}) {
   const writes: { method: string; path: string; body: any }[] = [];
@@ -38,7 +41,7 @@ function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?
 
 test("a new branch is one commit of the missing files off the default branch's head, then its PR into the default branch", async () => {
   const g = github();
-  const out = await setup.run(g.api, args());
+  const out = await runOf(g.api, args());
   assert.deepEqual(JSON.parse(out.text), { pr_url: "https://github.com/acme/widgets/pull/9", tip: "d".repeat(40) });
   assert.deepEqual(g.writes.map((w) => `${w.method} ${w.path.replace("/repos/acme/widgets", "")}`), ["POST /git/trees", "POST /git/commits", "POST /git/refs", "POST /pulls"]);
   assert.deepEqual(g.writes[1]!.body.parents, [HEAD]);
@@ -48,10 +51,10 @@ test("a new branch is one commit of the missing files off the default branch's h
 
 test("files the repo already has are never overwritten; with nothing missing there is no commit", async () => {
   const g = github({ has: [".deepsec/deepsec.config.ts"] });
-  await setup.run(g.api, args());
+  await runOf(g.api, args());
   assert.deepEqual(g.writes[0]!.body.tree.map((e: any) => e.path), [".deepsec/data/w/INFO.md"]);
   const none = github({ has: Object.keys(args().files) });
-  assert.deepEqual(JSON.parse((await setup.run(none.api, args())).text), { pr_url: null, tip: null, nothing_to_add: true });
+  assert.deepEqual(JSON.parse((await runOf(none.api, args())).text), { pr_url: null, tip: null, nothing_to_add: true });
   assert.deepEqual(none.writes, []);
 });
 
@@ -59,7 +62,7 @@ test("paths outside the allowlist are refused, in the plan and in the run", asyn
   const g = github();
   for (const files of [{ "src/index.ts": "x" }, { ".deepsec/deepsec.config.ts": "ok", ".github/workflows/ci.yml": "x" }, { ".deepsec/data/../../x/INFO.md": "x" }, {}]) {
     await assert.rejects(setup.plan(g.api, args({ files })), /allowed setup path|files is/);
-    await assert.rejects(setup.run(g.api, args({ files })), /allowed setup path|files is/);
+    await assert.rejects(runOf(g.api, args({ files })), /allowed setup path|files is/);
   }
   await assert.rejects(setup.plan(g.api, args({ branch: "main" })), /aidenhq\//);
   assert.deepEqual(g.writes, []);
@@ -67,13 +70,13 @@ test("paths outside the allowlist are refused, in the plan and in the run", asyn
 
 test("it refuses when the branch tip isn't the approved one", async () => {
   await assert.rejects(setup.plan(github({ tip: "f".repeat(40) }).api, args({ expected_tip: TIP })), /not cccccccccccc/);
-  await assert.rejects(setup.run(github({ tip: TIP }).api, args()), /not a new branch/);
-  await assert.rejects(setup.run(github({ tip: null }).api, args({ expected_tip: TIP })), /nothing, not/);
+  await assert.rejects(runOf(github({ tip: TIP }).api, args()), /not a new branch/);
+  await assert.rejects(runOf(github({ tip: null }).api, args({ expected_tip: TIP })), /nothing, not/);
 });
 
 test("the PR's whole diff against the default branch must hold allowed paths only", async () => {
   const g = github({ tip: TIP, diff: [".deepsec/package.json", "src/evil.ts"] });
-  const out = await setup.run(g.api, args({ expected_tip: TIP }));
+  const out = await runOf(g.api, args({ expected_tip: TIP }));
   assert.equal(out.ok, false);
   assert.match(out.text, /src\/evil\.ts/);
   assert.deepEqual(g.writes, []);
@@ -81,7 +84,7 @@ test("the PR's whole diff against the default branch must hold allowed paths onl
 
 test("an existing branch moves forward from its tip; an open PR is reused, never a second one", async () => {
   const g = github({ tip: TIP, diff: [".deepsec/package.json"], open: [{ html_url: "https://github.com/acme/widgets/pull/4", base: { ref: "main" } }] });
-  const out = await setup.run(g.api, args({ expected_tip: TIP }));
+  const out = await runOf(g.api, args({ expected_tip: TIP }));
   assert.deepEqual(JSON.parse(out.text), { pr_url: "https://github.com/acme/widgets/pull/4", tip: "d".repeat(40) });
   assert.deepEqual(g.writes[1]!.body.parents, [TIP]);
   assert.equal(g.writes.find((w) => w.method === "PATCH")!.body.force, undefined);
@@ -90,16 +93,14 @@ test("an existing branch moves forward from its tip; an open PR is reused, never
   const p = await setup.plan(github({ tip: TIP, diff: [".deepsec/package.json"] }).api, args({ expected_tip: TIP }));
   assert.match(p.facts.diff, /already on aidenhq\/deepsec-setup: \.deepsec\/package\.json \(modified\) ---\n@@ -1 \+1 @@\n-old/);
   const other = github({ tip: TIP, open: [{ html_url: "https://github.com/acme/widgets/pull/5", base: { ref: "release" } }] });
-  const refused = await setup.run(other.api, args({ expected_tip: TIP }));
-  assert.equal(refused.ok, false);
-  assert.match(refused.text, /pull request into release, not main/);
+  await assert.rejects(runOf(other.api, args({ expected_tip: TIP })), /pull request into release, not main/);
   assert.deepEqual(other.writes, []);
 });
 
 test("a branch that is the default branch is refused", async () => {
   const g = github();
   const api = async (m: string, path: string, body?: any) => (path === "/repos/acme/widgets" ? { default_branch: "aidenhq/deepsec-setup" } : g.api(m, path, body));
-  await assert.rejects(setup.run(api, args()), /default branch/);
+  await assert.rejects(runOf(api, args()), /default branch/);
   assert.deepEqual(g.writes, []);
 });
 
@@ -109,6 +110,32 @@ test("the plan shows the files to add whole and binds the branch's tip and the b
   assert.match(p.facts.diff, /new file \.deepsec\/data\/w\/INFO\.md ---\n# widgets/);
   assert.doesNotMatch(p.facts.diff, /deepsec\.config/);
   await assert.rejects(setup.plan(github().api, args(), () => "aidenhq"), /mentions "aidenhq"/);
+});
+
+test("the plan binds the reviewed default-branch head and the files it changes; the run refuses when either moved", async () => {
+  const p = await setup.plan(github({ tip: TIP, diff: [".deepsec/package.json"] }).api, args({ expected_tip: TIP }));
+  assert.equal((p.args as any).base_head, HEAD);
+  assert.deepEqual(p.paths, [{ repo: "acme/widgets", files: [{ path: ".deepsec/package.json" }, { path: ".deepsec/data/w/INFO.md" }, { path: ".deepsec/deepsec.config.ts" }] }]);
+  const g = github();
+  await assert.rejects(setup.run(g.api, args({ base_head: "f".repeat(40) })), /moved from the ffffffffffff head/);
+  await assert.rejects(setup.run(g.api, args()), /unrecorded/);
+  assert.deepEqual(g.writes, []);
+});
+
+test("a branch carrying a file the reviewer can't read as text is refused, in the plan and the run", async () => {
+  const noText = github({ tip: TIP, diff: [".deepsec/package.json"] });
+  const api = (m: string, path: string, b?: any) => (path.startsWith("/repos/acme/widgets/compare/") ? Promise.resolve({ files: [{ filename: ".deepsec/package.json", status: "added" }] }) : noText.api(m, path, b));
+  await assert.rejects(setup.plan(api, args({ expected_tip: TIP })), /no text diff/);
+  await assert.rejects(runOf(api, args({ expected_tip: TIP })), /no text diff/);
+  assert.deepEqual(noText.writes, []);
+});
+
+test("any open PR from the branch into another base refuses, even beside one into the default branch", async () => {
+  const open = [{ html_url: "https://github.com/acme/widgets/pull/4", base: { ref: "main" } }, { html_url: "https://github.com/acme/widgets/pull/5", base: { ref: "release" } }];
+  const g = github({ tip: TIP, diff: [".deepsec/package.json"], open });
+  await assert.rejects(setup.plan(g.api, args({ expected_tip: TIP })), /into release, not main/);
+  await assert.rejects(runOf(g.api, args({ expected_tip: TIP })), /into release, not main/);
+  assert.deepEqual(g.writes, []);
 });
 
 // The kernel's `setup` op: the code host files its own record and writes only what that record's approval runs.

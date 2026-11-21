@@ -6,6 +6,7 @@
   "properties": {
     "repo": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
     "branch": { "type": "string", "pattern": "^aidenhq/[\\w.-]{1,80}$" },
+    "base_head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "expected_tip": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
     "files": {
       "type": "object",
