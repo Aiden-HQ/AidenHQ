@@ -833,7 +833,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       {err && <Banner tone="danger">{err}</Banner>}
       <Card className="rv-form">
       <div className="rv-split">
-        <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setRepo(r))} />
+        <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} />
         <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A commit SHA; the default branch's head when empty."} error={commitOk ? null : "A commit SHA, 7 to 40 hex characters"}>
           {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => setCommit(e.target.value)} spellCheck={false} />}
         </Field>
