@@ -8,11 +8,13 @@ export type ComboRef = { engine: string; model: string; effort: string };
 export type Finding = {
   id: string; severity: "important" | "nit" | "pre_existing"; path: string; line: number; end_line?: number;
   title: string; why: string; evidence: string; fix_brief: string;
+  /** The catalog option that found it and its lens (a lens-option run's findings; a combo's have none). */
+  option?: string; lens?: string;
 };
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
-  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null };
+  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null; /** tools that failed in a tools run */ failed?: { id: string; why: string }[] };
   findings: Finding[];
   withheld: { important: number; nit: number; pre_existing: number };
   cost_usd: number; stale_guidance: string[];
@@ -22,6 +24,10 @@ export type Review = {
   fixed?: string[];
   /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again. */
   unsafe?: string[];
+  /** deepsec's set-up files when it set the repo up this run (path → content, `.deepsec/` only): filed as a setup PR. */
+  setup?: Record<string, string>;
+  /** A tree review's target (a whole repo at a commit); a PR review's is the PR. */
+  target?: "tree" | "pr";
 };
 
 /** An open (or just closed) pull request as the watcher needs it. `base` is the base branch's commit the PR is against. */
@@ -64,6 +70,14 @@ export type Thread = { finding: string | null; comment: number; replies: { id: n
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {
   repo: string; number: number; base: string; head: string; combo: ComboRef;
+  /** What it reviews: a PR's change, or a whole tree at `head` (number 0, no merge base). */
+  target: "pr" | "tree";
+  /** The check job: `code-review` (one model option or combo, metered) or `code-review-tools` (the selected tool options, token-free). */
+  profile: "code-review" | "code-review-tools";
+  /** The tools run's catalog option ids. */
+  options?: string[];
+  /** A pending deepsec setup PR's branch tip: its `.deepsec/` files are read at that commit (absent: none pending). */
+  setup_tip?: string | null;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
@@ -115,7 +129,14 @@ export type Posted = {
   /** The acknowledgement comment it wrote. */
   ack?: number;
 };
+/** A deepsec setup PR write (code-review.setup): filed, its outcome (the PR and the branch tip it made), or refused. */
+export type SetupArgs = { repo: string; base: string; branch: "aidenhq/deepsec-setup"; expected_tip: string | null; files: Record<string, string> };
+export type SetupOutcome = { state: "pending" | "done" | "refused"; write?: string; pr_url?: string; tip?: string; why?: string };
 export interface Poster {
+  /** Files the deepsec setup PR write (Tier 1). */
+  setup(a: SetupArgs): Promise<SetupOutcome>;
+  /** A filed setup write's outcome now. */
+  setupOutcome(write: string): Promise<SetupOutcome>;
   /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
@@ -130,3 +151,13 @@ export interface Poster {
   /** Closes the PR's review task (it only holds its posts' approvals) once the PR is closed or a one-off's post is settled. */
   close(repo: string, number: number, why: string, run?: string): Promise<void>;
 }
+
+/** A repo at a ref through the code host's snapshot (the kernel's /v1/codehost/snapshot, under this module's grant): the commit
+ * it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
+export interface Snapshots {
+  tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
+}
+/** Primer's report submission (primer-mcp's /internal/report): a new document, or a version of `documentId`. */
+export type ReportIn = { repo: string; title: string; content: string; documentId?: string; versionNote: string };
+export type ReportOut = { documentId: string; version: number; url: string };
+export type Publisher = (r: ReportIn) => Promise<ReportOut>;
