@@ -340,7 +340,9 @@ cat "${events}"
   // A run with no review in its rollout (codex couldn't read the model's answer) is no review, never a clean one.
   assert.deepEqual(await run(false), { message: "", read: true, cause: "codex review gave no review" });
   // A review whose commands never printed the diff didn't read it (the recipe counts it as no answer).
-  assert.equal((await run(true, blind)).read, false);
+  const b = await run(true, blind);
+  assert.equal(b.read, false);
+  assert.match(b.cause, /^it never read the diff: 2 commands ran; the last printed: /);
 });
 
 test("every engine's output loses the run's token and key-shaped text before it is mapped, the finding kept", async () => {
