@@ -362,8 +362,11 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
         if (who && escalate) escalate.record(caller.task, to as AskTo, t);
-        fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
-        wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
+        // A replacement can arrive in the same millisecond as the wait it replaces: give its fact and wake their own id, or
+        // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
+        let n = 0;
+        while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
+        wakes.open({ key: `wait:${caller.task}:${until}${n ? `:${n}` : ""}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });
       // The wait is durable now; the issue is parked at once so the pinned recovery sweep (next tick: 60–90 s) never reads an
       // armed wait as stranded work, whoever holds the task and whatever the holder's status does while it waits. A write that
