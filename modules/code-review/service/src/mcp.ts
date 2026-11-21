@@ -30,7 +30,7 @@ export function createMcp(tools: Tool[]) {
 /** POST /mcp with the connection's service key; false for any other path. */
 export function serveMcp(handle: ReturnType<typeof createMcp>, key: () => string, caller: (req: IncomingMessage) => Promise<Caller & { assertion?: string }>) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
-    if (req.method !== "POST" || (req.url ?? "/").split("?")[0] !== "/mcp") return false;
+    if (req.method !== "POST" || !URL.canParse(req.url ?? "/", "http://localhost") || new URL(req.url ?? "/", "http://localhost").pathname !== "/mcp") return false;
     const want = Buffer.from(key()), got = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!want.length || got.length !== want.length || !timingSafeEqual(got, want)) return void res.writeHead(401).end(), true;
     let n = 0;

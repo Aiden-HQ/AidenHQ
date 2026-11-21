@@ -915,11 +915,18 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     else return void res.writeHead(a.status, { "content-type": "text/plain", ...(a.location ? { location: a.location, "cache-control": "no-store" } : {}), ...(a.cookie ? { "set-cookie": a.cookie } : {}) }).end(`${a.msg}\n`);
     const up = httpRequest({ ...target, method: req.method, path: a.auth ? a.path : req.url });
     up.on("response", (r) => {
+      let cur: GateConfig;
+      try {
+        cur = config(); // this callback runs outside serve()'s .catch: an unreadable config refuses just this response
+      } catch {
+        r.destroy();
+        return plain(res, 503, "unavailable: the gate can't read its config right now");
+      }
       const h = { ...r.headers };
       for (const k of HOP) delete h[k];
       delete h["set-auth-token"]; // Better Auth's bearer header: the session token never leaves through the gate
       // An app can't set (or overwrite) any auth cookie; the auth listener's must be host-only (no Domain).
-      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (cfg0.previews || cfg0.login === "header-jwt" || a.site.door) ? hostOnly(c) : c));
+      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (cur.previews || cur.login === "header-jwt" || a.site.door) ? hostOnly(c) : c));
       if (kept.length) h["set-cookie"] = kept;
       else delete h["set-cookie"];
       if (a.auth && (/json/i.test(String(h["content-type"] ?? "")) || a.path.startsWith(`${AUTH_PATH}api/`))) return void tokenless(r, res, h);
@@ -942,7 +949,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
 
   const upgrade = async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
-    const cfg = config(); // read once, here: the callbacks below run outside the .catch
+    const cfg = config();
     const a = await authorize(req, { upgrade: true });
     // An upgrade is refused or proxied: authorize() returns no other kind for one.
     if (!a.site) {
@@ -950,11 +957,11 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       return void socket.end(`HTTP/1.1 ${r.status} ${({ 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 503: "Service Unavailable" } as Record<number, string>)[r.status] ?? "Forbidden"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${r.msg.length + 1}\r\n\r\n${r.msg}\n`);
     }
     const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true, strip: cfg.identity?.header, proto: cfg.origin?.scheme }) });
-    const raw = (status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
+    const raw = (cur: GateConfig, status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {
         if (rawHeaders[i]!.toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]!))) continue; // as for responses
-        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (cfg.previews || cfg.login === "header-jwt" || a.site!.door) ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
+        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (cur.previews || cur.login === "header-jwt" || a.site!.door) ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
       }
       return `${s}\r\n`;
     };
@@ -962,7 +969,14 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       usock.on("error", () => socket.destroy());
       usock.on("close", () => socket.destroy());
       socket.on("close", () => usock.destroy());
-      socket.write(raw(r.statusCode, r.statusMessage, r.rawHeaders));
+      let cur: GateConfig;
+      try {
+        cur = config();
+      } catch {
+        usock.destroy();
+        return void socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      }
+      socket.write(raw(cur, r.statusCode, r.statusMessage, r.rawHeaders));
       if (uhead.length) socket.write(uhead);
       if (head.length) usock.write(head);
       usock.pipe(socket).pipe(usock);
