@@ -30,8 +30,8 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the retry bound counts (tier.ts priorDecisions): the AI reviewer's judgment, not code's refusal (a moved head, too large). */
   const judged = (r: { state: string; decided_by?: string | null; review_code?: string | null }) => r.state === "rejected" && /^reviewer:/.test(r.decided_by ?? "") && !CODE_REJECTS.includes(r.review_code ?? "") && r.review_code !== "panel_split";
-  /** Where a record was aimed; a record whose args can't be read names none (one malformed record never fails the read). */
-  const targetsOf = (r: { kind: string; args?: unknown }): string[] => { try { return (requestTargets(actionOf(r.kind), r.args)?.targets ?? []).map((t) => t.key); } catch { return []; } };
+  /** Where a record was aimed, as the review loop aims it (a record no agent filed may be aimed at its run); a record whose args can't be read names none (one malformed record never fails the read). */
+  const targetsOf = (r: { kind: string; args?: unknown; requester?: { agent?: string } | null }): string[] => { try { return (requestTargets(actionOf(r.kind), r.args, !r.requester?.agent)?.targets ?? []).map((t) => t.key); } catch { return []; } };
   /** One row, or undefined when its table isn't there (a kernel without the wake inbox or the fact log). */
   const one = (sql: string, ...args: (string | number)[]) => { try { return db.prepare(sql).get(...args) as Record<string, any> | undefined; } catch { return undefined; } };
   const factData = (subject: string, type: string) => { const f = one("SELECT data FROM facts WHERE subject = ? AND type = ? ORDER BY seq DESC LIMIT 1", subject, type); return f ? (JSON.parse(f.data) as Record<string, unknown>) : undefined; };
