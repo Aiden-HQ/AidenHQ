@@ -73,12 +73,12 @@ PR state, not config.
 
 ## Triggers
 
-The service polls the watched repos (`code_review_poll_seconds`, default 60). A new PR (or one leaving draft) runs each `on_open`
+The service polls the watched repos (`code_review_poll_seconds`, default 60). A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 3 minutes (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; the batch counts once against the daily
 limits, and only its first run rechecks the PR's still-open findings (whichever combo found them). A run is reserved against the
 repo's and the instance's month caps in one transaction before it starts; a run whose PR moved on or closed while it ran is
-superseded and never posts. A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
+superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
 silent: draft, fork, daily limit, budget, closed, stopped, superseded.
 
 Commands in a PR comment (`service/src/commands.ts`; only a command line counts, never a quoted line, a code block or our own
