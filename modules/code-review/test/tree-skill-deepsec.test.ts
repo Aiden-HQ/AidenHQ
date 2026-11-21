@@ -173,3 +173,13 @@ fi
   assert.match(r.untracked, /\/security-audit reads the code its own way/);
   assert.equal(JSON.parse(r.message).findings.length, 0);
 });
+
+test("any committed file under .deepsec means scan, not init; scrub ignores an unset key", async () => {
+  const bin = fakeDeepsec(), root = repoRoot({ ".deepsec/deepsec.config.ts": "export default {}\n" });
+  const out = await withEnv({ ...gw, PATH: `${bin}:${process.env.PATH}` }, () => deepsec({ root, target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 1, scratch: mkdtempSync(join(tmpdir(), "cr-s-")) }));
+  assert.ok(!readFileSync(join(bin, "log"), "utf8").includes("CMD:init"));
+  assert.equal(out.setup, undefined);
+  const { scrub } = await import("../recipe/review.ts");
+  const old = process.env.OPENROUTER_API_KEY; delete process.env.OPENROUTER_API_KEY;
+  try { assert.equal(scrub({ message: "undefined behaviour", read: true }).message, "undefined behaviour"); } finally { if (old !== undefined) process.env.OPENROUTER_API_KEY = old; }
+});

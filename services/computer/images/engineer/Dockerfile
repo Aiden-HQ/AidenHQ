@@ -104,7 +104,7 @@ RUN case "$(dpkg --print-architecture)" in \
 # ---- end of the code review tools ----
 # Code review lenses, lane R2: the review options that run an upstream skill, plugin or scanner as shipped (modules/code-review,
 # recipe/engines.ts `skill:<option>` and recipe/deepsec.ts). Everything here is pinned to a commit or version published on or before
-# 2026-11-15 (the 7-day rule at 2026-11-22); a bump moves the pin and the catalog's version together. Nothing is loaded by default:
+# 2026-11-14 (the 7-day rule at 2026-11-22); a bump moves the pin and the catalog's version together. Nothing is loaded by default:
 # a review run links only the selected skill or plugin into its own throwaway home (resolveSkill).
 #   /opt/review/skills/<owner>__<repo>/  the repo at its pin (skill folders inside)
 #   /opt/review/plugins/<name>/          a Claude Code plugin folder at its pin
@@ -123,12 +123,12 @@ RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     skills callstackincubator/agent-skills 59e9d17446a248b21d86f078fcd0bd2d36db1ca4; \
     skills dotnet/skills 2877c712edc20643b72f64e2983b168e6661d607; \
     skills pashov/skills eacfc09b365d2697b83355909d0300607e596ffc; \
-    # Claude Code plugins: anthropics/claude-plugins-official's three, EveryInc's (the repo root is the plugin) and OpenAI's.
+    # Claude Code plugins: anthropics/claude-plugins-official's three, and EveryInc's (the repo root is the plugin).
     pin /tmp/cpo anthropics/claude-plugins-official b5b01ac4f889fec0c4c6bb89f27ca7c8574473f6; \
     for p in pr-review-toolkit code-modernization security-guidance; do cp -r "/tmp/cpo/plugins/$p" "/opt/review/plugins/$p"; done; rm -rf /tmp/cpo; \
     pin /opt/review/plugins/compound-engineering EveryInc/compound-engineering-plugin ee46dde75a40e297bd8eac4055a410a771d3ac1d; \
-    pin /tmp/cpcc openai/codex-plugin-cc db52e28f4d9ded852ab3942cea316258ae4ef346; cp -r /tmp/cpcc/plugins/codex /opt/review/plugins/codex; rm -rf /tmp/cpcc; \
-    # gemini-cli-extensions/code-review is skipped: the image has no gemini CLI (see the lane's PR).
+    # Left out: gemini-cli-extensions/code-review (no gemini CLI in the image) and openai/codex-plugin-cc (inactive since 2026-07,
+    # and it calls a local codex outside our gateway).
     chmod -R a+rX /opt/review; \
     test -f /opt/review/skills/cloudflare__security-audit-skill/skills/security-audit/SKILL.md; \
     test -f /opt/review/plugins/pr-review-toolkit/.claude-plugin/plugin.json; \
