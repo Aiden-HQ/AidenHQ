@@ -1,0 +1,21 @@
+{
+  "title": "github.setup: add these setup files on an aidenhq/ branch and open its PR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "branch", "expected_tip", "files", "allow", "title", "body"],
+  "properties": {
+    "repo": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
+    "branch": { "type": "string", "pattern": "^aidenhq/[\\w.-]{1,80}$" },
+    "expected_tip": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "propertyNames": { "pattern": "^[\\w.][\\w./-]{0,499}$" },
+      "additionalProperties": { "type": "string", "maxLength": 1000000 }
+    },
+    "allow": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "string", "pattern": "^[\\w.][\\w./*-]{0,499}$" } },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "body": { "type": "string", "minLength": 1, "maxLength": 20000 }
+  }
+}

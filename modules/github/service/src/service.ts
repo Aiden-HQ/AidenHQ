@@ -44,6 +44,7 @@ import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts"
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle } from "./aidenhq-sdk/box-bundle.ts";
 import { noteKept } from "./tidy.ts";
+import * as setupWrite from "./setup.ts";
 
 const run = promisify(execFile);
 
@@ -311,6 +312,7 @@ export function createService(o: Options) {
 
   const executor: Executor = {
     async plan(req: PlanRequest) {
+      if (req.kind.endsWith(".setup")) return setupWrite.plan(api, req.args, (text) => (ownRepo(String(req.args?.repo), o.fleetOrg, o.productRepo) ? undefined : leakIn(text)));
       const { state, facts, reads, changed, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
@@ -326,6 +328,8 @@ export function createService(o: Options) {
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
       if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {});
+      // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
+      if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -665,6 +669,26 @@ export function createService(o: Options) {
   }
   const send = (res: ServerResponse, status: number, b: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(b));
 
+  /**
+   * The kernel's `setup` op (kernel/src/codehost.ts: the grant and the shape of every field are checked there): files this code
+   * host's own `github.setup` record on the caller's task and waits for its outcome, so the push only ever runs approved and bound
+   * to the repo, branch, tip and files the reviewer read. Still waiting after five minutes: { pending, write }; ask again and the
+   * same open record is found.
+   */
+  async function setupOp(b: Record<string, any>): Promise<{ status: number; json: unknown }> {
+    log("ops", { op: "setup", module: String(b.module ?? ""), repo: String(b.repo ?? "") });
+    const task = String(b.task ?? "");
+    if (!task) throw fail(400, "name the task the setup's approval belongs to");
+    const args = { repo: slugOf(b.repo).slug, branch: b.branch, expected_tip: b.expected_tip ?? null, files: b.files, allow: b.allow, title: b.title, body: b.body };
+    let rec = await kernel("POST", "/v1/writes", { kind: "github.setup", args, task }) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
+    for (const t0 = Date.now(); !["done", "failed", "rejected", "stale", "cancelled", "unknown"].includes(rec.state); ) {
+      if (Date.now() - t0 > 5 * 60_000) return { status: 202, json: { pending: true, write: rec.id } };
+      await new Promise((r) => setTimeout(r, 2000));
+      rec = await kernel("GET", `/v1/writes/${rec.id}`);
+    }
+    if (rec.state !== "done" || !rec.outcome?.ok) return { status: 409, json: { error: `the setup wasn't done: write ${rec.id} ${rec.state}${rec.outcome?.text ? `: ${rec.outcome.text.slice(0, 300)}` : ""}`, write: rec.id } };
+    return { status: 200, json: JSON.parse(rec.outcome.text) };
+  }
   async function ops(op: string, req: IncomingMessage, res: ServerResponse) {
     // Only the kernel calls the ops, with this service's key: POST /v1/codehost/:op brokers them under each module's grant.
     if (!keyed(req)) throw fail(401, "the kernel only");
@@ -843,7 +867,12 @@ export function createService(o: Options) {
         const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
         return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
-      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|runner_token)$/.exec(String(req.url ?? ""));
+      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|setup|runner_token)$/.exec(String(req.url ?? ""));
+      if (m?.[1] === "setup" && req.method === "POST") {
+        if (!keyed(req)) throw fail(401, "the kernel only");
+        const r = await setupOp(await body(req, 6_000_000));
+        return send(res, r.status, r.json);
+      }
       if (m && req.method === "POST") return await ops(m[1]!, req, res);
       send(res, 404, { error: "not found" });
     } catch (e) {

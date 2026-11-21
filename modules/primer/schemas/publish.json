@@ -5,7 +5,8 @@
     "format": { "enum": ["markdown", "html"] }, "description": { "type": "string", "maxLength": 1000 },
     "documentId": { "type": "string", "pattern": "^[A-Za-z0-9-]{8,64}$" }, "versionNote": { "type": "string", "maxLength": 500 },
     "baseVersionNumber": { "type": "integer", "minimum": 1 },
-    "path": { "type": "string", "maxLength": 200 }, "own": { "enum": [true] }, "private": { "enum": [true] },
+    "path": { "type": "string", "maxLength": 200 }, "own": { "enum": [true] },
+    "private": { "enum": [true] }, "repo_key": { "type": "string", "minLength": 1, "maxLength": 200 },
     "by": { "type": "object", "additionalProperties": false, "required": ["agent", "task"], "properties": { "agent": { "type": "string", "minLength": 1, "maxLength": 200 }, "task": { "type": "string", "minLength": 1, "maxLength": 200 } } }
   }
 }

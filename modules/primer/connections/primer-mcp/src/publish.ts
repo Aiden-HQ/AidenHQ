@@ -10,8 +10,9 @@
 import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owner, type Owners } from "./owners.js";
+import { fileReports, type Reports } from "./reports.js";
 
-export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; private?: true; by?: Owner };
+export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; private?: true; repo_key?: string; by?: Owner };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
@@ -23,8 +24,12 @@ export function normalise(a: any, fromRunner = false): Publish {
   // The version the agent read: Primer merges people's edits since then (three-way) and refuses a stale one.
   if (args.documentId && Number.isInteger(a?.baseVersionNumber) && a.baseVersionNumber > 0) args.baseVersionNumber = a.baseVersionNumber;
   if (fromRunner && args.documentId && a?.own === true) args.own = true;
-  // Only ever narrows who can read a new document, so any requester may ask for it.
-  if (!args.documentId && a?.private === true) args.private = true;
+  // A private report (one document per repo_key, only the owner's): code review's, filed by that module (module.yaml filed_by).
+  if (a?.private === true) {
+    if (!str(a.repo_key)) throw new Error("a private publish names its repo_key");
+    args.private = true;
+    args.repo_key = str(a.repo_key)!.trim();
+  } else if (str(a?.repo_key)) throw new Error("repo_key goes with private");
   if (!args.content) throw new Error("the document is empty: nothing to publish");
   if (!args.documentId && !args.title) throw new Error("a new document needs a title");
   return args;
@@ -60,29 +65,51 @@ export function versionResult(documentId: string, text: string): string {
 /** The requester's identity as the kernel names it: the agent and its task (a module or an empty one has none). */
 const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agent && task ? { agent: r.agent, task } : undefined);
 
-/** This module's own filing (the report route, report.ts): its module token is the only way to be this requester. */
-const isOwnFiling = (r: { kind?: string; module?: string }) => r.kind === "module" && r.module === "primer";
+/** What publishing a private report needs of Primer beyond its MCP tools: narrowing a new document to the owner, and the repo→document map. */
+export interface Private { makePrivate(documentId: string): Promise<void>; reports: Reports }
 
-/** `makePrivate` narrows a document just created to the requester (Primer's PATCH /api/documents/:id visibility). */
-export function publisher(call: Call, owners: Owners = fileOwners(), makePrivate: (documentId: string) => Promise<void> = async () => {}): Executor {
+/** Whether a document's answer says it is private to its owner alone: private, and no collaborator. Anything unreadable is "no". */
+export async function ownerOnly(call: Call, documentId: string): Promise<boolean> {
+  const json = async (tool: string) => { try { return JSON.parse((await call(tool, { documentId })).text); } catch { return undefined; } };
+  const doc = await json("primer_get_document");
+  const who = await json("primer_list_collaborators");
+  const list = Array.isArray(who) ? who : Array.isArray(who?.collaborators) ? who.collaborators : undefined;
+  return doc?.visibility === "private" && Array.isArray(list) && list.length === 0;
+}
+
+/** First publications on one repo_key never overlap, so concurrent ones share the one document. */
+const locks = new Map<string, Promise<unknown>>();
+const serial = <T,>(key: string, fn: () => Promise<T>): Promise<T> => {
+  const run = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+  locks.set(key, run);
+  void run.finally(() => { if (locks.get(key) === run) locks.delete(key); }).catch(() => {});
+  return run;
+};
+
+export function publisher(call: Call, owners: Owners = fileOwners(), priv: Private = { makePrivate: async () => {}, reports: fileReports() }): Executor {
   return {
     async plan(req) {
       const args = normalise(req.args, req.requester?.kind === "job");
       const by = byOf(req.requester ?? {}, req.task);
       if (by) args.by = by;
       const owner = args.documentId ? owners.get(args.documentId) : undefined;
-      if ((owner && by && owner.agent === by.agent && owner.task === by.task) || (args.documentId && isOwnFiling(req.requester ?? {}))) args.own = true;
+      if (owner && by && owner.agent === by.agent && owner.task === by.task) args.own = true;
+      // A module's private report (module.yaml filed_by): its versions are the one report document's, never another's, so they
+      // stay at the floor. Only a module identity, which no agent can hold, counts.
+      const report = Boolean(args.private && req.requester?.kind === "module");
       const sha = createHash("sha256").update(args.content).digest("hex");
       return {
         args,
-        targets: { artifact_sha256: sha, ...(args.documentId ? { document: args.documentId } : {}) },
+        targets: { artifact_sha256: sha, ...(args.documentId ? { document: args.documentId } : {}), ...(args.repo_key ? { repo_key: args.repo_key } : {}) },
         facts: { size: args.content.length, short: sha.slice(0, 12) },
-        ...(args.documentId && !args.own ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
+        ...(args.documentId && !args.own && !report ? { raise: { tier: 2 as const, rule: "primer-version-not-own", reason: `a new version of document ${args.documentId}, which this agent didn't publish on this task and the owner's own words didn't ask to update` } } : {}),
         card: {
-          what: args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
-          changes: args.documentId
+          what: args.private ? `the private report "${args.title ?? args.repo_key}" (${args.repo_key})` : args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
+          changes: args.private
+            ? "Publishes this report on Primer where only its owner can read it: a new version of this repo's earlier report while that is still private to the owner alone, else a new private document."
+            : args.documentId
             ? `Adds this as the latest version of document ${args.documentId} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
-            : args.private ? "Creates a new Primer document that only its requester (the owner) can read." : "Creates a new Primer document that everyone in the organization can read.",
+            : "Creates a new Primer document that everyone in the organization can read.",
           from: args.path ? `, from the workspace file ${args.path}` : "",
         },
       };
@@ -90,29 +117,42 @@ export function publisher(call: Call, owners: Owners = fileOwners(), makePrivate
     async execute(rec) {
       const a = normalise(rec.args, true);
       const by: Owner | undefined = rec.args?.by?.agent && rec.args.by.task ? { agent: String(rec.args.by.agent), task: String(rec.args.by.task) } : undefined;
-      if (a.documentId) {
-        // A call that threw may have landed: read the versions back instead of publishing again.
-        const r = await call("primer_add_version", { documentId: a.documentId, content: a.content, format: a.format, ...(a.versionNote ? { versionNote: a.versionNote } : {}), ...(a.baseVersionNumber ? { baseVersionNumber: a.baseVersionNumber } : {}) }).catch(async (e: Error) => {
-          const seen = a.versionNote && (await call("primer_list_versions", { documentId: a.documentId! }).catch(() => undefined))?.text.includes(a.versionNote);
-          return seen ? { text: "a version with this note is on Primer: read its versions for the number", isError: false } : { text: `outcome unknown (${e.message}): check the document's versions on Primer before publishing again`, isError: true };
-        });
-        return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: versionResult(a.documentId, r.text) };
-      }
-      const r = await call("primer_create_document", { title: a.title, content: a.content, format: a.format, ...(a.description ? { description: a.description } : {}) })
-        .catch((e: Error) => ({ text: `outcome unknown (${e.message}): look for the document on Primer before publishing again`, isError: true }));
-      if (r.isError) return { ok: false, text: r.text.slice(0, 2000) };
-      let ref = documentRef(r.text);
-      if (!ref.documentId && ref.url) ref = { ...ref, ...documentRef((await call("primer_resolve_url", { url: ref.url })).text) };
-      if (ref.documentId && by) owners.set(ref.documentId, by);
-      if (a.private) {
-        if (!ref.documentId) return { ok: false, text: `Published on Primer: ${ref.url ?? "(no link)"}, but its id wasn't in Primer's answer, so it couldn't be made private: make it private on Primer by hand` };
+      if (!a.private) return write(a, by);
+      // A private report: the repo's one document (never a document the caller names), a new version of it while it is still
+      // private to the owner alone, else a new private document in its place; first publications on a repo_key are serialised.
+      return serial(a.repo_key!, async () => {
+        const known = priv.reports.get(a.repo_key!);
+        const keep = known !== undefined && (await ownerOnly(call, known));
+        const out = await write(keep ? { ...a, documentId: known } : { ...a, documentId: undefined, title: a.title ?? `Repo review: ${a.repo_key}` }, undefined);
+        if (keep || !out.ok) return out;
+        const id = /\(document ([A-Za-z0-9-]+)\)/.exec(out.text)?.[1];
+        if (!id) return { ok: false, text: `${out.text}: its id wasn't in Primer's answer, so it couldn't be made private: make it private on Primer by hand` };
         try {
-          await makePrivate(ref.documentId);
+          await priv.makePrivate(id);
         } catch (e) {
-          return { ok: false, text: `Published on Primer (document ${ref.documentId}: ${ref.url ?? "no link"}) but it couldn't be made private (${(e as Error).message.slice(0, 200)}): make it private on Primer before anything else` };
+          return { ok: false, text: `${out.text}, but it couldn't be made private (${(e as Error).message.slice(0, 200)}): make it private on Primer before anything else` };
         }
-      }
-      return { ok: true, text: `Published on Primer: ${ref.url ?? "(no link in Primer's answer)"}${ref.documentId ? ` (document ${ref.documentId})` : ""}` };
+        priv.reports.set(a.repo_key!, id);
+        return { ok: true, text: `${out.text}${known ? ` (the earlier report ${known} is shared wider or gone, so this is a new private document)` : ""}` };
+      });
     },
   };
+
+  async function write(a: Publish, by: Owner | undefined) {
+    if (a.documentId) {
+      // A call that threw may have landed: read the versions back instead of publishing again.
+      const r = await call("primer_add_version", { documentId: a.documentId, content: a.content, format: a.format, ...(a.versionNote ? { versionNote: a.versionNote } : {}), ...(a.baseVersionNumber ? { baseVersionNumber: a.baseVersionNumber } : {}) }).catch(async (e: Error) => {
+        const seen = a.versionNote && (await call("primer_list_versions", { documentId: a.documentId! }).catch(() => undefined))?.text.includes(a.versionNote);
+        return seen ? { text: "a version with this note is on Primer: read its versions for the number", isError: false } : { text: `outcome unknown (${e.message}): check the document's versions on Primer before publishing again`, isError: true };
+      });
+      return r.isError ? { ok: false, text: r.text.slice(0, 2000) } : { ok: true, text: versionResult(a.documentId, r.text) };
+    }
+    const r = await call("primer_create_document", { title: a.title, content: a.content, format: a.format, ...(a.description ? { description: a.description } : {}) })
+      .catch((e: Error) => ({ text: `outcome unknown (${e.message}): look for the document on Primer before publishing again`, isError: true }));
+    if (r.isError) return { ok: false, text: r.text.slice(0, 2000) };
+    let ref = documentRef(r.text);
+    if (!ref.documentId && ref.url) ref = { ...ref, ...documentRef((await call("primer_resolve_url", { url: ref.url })).text) };
+    if (ref.documentId && by) owners.set(ref.documentId, by);
+    return { ok: true, text: `Published on Primer: ${ref.url ?? "(no link in Primer's answer)"}${ref.documentId ? ` (document ${ref.documentId})` : ""}` };
+  }
 }
