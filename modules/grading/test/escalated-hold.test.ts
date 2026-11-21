@@ -13,7 +13,7 @@ test("an escalated task finished again is held until its version is checked, the
     kernel: { issue: async (id) => ({ id, status: "in_review" }), repos: async () => ({}), release: async (id) => (released.push(id), true) },
   });
   grades.file("esc", [], { kind: "file", ref: "" }, "agent:cos");
-  grades.record("esc", { version: "v1", outcome: "cannot_judge", model: "m", criteria: [] }, Date.now(), ["cos"]);
+  for (let i = 0; i < 2; i++) grades.record("esc", { version: "v1", outcome: "needs_revision", model: "m", criteria: [] }, Date.now(), ["cos"]); // the same version rejected twice
   assert.equal(grades.get("esc")!.state, "escalated");
   assert.deepEqual(completionGate(grades, "esc", "task_finish"), { pass: false, state: "escalated", label: "grading" }); // the assignee finishes again: held
   await tick();

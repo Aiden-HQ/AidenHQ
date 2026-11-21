@@ -24,7 +24,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   emit?: (e: Json) => void;
 }) {
   const grading = new Set<string>();
-  const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: it escalates to the delegator
+  const GRADE_WAIT_MS = 24 * 60 * 60_000; // evidence still missing a day after the close: it closes done, ungraded
   const RESUBMIT_WAIT_MS = 24 * 60 * 60_000; // an escalated task finished again, its evidence still moving a day later: no new version
   const MISSING_WAIT_MS = 10 * 60_000; // finished with no deliverable at all and nothing moving: the delegator decides now
   const WAKE_GRACE_MS = 2 * 60_000; // a run's own follow-through (an auto-deploy, a merge) lands before its task is woken
@@ -53,7 +53,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.
           const now = await pc.issue(task);
-          if (now.status !== "done" && (now.status !== s.status || (await gather(s.deliverable, gradeDeps(now), s.rubric)).version !== s.version)) {
+          if (now.status !== "done" && (now.status !== s.status || (s.version && (await gather(s.deliverable, gradeDeps(now), s.rubric)).version !== s.version))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
             steps.length = 1;
@@ -168,12 +168,12 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const attempt = (g.attempts ?? 0) + 1; // the pass this grade is on (a revision is the next attempt)
     let asked = false, v;
     if (ev.awaiting) {
-      // Evidence that never comes (a PR nobody merges, a deploy that never lands) escalates to the delegator after a day, saying why;
+      // Evidence that never comes (a PR nobody merges, a deploy that never lands) closes the task done, ungraded, after a day, saying why;
       // a deliverable that doesn't exist at all (finished with no PR, no apply, nothing posted) after MISSING_WAIT_MS, since
       // nothing is coming. A task still moving (a run, its merges, an open card) is never cut short.
       const waitOver = !ev.busy && (ev.missing ? Date.now() - (await lastMoved(issue, g)) >= MISSING_WAIT_MS : Date.now() - Date.parse(g.updatedAt) >= GRADE_WAIT_MS);
       // Before that, a stalled wait (the run ended, nothing open on it) wakes the task with the reason, once per reason and at
-      // most MAX_WAKES times; a reason already woken, or one past the cap, escalates to its delegator now.
+      // most MAX_WAKES times; a reason already woken, or one past the cap, ends the wait now.
       const nudge = ev.busy || waitOver ? "" : await stalled(issue, g, ev.awaiting);
       if (nudge === "wake") {
         await wake(issue, ev.awaiting);
@@ -185,7 +185,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         log("grading waits for evidence", { issue: issue.identifier, why: ev.awaiting });
         return;
       }
-      // The wait is over: hold the row if the deliverable turns out to be there after all, else escalate on today's facts
+      // The wait is over: hold the row if the deliverable turns out to be there after all, else close ungraded on today's facts
       // (escalationFor says which, and why). Both places the owner hears of a held grade — the note below and the board's
       // owner-channel line, which carries the escalated row — go through here; the other escalations (rejected versions,
       // cannot_judge, 5 failed grader passes) do not.
@@ -215,20 +215,16 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
-    const note = gradeNote(v, rubric, row.state, { version: ev.version, reason: row.state === "escalated" && v.outcome === "error" ? v.reason : undefined });
+    // A satisfied row without a satisfied verdict is a close the grader could not check: done, with "ungraded: <reason>".
+    const ungraded = row.state === "satisfied" && v.outcome !== "satisfied" ? (v.outcome === "needs_revision" ? "its criteria were not shown by the evidence" : v.outcome === "cannot_judge" ? "the grader couldn't judge it" : String(v.reason || "the grader failed").slice(0, 300)) : "";
+    const note = gradeNote(v, rubric, ungraded ? "ungraded" : row.state, { version: ev.version, reason: ungraded || undefined });
     if (row.state === "satisfied") {
       // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.
-      await owe(issue.id, [{ do: "done", note, version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, graded against its rubric: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      await owe(issue.id, [{ do: "done", note, version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
       // The reopen wakes the task's agent through the kernel: nothing to dispatch here.
-    } else if (row.state === "escalated" && v.outcome === "grading_failed") {
-      // The grader itself kept failing (MAX_GRADER_FAILURES in a row, never a rubric verdict): the task ends blocked with the
-      // error rather than looping in review, and its delegator hears it. Nothing is posted on the task after the block: a
-      // comment there would reopen it.
-      await owe(issue.id, [{ do: "block", note }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "blocked", text: `**${issue.identifier} is blocked: its grader failed ${row.failures} times in a row** (${String(v.reason ?? "").slice(0, 300)}): ${issue.title}. Unblock it once the grader works, or close it if you're satisfied.` }]);
-      log("grading failed: task blocked", { issue: issue.identifier, failures: row.failures, reason: String(v.reason ?? "").slice(0, 300) });
     } else if (row.state === "escalated") {
       // One question to the delegator, with the grader's note in it; on the task itself only when no open parent hears it (a
       // note there would wake its assignee, who has nothing left to do).

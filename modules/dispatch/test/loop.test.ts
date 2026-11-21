@@ -782,32 +782,33 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
 });
 
-test("a refusal a recompile clears is retried on the wake's next lease, then said on the task and dropped", async () => {
+test("a refusal a recompile clears is retried later and later, never dropped, until the kernel takes the wake", async () => {
   const task = { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" };
   const k = fake({ task });
+  let clock = 1_000_000;
+  k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana", now: () => clock });
+  let asked = 0;
   const start = k.kernel.start;
-  // Admission refused it: the agent has no grants (kernel/src/admission.ts no-grants, 403) — a recompile can add them.
-  k.kernel.start = async () => { throw new KernelError(403, "kernel POST /v1/jobs → 403", { type: "no-grants", message: "agent eng has no grants" }); };
-  for (const tick of [1, 2]) {
+  // Admission refused it: provenance isn't settled yet (kernel/src/admission.ts, 409) — a recompile clears it.
+  k.kernel.start = async () => { asked++; throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "provenance-unsettled", message: "not settled" }); };
+  // Each refusal doubles the wait, up to 30 minutes; a wake that comes back sooner is left alone.
+  for (const wait of [2, 4, 8, 16, 30, 30]) {
     k.inbox.push(wake("issue:t1:1", "assigned"));
     await k.dispatch.tick();
-    assert.deepEqual([k.dropped, k.notes], [[], []], `try ${tick}: kept for its next lease, nothing said yet`);
+    const before = asked;
+    clock += (wait - 1) * 60_000;
+    k.inbox.push(wake("issue:t1:1", "assigned"));
+    await k.dispatch.tick();
+    assert.equal(asked, before, `${wait} min: still waiting`);
+    clock += 60_000;
+    assert.deepEqual([k.dropped, k.notes], [[], []], "nothing dropped, nothing said");
   }
   assert.equal(k.started.length, 0);
-  // The third refusal is the last START_TRIES allows: it goes on the task, naming the refusal, and the wake is dropped.
+  // A wake the recompiled kernel then takes starts its job.
+  k.kernel.start = start;
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"]);
-  assert.equal(k.notes.length, 1, "one notice on the task, once per wake");
-  assert.match(k.notes[0].body, /not started/);
-  assert.match(k.notes[0].body, /no-grants/);
-  assert.match(k.notes[0].body, /agent eng has no grants/);
-  // A wake the recompiled kernel then takes starts its job: the retries did not wedge it.
-  k.kernel.start = start;
-  k.inbox.push(wake("issue:t1:2", "status"));
-  await k.dispatch.tick();
   assert.equal(k.started.length, 1);
-  assert.deepEqual(k.notes.length, 1, "no notice for a wake that ran");
 });
 
 test("every refusal nothing clears is dropped at once, and each leaves a notice naming it and what became of the wake", async () => {
@@ -970,16 +971,17 @@ test("a job stopped for no progress says so even when the first post fails and t
   assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times/);
 });
 
-test("a job that couldn't start is retried later, and after three tries a notice (never a reply) says why", async () => {
+test("a job that couldn't start is retried later and later, with no cap, and nobody is told", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
-  for (let n = 1; n <= 3; n++) {
+  for (let n = 1; n <= 8; n++) {
     k.inbox.push(wake(`issue:t1:${n}`, "assigned"));
     await k.dispatch.tick();
     Object.assign(k.jobs.get(`j${n}`), { state: "failed", exit: null, final: "couldn't start: the computer launcher answered 500", ended: Date.now() });
     await k.dispatch.tick();
   }
-  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"], ["retry.j2", "retry"]]);
-  assert.deepEqual(k.posts, [{ job: "j3", kind: "notice", body: "**Couldn't start:** couldn't start: the computer launcher answered 500. Say **continue** to try again." }]);
+  assert.equal(k.scheduled.length, 8);
+  assert.deepEqual(k.scheduled.map((s) => Math.round((s.at - Date.now()) / 60_000)), [2, 4, 8, 16, 30, 30, 30, 30]);
+  assert.deepEqual(k.posts, []);
 });
 
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
