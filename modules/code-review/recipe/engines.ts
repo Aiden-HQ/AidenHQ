@@ -42,8 +42,14 @@ export interface EngineInput {
 /** `calls`: the repo tools a run called, with the arguments code checks coverage by (path, the page `from`, `stat`). */
 export interface EngineResult { message: string; read: boolean; calls?: Call[]; cause?: string; incomplete?: string }
 export type Call = { tool: string; path?: string; from?: number; stat?: boolean };
-/** A tool call's coverage arguments, as code reads them from the call's own input. */
-export const callOf = (tool: string, a: Record<string, unknown> | undefined): Call => ({ tool, ...(typeof a?.path === "string" ? { path: a.path } : {}), ...(Number(a?.from) > 1 ? { from: Math.floor(Number(a!.from)) } : {}), ...(a?.stat === true ? { stat: true } : {}) });
+/**
+ * A tool call's coverage arguments, as code reads them from the call's own input; undefined for one with a wrong-typed
+ * argument, which the tools refuse (review-tools argsProblem), so a refused call never counts as a read.
+ */
+export const callOf = (tool: string, a: Record<string, unknown> | undefined): Call | undefined => {
+  const wrong = (a?.path !== undefined && typeof a.path !== "string") || (a?.from !== undefined && !Number.isInteger(a.from)) || (a?.stat !== undefined && typeof a.stat !== "boolean");
+  return wrong ? undefined : { tool, ...(typeof a?.path === "string" ? { path: a.path } : {}), ...(Number(a?.from) > 1 ? { from: Number(a!.from) } : {}), ...(a?.stat === true ? { stat: true } : {}) };
+};
 
 /** Why a combo can't run, or undefined. */
 export function comboProblem(c: Combo | null | undefined) {
@@ -84,7 +90,7 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   writeFileSync(join(home, "config.toml"), config({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), root, base, instructions }));
   const r = await runCodex({ prompt, home, cwd, out: join(tmp, "answer.txt"), key: process.env.OPENROUTER_API_KEY, minutes });
   const calls = r.events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
-    .map((e) => callOf(e.item!.tool!, e.item!.arguments));
+    .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []);
   const done = r.code === 0 && r.events.some((e) => e?.type === "turn.completed");
   const said = r.events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
   const cause = done ? undefined : r.timedOut ? "timed out" : /\b402\b|cap_reached/.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
@@ -134,7 +140,8 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     const events: ClaudeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     for (const e of events) for (const c of e.type === "assistant" ? e.message?.content ?? [] : []) {
       const t = c.type === "tool_use" && /^mcp__repo__(\w+)$/.exec(String(c.name))?.[1];
-      if (t) calls.push(callOf(t, c.input));
+      const call = t ? callOf(t, c.input) : undefined;
+      if (call) calls.push(call);
     }
     const end = events.findLast((e) => e.type === "result");
     return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error };

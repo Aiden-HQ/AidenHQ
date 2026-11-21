@@ -39,6 +39,22 @@ export function page(text: string, from: unknown = 1) {
   return i < lines.length ? `${out.join("\n")}\n[answer lines ${start}-${i} of ${lines.length} (a line over ${MAX} characters counts as several): call again with from: ${i + 1} for the rest]` : out.join("\n");
 }
 
+/**
+ * What is wrong with a tool call's arguments against its declared schema (and `from`), or undefined: a wrong type is refused
+ * before the tool runs, so the tool and code's record of what it read take the same value.
+ */
+export function argsProblem(tool: { schema: Record<string, unknown>; required?: string[] } | undefined, args: Record<string, unknown>) {
+  if (!tool) return "no such tool";
+  const props: Record<string, unknown> = { ...tool.schema, from: { type: "integer" } };
+  for (const [k, v] of Object.entries(args ?? {})) {
+    const type = (props[k] as { type?: string } | undefined)?.type;
+    if (!type) return `no argument ${k}`;
+    if (!(type === "integer" ? Number.isInteger(v) : type === "boolean" ? typeof v === "boolean" : typeof v === type)) return `${k} must be ${type === "integer" ? "an integer" : `a ${type}`}`;
+  }
+  const missing = (tool.required ?? []).find((k) => args?.[k] === undefined);
+  return missing ? `${missing} is required` : undefined;
+}
+
 /** The tools, bound to one checkout and the PR's base commit. Each returns text; a bad argument throws. */
 export function tools(root: string, base: string): Record<string, Tool> {
   root = realpathSync(root);
@@ -53,14 +69,15 @@ export function tools(root: string, base: string): Record<string, Tool> {
   };
   // No system or global git config (a home-directory .gitconfig could name a pager, fsmonitor or diff program): only the
   // checkout's own .git/config, which actions/checkout wrote and the PR can't change.
-  const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+  // Pathspecs are literal: a file the PR names `:(glob)*` or `:!x` is that file, never a pattern.
+  const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" };
   const git: Git = (...args) => (execFileSync("git", ["--no-pager", ...args], { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, env }));
   const str = { type: "string" };
   return {
     diff: {
       description: `The PR's changes: git diff from its base (${base.slice(0, 12)}, the merge base) to the checked-out head, for the whole tree or one path. stat: true lists changed files with line counts instead.`,
       schema: { path: str, stat: { type: "boolean" } },
-      run: ({ path, stat }) => git("diff", "--no-ext-diff", "--no-textconv", "--no-color", ...(stat ? ["--stat=200"] : []), `${base}...HEAD`, "--", inside(path)),
+      run: ({ path, stat }) => git("diff", "--no-ext-diff", "--no-textconv", "--no-color", ...(stat === true ? ["--stat=200"] : []), `${base}...HEAD`, "--", inside(path)),
     },
     log: {
       description: "The PR's commits since its base, with their messages.",
@@ -203,6 +220,8 @@ export function serve(t: Record<string, Tool>, input: NodeJS.ReadableStream = pr
     }
     if (m.method === "tools/call") {
       const d = t[m.params?.name!];
+      const bad = d && argsProblem(d, m.params?.arguments ?? {});
+      if (bad) return ok({ content: [{ type: "text", text: `bad arguments: ${bad}` }], isError: true });
       if (!d) return send({ id: m.id, error: { code: -32602, message: `no tool ${m.params?.name}` } });
       return Promise.resolve().then(() => d.run(m.params!.arguments ?? {})).then(
         (text) => ok({ content: [{ type: "text", text: page(text, m.params!.arguments?.from) }], isError: false }),

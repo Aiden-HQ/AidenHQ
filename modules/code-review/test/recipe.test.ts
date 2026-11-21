@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { bound, review } from "../recipe/review.ts";
-import { page, tools } from "../recipe/review-tools.ts";
+import { bound, history, review } from "../recipe/review.ts";
+import { argsProblem, page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
-import { runEngine } from "../recipe/engines.ts";
+import { callOf, runEngine } from "../recipe/engines.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 const lay = (dir, files) => { for (const [f, t] of Object.entries(files)) (mkdirSync(dirname(join(dir, f)), { recursive: true }), writeFileSync(join(dir, f), t)); };
@@ -314,4 +314,17 @@ test("a review whose finders didn't page through a big file's diff is incomplete
   };
   const read = await review({ spec: spec({ combo: combo({ effort: "low" }) }), ...box({ head, base }), run: all });
   assert.equal(read.coverage.incomplete, null);
+});
+
+test("tool arguments of the wrong type are refused and never count as a read; file names are literal pathspecs", async () => {
+  const { ws, out } = box({ base: { "a.js": "1\n" }, head: { "a.js": "1\n2\n", ":(glob)*": "odd\n" } });
+  const t = tools(ws, history(ws, out, spec()).base);
+  assert.match(argsProblem(t.diff, { stat: "yes" }), /stat must be a boolean/);
+  assert.equal(argsProblem(t.diff, { stat: true, path: "a.js" }), undefined);
+  assert.equal(callOf("diff", { stat: "yes" }), undefined);
+  assert.deepEqual(callOf("diff", { path: "a.js", from: 3 }), { tool: "diff", path: "a.js", from: 3 });
+  // A file named like a pathspec magic is that file: its diff is its own, not every file's.
+  const odd = t.diff.run({ path: ":(glob)*" });
+  assert.match(odd, /\+odd/);
+  assert.doesNotMatch(odd, /a\.js/);
 });
