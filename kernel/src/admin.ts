@@ -267,7 +267,7 @@ export function createAdmin(d: Deps) {
       const hit = compiled.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!hit) throw new Refusal(404, "not found");
       const id = hit.re.exec(url.pathname)![1] ?? "";
-      if (OAUTH_CLIENT.has(hit.path) || hit.path === "/.well-known/oauth-authorization-server") return d.accounts.oauth(req, res, hit.path, url.search);
+      if (OAUTH_CLIENT.has(hit.path) || hit.path === "/.well-known/oauth-authorization-server") return await d.accounts.oauth(req, res, hit.path, url.search);
       if (req.method === "POST" && !d.origins().includes(String(req.headers.origin ?? ""))) throw new Refusal(403, "this form didn't come from this page's own address");
       const next = url.searchParams.get("next") ?? "";
       switch (`${hit.method} ${hit.path}`) {
@@ -280,7 +280,7 @@ export function createAdmin(d: Deps) {
             return redirect(res, `/auth/sign-in?next=${encodeURIComponent(here)}`);
           }
           if (!s.ready) throw new Refusal(403, "only an admin with an authenticator connects an MCP client");
-          return d.accounts.oauth(req, res, "/oauth2/authorize", url.search);
+          return await d.accounts.oauth(req, res, "/oauth2/authorize", url.search);
         }
         case "GET /setup": case "POST /setup": {
           const fr = d.firstRun;

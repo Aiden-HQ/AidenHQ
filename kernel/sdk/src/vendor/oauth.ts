@@ -223,6 +223,7 @@ export function oauth(o: OAuthOptions): Auth {
       if (res.status < 500) mark("expired", String((err as Error).message));
       throw err;
     }
+    if (token !== t) return token!; // a reconnect saved a newer grant while this refresh was in flight
     save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token, scope: next.scope ?? t.scope });
     return token!;
   }
