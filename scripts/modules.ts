@@ -3,7 +3,7 @@
 // nothing (scripts/compile.ts writes). See docs/configuration.md.
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.ts";
@@ -297,6 +297,9 @@ function settingRules(name: string, def: Obj) {
     }
   }
 }
+
+/** settings.computers_max where unset: one box per 1.5 GB of the host's RAM (boxes mostly wait on model calls: measured 0.3 to 0.45 GB each), 4 to 64. */
+export const defaultComputersMax = (totalBytes = totalmem()) => Math.min(64, Math.max(4, Math.floor(totalBytes / 2 ** 30 / 1.5)));
 
 /** A module's settings for the board: default, allowed values, required, pattern, when, and the comment above each key as its `doc`. */
 function settingDefs(file: string, def: Obj) {
@@ -674,6 +677,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const settings: Obj = {};
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
+  settings.computers_max ??= defaultComputersMax();
   if (settings.upstream === "prs") { settings.upstream = "issues"; warnings.push("setting upstream: prs was removed in this release: treated as issues"); }
   setupFlows(enabledDefs, compiled, settings);
   const orgs = organisations(readMarketplace(productDir).organisations, known, enabledDefs);

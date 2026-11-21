@@ -265,3 +265,18 @@ test("a run that can't start because GitHub or the kernel can't answer now waits
   await w.tick();
   assert.match(w.engine.run(b.id).run.why, /^couldn't start: github-mcp compare: 404/);
 });
+
+test("a run whose check job has no computer yet shows as waiting, not running", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
+  await w.tick();
+  w.later(1000);
+  w.pr(2, sha("2"));
+  await w.tick();
+  w.results.set("c-1", { state: "running", waiting: true });
+  w.later(5000);
+  await w.tick();
+  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status), ["waiting"]);
+  w.results.set("c-1", { state: "running" });
+  await w.tick();
+  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status), ["running"]);
+});

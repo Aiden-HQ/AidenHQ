@@ -75,6 +75,7 @@ import { createProvenance } from "./provenance.ts";
 import { KERNEL_KINDS, LOCAL_ORG, raiseCapCard } from "./kinds.ts";
 import { JobError, admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
 import { createAdmission, wakeInbox } from "./admission.ts";
+import { createPool } from "./pool.ts";
 import { createBoxes, handbookFrom, launcherClient, type Boxes } from "./boxes.ts";
 import { checkJobsFrom } from "./checkbox.ts";
 import type { Recipes } from "./checkjobs.ts";
@@ -587,8 +588,10 @@ boxes = createBoxes({
     may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),
   },
 });
+// One pool for agent jobs and check jobs (pool.ts): each kind is guaranteed half of settings.computers_max.
+const pool = createPool({ capacity: () => Number(computers().max) || 0, agentLive: () => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get() as { n: number }).n });
 const admission = createAdmission({
-  db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
+  pool, db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
   spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, routinesTable()),
   // A task gone is none (a refusal dispatch drops); a read that fails otherwise is a 503, so the wake comes back.
@@ -606,7 +609,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
-const checkJobs = checkJobsFrom({ db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), log });
+const checkJobs = checkJobsFrom({ pool, db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), log });
 // The previous kernel's check runs are its own until it has exited (it hands their box runs on as it drains); then this one
 // follows those again to their end, and what never reached its box is lost.
 afterPrevious(() => void checkJobs.recover().catch((e: Error) => log("WARNING: adopted checks failed outside their own handling", { err: String(e?.message ?? e).slice(0, 300) })));

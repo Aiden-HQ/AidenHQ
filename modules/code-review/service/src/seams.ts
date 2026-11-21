@@ -65,9 +65,9 @@ export type ReviewSpec = {
   budget_usd: number; ignore: string[]; max_nits: number;
 };
 /** `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
- * the run is charged its whole run_usd. A running one's is its spend so far (what the day budget counts). */
+ * the run is charged its whole run_usd. `waiting`: its check job has no computer yet. A running one's is its spend so far (what the day budget counts). */
 export type RunResult =
-  | { state: "running"; billed_usd?: number }
+  | { state: "running"; billed_usd?: number; waiting?: boolean }
   | { state: "done"; review: Review; billed_usd?: number }
   | { state: "failed"; why: string; billed_usd?: number };
 export interface ReviewRunner {

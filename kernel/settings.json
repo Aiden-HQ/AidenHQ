@@ -48,8 +48,7 @@
     "doc": "On (a new install): a module's scheduled routines start paused and its agents' heartbeats off, until the owner turns one on (overrides.routines.<key>.status: active, overrides.agents.<key>.heartbeat). Unset or off: they run as their modules declare. docs/design/quiet-start.md."
   },
   "computers_max": {
-    "default": 12,
-    "doc": "How many agent computers run at once: the computer launcher's pool and the kernel's job admission both read it (config/computers.json max), so no job is admitted that can't get a computer. Each takes up to AIDENHQ_COMPUTERS_MEMORY (6g) when busy; size it to the host's memory."
+    "doc": "How many computers run at once, 1 to 64: the computer launcher's pool and the kernel's job admission both read it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled. Agent jobs and check jobs (code review, CI checks) are each guaranteed half the pool and may borrow the other's idle computers."
   },
   "eval_day_usd": {
     "default": 5,

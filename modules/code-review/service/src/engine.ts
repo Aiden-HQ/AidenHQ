@@ -158,6 +158,8 @@ export function createEngine(d: EngineDeps) {
   /** What each running run's check job has spent so far (the kernel's figure, read each tick), by run id. A run with no figure
    * (not read yet, the kernel unreachable) counts at its whole run_usd: unknown spend is never 0. */
   const live = new Map<string, number>();
+  /** Running runs whose check job still waits for a computer (the kernel says so each tick). */
+  const waiting = new Set<string>();
 
   /** Spent today (UTC), real money only: ended runs' billed cost plus what running ones have spent so far, for one repo or the whole instance. */
   function spent(repo?: string) {
@@ -455,10 +457,14 @@ export function createEngine(d: EngineDeps) {
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
+      waiting.delete(r.id);
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
       if (res.state !== "running") await finish(r, res);
-      else if (res.billed_usd !== undefined && !("err" in res)) live.set(r.id, res.billed_usd);
-      else live.delete(r.id); // no figure this tick: back to the whole run_usd
+      else {
+        if (res.waiting && !("err" in res)) waiting.add(r.id);
+        if (res.billed_usd !== undefined && !("err" in res)) live.set(r.id, res.billed_usd);
+        else live.delete(r.id); // no figure this tick: back to the whole run_usd
+      }
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created", now())) {
       const started = admit(r);
@@ -501,14 +507,14 @@ export function createEngine(d: EngineDeps) {
       const where: string[] = [], args: unknown[] = [];
       if (q.repo) (where.push("repo = ?"), args.push(q.repo.toLowerCase()));
       if (q.status) (where.push("status = ?"), args.push(q.status));
-      return all<RunRow & { title: string | null }>(`SELECT r.*, p.title FROM runs r LEFT JOIN prs p ON p.repo = r.repo AND p.number = r.number ${where.length ? `WHERE ${where.map((w) => `r.${w}`).join(" AND ")}` : ""} ORDER BY r.created DESC LIMIT ?`, ...args, Math.min(Math.max(1, q.limit ?? 50), 500)).map(view);
+      return all<RunRow & { title: string | null }>(`SELECT r.*, p.title FROM runs r LEFT JOIN prs p ON p.repo = r.repo AND p.number = r.number ${where.length ? `WHERE ${where.map((w) => `r.${w}`).join(" AND ")}` : ""} ORDER BY r.created DESC LIMIT ?`, ...args, Math.min(Math.max(1, q.limit ?? 50), 500)).map((r) => view(r, waiting.has(r.id)));
     },
     run(id: string) {
       const r = runRow(id);
       if (!r) return undefined;
       const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id);
       const findings = all<{ id: string; severity: string; path: string; line: number; title: string; outcome: string | null }>("SELECT id, severity, path, line, title, outcome FROM findings WHERE run = ? ORDER BY rowid", id).map((f) => ({ ...f }));
-      return { run: view({ ...r, title: prRow(r.repo, r.number)?.title ?? null }), review: v ? (JSON.parse(v.json) as Review) : null, findings };
+      return { run: view({ ...r, title: prRow(r.repo, r.number)?.title ?? null }, waiting.has(r.id)), review: v ? (JSON.parse(v.json) as Review) : null, findings };
     },
     repos() {
       const c = d.config();
@@ -532,8 +538,9 @@ export type Engine = ReturnType<typeof createEngine>;
 const round = (n: number) => Math.round(n * 10_000) / 10_000;
 /** A run as the API shows it: the contract's fields (its engine, model and effort, billed cost, tokens, duration), the PR's title (a stranger's words:
  * plain text only) and, once posted, the review's link and the threads it resolved. */
-function view(r: RunRow & { title?: string | null }) {
-  return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: r.status, why: r.why, cost_usd: round(r.cost_usd),
+/** `waiting`: the run is started but its check job has no computer yet (the pool is full): shown as "waiting", not "running". */
+function view(r: RunRow & { title?: string | null }, waiting = false) {
+  return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: waiting ? "waiting" : r.status, why: r.why, cost_usd: round(r.cost_usd),
     tokens_in: r.tokens_in, tokens_cached: r.tokens_cached, tokens_out: r.tokens_out, duration_ms: r.duration_ms,
     important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, check_job: r.check_job,
     full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, url: `https://github.com/${r.repo}/pull/${r.number}`,

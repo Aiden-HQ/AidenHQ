@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createJobs } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
+import { createPool } from "../src/pool.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createProvenance, ORIGIN } from "../src/provenance.ts";
 import { createJobTools } from "../src/jobtools.ts";
@@ -36,7 +37,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const origins = {}, caps = {};
   const adm = createAdmission({
     provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
-    db, facts, grants: () => grants, capacity: () => capacity, spend: (...a) => spend(...a),
+    db, facts, grants: () => grants, capacity: () => capacity, pool: createPool({ capacity: () => capacity, agentLive: () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get().n }), spend: (...a) => spend(...a),
     kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "github.pr": { module: "github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", ...origins[id] } : undefined) },
