@@ -5,7 +5,7 @@ import { GitHubRefused, type GitHub } from "./github.js";
 
 export type PullRequest = {
   repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
-  fork: boolean; author: string; open: boolean; url: string; title: string;
+  fork: boolean; author: string; open: boolean; merged: boolean; url: string; title: string;
 };
 export type PrComment = { id: string; number: number; author: string; body: string; created_at: string };
 export type Permission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
@@ -38,7 +38,7 @@ export function sinceArg(v: string | null): string {
 }
 
 type GhPr = {
-  number: number; state: string; title?: string; draft?: boolean; html_url: string; user?: { login?: string } | null;
+  number: number; state: string; merged_at?: string | null; title?: string; draft?: boolean; html_url: string; user?: { login?: string } | null;
   head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
 };
 
@@ -47,7 +47,7 @@ function shape(repo: string, p: GhPr): PullRequest {
   const headRepo = p.head?.repo?.full_name?.toLowerCase();
   return {
     repo: repo.toLowerCase(), number: p.number, head: String(p.head?.sha), base: String(p.base?.sha), base_ref: String(p.base?.ref),
-    draft: Boolean(p.draft), fork: !headRepo || headRepo !== baseRepo, author: p.user?.login ?? "", open: p.state === "open", url: p.html_url,
+    draft: Boolean(p.draft), fork: !headRepo || headRepo !== baseRepo, author: p.user?.login ?? "", open: p.state === "open", merged: !!p.merged_at, url: p.html_url,
     // A stranger's words: shown as plain text on the board, never in a task title or a prompt.
     title: String(p.title ?? "").slice(0, 200),
   };
