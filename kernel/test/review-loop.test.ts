@@ -340,6 +340,7 @@ test("a run's post is reviewed with no sibling run's rejection notes, answered o
   const k = await side(t, db(), mod, { comments, delegator: "ag-kai", agents: { "ag-kai": { key: "kai", roles: [] } } });
   const service = { agent: "", key: "", name: "", roles: [], kind: "service", module: "" };
   for (let n = 0; n < MAX_REJECTS + 1; n++) {
+    await new Promise((r) => setTimeout(r, 5));
     if (n === 2) comments.push({ body: "Decided: go on.", createdAt: new Date().toISOString(), authorType: "agent", authorAgentId: "ag-kai" });
     fileRecord(k.records, { args: { note: `run ${n}`, run: `run-${n}` }, requester: service });
     const sweep = k.loop.tick();

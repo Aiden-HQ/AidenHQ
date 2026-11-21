@@ -47,7 +47,7 @@ const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed"
 /** A record as earlier decisions are read (tier.ts Prior). */
 const asPrior = (r: Rec): Prior & { review?: string | null } => ({
   id: r.id, action: actionOf(r.kind), args: r.args, state: STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
-  reviewCode: r.review_code ?? null, review: r.review, requestChain: r.chain ?? undefined, digest: r.digest,
+  service: !r.requester.agent, reviewCode: r.review_code ?? null, review: r.review, requestChain: r.chain ?? undefined, digest: r.digest,
 });
 
 const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -204,9 +204,9 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const chainHash = requestHash(chain, said);
   // A run's own request (tier.ts Target.own) reads only its own run's reviewer rejections: a sibling run's rejected post, answered
   // or not, is another review's finding. The owner's decisions on the task all stay (their veto is the task's).
-  const aimed = requestTargets(action, r.args);
+  const aimed = requestTargets(action, r.args, !r.requester.agent);
   const own = aimed?.targets.every((t) => t.own) ?? false;
-  const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
+  const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args, !x.requester.agent)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
   const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id && sameRun(x)).map(asPrior), authored.slice(-COMMENTS));
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed);

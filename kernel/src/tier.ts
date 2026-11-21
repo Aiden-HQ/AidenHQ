@@ -173,7 +173,7 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
  * requester). An answered rejection no longer refuses the same content nor counts toward MAX_REJECTS; agents' answers lift
  * a target's park once (AGENT_LIFTS), the owner's every time.
  */
-export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent" };
+export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
 /** A no on a stale or duplicate card (decided_by `stale:account:<id>`) judged nothing: neither a veto nor a rejection. */
@@ -243,10 +243,10 @@ const AIM = ["repo", "number", "issue_number", "pull_number", "channel", "thread
  * Where a request is aimed, for MAX_REJECTS: every branch (`repo|branch`, its patch key) or PR (`repo#number`, its patch
  * key) it changes, and a label for the agent. `s` is either the verified request state (`branches`, `prs`) or an approval
  * record's args (`only`, `prs`). A connection tool call (conn.tool) is aimed at its tool and the AIM arguments it names, so
- * rejected comments on one issue never park a close on another. A request whose args carry a `run` is aimed at that run. A request of an action that names none of these (apply,
+ * rejected comments on one issue never park a close on another. A service-filed request whose args carry a `run` is aimed at that run. A request of an action that names none of these (apply,
  * create_repo, a module digest) has the task as its target.
  */
-export function requestTargets(action: string, s: any): { targets: Target[]; label: string } | undefined {
+export function requestTargets(action: string, s: any, service = false): { targets: Target[]; label: string } | undefined {
   if (action === "conn.tool" && s?.connection && s?.tool) {
     const aim = AIM.filter((k) => ["string", "number"].includes(typeof s.arguments?.[k])).map((k) => `${k}=${String(s.arguments[k]).toLowerCase()}`);
     const label = `${s.connection}.${s.tool}${aim.length ? ` (${aim.join(", ")})` : ""}`;
@@ -257,13 +257,14 @@ export function requestTargets(action: string, s: any): { targets: Target[]; lab
   if (branches.length) return { targets: branches.map((b: any) => of(b, `${String(b.repo).toLowerCase()}|${b.branch}`)), label: `branch${branches.length > 1 ? "es" : ""} ${branches.map((b: any) => `\`${b.branch}\``).join(", ")}` };
   const prs = action === "merge" ? (s?.prs ?? []).filter((p: any) => p?.repo && p?.number !== undefined) : [];
   if (prs.length) return { targets: prs.map((p: any) => of(p, `${String(p.repo).toLowerCase()}#${p.number}`)), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
-  // A request that names the run it reports on (a review's post, one per run) is aimed at that run: sibling runs of one task
-  // are different requests, never retries of each other.
-  if (typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}`, own: true }], label: `run ${s.run}` };
+  // A record no agent filed (`service`: a module's own write) that names the run it reports on (a review's post, one per run) is
+  // aimed at that run: sibling runs of a task are different requests, never retries of each other. An agent's request never
+  // is: it could mint fresh run ids to dodge the park.
+  if (service && typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}`, own: true }], label: `run ${s.run}` };
   return undefined;
 }
 /** The targets a record was raised against (its card's args), for a rejection to be counted on. */
-const recordTargets = (r: Prior): Target[] => requestTargets(r.action, r.args)?.targets ?? [];
+const recordTargets = (r: Prior): Target[] => requestTargets(r.action, r.args, r.service)?.targets ?? [];
 
 /** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
 export const MAX_REJECTS = 5;
