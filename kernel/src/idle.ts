@@ -358,6 +358,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // Another recipient, or a state that can't be read now, fails the call instead of reporting a wait nothing recorded.
       if (r?.sent === "open" && r.to) throw fail(409, "conflict", `This task's earlier question is still open with ${r.to}: tell that recipient to answer it, or finish the work that asks, then ask again. Nothing was sent and this task's wait is unchanged.`);
       if (r?.sent === "open") throw fail(503, "unavailable", "This task's ask state can't be read now, so nothing was sent and this task isn't waiting. Try again.");
+      if (r?.sent === "ambiguous") throw fail(409, "conflict", "This task's earlier question is still open, but its recipient can't be told apart from the record (it was asked before the kernel recorded the exact destination), so nothing was sent: have that question answered with a comment on the task, then ask again.");
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
@@ -366,7 +367,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
         let n = 0;
         while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
-        wakes.open({ key: `wait:${caller.task}:${until}${n ? `:${n}` : ""}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
+        // The wait episode is in the wake key too: two replacements with the same `until` but a different millisecond must
+        // still be different wakes, or the later one is dropped as a duplicate and the task keeps the old one.
+        wakes.open({ key: `wait:${caller.task}:${until}:${t}${n ? `:${n}` : ""}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });
       // The wait is durable now; the issue is parked at once so the pinned recovery sweep (next tick: 60–90 s) never reads an
       // armed wait as stranded work, whoever holds the task and whatever the holder's status does while it waits. A write that
