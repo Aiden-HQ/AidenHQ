@@ -3,6 +3,7 @@ import type { Issue } from "../src/paperclip.js";
 import { ScheduleSchema, scheduleMove } from "../src/scheduled-moves.js";
 import { addDays } from "../src/dates.js";
 import { Store, localDate } from "../src/store.js";
+import { parkBucket } from "../web/src/util.js";
 
 const TZ = "Europe/Madrid";
 const issue = (): Issue => ({ id: "11111111-1111-1111-1111-111111111111", identifier: "PEN-1", title: "t", description: null, status: "todo", priority: "high", assigneeUserId: "u", assigneeAgentId: null, assigneeAdapterOverrides: null, labels: [], labelIds: [], createdAt: "2026-10-01T08:00:00.000Z", updatedAt: "2026-10-01T08:00:00.000Z" });
@@ -42,14 +43,19 @@ describe("scheduled moves", () => {
     const s = new Store(":memory:");
     const later = addDays(localDate(TZ), 3);
     s.move(issue().id, "today");
-    expect(scheduleMove(s, issue(), ScheduleSchema.parse({ date: later, park: "backlog" }), TZ)).toEqual({
+    expect(scheduleMove(s, issue(), ScheduleSchema.parse({ date: later, park: "later" }), TZ)).toEqual({
       scheduled: { date: later, bucket: "today", position: "top" },
       movedNow: false,
     });
-    expect(s.placements().get(issue().id)?.bucket).toBe("backlog");
+    expect(s.placements().get(issue().id)?.bucket).toBe("later");
     expect(s.schedules().get(issue().id)?.date).toBe(later);
     expect(s.applySchedules(later)).toEqual([issue().id]);
     expect(s.placements().get(issue().id)?.bucket).toBe("today");
     expect(() => ScheduleSchema.parse({ date: later, park: "nowhere" })).toThrow();
+  });
+
+  it("Snooze parks by date: Tomorrow, Later within a week, else Backlog", () => {
+    const today = localDate(TZ);
+    expect([1, 2, 7, 8].map((n) => parkBucket(today, addDays(today, n)))).toEqual(["tomorrow", "later", "later", "backlog"]);
   });
 });
