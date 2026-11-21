@@ -12,6 +12,7 @@ import { reviewWith } from "../service/src/server.ts";
 const JOB_SECRET = "j".repeat(64);
 const listen = (handler) => new Promise((ok) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => ok(s)); });
 const url = (s) => `http://127.0.0.1:${s.address().port}`;
+const until = async (f) => { for (let end = Date.now() + 2000; !f();) { if (Date.now() > end) throw new Error("timed out"); await new Promise((ok) => setTimeout(ok, 5)); } };
 const resolver = { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; }, forget() {} };
 
 let gateway, module_, kernel, up = true;
@@ -124,16 +125,22 @@ test("a working review reports progress: the service beats the kernel as the rev
 });
 
 test("a hung model call stops reporting progress: one beat when the call starts, none while it waits", async () => {
-  // Let the previous review's keepalive land, so only this call's progress can move the count.
-  await new Promise((ok) => setTimeout(ok, 60));
+  // Let the previous review's keepalives land (no new beat for two intervals), so only this call's progress moves the count.
+  for (let seen = -1; seen !== beats.length;) {
+    seen = beats.length;
+    await new Promise((ok) => setTimeout(ok, 100));
+  }
   const before = beats.length;
   answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
   // The gateway hangs for 140 ms: three beat intervals (40 ms each) pass with no answer at all.
   slowMs = 140;
   try {
     const asking = ask({ card, diff: "+x" });
+    // Wait for the call's start beat (it may be the call before this one still settling), then watch the hang.
+    await until(() => beats.length > before);
+    const sawStart = beats.length;
     await new Promise((ok) => setTimeout(ok, 110));
-    assert.equal(beats.length - before, 1, "the call starting is progress; the clock alone never keeps it alive");
+    assert.equal(beats.length, sawStart, "the clock alone never keeps a hung call alive");
     assert.equal((await asking).status, 200);
   } finally {
     slowMs = 0;
