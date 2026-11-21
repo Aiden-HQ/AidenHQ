@@ -73,7 +73,7 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
   const st = await store.scope("drive");
   const baseline = !st.baselined;
   // A pass that hit the cap saves "<since>#<page token>#<newest seen>": the next one resumes that exact query, so any number of files with one timestamp still gets through.
-  const [since, resume, newest] = (st.cursor ?? new Date(now - BASELINE_DAYS * DAY).toISOString()).split("#") as [string, string | undefined, string | undefined];
+  let [since, resume, newest] = (st.cursor ?? new Date(now - BASELINE_DAYS * DAY).toISOString()).split("#") as [string, string | undefined, string | undefined];
   let cursor = newest ?? since;
   let written = 0;
   let seen = 0;
@@ -83,7 +83,8 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
     const r = await drive.changedFiles(since, page).catch((err) => {
       if (!resume || page !== resume || !/^Google API 400\b/.test(String(err?.message ?? err))) throw err;
       page = undefined;
-      return drive.changedFiles(cursor);
+      since = cursor;
+      return drive.changedFiles(since);
     });
     for (const f of r.files) {
       if ((await store.upsert(DOC, docRow(f), { baseline })) !== "same") written++;
