@@ -11,6 +11,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
+import { REFUSALS_DDL, busyError, refusalColumns, refusalOf, type Refusal } from "./refusals.ts";
 import type { Facts } from "./facts.ts";
 import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
@@ -26,9 +27,21 @@ export interface JobView {
   progress: Progress; version: number;
   /** When the run ended (ms), and whether its dispatcher acknowledged the end (outcome posted, whoever asked told). */
   ended: number | null; acked: boolean;
-  /** Why the run's last write was refused at plan time, when nothing later went through. */
+  /** Why the run's last write was refused at plan time, when nothing later went through, and its rule's stable code when it has one. */
   refused?: string;
+  refusedCode?: string;
+  /**
+   * The kind the caller asked for, and the module whose kind it is. Both are the kernel's own, from its routing: the code is the
+   * executor's, and the module alone is too broad (another of its kinds could return the same code), so a dispatcher binds a
+   * terminal rule to all of them together.
+   */
+  refusedKind?: string;
+  refusedSource?: string;
 }
+
+/** A job view's refusal fields: the words, and (when the plan gave one) its rule's code beside the kind asked for and its module. */
+const refusedFields = (r: Refusal | undefined): Pick<JobView, "refused" | "refusedCode" | "refusedKind" | "refusedSource"> =>
+  r ? { refused: r.why, ...(r.code ? { refusedCode: r.code } : {}), ...(r.kind ? { refusedKind: r.kind } : {}), ...(r.source ? { refusedSource: r.source } : {}) } : {};
 
 export class JobError extends Error {
   status: number;
@@ -151,8 +164,6 @@ export function insideNoLinks(root: string, path: string, what: string): string 
 export const dispatchesFrom = (modules: () => Record<string, { dispatches?: string[] } | undefined>, agents: () => Record<string, { key?: unknown } | undefined>) =>
   (module: string, agent: string) => { const key = agents()[agent]?.key; return typeof key === "string" && key !== "" && (modules()[module]?.dispatches ?? []).includes(key); };
 
-/** A job's last plan-time write refusal (writes.ts records it; a write that goes through clears it). */
-export const REFUSALS_DDL = "CREATE TABLE IF NOT EXISTS job_refusals (job TEXT PRIMARY KEY, why TEXT NOT NULL)";
 const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL, pid INTEGER NOT NULL,
   log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL, live_input INTEGER NOT NULL,
@@ -184,6 +195,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         db.exec("BEGIN IMMEDIATE");
         db.exec(DDL);
         db.exec(REFUSALS_DDL);
+        refusalColumns(db);
         // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
         // job that started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
         const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
@@ -194,17 +206,15 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         db.exec("COMMIT");
         return;
       } catch (e) {
-        // The other opener holds the lock (here or at any step inside it): wait for it and try again, bounded. The busy test is
-        // the code SQLite puts on the error (a "database is locked" message is the same thing).
-        const busy = (e as { errcode?: number }).errcode === 5 || (e as { errstr?: string }).errstr === "SQLITE_BUSY" || /database is locked/i.test(String((e as Error).message));
+        // The other opener holds the lock (here or at any step inside it): wait for it and try again, bounded.
         try { db.exec("ROLLBACK"); } catch {}
-        if (busy && attempt < SETUP_TRIES) { pause(SETUP_RETRY_MS); continue; }
+        if (busyError(e) && attempt < SETUP_TRIES) { pause(SETUP_RETRY_MS); continue; }
         throw e;
       }
     }
   };
   setup();
-  const refusal = (id: string) => (db.prepare("SELECT why FROM job_refusals WHERE job = ?").get(id) as { why: string } | undefined)?.why;
+  const refusal = (id: string) => refusalOf(db, id);
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
@@ -240,11 +250,12 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   const row = (id: string) => db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as Record<string, any> | undefined;
   const view = (r: Record<string, any>): JobView => {
     const why = JSON.parse(r.why || "{}");
+    const refused = refusal(r.id);
     return {
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
       session: r.session ?? null, timedOut: why.timedOut === true,
-      cancelled: why.cancelled === true, stoppedBy: why.by ?? null, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...(refusal(r.id) ? { refused: refusal(r.id) } : {}),
+      cancelled: why.cancelled === true, stoppedBy: why.by ?? null, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...refusedFields(refused),
     };
   };
 
