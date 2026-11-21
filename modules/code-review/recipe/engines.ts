@@ -304,5 +304,11 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   const done = r.code === 0 && events.some((e) => e.type === "turn.completed") && !!v && ["patch is correct", "patch is incorrect"].includes(String(v.overall_correctness));
   const said = events.filter((e) => e.type === "error" || e.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
   if (!done) return { message: "", read, cause: r.code === 0 && !r.timedOut ? "codex review gave no review" : stopped(r, said) };
+  if (!read) {
+    // Loud: what its commands said instead (a sandbox that wouldn't start, git refusing), so the cause is visible on the run.
+    const cmds = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution");
+    const last = String(cmds.at(-1)?.item?.aggregated_output ?? "").replace(/\s+/g, " ").trim().slice(-300);
+    return { message: "", read, cause: `it never read the diff: ${cmds.length} command${cmds.length === 1 ? "" : "s"} ran${last ? `; the last printed: ${last}` : ""}` };
+  }
   return { message: JSON.stringify({ findings: nativeFindings(v!, [root.replace(/\/$/, ""), realpathSync(root)]), stale_guidance: [] }), read, incomplete: "codex review read the change with git itself, so which parts it read isn't tracked" };
 }
