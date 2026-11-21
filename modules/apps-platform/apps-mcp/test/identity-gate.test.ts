@@ -323,6 +323,24 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);
 
+  it.runIf(process.platform === "linux")("keeps a stalled TLS reply hard: a prefix that never completes still marks the port HTTPS", async () => {
+    // A multiplexer answers the PostgreSQL handshake, then begins a TLS record and stalls. The probe must not fall back to
+    // "not TLS" because the header never finished: bytes already received are still evidence the port could serve HTTPS.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const stalled = await tcp(`(s) => {
+      let stage = 0;
+      s.on("data", (d) => {
+        if (stage === 0 && d[0] === 0x16) { stage = 2; s.write(Buffer.from([0x16, 0x03])); return; }
+        if (stage === 0 && d[0] === 0x47) return s.destroy();
+        if (stage === 0) { stage = 1; return s.write("N"); }
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+      });
+    }`);
+    const r = await scan(db, [stalled]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
   it.runIf(process.platform === "linux")("keeps an unconfirmed silent socket hard even on an app the registry says serves no HTTP", async () => {
     // Silence is not identification: a server that hangs up on plaintext (an HTTPS listener, say) or never answers is still
     // judged, so the no-HTTP exemption cannot hide a listener that never showed it speaks a database's protocol.

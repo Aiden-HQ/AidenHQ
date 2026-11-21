@@ -342,9 +342,9 @@ const TLS_HELLO = Buffer.concat([
   Buffer.from([0x00, 0x00, 0x02, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x00]), // no session, one suite, null compression, no extensions
 ]);
 // The record header can arrive in pieces: hold what came until the five-byte header is complete, then a handshake (0x16) or
-// alert (0x15) on TLS 0x03 says the port speaks TLS too. A connection that ends mid-header after a TLS opening byte still
-// counts: the port began a TLS record, so it could serve HTTPS. Anything short of that is not TLS, and Postgres alone gets no
-// such bytes back from a hello it does not understand.
+// alert (0x15) on TLS 0x03 says the port speaks TLS too. A connection that ends or stalls mid-header after a TLS opening byte
+// still counts: the port began a TLS record, so it could serve HTTPS. Anything short of that is not TLS, and Postgres alone
+// gets no such bytes back from a hello it does not understand.
 const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
 const tls = (host, port) => new Promise((done) => {
   let got = Buffer.alloc(0);
@@ -352,7 +352,7 @@ const tls = (host, port) => new Promise((done) => {
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
   s.on("connect", () => s.write(TLS_HELLO));
   s.on("data", (d) => { got = Buffer.concat([got, d]); if (got.length >= 5) end(TLS_PREFIX(got) ? "https" : ""); });
-  s.on("timeout", () => end(""));
+  s.on("timeout", () => end(TLS_PREFIX(got) ? "https" : ""));
   s.on("end", () => end(TLS_PREFIX(got) ? "https" : ""));
   s.on("error", () => end(TLS_PREFIX(got) ? "https" : ""));
 });
