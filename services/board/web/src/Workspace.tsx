@@ -885,7 +885,7 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
             value={fix}
             maxLength={500}
             onChange={(e) => setFix(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && fix.trim() && sendFix()}
+            onKeyDown={(e) => e.key === "Enter" && fix.trim() && !busy && sendFix()}
             aria-label="What's not right"
           />
           <button className="btn primary" disabled={!fix.trim() || busy} onClick={() => sendFix()}>

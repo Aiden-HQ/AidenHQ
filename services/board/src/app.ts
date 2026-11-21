@@ -432,7 +432,7 @@ export function createApp(opts: AppOptions): Server {
       filed = await records.settingsChange(issue.id, changes, credential);
     } catch (e) {
       if (!(e as { refused?: boolean }).refused) {
-        // A timeout or a server error: the kernel may have filed it, so the task stays open to show whatever it did.
+        // A timeout: the kernel may have filed it, so the task stays open to show whatever it did.
         const why = String((e as Error).message).slice(0, 300);
         await pc.addComment(issue.id, `**Outcome unknown:** ${why}. The kernel may still have filed this change.`).catch(() => {});
         log.warn({ issue: issue.identifier, err: why }, "settings change outcome unknown");

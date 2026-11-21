@@ -13,7 +13,7 @@ export function Button({ variant, size, className, type = "button", ...rest }: B
 
 /** A link from server data runs nothing: web, in-page and same-origin addresses only. */
 export function safeHref(href: string) {
-  return /^(https?:\/\/|#|\/(?!\/))/i.test(href) ? href : "#";
+  return /^(https?:\/\/|#|\/(?![\/\\]))/i.test(href) ? href : "#";
 }
 
 export function LinkButton({ variant, size, href, children, external }: { variant?: ButtonVariant; size?: "sm"; href: string; children: React.ReactNode; external?: boolean }) {

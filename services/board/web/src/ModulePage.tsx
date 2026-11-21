@@ -15,7 +15,7 @@ import { EmptyState } from "./ui/EmptyState";
 import { ListRow, ListRows } from "./ui/ListRow";
 import { PageHeader } from "./ui/PageHeader";
 import { Section } from "./ui/Section";
-import { Tabs } from "./ui";
+import { Tabs, safeHref } from "./ui";
 import { StatusDot, type StatusTone } from "./ui/StatusDot";
 import { TaskState } from "./ui/TaskState";
 import { Monogram } from "./ui/Tile";
@@ -122,7 +122,7 @@ function Loaded({ d, tab, go, onSignIn, setup, connect, can, advisory }: { d: Mo
           <span className="ui-banner-text">
             <strong>Security advisory {advisory.id}</strong> ({advisory.severity}): {advisory.summary.replace(/^`|`$/g, "")} The fix is an ordinary update to a newer pin: {m.pinned ? "follow the marketplace (below) or pin a newer commit" : "update its marketplace (Modules, then Marketplaces)"}.
           </span>
-          {advisory.url && <a className="btn" href={advisory.url} target="_blank" rel="noreferrer noopener">Details</a>}
+          {advisory.url && <a className="btn" href={safeHref(advisory.url)} target="_blank" rel="noreferrer noopener">Details</a>}
         </div>
       )}
       <Pin m={m} />

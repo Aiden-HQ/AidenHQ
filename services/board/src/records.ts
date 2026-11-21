@@ -130,9 +130,10 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
   };
   const settingsChange: Records["settingsChange"] = async (task, changes, credential) => {
     if (!k) throw Object.assign(new Error("the board has no kernel to write the change"), { refused: true });
-    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) });
+    // Only a timeout leaves the outcome unknown; any answer, or a request that never connected, is a refusal.
+    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) }).catch((e: Error) => { throw Object.assign(e, { refused: e.name !== "TimeoutError" }); });
     const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
-    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
+    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: true });
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
   const validate: Records["validate"] = async (module, settings) => {

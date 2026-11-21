@@ -1052,7 +1052,7 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
   const [pick, setPick] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [created, setCreated] = useState<{ id: string; identifier: string } | null>(null);
+  const [created, setCreated] = useState<{ id: string; identifier: string } | null>(null); // locks the title once the task exists
   const crew = board.assignees.filter((a) => a.kind !== "me");
   const agent = crew.find((a) => a.key === pick);
   const name = agent?.name;
@@ -1083,7 +1083,7 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
         }}
       >
         <h2>New task</h2>
-        <input className="new-title" autoFocus value={title} placeholder="What needs doing?" onChange={(e) => setTitle(e.target.value)} />
+        <input className="new-title" autoFocus value={title} readOnly={!!created} placeholder="What needs doing?" onChange={(e) => setTitle(e.target.value)} />
         <CrewPicker crew={crew} pick={pick} setPick={setPick} me />
         {agent && (
           <textarea

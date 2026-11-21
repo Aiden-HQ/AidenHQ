@@ -361,8 +361,10 @@ export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: str
         setCode(null);
         setProblem(p.state === "expired" ? "The code expired before it was entered. Get a new one." : `${p.detail ?? "The sign-in stopped."} Get a new code to try again.`);
       }, (e) => {
+        // A blip keeps polling (the vendor's code is still good); an ended session can't.
+        if (!(e instanceof SignInRequired)) return;
         setCode(null);
-        setProblem(e instanceof SignInRequired ? "Sign in to the board again, then get a new code." : `Couldn't check the sign-in: ${(e as Error).message}. Get a new code to try again.`);
+        setProblem("Your session ended. Sign in again, then press Connect.");
       });
     }, Math.max(2, code.interval) * 1000);
     return () => clearInterval(t);
