@@ -20,8 +20,8 @@ the version or fix the chain asked for, and say what is missing.
 A new registry, URL or git source is not always wrong: the owner may approve one, narrowly, for one package and one
 source (an image where the distro's package is too old for a security fix, say). A base image from Docker Hub's
 official-images repository (`library/<name>`) is the default registry and not a new source, however that repository is
-named: as the bare `<name>`, as `docker.io/library/<name>` (or another host under `docker.io`), or from Docker Hub's own
-pull-through mirror `mirror.gcr.io/library/<name>`, which serves that same repository at the same digest. It needs no
+named: as the bare `<name>`, as `docker.io/library/<name>` (or another host under `docker.io`), or from the pull-through
+mirror `mirror.gcr.io/library/<name>` (Google's cache of that same repository, served at the same digest). It needs no
 record, its absence from `APPROVED_SOURCE_EXCEPTIONS` is no reason to reject it, and it is a pin only at a version and
 digest, as any image is. A record is for a package moved to some other vendor's registry, URL or apt/git source: any
 other host is that other vendor's registry whatever it calls itself and whatever image it serves under that name, and
