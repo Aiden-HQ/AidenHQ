@@ -331,7 +331,7 @@ describe("identity gate", () => {
     // The factory stands in for net.connect: connection 1 answers the SSLRequest with "N" and trailing bytes; connection 2
     // (the startup message) hangs up without an answer, so the port is not identified. The reply is emitted after the probe
     // has attached its listeners, so its "end" is seen.
-    const controlled = (firstData: string, secondData: string | null) => `(() => {
+    const controlled = (firstData: string, secondData: string | null, gap = 0) => `(() => {
       const { EventEmitter } = require("events");
       let n = 0;
       return (host, port) => {
@@ -352,9 +352,28 @@ describe("identity gate", () => {
       };
     })()`;
     const frame = "Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])";
+    // Coalesced in one read, split into two reads in one tick, and split across the quiet window: every shape must stay hard.
     const coalesced = controlled(`[Buffer.concat([Buffer.from("N"), ${frame}])]`, "null");
     const split = controlled(`[Buffer.from("N"), ${frame}]`, "null");
-    for (const pg of [coalesced, split]) {
+    const late = `(() => {
+      const { EventEmitter } = require("events");
+      let n = 0;
+      return (host, port) => {
+        const e = new EventEmitter();
+        const first = ++n === 1;
+        e.destroy = () => {};
+        e.write = () => {
+          setImmediate(() => {
+            if (first) { e.emit("data", Buffer.from("N")); setTimeout(() => e.emit("data", ${frame}), 400); }
+            else e.emit("end");
+          });
+          return true;
+        };
+        setImmediate(() => e.emit("connect"));
+        return e;
+      };
+    })()`;
+    for (const pg of [coalesced, split, late]) {
       const r = await scan(db, [silent], { pg });
       expect(r.ok).toBe(false);
       expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });

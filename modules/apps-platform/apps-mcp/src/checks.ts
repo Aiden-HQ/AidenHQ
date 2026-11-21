@@ -262,6 +262,8 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
 }
 
 export const PORT_PROBE_MS = 3_000;
+// How long the refusal connection is watched for trailing bytes after "N" before the startup message is sent.
+const SSL_REFUSAL_QUIET_MS = 100;
 /**
  * Run as `node -e` in a one-shot container on `--network container:<id>` and `--pid container:<id>`, so /proc/net/tcp{,6} and
  * the pids are that container's own. The network namespace is shared with helpers the platform runs there (the render's
@@ -302,12 +304,13 @@ const raw = (host, port) => new Promise((done) => {
 });
 // A PostgreSQL server waits for the client, so an HTTP GET makes it hang up (raw: closed) and says nothing about what it is.
 // An SSLRequest's reply alone is not identification either: a TLS listener offers SSL too. So the server must decline SSL
-// with "N" and then answer a startup message with a *complete, well-formed* protocol message (AuthenticationRequest,
-// ErrorResponse or NoticeResponse). The refusal and the startup message are read on separate connections: bytes after the
-// "N" on the refusal connection are never read as the startup reply, so a coalesced or split "N" plus trailing data cannot
-// identify the socket. A truncated header, a frame whose length runs past what arrived, or a malformed body is not
-// identification either: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at the
-// server's first answer. A server that offers SSL ("S") is not identified: the port may be HTTPS, so it stays closed.
+// with exactly one byte, "N", and then answer a startup message with a *complete, well-formed* protocol message
+// (AuthenticationRequest, ErrorResponse or NoticeResponse). The refusal and the startup message are read on separate
+// connections: bytes after the "N" on the refusal connection are never read as the startup reply, so a coalesced or split
+// "N" plus trailing data cannot identify the socket. A truncated header, a frame whose length runs past what arrived, or a
+// malformed body is not identification either: a half-answer must not exempt a port. No credentials are sent: the handshake
+// is dropped at the server's first answer. A server that offers SSL ("S") is not identified: the port may be HTTPS, so it
+// stays closed.
 // "postgres" identifies the socket, "invalid" is a definitive no (stop reading), "" needs more bytes. One complete frame,
 // validated against its own type, or nothing.
 const pgFrame = (b) => {
@@ -358,19 +361,26 @@ const pgFrame = (b) => {
   }
   return "invalid";
 };
-// The refusal is read on one connection and the startup message is sent on a fresh one. A server that answers "N" and
-// then sends a frame without waiting for a startup message would otherwise be read as a database; on a separate
-// connection the frame can only be the reply to the startup message this probe sent. Trailing bytes after "N" on the
-// refusal connection are never parsed, and a split "N" plus trailing data cannot identify the socket. A test that needs a
-// controlled socket replaces pgConnect below; the parsing is otherwise unchanged.
+// The refusal must be exactly "N" and nothing else. "N" can arrive in one read and trailing bytes in the next, so the
+// refusal connection is watched for a short quiet window after "N": any further byte means the server did not send a
+// one-byte answer. Only then is the startup message sent, on a fresh connection, so bytes after "N" are never parsed as
+// its reply. A test that needs a controlled socket replaces pgConnect below; the parsing is otherwise unchanged.
 const pgConnect = (host, port) => net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
 const postgres = (host, port) => new Promise((done) => {
   let stage = 0, token = 0;
   const connect = () => {
     const me = ++token;
     const s = pgConnect(host, port);
-    let got = Buffer.alloc(0);
-    const stop = (r) => { if (me !== token) return; token++; s.destroy(); done(r); };
+    let got = Buffer.alloc(0), timer;
+    const stop = (r) => { if (me !== token) return; token++; if (timer) clearTimeout(timer); s.destroy(); done(r); };
+    const accept = () => {
+      if (me !== token) return;
+      token++;
+      if (timer) clearTimeout(timer);
+      s.destroy();
+      stage = 1;
+      connect();
+    };
     s.on("connect", () => {
       if (me !== token) return;
       if (stage === 0) s.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47])); // SSLRequest
@@ -384,13 +394,9 @@ const postgres = (host, port) => new Promise((done) => {
       if (me !== token) return;
       got = Buffer.concat([got, d]);
       if (stage === 0) {
-        if (!got.length) return;
         if (got[0] !== 0x4e) return stop(""); // "S" offers SSL: the port may be HTTPS, so it is not identified
-        // "N" declines SSL. This connection is done: bytes after it are not a reply to a startup message sent on it.
-        token++;
-        s.destroy();
-        stage = 1;
-        connect();
+        if (got.length > 1) return stop(""); // trailing bytes after "N": not a server's one-byte refusal
+        if (!timer) timer = setTimeout(accept, ${SSL_REFUSAL_QUIET_MS}); // "N" alone so far: watch for trailing bytes
         return;
       }
       const r = pgFrame(got);
@@ -398,7 +404,11 @@ const postgres = (host, port) => new Promise((done) => {
       if (got.length > 1 << 20) return stop(""); // still incomplete, and past any frame a header may declare
     });
     s.on("timeout", () => stop(""));
-    s.on("end", () => stop(stage === 1 && pgFrame(got) === "postgres" ? "postgres" : ""));
+    s.on("end", () => {
+      if (me !== token) return;
+      if (stage === 0) return got.length === 1 && got[0] === 0x4e ? accept() : stop("");
+      stop(pgFrame(got) === "postgres" ? "postgres" : "");
+    });
     s.on("error", () => stop(""));
   };
   connect();
