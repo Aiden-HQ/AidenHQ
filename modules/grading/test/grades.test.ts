@@ -77,6 +77,14 @@ describe("graded done", () => {
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "grading_failed", label: "grading" });
   });
 
+  it("an unchanged resubmission is no new attempt; only a bound on every rejection ends its loop", () => {
+    const { grades } = new Store();
+    grades.file("t", [], { kind: "report", ref: "" }, "agent:cos");
+    const reject = () => (completionGate(grades, "t", "task_finish"), grades.record("t", { version: "c1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "e" }] }));
+    for (let i = 0; i < 5; i++) expect(reject()).toMatchObject({ state: "needs_revision", attempts: 1 });
+    expect(reject()).toMatchObject({ state: "satisfied", attempts: 1 });
+  });
+
   it("a needs_revision verdict that shows nothing unmet settles ungraded: only an unmet criterion sends work back", () => {
     const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" }, "agent:cos");
