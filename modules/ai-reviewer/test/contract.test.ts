@@ -22,6 +22,8 @@ let moduleHandle;
 // How long the model gateway takes to answer (a slow model call shows the keepalive).
 let slowMs = 0;
 const beats = [];
+// Each review the module is dispatched, in order: its id (so a test counts its own review's beats, never another's).
+const dispatched = [];
 const calls = [];
 const answers = [];
 const verdicts = [];
@@ -39,6 +41,15 @@ before(async () => {
     // The verdict goes to the kernel this test started (its port is known only after it listens).
     moduleHandle ??= serveReviewer(reviewWith(`${url(gateway)}/api/v1/chat/completions`), { key: "svc-key", kernelUrl, instance: serviceInstance, beatMs: 40 });
     if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance: moduleHandle.instance }));
+    if (req.method === "POST" && String(req.url).endsWith("/review")) {
+      // Peek at the dispatch for its review id, then hand the same body to the service.
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const body = Buffer.concat(chunks).toString("utf8");
+      dispatched.push(JSON.parse(body || "{}").id);
+      const replay = Object.assign(Object.create(req), { [Symbol.asyncIterator]: async function* () { yield Buffer.concat(chunks); } });
+      return void (await moduleHandle(replay, res));
+    }
     if (!(await moduleHandle(req, res))) res.writeHead(404).end();
   });
   const reviews = createReviews({
@@ -125,20 +136,17 @@ test("a working review reports progress: the service beats the kernel as the rev
 });
 
 test("a hung model call stops reporting progress: one beat when the call starts, none while it waits", async () => {
-  // Let the previous review's keepalives land (no new beat for two intervals), so only this call's progress moves the count.
-  for (let seen = -1; seen !== beats.length;) {
-    seen = beats.length;
-    await new Promise((ok) => setTimeout(ok, 100));
-  }
-  const seenIds = new Set(beats);
+  const known = new Set(dispatched);
   answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
-  // The gateway hangs for 140 ms: three beat intervals (40 ms each) pass with no answer at all.
+  // The gateway hangs for 140 ms: several beat intervals (40 ms each) pass with no answer at all.
   slowMs = 140;
   try {
     const asking = ask({ card, diff: "+x" });
-    // Count this review's own beats (its URL carries its id), never one a leftover review of an earlier test sent.
-    await until(() => beats.some((b) => !seenIds.has(b)));
-    const mine = beats.find((b) => !seenIds.has(b));
+    // This test's own review, by the id the module was dispatched with: never a leftover review of an earlier test.
+    await until(() => dispatched.some((id) => !known.has(id)));
+    const mine = `/v1/reviews/${dispatched.filter((id) => !known.has(id))[0]}`;
+    // The call starting is progress: one beat for this review, as the review works.
+    await until(() => beats.includes(mine));
     const starts = beats.filter((b) => b === mine).length;
     await new Promise((ok) => setTimeout(ok, 110));
     assert.equal(beats.filter((b) => b === mine).length, starts, "the clock alone never keeps a hung call alive");
