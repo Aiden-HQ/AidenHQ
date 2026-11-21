@@ -787,7 +787,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const today = day(now()), [inst] = installScope(today), usd = (n: number) => Math.round(n * 1e4) / 1e4;
         const ids = new Set([...Object.keys(grants()), ...(q.spenders.all(today) as { agent_id: string }[]).map((r) => r.agent_id)]);
         const agents = [...ids].map((agent_id) => ({ agent_id, spent: usd(daySpent(agent_id, today)), cap: capOf({ agentId: agent_id }, "day", today) }));
-        return send(res, 200, { day: today, install: { spent: usd((q.spentAll.get(today) as Sum).s), cap: inst?.cap ?? null }, agents: agents.sort((a, b) => b.spent / b.cap - a.spent / a.cap) });
+        return send(res, 200, { day: today, install: { spent: usd((q.spentAll.get(today) as Sum).s), cap: inst?.cap ?? null }, agents: agents.sort((a, b) => (b.cap > 0 ? b.spent / b.cap : Infinity) - (a.cap > 0 ? a.spent / a.cap : Infinity) || 0) });
       }
       if (req.method === "POST" && path === "/internal/caps") {
         boardKeyed(req);

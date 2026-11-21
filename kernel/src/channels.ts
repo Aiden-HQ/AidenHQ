@@ -25,6 +25,8 @@ type OwnerWords = { text?: unknown; voice?: unknown; forward?: unknown; task?: u
 
 const KERNEL_ID = /^k-[0-9a-f]{16}$/;
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+/** The owner's timezone; an unknown zone reads as UTC (as the updater does). */
+const zone = (tz: unknown): string => { try { return new Intl.DateTimeFormat("en-CA", { timeZone: String(tz || "UTC") }).resolvedOptions().timeZone; } catch { return "UTC"; } };
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
 /** A channel's short name: channel-telegram → telegram. Its label on owner messages and its `via` on decisions. */
 export const channelId = (module: string) => module.replace(/^channel-/, "");
@@ -152,7 +154,7 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       return { task: { id: String(issue.id), identifier: String(issue.identifier ?? "") } };
     }
     const o = modules().owner ?? {};
-    const day = new Date(now()).toLocaleDateString("en-CA", { timeZone: o.timezone || "UTC" });
+    const day = new Date(now()).toLocaleDateString("en-CA", { timeZone: zone(o.timezone) });
     const key = `chat_issue:${day}`;
     let issue = kv.get(key) ? await readTask(kv.get(key)!) : null;
     if (issue) {
@@ -172,7 +174,7 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
    */
   const dailyDigest = (): string | null => {
     const t = new Date(now());
-    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: modules().owner?.timezone || "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(t).map((p) => [p.type, p.value]));
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: zone(modules().owner?.timezone), year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(t).map((p) => [p.type, p.value]));
     const day = `${parts.year}-${parts.month}-${parts.day}`;
     if (Number(parts.hour) < 21 || kv.get("approvals_digest_day") === day) return null;
     kv.set("approvals_digest_day", day);
