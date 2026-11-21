@@ -108,18 +108,15 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     const reopen = db.prepare("SELECT MAX(at) AS at FROM facts WHERE type = 'task.status_changed' AND subject = ? AND at > ? AND json_extract(data, '$.from') IN ('done', 'cancelled')").get(`task:${task}`, new Date(marker.at).toISOString()) as { at: string | null } | undefined;
     if (reopen?.at) return undefined;
     if (!(Number.isFinite(Date.parse(row.wait_since)) && Date.parse(row.wait_since) >= marker.at)) return undefined;
-    // `to:<recipient>` is this code's exact destination. Older markers stored the requested category instead: "owner" was the
-    // owner directly, but "delegator" was written for the chief of staff too (there was no other kind), so who waits on one
-    // can't be told from the row: it is `"ambiguous"`, never replaced.
-    if (marker.kind.startsWith("to:")) {
-      const to = marker.kind.slice(3);
-      if (to !== "owner" && to !== "delegator" && to !== "chief_of_staff") return undefined;
-      // The wait fact and the marker are written together: a "chief of staff" or "delegator" ask is a delegator wait. A row
-      // that disagrees with its own wait is not this ask's destination either.
-      return answeredBy === "owner" ? (to === "owner" ? { to } : "ambiguous") : to === "owner" ? "ambiguous" : { to };
-    }
-    if (marker.kind === "owner") return { to: "owner" };
-    return "ambiguous";
+    // `to:<recipient>` is this code's exact destination. The bare kinds are older, except `chief_of_staff`, which only the
+    // revision just before this one wrote (it stored the resolved recipient). Bare "owner" is the owner either way; bare
+    // "delegator" is the requested category, where it also stood for the chief of staff, so who waits on one can't be told
+    // from the row: it is `"ambiguous"`, never replaced.
+    const to = marker.kind.startsWith("to:") ? marker.kind.slice(3) : marker.kind === "owner" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
+    if (to !== "owner" && to !== "delegator" && to !== "chief_of_staff") return "ambiguous";
+    // The wait fact and the marker are written together: an owner ask is an owner wait, every other one a delegator wait. A
+    // row that disagrees with its own wait is not this ask's destination either.
+    return answeredBy === "owner" ? (to === "owner" ? { to } : "ambiguous") : to === "owner" ? "ambiguous" : { to };
   }
 
   async function toOwner(t: Issue, text: string, dedupe = `escalate:${t.id}`) {
