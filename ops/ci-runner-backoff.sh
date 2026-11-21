@@ -12,8 +12,5 @@ cd "$(dirname "$0")/.."
 id="${1:-1}"
 delay="$(ci_runner_backoff_read "$id")"
 [ -n "$delay" ] || exit 0
-# An older version's marker (300s) is clamped to the cap and the clamp persisted, so a wait that systemd would kill at its
-# default 90s ExecStartPre timeout never runs and the next refusal doubles from the cap.
-if ci_runner_backoff_over "$id"; then ci_runner_backoff_write "$id" "$delay"; fi
 echo "ci runner $id: no registration token last time; retrying after ${delay}s" >&2
 exec sleep "$delay"

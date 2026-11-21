@@ -35,8 +35,7 @@ test("a persisted runner backoff is a metric, and a stale or empty one is not", 
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "3.backoff"), "60\n");
   writeFileSync(join(dir, "4.backoff"), "1\n");
-  // An older version's cap, and a stale marker a drain left behind: the first is clamped, the second is dropped.
-  writeFileSync(join(dir, "5.backoff"), "300\n");
+  // A stale marker a drain left behind: dropped rather than read as a loop.
   writeFileSync(join(dir, "6.backoff"), "60\n");
   const long_ago = new Date(Date.now() - 60 * 60_000);
   utimesSync(join(dir, "6.backoff"), long_ago, long_ago);
@@ -45,7 +44,6 @@ test("a persisted runner backoff is a metric, and a stale or empty one is not", 
   const text = await run(h);
   assert.match(text, /^aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@3\.service"\} 60$/m);
   assert.match(text, /^aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@4\.service"\} 1$/m);
-  assert.match(text, /^aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@5\.service"\} 60$/m, "a legacy 300 is clamped to the cap");
   assert.doesNotMatch(text, /aidenhq-ci-runner@6\.service/, "a stale marker is not a loop");
   assert.doesNotMatch(text, /aidenhq-ci-runner@7\.service/, "a marker that is not a delay is not a series");
   // The unit's own state reads alongside it (the fake's third column is its sub-state, not "running": the snapshot's active

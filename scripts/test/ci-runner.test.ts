@@ -90,22 +90,6 @@ test("a refused token waits 1s, 2s, 4s before the next attempt; a token that min
   assert.deepEqual(retries(clean.calls), [], "a clean start does not sleep");
 });
 
-// A marker an older version left at 300s exceeds systemd's 90s ExecStartPre timeout: the attempt would be killed before the
-// script could retry or lower it. The wait is clamped to the cap, and the clamp is persisted, so the refusal loop keeps going.
-test("a legacy 300s marker is clamped to the 60s cap before sleeping", async () => {
-  const dir = checkout();
-  writeFileSync(join(dir, "fail"), "");
-  mkdirSync(join(dir, "data/ci-runner"), { recursive: true });
-  writeFileSync(marker(dir), "300\n");
-  const r = await run(dir);
-  assert.equal(r.status, 1, r.out);
-  assert.deepEqual(retries(r.calls), [60], "the persisted wait is clamped before it is served");
-  assert.equal(readFileSync(marker(dir), "utf8").trim(), "60", "and the clamp is written back");
-  const next = await run(dir);
-  assert.deepEqual(retries(next.calls), [60], "the next attempt serves the cap");
-  assert.equal(readFileSync(marker(dir), "utf8").trim(), "60", "and stays at the cap");
-});
-
 // A marker left before a drain or an outage is not a refusal that is still looping: once it is old, the runner starts at once
 // rather than serving a stale wait (the owner may have fixed the sign-in while the units were stopped).
 test("a stale marker does not delay a runner brought back after a drain", async () => {

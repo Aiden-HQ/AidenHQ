@@ -69,7 +69,8 @@ write() { # name: atomic, so node-exporter never reads half a file
       stamp="$(stat -c %Y "$marker" 2>/dev/null || true)"
       [[ "$stamp" =~ ^[0-9]+$ ]] || continue
       [ $(( $(date +%s) - stamp )) -le 900 ] || continue
-      [ "$delay" -le 60 ] || delay=60
+      # Not a delay this version writes (the cap): no series rather than a wait the runner itself would not serve.
+      [ "$delay" -le 60 ] || continue
       echo "aidenhq_unit_backoff{scope=\"user\",unit=\"aidenhq-ci-runner@$(basename "$marker" .backoff).service\"} $delay"
     done
   done
