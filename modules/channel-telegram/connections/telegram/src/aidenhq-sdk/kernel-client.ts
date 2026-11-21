@@ -64,7 +64,9 @@ export function factEmitter(client: KernelClient, log: (msg: string, f?: Record<
           if (!(status >= 400 && status < 500)) throw e;
           log("facts: the kernel refused a batch, dropped", { status, dropped: batch.length, error: String((e as Error).message).slice(0, 200) });
         }
-        queue = queue.slice(batch.length);
+        // emit() may have trimmed the queue's head during the await: drop exactly what was sent, not the first N.
+        const sent = new Set(batch);
+        queue = queue.filter((f) => !sent.has(f));
       }
     } catch (e) {
       log("facts: send failed, kept for the next flush", { queued: queue.length, error: String((e as Error).message).slice(0, 200) });

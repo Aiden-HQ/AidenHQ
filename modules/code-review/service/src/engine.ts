@@ -418,19 +418,26 @@ export function createEngine(d: EngineDeps) {
     }
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
-      run("UPDATE prs SET open = 0 WHERE repo = ? AND number = ?", cfg.repo, gone.number);
       // Its findings still open are open at its merge or close (GitHub says which; unknown when it can't be read).
       if (one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL", cfg.repo, gone.number)) {
         const closed = await d.source.get(cfg.repo, gone.number).catch((e) => void log("closed PR not read; its findings' outcome stays unknown", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
         if (closed && !closed.open) run("UPDATE findings SET outcome = ?, outcome_at = ? WHERE repo = ? AND number = ? AND outcome IS NULL", closed.merged ? "open_at_merge" : "open_at_close", iso(), cfg.repo, gone.number);
       }
-      // Its review task held only its posts' approvals: done with the PR.
-      if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL", cfg.repo, gone.number))
-        void d.poster.close(cfg.repo, gone.number, "The pull request is closed.").catch((e) => log("review task not closed", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
       for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued'", cfg.repo, gone.number)) {
         run("UPDATE runs SET status = 'skipped', why = 'closed', ended = ? WHERE id = ?", iso(), q.id);
         end(runRow(q.id)!);
       }
+      // Its review task held only its posts' approvals: done with the PR.
+      // The PR stays open here until the close lands, so a failed close is tried again next poll.
+      if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL", cfg.repo, gone.number)) {
+        try {
+          await d.poster.close(cfg.repo, gone.number, "The pull request is closed.");
+        } catch (e) {
+          log("review task not closed", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) });
+          if (!permanent(e)) continue;
+        }
+      }
+      run("UPDATE prs SET open = 0 WHERE repo = ? AND number = ?", cfg.repo, gone.number);
     }
     if (!cursor) return void run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
     const got = await d.source.comments(cfg.repo, cursor.comments);

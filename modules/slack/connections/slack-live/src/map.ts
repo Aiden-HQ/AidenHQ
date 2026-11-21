@@ -29,14 +29,15 @@ export function toEvent(body: unknown, now = Date.now()): LiveEvent | null {
   return { eventId, kind, channelId, userId: str(ev.user) ?? "", ...(threadTs ? { threadTs } : {}), ts, text, permalink: permalink(channelId, ts), receivedAt: now };
 }
 
-// 60 s same-channel same-text dedupe (in memory; a restart clears it).
+// 60 s same-channel same-text dedupe (in memory; a restart clears it). `accept` runs unless the text is a duplicate; the text is
+// remembered only once it returned, so an event whose insert threw (and is redelivered) isn't taken for a duplicate.
 export function makeDedupe() {
   const seen = new Map<string, number>();
-  return (e: LiveEvent): boolean => {
+  return (e: LiveEvent, accept: () => void): void => {
     const key = `${e.channelId}::${e.text.replace(/\s+/g, " ").toLowerCase()}`;
     const last = seen.get(key);
+    if (last === undefined || e.receivedAt - last > DEDUPE_MS) accept();
     seen.set(key, e.receivedAt);
     for (const [k, at] of seen) if (e.receivedAt - at > DEDUPE_MS) seen.delete(k);
-    return last !== undefined && e.receivedAt - last <= DEDUPE_MS;
   };
 }
