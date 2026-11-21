@@ -14,7 +14,7 @@ const GAP_MS = 2 * 60_000;
 /** undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks; `findings`: the reasons when
  * the only thing left is open important findings, none still running or queued: the author's to fix); bypass: it may merge
  * without the verdict, code review unreachable for over DOWN_MS (why). */
-export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string; findings?: string } | { bypass: string }>;
+export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string; findings?: string; down?: true } | { bypass: string; down?: true }>;
 
 export function createReviewGate(o: { gated: string[]; url: string; key: () => string; fetchFn?: typeof fetch; now?: () => number }): ReviewGate {
   const gated = new Set(o.gated.map((r) => r.toLowerCase()));
@@ -26,7 +26,7 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
   const unreachable = (why: string) => {
     if (down === undefined || now() - last > GAP_MS) down = now();
     last = now();
-    return now() - down > DOWN_MS ? { bypass: `code review has been unreachable for ${Math.round((now() - down) / 60_000)} minutes (${why})` } : { wait: `code review is unreachable (${why})` };
+    return now() - down > DOWN_MS ? { bypass: `code review has been unreachable for ${Math.round((now() - down) / 60_000)} minutes (${why})`, down: true as const } : { wait: `code review is unreachable (${why})`, down: true as const };
   };
   return async (repo, number, head) => {
     if (!gated.has(repo.toLowerCase())) return undefined;

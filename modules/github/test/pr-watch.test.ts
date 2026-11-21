@@ -453,4 +453,9 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   running.set([running.agentPr(6)]);
   await running.watch.tick();
   assert.equal(running.woke.length, 0);
+  let calls = 0;
+  const down = await rig(t, { reviewGate: async () => { calls++; return { wait: "code review is unreachable (x)", down: true }; }, merge: () => [200, { skip: "merging" }] });
+  down.set([3, 2, 1].map((n) => down.agentPr(n)));
+  await down.watch.tick();
+  assert.deepEqual([calls, down.woke.length], [1, 0], "an unreachable gate is asked once per pass, and wakes nobody");
 });

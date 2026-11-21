@@ -100,6 +100,7 @@ export function startPrWatch(o: PrWatchOptions) {
   const gh = (method: string, path: string, body?: unknown) => o.gh(method, path, body, { background: true });
   const stateFile = join(o.cacheDir, "pr-watch.json");
   let findingsWakes = 0; // review-findings wakes sent in this pass
+  let gateDown = false;  // code review answered unreachable in this pass: no more verdict calls until the next
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
@@ -387,8 +388,9 @@ export function startPrWatch(o: PrWatchOptions) {
       // head, under the same wake cap and CI breaker as red checks; the merge below follows once the gate passes.
       // A green head resets the CI breaker, whatever holds its merge.
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.breaker[url]) { delete state.breaker[url]; save(); }
-      if (o.reviewGate && pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && !(state.found[url] === pr.headRefOid && state.greened[url] === pr.headRefOid)) {
+      if (o.reviewGate && !gateDown && pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && !(state.found[url] === pr.headRefOid && state.greened[url] === pr.headRefOid)) {
         const g = await o.reviewGate(repo, pr.number, pr.headRefOid);
+        if (g && "down" in g) gateDown = true; // the rest of this pass skips the gate: no wake, the PR is handled as before
         if (g && "findings" in g && g.findings) {
           if (state.found[url] !== pr.headRefOid && !state.breaker[url]?.told && findingsWakes < FINDINGS_WAKES_PER_TICK) {
             // The reasons carry the PR author's finding titles: fenced as data. They name no thread links, so the PR url leads to `github_pr_threads`.
@@ -463,6 +465,7 @@ export function startPrWatch(o: PrWatchOptions) {
     const all: Json = Object.fromEntries(Object.entries(readJson(stateFile, {})).filter(([k]) => k.includes("/"))); // the old flat state is dropped
     let open = 0;
     findingsWakes = 0;
+    gateDown = false;
     if (o.connected && !o.connected()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }
