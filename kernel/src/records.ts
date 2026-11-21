@@ -243,7 +243,10 @@ export function openRecords(file: string, now = () => new Date()) {
       if (r.digest !== digest) return "the digest doesn't match this record";
       // Two approvals (`+`), or one approval and the other reviewer unsure about the request, with the input code verified
       // whole (`;unsure:`, the owner's rule of 2026-11-20).
-      if (r.panel && v.decision === "approve" && !v.by.includes("+") && !/;unsure:/.test(v.by)) return "an authority-expanding record needs a second reviewer's approval too";
+      // Code's own approval of a push or PR that code review owns (code_review_owns) asks for no second model: the merge it leads
+      // to is gated by the repo's mandatory code review and CI, and opening a PR grants nothing.
+      const codeOwned = v.code === "code_review_owns" && v.by === "reviewer:kernel/code";
+      if (r.panel && v.decision === "approve" && !codeOwned && !v.by.includes("+") && !/;unsure:/.test(v.by)) return "an authority-expanding record needs a second reviewer's approval too";
       if (v.decision === "approve" && (r.review_first || r.tier === 2 || (r.args as { ownerRequired?: unknown } | null)?.ownerRequired === true)) return "after the reviewer, the owner decides this record (escalate it)";
       if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return "this record is the owner's on its merits: escalate the reject to them";
       const note = v.note.slice(0, 2000);
