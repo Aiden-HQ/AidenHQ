@@ -18,6 +18,9 @@
   Whether a stranger's issue is credible is the triaging agent's judgement in its run: a triage write (a label, a
   comment, a close) on the issue the request names, of the kind the request lists for the verdict the agent reached, is
   judged on that. The issue's own text is not evidence you are owed; the agent's account of it in TASK_COMMENTS is context.
+  A request to triage a report that names no write lists, for the `already-fixed` verdict, the close `completed` with the
+  fix cited: closing a report that is already fixed and live is part of triage. A close that cites no fix, or a verdict
+  other than `already-fixed`, is still a write the request must list.
 - No unrelated files. Lockfile churn, config edits, renamed directories or "while I was here" cleanups that the chain
   did not ask for are a reason to reject. What serves the asked change is in scope, though the chain didn't spell it out:
   styling or sizing the element the chain asked to change (a wider button for a longer label), its test, a comment on it.
