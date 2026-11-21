@@ -38,6 +38,10 @@ const AppSchema = z
     description: z.string(),
     port: z.number().int().min(1024).max(65535).refine((p) => p < PREVIEW_PORTS.min || p > PREVIEW_PORTS.max, `ports ${PREVIEW_PORTS.min}-${PREVIEW_PORTS.max} are the previews'`).optional(),
     expose: z.boolean().default(true), // tailscale serve --https=<port>; false for non-HTTP apps (databases)
+    // A non-HTTP app declares what its published port speaks (docs/design/app-identity.md). It is a trusted declaration,
+    // not an inference from other fields: the identity gate exempts a socket only when the app declares `postgres` *and*
+    // the socket is positively identified as PostgreSQL. The registry refuses it beside any HTTP door.
+    protocol: z.literal("postgres").optional(),
     health: z.object({ url: z.string().optional(), grace_sec: z.number().default(60) }).default({ grace_sec: 60 }),
     stateful: z.boolean().default(false),
     untrusted: z.boolean().default(false),
@@ -79,6 +83,9 @@ const AppSchema = z
   })
   .strict()
   .refine((a) => !a.api || a.health.url, "api needs health.url (its origin is where app_api sends requests)")
+  // `protocol: postgres` is a database's declaration: any HTTP door (a tailnet route, a share host, a health url, an agent
+  // API) would make the app an HTTP app the identity gate must judge, so the declaration is refused there.
+  .refine((a) => !a.protocol || (!a.expose && !a.share?.host && !a.health.url && !a.api), "protocol: postgres is for an app with no HTTP surface: not exposed, no share.host, no health.url, no api")
   // aud is required by compile (scripts/edge.ts) unless settings.app_login is password, which this registry doesn't know.
   .refine((a) => !a.share?.host || a.port, "share.host needs a port (the gate proxies to 127.0.0.1:<port>)")
   .refine((a) => a.internet || !a.port, "internet: false apps can't publish a port (Docker doesn't publish from internal networks)")

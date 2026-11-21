@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { dropPreviewDatabase, provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine, type ProbeOutcome } from "./deploy.js";
 import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
-import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mergeScans, noHttpSurface, processUids, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
+import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mergeScans, postgresOnly, processUids, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
@@ -451,7 +451,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       const service = String(c.Config?.Labels?.["com.docker.compose.service"] ?? "");
       const exposed = Object.keys(c.Config?.ExposedPorts ?? {}).filter((k) => k.endsWith("/tcp")).map((k) => parseInt(k, 10));
       const ips = Object.values<any>(c.NetworkSettings?.Networks ?? {}).flatMap((n) => [n.IPAddress, n.GlobalIPv6Address]).filter(Boolean);
-      const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, postgresProbe: noHttpSurface(app), sni: [app.name, app.share?.host].filter(Boolean), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+      const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, postgresProbe: postgresOnly(app), sni: [app.name, app.share?.host].filter(Boolean), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
       const scans = [];
       for (const uid of processUids(await exec(["top", c.Id, "-eo", "uid,pid"]))) scans.push(JSON.parse(await exec(identityProbeArgs(cfg.healthImage, c.Id, uid), { input: JSON.stringify(input), timeout: 300_000 })));
       const scan = mergeScans(scans);
@@ -459,7 +459,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       for (const k of scan.sockets)
         ports.push({ service, port: k.port, host: k.host, listening: k.listening, ...(k.raw ? { raw: k.raw } : {}), answers: k.statuses.map((status, i) => ({ probe: probes[i]!, status })) });
     }
-    return identityPorts(ports, required, denied, noHttpSurface(app));
+    return identityPorts(ports, required, denied, postgresOnly(app));
   }
 
   /**

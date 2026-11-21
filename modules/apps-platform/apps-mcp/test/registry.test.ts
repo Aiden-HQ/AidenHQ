@@ -159,6 +159,23 @@ describe("share (shared access)", () => {
   });
 });
 
+describe("a declared protocol", () => {
+  const db = (o: object = {}) => ({ name: "warehouse", repo: "example-org/warehouse", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres", ...o });
+  it("is postgres only, and only on an app with no HTTP door", async () => {
+    const { parseApp } = await import("../src/registry.js");
+    expect(parseApp(db()).protocol).toBe("postgres");
+    // Any HTTP door would be an app the identity gate must judge: the declaration is refused beside one.
+    expect(() => parseApp(db({ expose: true }))).toThrow(/protocol: postgres is for an app with no HTTP surface/);
+    expect(() => parseApp(db({ health: { url: "http://pg:5432/health" } }))).toThrow(/protocol: postgres is for an app with no HTTP surface/);
+    expect(() => parseApp(db({ share: { host: "db.example.com", aud: "aud-db-0001" } }))).toThrow(/protocol: postgres is for an app with no HTTP surface/);
+    expect(() => parseApp(db({ api: { callers: ["x"], paths: ["/api"] }, health: { url: "http://pg:5432/health" } }))).toThrow(/protocol: postgres is for an app with no HTTP surface/);
+  });
+  it("is postgres, not any other protocol", async () => {
+    const { parseApp } = await import("../src/registry.js");
+    expect(() => parseApp(db({ protocol: "https" }))).toThrow();
+  });
+});
+
 describe("an app's path", () => {
   const base = { name: "hello", repo: "example-org/hello", owner: "a", description: "d" };
   it("is the folder that holds compose.yaml: a compose file name is refused", () => {

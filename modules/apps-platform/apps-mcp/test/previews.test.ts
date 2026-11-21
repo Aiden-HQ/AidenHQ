@@ -3,12 +3,21 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { provisionDatabase } from "../src/database.js";
 import { createEngine } from "../src/deploy.js";
-import { previewTick, type OpenPr, type PreviewDeps } from "../src/previews.js";
+import { previewApp, previewTick, type OpenPr, type PreviewDeps } from "../src/previews.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
 
 const REPO = "acme-agents/demo";
 const app = parseApp({ name: "demo", repo: REPO, owner: "a", description: "d", port: 8080, health: { url: "http://web:8080/health" }, database: "warehouse", secrets: ["DEMO_DATABASE_URL", "SALT"], api: { callers: ["x"], paths: ["/api"] } });
+it("never gives a database's declaration to its preview: a preview is served as HTTP", () => {
+  // A database app declares protocol: postgres, which is what the identity gate trusts to skip its port. A preview is served
+  // over HTTP at its own host or port, so inheriting the declaration would exempt an HTTP door from the gate.
+  const db = parseApp({ name: "warehouse", repo: REPO, owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+  const preview = previewApp(db, 6, 5461);
+  expect(preview.protocol).toBeUndefined();
+  expect(db.protocol).toBe("postgres");
+});
+
 const sha = (c: string) => c.repeat(40);
 const pr = (number: number, o: Partial<OpenPr> = {}): OpenPr => ({ number, sha: sha(String(number % 10)), base: "main", head_repo: REPO, ...o });
 

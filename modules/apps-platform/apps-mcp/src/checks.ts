@@ -10,7 +10,7 @@
 // declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy; warnings are reported.
 //   identity every TCP port any of the app's containers listens on or exposes: a security gate, not a light check
 //            (identityProbes below). Fails closed; only an app nobody can reach is skipped, and so is a PostgreSQL socket of
-//            an app whose registry says it serves no HTTP (not exposed, no share.host, no health.url), each said as a
+//            a PostgreSQL socket of an app that declares protocol: postgres (and so has no HTTP door), each said as a
 //            warning. Identification is positive (a PostgreSQL startup handshake, not an SSLRequest reply alone, which a TLS
 //            listener also gives), and a socket that answers HTTP — plaintext or over TLS — is judged either way; silence
 //            alone never skips.
@@ -39,11 +39,11 @@ export const sample = (s: unknown): string => String(s ?? "").replace(/[\p{Cc}<>
 export const isWeb = (app: App) => app.expose && !!app.port && !!app.health.url;
 
 /**
- * The registry says the app serves no HTTP at all: not exposed on the tailnet or through the gate, not shared, and no
- * health.url. The warehouse's shape (a database published on loopback). Even then a socket is skipped only after it is
- * positively identified as PostgreSQL, and one that answers HTTP is judged (identityPorts).
+ * The app's registry declares its published port speaks PostgreSQL and nothing else (`protocol: postgres`), with no HTTP
+ * door (the registry refuses the declaration beside one). That is the trusted basis for the identity gate's exemption;
+ * even so a socket is skipped only after it is positively identified as PostgreSQL, and one that answers HTTP is judged.
  */
-export const noHttpSurface = (app: App) => !app.expose && !app.share?.host && !app.health.url;
+export const postgresOnly = (app: App) => app.protocol === "postgres";
 
 /** Which render and agent probes to run, and whether each path was declared (strict) or inferred (lenient). */
 export function plan(app: App, declared: Declared = {}): { render: { path: string; declared: boolean }[]; agent: { path: string; declared: boolean }[] } {
@@ -221,8 +221,8 @@ export interface PortAnswers { service: string; port: number; host: string; list
 /**
  * The gate over every socket of every container (IDENTITY_SCRIPT's findings). A socket that answered HTTP is judged by
  * judgeIdentity. One that didn't is skipped when it clearly isn't HTTP (a non-HTTP banner), when nothing listens on an
- * exposed port, or when the app's registry says it serves no HTTP (`noHttp`: not exposed, no share.host, no health.url) and
- * the socket is positively identified as PostgreSQL (a database's own protocol); never on a port the registry says is HTTP
+ * exposed port, or when the app declares `protocol: postgres` (`noHttp`: a registry declaration the gate trusts, refused
+ * beside any HTTP door) and the socket is positively identified as PostgreSQL; never on a port the registry says is HTTP
  * (required) or one that speaks TLS (`https`: it could serve HTTP), and any other silence, `closed` and `silent` included,
  * fails closed. No socket at all: nobody can reach the
  * app, the one skip, recorded as a warning. Every skip is a non-hard finding.
@@ -241,7 +241,7 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
     else if (p.raw === "banner" && !req) findings.push({ hard: false, what: `${at(p)} speaks something other than HTTP: not probed` });
     else if (p.raw === "refused" && !p.listening && !req) findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
     else if (p.raw === "https") findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: answers HTTPS, so it is a web app the gate can't judge over these probes` });
-    else if (noHttp && !req && p.raw === "postgres") findings.push({ hard: false, what: `${at(p)}: speaks PostgreSQL, not HTTP: not probed (the app isn't exposed, isn't shared and has no health.url, so nothing reaches it as a web app)` });
+    else if (noHttp && !req && p.raw === "postgres") findings.push({ hard: false, what: `${at(p)}: speaks PostgreSQL, not HTTP: not probed (the app declares protocol: postgres and has no HTTP door)` });
     else findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
@@ -256,7 +256,7 @@ export const PORT_PROBE_MS = 3_000;
  * process of this pid namespace holds it: its inode appears as a `socket:[<inode>]` fd of some /proc/<pid>/fd. A listener
  * no fd attributes (it vanished between the two reads) is dropped too; the registry's required doors are still checked.
  * stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
- * headers }[], postgresProbe: whether to identify a silent socket as PostgreSQL (an app with no HTTP surface), sni: the names
+ * headers }[], postgresProbe: whether to identify a silent socket as PostgreSQL (an app declaring protocol: postgres), sni: the names
  * to offer a TLS listener }, and `proc`,
  * the proc root those pids and net tables are read from (the platform leaves it unset: /proc; a test passes a fixture tree).
  * Every such socket (but Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a wildcard bind on loopback and

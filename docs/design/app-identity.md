@@ -79,11 +79,13 @@ which drops it. In every other mode (`local`, `public`, `cloudflare`, or tailsca
 app's port are the host's loopback and Docker bridges, so the app requires a signed identity and the deploy's identity
 probe requires it to refuse a token-less request.
 
-**An app with no HTTP surface** — not exposed, no `share.host`, no `health.url` (a database, like the warehouse) — is
-probed the same way, and a socket that answers HTTP is still judged. A database answers silence to an HTTP request, so
-such an app's socket is identified positively as PostgreSQL: it must decline SSL and then answer a startup message with
-a complete, well-formed PostgreSQL protocol frame — a truncated header, a malformed body, an authentication code the
-protocol does not define or without the payload that code carries (AuthenticationOk, cleartext, GSS and SSPI carry none;
+**A database app** declares it in its registry entry: `protocol: postgres`, allowed only on an app with no HTTP door
+(not exposed, no `share.host`, no `health.url`, no `api`; the registry refuses it beside one), and a preview never inherits
+it. That declaration is the trusted basis for the exemption — never the inference that a missing field means no HTTP — and
+it is required even when nothing else marks the app as HTTP. Its socket is probed the same way as any other, and one that
+answers HTTP is still judged. A database answers silence to an HTTP request, so such an app's socket is identified
+positively as PostgreSQL: it must decline SSL and then answer a startup message with a complete, well-formed PostgreSQL
+protocol frame — a truncated header, a malformed body, an authentication code the protocol does not define or without the payload that code carries (AuthenticationOk, cleartext, GSS and SSPI carry none;
 MD5 a four-byte salt; SASL a non-empty mechanism list, each name NUL-terminated and ended by a separate NUL), or an error
 without its severity, SQLSTATE and message is not identification. An SSLRequest
 reply alone is not enough — a TLS listener offers SSL too, and a multiprotocol listener could serve HTTPS on the same
