@@ -443,6 +443,9 @@ export function createEngine(d: EngineDeps) {
       const v = res.review as Partial<Review>;
       const bound = String(v.repo ?? "").toLowerCase() === r.repo && v.head === r.head && Array.isArray(v.findings) && (r.target === "tree" || (v.pr === r.number && v.base === r.merge_base));
       if (!bound) res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
+      // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
+      else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string"))
+        res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title)", billed_usd: res.billed_usd };
     }
     if (res.state === "failed") {
       // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
@@ -548,12 +551,18 @@ export function createEngine(d: EngineDeps) {
     const b = batchRow(id);
     if (!b || b.status !== "running" || one("SELECT 1 FROM runs WHERE batch = ? AND status IN ('queued', 'running')", id)) return;
     const lens = new Map(catalogSafe().map((o) => [o.id, o.lens]));
-    const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => {
-      const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
-      const tools = r.profile === "code-review-tools";
-      return { option: tools ? "tools" : r.option!, ...(tools ? { options: r.option!.split(",") } : {}), lens: tools ? null : lens.get(r.option!) ?? null, status: r.status, why: r.why, cost_usd: r.cost_usd, review: v ? (JSON.parse(v.json) as Review) : null };
-    });
-    const out = render({ repo: b.repo, sha: b.sha, created: new Date(b.created).toISOString(), run_usd: b.run_usd, runs, lensOf: (o) => lens.get(o) ?? "correctness" });
+    let out: ReturnType<typeof render>;
+    try {
+      const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => {
+        const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
+        const tools = r.profile === "code-review-tools";
+        return { option: tools ? "tools" : r.option!, ...(tools ? { options: r.option!.split(",") } : {}), lens: tools ? null : lens.get(r.option!) ?? null, status: r.status, why: r.why, cost_usd: r.cost_usd, review: v ? (JSON.parse(v.json) as Review) : null };
+      });
+      out = render({ repo: b.repo, sha: b.sha, created: new Date(b.created).toISOString(), run_usd: b.run_usd, runs, lensOf: (o) => lens.get(o) ?? "correctness" });
+    } catch (e) {
+      // Never a stuck tick: the batch stays running and the sweep tries again (loudly) each tick.
+      return void log("repo review report not rendered", { batch: id, err: String((e as Error).message).slice(0, 200) });
+    }
     run("UPDATE batches SET status = 'done', verdict = ?, report = ?, ended = ? WHERE id = ?", out.verdict, out.markdown, iso(), id);
     if (!d.publisher) return void run("UPDATE batches SET report_why = ? WHERE id = ?", "Primer can't be reached from code review: the report is on the board only", id);
     const doc = one<{ document: string }>("SELECT document FROM documents WHERE repo = ?", b.repo)?.document;
@@ -867,6 +876,8 @@ export function createEngine(d: EngineDeps) {
         else live.delete(r.id); // no figure this tick: back to the whole run_usd
       }
     }
+    // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
+    for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
       // A repo review's options run one at a time, in order: each gets what the ones before it left of the cap.
       if (r.target === "tree" && one("SELECT 1 FROM runs WHERE batch = ? AND id != ? AND (status = 'running' OR (status = 'queued' AND rowid < (SELECT rowid FROM runs WHERE id = ?)))", r.batch, r.id, r.id)) continue;

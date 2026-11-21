@@ -34,6 +34,10 @@ export function coverageOf(runs: ReportRun[]): Coverage {
     const failed = new Map((r.review.coverage?.failed ?? []).map((f) => [f.id, f.why]));
     for (const id of ids) failed.has(id) ? c.failed.push({ id, why: failed.get(id)! }) : c.ran.push(id);
     if (r.review.coverage?.incomplete) c.partial.push({ id: r.option, why: r.review.coverage.incomplete });
+    // Findings a run left out (a tool's output capped, nits past the cap) are coverage the report doesn't show whole.
+    const w = r.review.withheld ?? { important: 0, nit: 0, pre_existing: 0 };
+    const left = (w.important ?? 0) + (w.nit ?? 0) + (w.pre_existing ?? 0);
+    if (left > 0) c.partial.push({ id: r.option, why: `${left} finding${left === 1 ? "" : "s"} left out by its cap` });
   }
   return c;
 }
