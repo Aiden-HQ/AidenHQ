@@ -95,7 +95,7 @@ function closedAt(x: Index, task: string, t: number) {
 
 /**
  * A wake not bound this long past its due time, and never held by admission (`job.held`: queued behind the agent's
- * max_parallel, the computers, a spend cap), no longer counts as pending: nothing is taking it to a job.
+ * max_parallel, the computers, a spend limit), no longer counts as pending: nothing is taking it to a job.
  */
 const PENDING_MAX = 2.5 * 3600_000;
 /** When a wake stops counting as pending by age (PENDING_MAX), or never when it closed or admission holds it. */

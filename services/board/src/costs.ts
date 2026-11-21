@@ -1,7 +1,7 @@
 // The Costs tab's sources (cost-ledger.ts reads them):
 //  - the model gateway's ledger: every model call, with what OpenRouter billed for it, mirrored into the board's usage table every
 //    minute (pullUsage), so the tab can group it in SQL;
-//  - the kernel's spend summary: today against every cap in force, as the gateway enforces them (spendSummary);
+//  - the kernel's spend summary: the install's day and month against its spend limits, as the gateway enforces them (spendSummary);
 //  - OpenRouter's own figures for the key (keyUsage) and its list prices (prices).
 import { readFileSync } from "node:fs";
 import type { Logger } from "pino";
@@ -128,11 +128,12 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
   setInterval(tick, everyMs).unref();
 }
 
-/** Today (UTC) against every cap in force, from the kernel (GET /v1/spend/summary: the sums the caps enforce, raises included). */
+/** The install's spend against its two limits, from the kernel (GET /v1/spend/summary: the sums the gateway enforces; a UTC day and month). */
 export interface SpendSummary {
   day: string;
-  install: { spent: number; cap: number | null };
-  agents: { agent_id: string; spent: number; cap: number }[];
+  month: string;
+  install: { day: { spent: number; cap: number }; month: { spent: number; cap: number } };
+  agents: { agent_id: string; spent: number }[];
 }
 
 /** The kernel's spend summary; null when it doesn't answer (the header then shows no spend line). */

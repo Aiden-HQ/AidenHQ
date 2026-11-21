@@ -27,13 +27,12 @@ compiler's is the last gate.
 ## The path
 
 1. The owner (a signed-in admin) presses Save or Change. `POST /api/settings/change` takes a typed change: `setting`
-   (`{ key, value }`), `agent` (`model`, `reasoning_effort`, `heartbeat`, `max_parallel`), `caps`, `module` (on or off),
+   (`{ key, value }`), `agent` (`model`, `reasoning_effort`, `heartbeat`, `max_parallel`), `module` (on or off),
    `routine`, `rules`, `handbook`, `unfork`, `pin`, `marketplace` or `grants`. The board checks it against the compiled config
    and module catalog (the setting exists, a value is one of its `values`, a URL passes the check, the agent exists, the
    heartbeat is one of the compiler's hours, and an Engineer or team member has no heartbeat of its own;
    `services/board/src/settings-change.ts`). On a team (docs/configuration.md, Teams) the kernel writes the same typed change
-   where it lives: the team record's fields to `teams.<t>.defaults`, a member's to `teams.<t>.members.<key>`, the record's
-   `day_usd` to `teams.<t>.caps`.
+   where it lives: the team record's fields to `teams.<t>.defaults`, a member's to `teams.<t>.members.<key>`.
 2. The board files it as the owner's own task (label `settings-change`, held by the owner, so no agent wakes; the board's
    columns leave it out, the Settings and Code review pages show it), keeps the typed change in its own store by task id (for
    the page) and hands it to the kernel: `POST /v1/settings/change` with the board's key, `{ task, changes, credential }`, where
@@ -54,7 +53,7 @@ compiler's is the last gate.
    an owner; a credential that doesn't check out is refused) and the
    record is the owner's (computeTier `ownerSave`: Tier 2, no reviewer), decided at filing as `account:<id>` via `save`. The
    planner still reads it (`kernel/src/apply-tier.ts`), so its refusals hold and its merit tier stays on the record. An agent's own
-   change (`asAgent`) carries none and is tiered on its merits like any instance change: a setting is the panel's; spend caps, quiet start and any loosening of `autonomy` are the owner's; an agent's
+   change (`asAgent`) carries none and is tiered on its merits like any instance change: a setting is the panel's; raising a spend limit, quiet start and any loosening of `autonomy` are the owner's; an agent's
    `model` / `reasoning_effort` / `heartbeat` override is Tier 1; a module turned on or off or a grants override is judged by
    the module authority diff. On approval the code host lands exactly that commit and the apply runs `ops/apply-config.sh`.
 6. An owner-decided change's task closes with its apply's outcome notice (one delivery, `notices.ts` `close`: done when it
@@ -82,7 +81,7 @@ never from the request.
   (weights 0 to 10, load at least 1). One gate, `routingDiff` in `apply-tier.ts`, proves a diff is only that: the writer
   refuses anything else, and the apply planner proposes Tier 1 `routing-only` for a commit this loop wrote (and refuses one
   that moves more), only while its experiment is live and only as filed by the experiment's agent on its own task. Any other
-  `teams` change keeps its own rules (the panel's; a day cap the owner's).
+  `teams` change keeps its own rules (the panel's).
 - **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
   commit with the code host and files one `kernel.apply` with the Steward as requester (no owner identity, no updater
   exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or

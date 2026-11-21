@@ -59,7 +59,7 @@ test("a card that has not run is not evidence yet, and a short-name apply card s
 });
 
 test("another kind's card is never an apply, and no card at all is still the missing deliverable", async () => {
-  const other = await applyEvidence([record({ action: "kernel.raise_cap" })]);
+  const other = await applyEvidence([record({ action: "acme.post" })]);
   assert.equal(other.missing, true);
   assert.equal(other.awaiting, "no apply filed yet");
   const pr = await presentNow({ kind: "apply", ref: "" }, deps([record({ action: "github.pr" })]));

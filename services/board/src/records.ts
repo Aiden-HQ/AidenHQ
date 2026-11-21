@@ -16,7 +16,7 @@ export interface Approval {
   /** The Paperclip task id, and its identifier (the id again when the filer didn't know it). */
   issueId: string;
   identifier: string;
-  /** The kind as people read it: push, pr, merge, apply, create_repo, raise_cap, deploy_app, app_run, or a module's kind whole. */
+  /** The kind as people read it: push, pr, merge, apply, create_repo, deploy_app, app_run, or a module's kind whole. */
   action: string;
   target: string;
   digest: string;

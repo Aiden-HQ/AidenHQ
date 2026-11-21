@@ -50,7 +50,7 @@ const link: Valid = (s, c) => Boolean(c.origin) && s.startsWith(`${c.origin}/`) 
 const STATES = ["pending", "approved", "rejected", "stale", "expired", "used", "auto", "core", "on", "off", "dependency", "missing", "ok", "unknown", "none", "idle", "denied", "cancelled", "failed", "healthy", "unhealthy", "rolled_back", "review", "applied", "done", "working", "waiting", "open_link"];
 const REASONS = ["closed", "cancelled", "job_running", "job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "blocked", "agent_wait", "module_wait", "owner_task", "scheduled", "chat_turn", "backlog", "failed", "unpolled", "orphaned", "unknown", "history_expired"];
 const WHYS = ["card", "owner_wait", "delegator_wait", "handback", "failed", "stalled_wait", "unpolled", "orphaned", "unknown", "history_expired"];
-const CHANGE_KINDS = ["setting", "agent", "caps", "module", "routine", "rules", "handbook", "unfork", "pin", "marketplace", "grants"];
+const CHANGE_KINDS = ["setting", "agent", "module", "routine", "rules", "handbook", "unfork", "pin", "marketplace", "grants"];
 const UPDATES = ["comment", "status", "move", "stop", "hand_over", "schedule", "settle", "merge", "recurring"];
 /**
  * A string a result may carry bare, by its key: only when it is provably the board's own. An id or a time by its strict shape, an
@@ -84,7 +84,7 @@ const VALID = new Map<string, Valid>(Object.entries({
   priority: oneOf("low", "medium", "high", "critical"),
   decision: oneOf("approve", "reject"),
   outcome: oneOf("applied", "failed"),
-  action: oneOf("push", "pr", "merge", "apply", "create_repo", "raise_cap", "deploy_app", "app_run", ...UPDATES),
+  action: oneOf("push", "pr", "merge", "apply", "create_repo", "deploy_app", "app_run", ...UPDATES),
   holder: agentish, agent: agentish, assignee: agentish, by: agentish, requestedBy: agentish, decidedBy: agentish, owner: agentish, key: agentish,
   module: (s, c) => Boolean(c.known?.has(s)), signin: (s, c) => Boolean(c.known?.has(s)), connection: (s, c) => Boolean(c.known?.has(s)),
   link, connect_link: link,
@@ -173,7 +173,7 @@ export function createMcp(d: McpDeps) {
 
     tool(
       "status",
-      "What needs the owner now: tasks waiting on them, pending approval cards, failing apps, connections that are down or still to set up, spend limits and the running generation. The place to start.",
+      "What needs the owner now: tasks waiting on them, pending approval cards, failing apps, connections that are down or still to set up and the running generation. The place to start.",
       {},
       { needs_you: row, approvals_pending: z.number(), approvals: rows, apps_failing: rows, setup_todo: rows, instance: row.nullable(), unavailable: z.array(z.string()) },
       "read",
@@ -194,7 +194,7 @@ export function createMcp(d: McpDeps) {
         // The setup page's own verdict (not done, not dismissed), so a connected module is never listed.
         const todo = [...down, ...(setup ?? []).map((f) => ({ module: f.module, problem: f.title, link: `${ctx.origin}/#/setup/${f.module}` }))];
         const text = `${needs?.counts?.needs_you ?? 0} waiting on you, ${pending.length} pending cards, ${failing.length} apps failing, ${todo.length} to set up or fix.`;
-        return out(text, { needs_you: needs ?? {}, approvals_pending: pending.length, approvals: (pending.slice(0, 10).map(cardRow)) as object[], apps_failing: failing, setup_todo: todo, instance: settings ? { ...settings.instance, spend: settings.spend } : null, unavailable });
+        return out(text, { needs_you: needs ?? {}, approvals_pending: pending.length, approvals: (pending.slice(0, 10).map(cardRow)) as object[], apps_failing: failing, setup_todo: todo, instance: settings?.instance ?? null, unavailable });
       },
     );
 
@@ -416,7 +416,7 @@ export function createMcp(d: McpDeps) {
 
     tool(
       "change_settings",
-      "The board's typed settings change: module on or off, an agent's model, effort, heartbeat or pause, spend caps, routines, rules, handbook, grants, pins, marketplaces (`modules` shows what each accepts). It returns at once with the record id, its tier and state (applied, in review, or waiting for a decision); follow with `approvals` or `status`.",
+      "The board's typed settings change: module on or off, an agent's model, effort, heartbeat or pause, routines, rules, handbook, grants, pins, marketplaces (`modules` shows what each accepts). It returns at once with the record id, its tier and state (applied, in review, or waiting for a decision); follow with `approvals` or `status`.",
       { changes: z.array(ChangeSchema).min(1).max(10) },
       { task: z.string(), record: z.string().optional(), tier: z.number().optional(), state: z.string().optional(), unchecked: z.array(z.string()).optional() },
       "destructive",
@@ -465,7 +465,7 @@ export function createMcp(d: McpDeps) {
 
     tool(
       "costs",
-      "Spend. `summary`: by agent, model and day over a range (default the last 7 days; ISO `from`/`to`), with the install's cap; `features`: what each feature cost; `top`: the top runs and tasks of one `agent` id or `model`.",
+      "Spend. `summary`: by agent, model and day over a range (default the last 7 days; ISO `from`/`to`), with the install's spend limits; `features`: what each feature cost; `top`: the top runs and tasks of one `agent` id or `model`.",
       { view: z.enum(["summary", "features", "top"]).default("summary"), from: z.string().max(40).optional(), to: z.string().max(40).optional(), bucket: z.enum(["hour", "day"]).optional(), agent: z.string().max(60).optional(), model: z.string().max(120).optional() },
       { costs: row },
       "read",

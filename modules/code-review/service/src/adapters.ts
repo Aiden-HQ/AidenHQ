@@ -52,7 +52,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
-    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }), judge: JSON.stringify(s.judge ?? {}),
+    previous: JSON.stringify({ findings: s.previous }), judge: JSON.stringify(s.judge ?? {}),
   };
 }
 
@@ -76,8 +76,6 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
 /** A skip's reason as the notice's fixed words name it (seams' `why` starts with its key). */
 export function reasonOf(why: string | undefined): string | undefined {
   const w = String(why ?? "");
-  if (w.startsWith("budget: the instance")) return "budget_instance";
-  if (w.startsWith("budget")) return "budget_repo";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
 }

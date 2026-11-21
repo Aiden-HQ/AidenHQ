@@ -85,9 +85,7 @@ describe("POST /api/settings/change", () => {
       { kind: "routine", routine: "nope", field: "status", value: "paused" },
       { kind: "pin", name: "glean", sha: "main" },
       { kind: "marketplace", op: "add", name: "acme", sha: "a".repeat(40) },
-      // A team has one cap (its day cap), a member none, and neither a heartbeat.
-      { kind: "caps", agent: "team-eng", value: { run_usd: 5 } },
-      { kind: "caps", agent: "kai", value: { day_usd: 5 } },
+      // A team member has no heartbeat of its own.
       { kind: "agent", agent: "kai", field: "heartbeat", value: 4 },
     ]) expect((await post({ changes: [ch] })).status, JSON.stringify(ch)).toBe(400);
     expect(created).toHaveLength(0);

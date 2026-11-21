@@ -152,7 +152,7 @@ export interface RunView {
   tokens: { input: number; cached: number; output: number } | null;
   plan: { text: string; state: string }[];
   timeline: TraceEvent[];
-  ledger: { rows: LedgerRow[]; usd: number | null; capUsd: number | null };
+  ledger: { rows: LedgerRow[]; usd: number | null };
 }
 export type LedgerRow = Pick<UsageRecord, "at" | "kind" | "model" | "input" | "cached" | "output" | "costUsd" | "ms" | "status" | "component"> & { runKey: string | null };
 
@@ -182,7 +182,7 @@ function findSha(revsJsonl: string, agentId: string, rev: string, field: "produc
   return sha;
 }
 
-export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string, capUsd: number | null): RunView {
+export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string): RunView {
   const withRev = rows.find((r) => r.rev);
   const line = withRev ? null : revAt(revsJsonl, job.agent, job.started_at);
   const priced = rows.filter((r) => r.costUsd != null);
@@ -210,7 +210,6 @@ export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string,
     ledger: {
       rows: rows.map((r) => ({ at: r.at, kind: r.kind ?? null, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.costUsd ?? null, ms: r.ms ?? null, status: r.status ?? null, component: r.component, runKey: r.runKey ? r.runKey.slice(0, 8) : null })),
       usd: priced.length ? priced.reduce((s, r) => s + r.costUsd!, 0) : null,
-      capUsd,
     },
   };
 }
@@ -218,7 +217,7 @@ export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string,
 export interface RunsDeps {
   work: Pick<Work, "job">;
   store: { usageOfRun(runId: string): UsageRecord[] };
-  /** config/grants/grants.json: the caps; revs.jsonl sits beside it. */
+  /** config/grants/grants.json: revs.jsonl sits beside it. */
   grantsFile?: string;
 }
 
@@ -234,11 +233,7 @@ export function makeRuns(d: RunsDeps) {
   return async (id: string): Promise<RunView | null> => {
     const job = await d.work.job(id);
     if (!job) return null;
-    let capUsd: number | null = null;
-    try {
-      capUsd = JSON.parse(read(d.grantsFile)).agents?.[job.agent]?.caps?.run_usd ?? null;
-    } catch {}
     const revs = read(d.grantsFile ? join(d.grantsFile, "..", "revs.jsonl") : undefined);
-    return buildRun(job, d.store.usageOfRun(job.id), revs, capUsd);
+    return buildRun(job, d.store.usageOfRun(job.id), revs);
   };
 }

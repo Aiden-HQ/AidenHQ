@@ -2,13 +2,12 @@
 // Paperclip metadata, which agents can edit. Who is calling comes from the kernel's caller assertion (aidenhq-sdk/caller.ts).
 import { readFileSync, statSync, type Stats } from "node:fs";
 
-/** One agent's grants-table entry. `models`, `caps`, `graded` and `rev` are for the kernel's gateway and the grader. */
+/** One agent's grants-table entry. `models`, `graded` and `rev` are for the kernel's gateway and the grader. */
 export interface Grant {
   key: string;
   roles?: string[];
   tools?: Record<string, string[]>;
   models?: string[];
-  caps?: { run_usd: number; task_usd: number; day_usd: number };
   graded?: boolean;
   rev?: string;
 }

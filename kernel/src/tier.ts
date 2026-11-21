@@ -33,7 +33,7 @@ export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value
  * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the runner's kinds). The merit tier
  * is the highest of the floors, raises and the owner's veto. Under full autonomy (and no routine cap) the owner approves
  * only their own authority: a raise marked `ownerOnly` (loosening autonomy, raising spend, new authority from a module that
- * isn't official, an owner path: a supply-chain source exception), a kind's own floor (kernel.raise_cap) and their veto; any other Tier 2 raise is Tier 1 for the panel
+ * isn't official, an owner path: a supply-chain source exception), a kind's own floor and their veto; any other Tier 2 raise is Tier 1 for the panel
  * (owner, 2026-11-19: "full autonomy mode should not bug me for approval almost ever"). A Tier 2 merit is reviewed first and the owner's
  * (`reviewFirst`, "owner" unless the requester says how: "final" for new module authority, null for the owner's tap alone).
  * Then the caps: the instance's autonomy off, or a routine's tier0 or off (`routine`; an unreadable trace is off). off lifts

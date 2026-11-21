@@ -54,7 +54,7 @@ test("a task's read carries an apply's card diff (its grader's APPLY_CHANGE) and
   const card = (details) => ({ sentence: "s", changes: "c", reads: "r", cost: "none", details });
   const file = (kind, details) => records.file({ kind, module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, panel: false, card: card(details), requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "job" }, task: "t1", state: "review" });
   const apply = file("kernel.apply", "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n");
-  const cap = file("kernel.raise_cap", "cap: $10.00 -> $20.00");
+  const cap = file("acme.post", "note: hello");
   const rows = work.task("t1").records;
   const byId = (id) => rows.find((r) => r.id === id);
   assert.equal(byId(apply.id).details, "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n", "the apply's committed diff is sent to its grader");

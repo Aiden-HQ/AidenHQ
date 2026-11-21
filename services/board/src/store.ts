@@ -26,7 +26,7 @@ export interface UsageRecord {
   costUsd?: number | null;
   /** The Paperclip agent that made the call (any agent's call through the model gateway); none for system components. */
   agentId?: string | null;
-  /** The run's key (runKey in kernel/src/gateway/lib.ts: the credential's sha256; a computer's box session), for per-run caps and the run page. */
+  /** The run's key (runKey in kernel/src/gateway/lib.ts: the credential's sha256; a computer's box session) and the run page. */
   runKey?: string | null;
   /** The run: a kernel job's id, or Paperclip's run id when the credential named one (a run JWT, before the switch). */
   runId?: string | null;

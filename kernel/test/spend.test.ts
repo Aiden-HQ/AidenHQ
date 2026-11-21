@@ -1,5 +1,5 @@
 // Spend (spec §5.12) end to end against a fake upstream: reservations in one transaction (A11), settlement and fail
-// closed (A12), and the ledger's move from the old data/gateway/usage.db into kernel.db, with the caps it carries.
+// closed (A12), and the ledger's move from the old data/gateway/usage.db into kernel.db.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -20,10 +20,10 @@ const closedPort = async () => { const x = await serve(() => {}); await new Prom
 const LIST = await modelsList({ flat: { in: 0, cached_in: 0, out: 1, max_output: 10_000 }, priced: { in: 1, cached_in: 0.1, out: 2, max_output: 10_000 }, astra: { in: 8, cached_in: 0.4, out: 40, max_output: 128_000 } });
 const modelsUrl = LIST.url;
 
-/** A gateway on `dir`'s kernel.db with one job agent `ag` (day cap `dayUsd`), and an upstream `answer(body, res)`. Every secret is "js". */
+/** A gateway on `dir`'s kernel.db with one job agent `ag` (the install's day limit `dayUsd`), and an upstream `answer(body, res)`. Every secret is "js". */
 async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "spend-")), legacy, agents } = {}) {
-  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: agents ?? { ag: { key: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: dayUsd } } } }));
-  writeFileSync(join(dir, "gateway.json"), "{}");
+  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: agents ?? { ag: { key: "eng" } } }));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ install_day_usd: dayUsd }));
   const seen = [];
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { const body = JSON.parse(b); seen.push(body); answer(body, res, seen.length); });
@@ -41,8 +41,8 @@ async function rig(t, { dayUsd = 30, answer, dir = mkdtempSync(join(tmpdir(), "s
 }
 const usage = (cost, extra = {}) => (body, res, n) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: `gen-${n}`, model: body.model, usage: { prompt_tokens: 1000, completion_tokens: 500, cost, ...extra } }));
 
-test("caps count real cost: a $2 cap with $0.51 spent runs the next call, output bounded to the room; at the cap, refused", async (t) => {
-  // Astra at $8/$40 a million: the old worst-case reservation (x2) refused this call with $1.49 of a $2 run cap left.
+test("limits count real cost: a $2 limit with $0.51 spent runs the next call, output bounded to the room; at the limit, refused", async (t) => {
+  // Astra at $8/$40 a million: the old worst-case reservation (x2) refused this call with $1.49 of $2 left.
   const billed = [0.51, 1.6];
   const r = await rig(t, { dayUsd: 2, answer: (body, res, n) => usage(billed[n - 1] ?? 0.01)(body, res, n) });
   assert.equal((await r.call({ model: "astra", messages: [] })).status, 200);
@@ -53,15 +53,15 @@ test("caps count real cost: a $2 cap with $0.51 spent runs the next call, output
   assert.deepEqual(r.rows().map((x) => x.cost_usd), [0.51, 1.6]);
   const refused = await r.call({ model: "astra", messages: [] });
   assert.equal(refused.status, 402);
-  assert.match(refused.json.error.message, /^spend cap reached: agent-day \$2\.11 of \$2\.00;/);
+  assert.match(refused.json.error.message, /^spend cap reached: the install's daily limit, \$2\.11 of \$2\.00 /);
   assert.equal(r.seen.length, 2);
-  // Near a cap a call is still sent with at least 1,024 output tokens, never refused for its size.
+  // Near a limit a call is still sent with at least 1,024 output tokens, never refused for its size.
   const s2 = await rig(t, { dayUsd: 0.0001, answer: usage(0.00005) });
   assert.equal((await s2.call({ model: "astra", messages: [] })).status, 200);
   assert.equal(s2.seen[0].max_tokens, 1024);
 });
 
-test("caps keep their values: at the day cap refused, a reservation past it refused, bounded output, true cost settled", async (t) => {
+test("the day limit keeps its value: at it refused, a reservation past it refused, bounded output, true cost settled", async (t) => {
   const r = await rig(t, { dayUsd: 0.05, answer: usage(0.03) });
   // The first call asks for 20,000 output tokens: cut to the model's 10,000. It settles at the $0.03 billed.
   assert.equal((await r.call({ model: "flat", max_tokens: 20_000, messages: [] })).status, 200);
@@ -71,27 +71,14 @@ test("caps keep their values: at the day cap refused, a reservation past it refu
   assert.equal(r.seen[1].max_tokens, 10_000);
   const refused = await r.call({ model: "flat", messages: [] });
   assert.equal(refused.status, 402);
-  assert.match(refused.json.error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
+  assert.match(refused.json.error.message, /^spend cap reached: the install's daily limit, \$0\.06 of \$0\.05 /);
   assert.equal(r.seen.length, 2);
-  // Admission reads the same caps: no new job for this agent today, on any task.
+  // Admission reads the same limits: no new job today, on any task.
   assert.deepEqual(r.gw.exhausted("ag", "WOR-9").map((o) => o.scope), ["day"]);
-  // A cap with room for some output, not all: the call is cut to what is left, never past it.
+  // A limit with room for some output, not all: the call is cut to what is left, never past it.
   const s = await rig(t, { dayUsd: 0.005, answer: usage(0.001) });
   assert.equal((await s.call({ model: "flat", max_tokens: 10_000, messages: [] })).status, 200);
   assert.equal(s.seen[0].max_tokens, 5000);
-});
-
-test("a team's day cap counts every member's spend: one member may use all of it, and then no member starts", async (t) => {
-  const r = await rig(t, { answer: usage(0.06), agents: {
-    tr: { key: "eng", team: { name: "engineering", members: ["kai", "mina"] }, caps: { day_usd: 0.05 } },
-    ag: { key: "kai", member_of: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: 1000 } },
-    ag2: { key: "mina", member_of: "eng", caps: { run_usd: 30, task_usd: 30, day_usd: 1000 } },
-  } });
-  assert.equal((await r.call({ model: "flat", messages: [] })).status, 200); // kai spends $0.06 of the team's $0.05
-  assert.match((await r.call({ model: "flat", messages: [] })).json.error.message, /^spend cap reached: agent-day \$0\.06 of \$0\.05;/);
-  assert.deepEqual(r.gw.exhausted("ag2", "WOR-9").map((o) => o.scope), ["day"]); // mina never spent, but the team's day is used up
-  r.gw.setCap("day", "tr", "2026-11-16", 1); // an approved raise lands on the team record: every member has room again
-  assert.deepEqual(r.gw.exhausted("ag2", "WOR-9"), []);
 });
 
 test("a definite upstream refusal before any output is released at $0; a cut stream is not", async (t) => {

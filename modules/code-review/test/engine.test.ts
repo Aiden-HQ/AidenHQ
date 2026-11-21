@@ -57,8 +57,8 @@ function world(settings = {}) {
   return { db, engine, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
 }
 
-const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
-const CLAUDE = { engine: "claude-code", model: "anthropic/claude-sonnet-5.5", effort: "high", run_usd: 2 };
+const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
+const CLAUDE = { engine: "claude-code", model: "anthropic/claude-sonnet-5.5", effort: "high" };
 const label = (s) => `${s.combo.engine}/${s.combo.effort}`;
 
 test("a new PR runs each on_open combo, each posted with its combo; a push debounces into one incremental batch whose first run rechecks; cost, tokens and findings are kept", async () => {
@@ -68,7 +68,7 @@ test("a new PR runs each on_open combo, each posted with its combo; a push debou
   w.pr(2, sha("2"));
   await w.tick();
   assert.deepEqual(w.started.map(label), ["codex/medium", "claude-code/high"]);
-  assert.deepEqual(w.started.map((s) => [s.budget_usd, s.incremental_from]), [[1, null], [2, null]]);
+  assert.deepEqual(w.started.map((s) => s.incremental_from), [null, null]);
   w.finish(0, {}, 0.04);
   w.finish(1, { findings: [{ id: "f2", severity: "nit", path: "b.ts", line: 1, title: "n", why: "", evidence: "", fix_brief: "" }], cost_usd: 9, tokens: { input: 1000, cached: 200, output: 50 } }, 0.31);
   w.later(5000);
@@ -164,37 +164,15 @@ test("commands: only a writer's count, our own posts and quoted lines never do, 
   assert.equal(parseCommand("```\n@aiden review\n```"), undefined);
 });
 
-test("the day budget counts real spend only: a running run at its spend so far; a queued run starts while spent is under the cap; drafts and forks skip with a reason", async () => {
-  const w = world({ repos: [{ repo: REPO, day_usd: 2.5, on_open: [CODEX, CLAUDE] }] });
+test("drafts and forks skip with a reason, acknowledged once", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX, CLAUDE] }] });
   await w.tick();
   w.pr(1, sha("1"));
   w.pr(4, sha("4"), { draft: true });
   w.pr(5, sha("5"), { fork: true });
   await w.tick();
-  // Nothing is reserved: both combos ($1 + $2 caps, over the $2.5 cap together) start, nothing is spent yet.
   assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.status === "running").map((r) => r.engine).sort(), ["claude-code", "codex"]);
-  // No figure read yet: a running run counts at its whole run_usd (fail closed), never 0.
-  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3);
-  // The kernel's live figure for a running check is what counts: $3 spent so far (each within its run_usd) passes the cap.
-  w.results.set("c-1", { state: "running", billed_usd: 1 });
-  w.results.set("c-2", { state: "running", billed_usd: 2 });
-  await w.tick();
-  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3);
-  // A readable figure replaces the cap: $0.5 and $0.25 so far; then the kernel can't be reached: both back at their run_usd.
-  w.results.set("c-1", { state: "running", billed_usd: 0.5 });
-  w.results.set("c-2", { state: "running", billed_usd: 0.25 });
-  await w.tick();
-  assert.equal(w.engine.repos().repos[0].day_spent_usd, 0.75);
-  w.results.set("c-1", { state: "running" });
-  w.results.set("c-2", { state: "running", billed_usd: 2 });
-  await w.tick();
-  assert.equal(w.engine.repos().repos[0].day_spent_usd, 3, "c-1 has no figure: its whole $1");
-  w.later(1000);
-  w.pr(2, sha("2"));
-  await w.tick();
-  assert.ok(w.engine.runs({ repo: REPO }).some((r) => r.number === 2 && r.status === "skipped" && r.why.startsWith("budget")));
-  assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]).sort(), [[2, "budget"], [4, "draft"], [5, "fork"]]);
-  assert.equal("day_reserved_usd" in w.engine.repos(), false);
+  assert.deepEqual(w.acks.filter((a) => a.state === "skipped").map((a) => [a.number, a.why.split(":")[0]]).sort(), [[4, "draft"], [5, "fork"]]);
 });
 
 test("a run is charged what the kernel billed (never what the box says), and a result for another head is refused", async () => {
@@ -209,14 +187,14 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   assert.equal(runs.length, 3);
   await w.tick();
   w.finish(0, { cost_usd: 0.001 }, 0.7);     // billed $0.70: charged that, whatever the box claims
-  w.finish(1, { cost_usd: 0 });              // no billing known: the whole $2 run_usd
-  w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged at most its $1
+  w.finish(1, { cost_usd: 0 });              // no billing known: charged nothing
+  w.finish(2, { head: sha("9"), repo: "acme/other", cost_usd: 0 }, 99); // a result for another head: refused, charged what was billed
   await w.tick();
   const by = Object.fromEntries(w.engine.runs({ repo: REPO }).filter((r) => r.status !== "skipped").map((r) => [`${r.engine}/${r.effort}`, r]));
-  assert.deepEqual([by["codex/medium"].cost_usd, by["claude-code/high"].cost_usd, by["codex/low"].cost_usd], [0.7, 2, 1]);
+  assert.deepEqual([by["codex/medium"].cost_usd, by["claude-code/high"].cost_usd, by["codex/low"].cost_usd], [0.7, 0, 99]);
   assert.equal(by["codex/low"].status, "failed");
-  // Today spend is the billed costs (0.7 + 2 + 1).
-  assert.equal(w.engine.repos().day_spent_usd, 3.7);
+  // Today spend is the billed costs (0.7 + 0 + 99).
+  assert.equal(w.engine.repos().day_spent_usd, 99.7);
   // GET /reviews/:id carries the run's combo, cost, tokens, duration and its findings in full.
   const one = w.engine.run(by["codex/medium"].id)!;
   assert.ok(one.run.model && one.run.cost_usd === 0.7 && "duration_ms" in one.run && "tokens_in" in one.run && Array.isArray(one.review!.findings) && Array.isArray(one.findings));
@@ -413,11 +391,11 @@ test("a mandatory review that covered only part of the PR doesn't cover its head
   assert.match(v.reasons[0].unblock, /@aiden review full/);
 });
 
-test("a mandatory run is never skipped for budget; the owner dismisses an open finding and the merge may go", async () => {
-  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], day_usd: 0.01 }], day_usd: 0.01 });
+test("the owner dismisses an open finding and the merge may go", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
   w.finish(0, {}, 1); await w.tick();
-  w.pr(3, sha("3")); await w.tick(); // $1 spent of $0.01: its mandatory review starts anyway
+  w.pr(3, sha("3")); await w.tick();
   assert.deepEqual(w.started.map((s) => s.number), [2, 3]);
   assert.throws(() => w.engine.dismiss({ repo: REPO, number: 2, id: "f1" }), /say why/);
   assert.deepEqual(w.engine.dismiss({ repo: REPO, number: 2, id: "f1", reason: "intended: the lock is held by the caller", by: "owner" }), { dismissed: "f1" });
@@ -435,7 +413,7 @@ test("a dispute on a gating finding's thread: the PR's author or a writer starts
   await w.tick();
   const judges = w.started.filter((s) => s.judge);
   assert.equal(judges.length, 1, "one judge: mallory has no write access, alice's reply waits behind bob's, a thread not ours never counts");
-  assert.deepEqual([judges[0].combo.model, judges[0].judge.reply, judges[0].judge.finding.id, judges[0].budget_usd], ["~openai/gpt-luna-latest", { author: "bob", body: "the caller holds the lock (see pay.ts:10)" }, "f1", 1]);
+  assert.deepEqual([judges[0].combo.model, judges[0].judge.reply, judges[0].judge.finding.id], ["~openai/gpt-luna-latest", { author: "bob", body: "the caller holds the lock (see pay.ts:10)" }, "f1"]);
   w.results.set(`c-${w.started.length}`, { state: "done", review: { version: 1, verdict: "dismissed", reason: "The lock is held by every caller." }, billed_usd: 0.2 });
   w.threads.set(2, [{ ours: true, finding: "f1", comment: 41, replies: [reply(51, "bob", "x"), reply(54, "owner", "<!-- aidenhq-ruling -->…", true)] }]);
   await w.tick();

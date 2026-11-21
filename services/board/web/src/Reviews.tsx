@@ -3,7 +3,7 @@ import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
 import { MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type Severity } from "../../src/reviews";
-import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Meter, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
 import "./reviews.css";
 
@@ -25,7 +25,7 @@ const routeOf = (): Route => {
 
 const SEVERITIES: [Severity, string][] = [["important", "Important"], ["nit", "Nit"], ["pre_existing", "Pre-existing"]];
 /** A skip's reason ("draft: …", the service's words after the colon) in the page's words. */
-const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", budget: "Over the repo daily cap", "day cap": "Over the daily cap", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
+const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
 const skipWords = (why: string | null) => {
   if (!why) return "Skipped";
   const key = why.split(":")[0]!.trim().toLowerCase();
@@ -76,7 +76,7 @@ const CUSTOM = "__custom";
 /** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
 function ComboPicker({ label, value, onChange, engines, none, gates }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
-  const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium", run_usd: engines.codex.run_usd });
+  const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium" });
   return (
     <div className="rv-combos" role="group" aria-label={label}>
       {!value.length && <span className="rv-muted rv-combo-none">{none ?? "None"}</span>}
@@ -85,7 +85,7 @@ function ComboPicker({ label, value, onChange, engines, none, gates }: { label: 
         const custom = !e.models.includes(c.model);
         return (
           <div key={i} className="rv-combo">
-            <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", run_usd: engines[k].run_usd, ...(c.mandatory ? { mandatory: true } : {}) })} />
+            <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", ...(c.mandatory ? { mandatory: true } : {}) })} />
             <span className="rv-combo-model">
               <Select aria-label={`${label} ${i + 1} model`} value={custom ? CUSTOM : c.model} options={[...e.models.map((m) => [m, m.replace(/^~/, "")] as const), [CUSTOM, "Other model…"] as const]} onChange={(m) => set(i, { ...c, model: m === CUSTOM ? "" : m })} />
               {custom && <Input aria-label={`${label} ${i + 1} model id`} aria-invalid={!MODEL_ID.test(c.model)} placeholder="vendor/model, like z-ai/glm-5.3" value={c.model} autoFocus={!c.model} onChange={(ev) => set(i, { ...c, model: ev.target.value.trim() })} />}
@@ -132,7 +132,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   /** The change saved here, else the newest one to settings.code_review (the board's settings changes): under way, live, or why not. */
   const [filed, setFiled] = useState<FiledChange | null>(null);
   const savedId = useRef("");
-  const [dialog, setDialog] = useState<null | { kind: "oneoff"; url?: string } | { kind: "repo"; repo?: RepoConfig } | { kind: "cap" }>(null);
+  const [dialog, setDialog] = useState<null | { kind: "oneoff"; url?: string } | { kind: "repo"; repo?: RepoConfig }>(null);
 
   useEffect(() => {
     const on = () => location.hash.startsWith("#/reviews") && setRoute(routeOf());
@@ -203,12 +203,9 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
       actions={
         ready && config ? (
           <>
-            <button type="button" className="rv-spend" onClick={() => setDialog({ kind: "cap" })} title="Today review spend across repos, against the cap. Change the cap.">
-              <span>
-                {usd(spent)} <span className="rv-spend-of">of {usd(config.day_usd, 0)} today</span>
-              </span>
-              <Meter value={spent / config.day_usd} tone={spent >= config.day_usd ? "failed" : spent >= config.day_usd * 0.8 ? "needs" : undefined} label="Spend today against the cap" />
-            </button>
+            <span className="rv-spend" title="Today's review spend across repos (UTC)">
+              {usd(spent)} <span className="rv-spend-of">today</span>
+            </span>
             <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>
           </>
         ) : undefined
@@ -251,7 +248,6 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
       {dialog?.kind === "oneoff" && engines && <OneOffDialog config={config} engines={engines} url={dialog.url} onClose={() => setDialog(null)} />}
       {dialog?.kind === "repo" && config && engines && <RepoDialog config={config} engines={engines} edit={dialog.repo} onClose={() => setDialog(null)} onSave={save} />}
-      {dialog?.kind === "cap" && config && <CapDialog config={config} spent={spent} onClose={() => setDialog(null)} onSave={save} />}
     </Page>
   );
 }
@@ -297,7 +293,7 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
           <span className="rv-step-mark">2</span>
           <div className="rv-step-body">
             <b>Watch a repo</b>
-            <span>A review when a PR opens and a lighter one on each push, by the engines and models you pick. $100 a day cap to start.</span>
+            <span>A review when a PR opens and a lighter one on each push, by the engines and models you pick.</span>
           </div>
           <Button variant={connected ? "primary" : "default"} disabled={!connected} onClick={onWatch}>Watch a repo</Button>
         </li>
@@ -682,7 +678,6 @@ function ReposTab({ config, repos, engines, onEdit, onWatch }: { config: CodeRev
         <TileGrid>
           {config.repos.map((r) => {
             const live = row(r.repo);
-            const cap = r.day_usd ?? REPO_DEFAULTS.day_usd;
             const moment = (k: "on_open" | "on_push", name: string) => (r[k].length ? r[k].map((c, i) => <Tag key={`${k}${i}`} title={`${name}: ${c.engine} · ${c.model} · ${c.effort}`}>{name}: {comboLabel(c, engines ?? undefined)}</Tag>) : <Tag key={k} title={name}>{name}: off</Tag>);
             const spent = live?.day_spent_usd ?? 0;
             const id = live?.identity;
@@ -704,8 +699,7 @@ function ReposTab({ config, repos, engines, onEdit, onWatch }: { config: CodeRev
                 }
                 foot={
                   <span className="rv-tile-spend">
-                    <Meter value={spent / cap} tone={spent >= cap ? "failed" : spent >= cap * 0.8 ? "needs" : undefined} label={`${r.repo} spend today`} />
-                    <span>{usd(spent)} of {usd(cap, 0)} today</span>
+                    <span>{usd(spent)} today</span>
                   </span>
                 }
                 action={<Button size="sm" onClick={() => onEdit(r)}>Edit</Button>}
@@ -739,7 +733,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
   const validRepo = /^[\w.-]+\/[\w.-]+$/.test(repo) && (edit || !watched.has(repo.toLowerCase()));
   const entry = (): RepoConfig => {
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
-    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, day_usd: f.day_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
+    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
   };
   const submit = async (value: CodeReview, what: string) => {
     setBusy(true);
@@ -762,7 +756,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
         <>
           {edit && <Button variant="danger" className="rv-left" disabled={busy} onClick={() => void submit({ ...config, repos: others }, `stop watching ${edit.repo}`)}>Stop watching</Button>}
           <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!validRepo || busy || !(f.day_usd > 0) || !combosOk([...f.on_open, ...f.on_push])} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`)}>
+          <Button variant="primary" disabled={!validRepo || busy || !combosOk([...f.on_open, ...f.on_push])} onClick={() => void submit({ ...config, repos: edit ? config.repos.map((r) => (r.repo === edit.repo ? entry() : r)) : [...config.repos, entry()] }, edit ? `${repo} updated` : `watch ${repo}`)}>
             {busy ? "Saving…" : edit ? "Save" : "Watch repo"}
           </Button>
         </>
@@ -801,15 +795,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
       )}
       <Field label="When a PR opens" help="Each row is one review, posted on its own">{() => <ComboPicker gates label="When a PR opens" value={f.on_open} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
       <Field label="On each push" help="Only the new changes">{() => <ComboPicker gates label="On each push" value={f.on_push} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
-      <div className="rv-grid3">
-        <Field label="Daily cap" help="Reviews past it are skipped, with a comment saying why">
-          {(id, d) => (
-            <span className="rv-money">
-              <span aria-hidden>$</span>
-              <Input id={id} aria-describedby={d} type="number" min={1} step={5} value={f.day_usd} onChange={(e) => setF({ ...f, day_usd: Number(e.target.value) })} />
-            </span>
-          )}
-        </Field>
+      <div className="rv-grid2">
         <Field label="Draft PRs">{() => <span className="rv-switch"><Switch on={f.drafts} label="Review draft PRs" onChange={(on) => setF({ ...f, drafts: on })} />{f.drafts ? "Reviewed" : "Skipped"}</span>}</Field>
         <Field label="PRs from forks" help={f.forks === "manual" ? "Someone with write access comments @aiden review" : "Reviewed like any PR"}>
           {(id) => <Select id={id} value={f.forks} options={[["manual", "When asked"], ["auto", "Automatically"]]} onChange={(v) => setF({ ...f, forks: v })} />}
@@ -826,35 +812,6 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
           </Field>
         </div>
       </details>
-    </Dialog>
-  );
-}
-
-function CapDialog({ config, spent, onClose, onSave }: { config: CodeReview; spent: number; onClose: () => void; onSave: Save }) {
-  const [cap, setCap] = useState(config.day_usd);
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title="Daily cap across repos"
-      actions={
-        <>
-          <Button variant="quiet" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={busy || !(cap > 0) || cap === config.day_usd} onClick={() => (setBusy(true), void onSave({ ...config, day_usd: cap }, `daily cap $${cap}`).catch((e: Error) => (setErr(e.message), setBusy(false))))}>{busy ? "Saving…" : "Save cap"}</Button>
-        </>
-      }
-    >
-      <p>{usd(spent)} spent today. Each repo keeps its own cap too; a review is skipped when either is reached.</p>
-      <Field label="Cap" error={err || null}>
-        {(id) => (
-          <span className="rv-money">
-            <span aria-hidden>$</span>
-            <Input id={id} type="number" min={1} step={10} value={cap} onChange={(e) => setCap(Number(e.target.value))} />
-          </span>
-        )}
-      </Field>
     </Dialog>
   );
 }

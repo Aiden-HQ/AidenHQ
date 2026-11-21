@@ -22,8 +22,6 @@ export interface Change {
   watch?: Dict[];
   /** Repos to stop watching. */
   unwatch?: string[];
-  /** The daily cap across repos, USD. */
-  day_usd?: number;
 }
 
 /**
@@ -31,7 +29,7 @@ export interface Change {
  * the owner-readable reason when the result wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: string[] } {
-  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], day_usd: raw.day_usd ?? 200 };
+  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])] };
   let repos = value.repos as Dict[];
   const summary: string[] = [];
   const key = (r: unknown) => String(r).toLowerCase();
@@ -42,7 +40,7 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
   }
   for (const w of ch.watch ?? []) {
     if (typeof w?.repo !== "string" || !REPO.test(w.repo)) throw new Error("each watched repo is { repo: owner/name, … }");
-    // Combos are stored whole as they run (run_usd filled in), so the kernel sees every run's cost (module.yaml settings.code_review.owner).
+    // Combos are stored whole as they run (module.yaml settings.code_review.owner reads them).
     for (const k of MOMENTS) if (w[k] !== undefined) {
       const c = combos(w[k], `${w.repo} ${k}`);
       if ("error" in c) throw new Error(c.error);
@@ -59,19 +57,15 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
     }
   }
   value.repos = repos;
-  if (ch.day_usd !== undefined) {
-    value.day_usd = ch.day_usd;
-    summary.push(`daily cap $${ch.day_usd}`);
-  }
-  if (!summary.length) throw new Error("say what to change: watch, unwatch or day_usd");
+  if (!summary.length) throw new Error("say what to change: watch or unwatch");
   const checked = readConfig(JSON.stringify(value));
   if (checked.errors.length) throw new Error(`that setting wouldn't work: ${checked.errors.join("; ")}`);
   return { value, summary };
 }
 
 /**
- * The combos an agent may start a one-off with: an engine's offered model at its default run cap, or a combo a watched repo
- * already runs. Any other model or a higher cap is the owner's (as in settings: module.yaml settings.code_review.owner), set on
+ * The combos an agent may start a one-off with: an engine's offered model, or a combo a watched repo
+ * already runs. Any other model is the owner's (as in settings: module.yaml settings.code_review.owner), set on
  * the board, whose one-off keeps full choice.
  */
 export function agentCombos(raw: unknown, repos: () => unknown) {
@@ -79,18 +73,18 @@ export function agentCombos(raw: unknown, repos: () => unknown) {
   const list = combos(raw, "combos");
   if ("error" in list) throw new Error(list.error);
   const watched = ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];
-  const same = (a: Combo, b: Combo) => a.engine === b.engine && a.model === b.model && a.effort === b.effort && a.run_usd === b.run_usd;
+  const same = (a: Combo, b: Combo) => a.engine === b.engine && a.model === b.model && a.effort === b.effort;
   for (const c of list) {
     const e = ENGINES[c.engine];
-    if (((e.models as readonly string[]).includes(c.model) && c.run_usd === e.run_usd) || watched.some((w) => same(w, c))) continue;
-    throw new Error(`${c.engine} with ${c.model} at $${c.run_usd} a run is the owner's to choose: they start it from the board's Reviews page (Review again), or ask for one of ${c.engine}'s offered models (${e.models.join(", ")}) at the default $${e.run_usd}`);
+    if ((e.models as readonly string[]).includes(c.model) || watched.some((w) => same(w, c))) continue;
+    throw new Error(`${c.engine} with ${c.model} is the owner's to choose: they start it from the board's Reviews page (Review again), or ask for one of ${c.engine}'s offered models (${e.models.join(", ")})`);
   }
 }
 
 const COMBOS = {
   type: "array", maxItems: 4,
-  description: `Combos, each its own review run and post: { engine, model, effort, run_usd?, mandatory? (its review gates the repo's merges; keep it as it is) }. Engines: ${Object.entries(ENGINES).map(([e, v]) => `${e} (efforts ${v.efforts.join("|")}; models such as ${v.models.join(", ")}; run_usd default ${v.run_usd})`).join("; ")}. Any model id OpenRouter lists may be typed. [] runs none.`,
-  items: { type: "object", properties: { engine: { type: "string", enum: Object.keys(ENGINES) }, model: { type: "string" }, effort: { type: "string" }, run_usd: { type: "number" }, mandatory: { type: "boolean" } }, required: ["engine", "model", "effort"], additionalProperties: false },
+  description: `Combos, each its own review run and post: { engine, model, effort, mandatory? (its review gates the repo's merges; keep it as it is) }. Engines: ${Object.entries(ENGINES).map(([e, v]) => `${e} (efforts ${v.efforts.join("|")}; models such as ${v.models.join(", ")})`).join("; ")}. Any model id OpenRouter lists may be typed. [] runs none.`,
+  items: { type: "object", properties: { engine: { type: "string", enum: Object.keys(ENGINES) }, model: { type: "string" }, effort: { type: "string" }, mandatory: { type: "boolean" } }, required: ["engine", "model", "effort"], additionalProperties: false },
 };
 const REPO_ENTRY = {
   type: "object",
@@ -100,7 +94,6 @@ const REPO_ENTRY = {
     on_push: { ...COMBOS, description: `on each push, only the new changes (default codex, ~deepseek/deepseek-flash-latest, low). ${COMBOS.description}` },
     drafts: { type: "boolean" },
     forks: { type: "string", enum: ["manual", "auto"] },
-    day_usd: { type: "number" },
     ignore: { type: "array", items: { type: "string" } },
     max_nits: { type: "integer" },
   },
@@ -122,7 +115,7 @@ export function configTools(d: {
     {
       name: "code_review_run",
       roles: ["reviewer-manager"],
-      description: "Review one pull request now, posted to it like a watched repo's review, one run and post per combo: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }. Each combo is an engine's offered model at its default run_usd, or a combo a watched repo already runs; any other model or cap is the owner's to start from the board. Any PR the owner's GitHub sign-in can read; it posts as the owner, signed by AidenHQ.",
+      description: "Review one pull request now, posted to it like a watched repo's review, one run and post per combo: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }. Each combo is an engine's offered model or a combo a watched repo already runs; any other model is the owner's to start from the board. Any PR the owner's GitHub sign-in can read; it posts as the owner, signed by AidenHQ.",
       inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" } }, required: ["pr_url"], additionalProperties: false },
       run: async (a) => { agentCombos(a.combos, d.repos); return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) }); },
     },
@@ -148,13 +141,12 @@ export function configTools(d: {
       name: "code_review_configure",
       roles: ["reviewer-manager"],
       description:
-        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked, $50 a month; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching; day_usd: the cap across repos. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Raising spend, reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine, model or run cap; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
+        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Raising spend, reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine or model; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
       inputSchema: {
         type: "object",
         properties: {
           watch: { type: "array", items: REPO_ENTRY },
           unwatch: { type: "array", items: { type: "string" } },
-          day_usd: { type: "number" },
         },
         additionalProperties: false,
       },

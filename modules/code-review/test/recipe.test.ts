@@ -22,7 +22,7 @@ function box({ head, base, from }) {
 }
 // codex at high effort: two finders and a verifier; at low effort one finder, no verifier (engines.ts plan).
 const combo = (p = {}) => JSON.stringify({ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "high", max_nits: 1, ignore: ["docs/**"], ...p });
-const spec = (p = {}) => ({ repo: "acme/app", head: A, base: B, incremental_from: B, pr: "7", focus: "", budget_usd: "2", combo: combo(), ...p });
+const spec = (p = {}) => ({ repo: "acme/app", head: A, base: B, incremental_from: B, pr: "7", focus: "", combo: combo(), ...p });
 const F = (o) => ({ severity: "important", path: "src/pay.js", line: 2, title: "Refund adds instead of subtracting", why: "w", evidence: "e", fix_brief: "f", ...o });
 
 test("a review: base guidance only, excluded files, finders fanned out, the verifier's confirmations kept at real places", async () => {
@@ -69,7 +69,7 @@ test("a review: incremental from the last head, a finder that fails is said, a v
   let n = 0;
   const run = async (engine, o) => {
     if (o.prompt.startsWith("Verify")) return { read: false, message: "", cause: "timed out" };
-    if (n++ === 0) return { read: false, message: "", cause: "the run's budget ran out" };
+    if (n++ === 0) return { read: false, message: "", cause: "the install's spend limit was reached" };
     return { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [F({ path: "a.js", line: 3 }), F({ severity: "nit", path: "a.js", line: 1, title: "n" })] }) };
   };
   const r = await review({ spec: spec({ incremental_from: C, combo: combo({ max_nits: 0 }) }), ws, out, run });
@@ -77,7 +77,7 @@ test("a review: incremental from the last head, a finder that fails is said, a v
   assert.deepEqual(r.coverage.reviewed, ["a.js", "b.js"]);
   assert.deepEqual(r.findings, []);
   assert.deepEqual(r.withheld, { important: 1, nit: 1, pre_existing: 0 });
-  assert.match(r.coverage.incomplete, /1 of 2 finders didn't finish \(the run's budget ran out\); the verifier didn't finish/);
+  assert.match(r.coverage.incomplete, /1 of 2 finders didn't finish \(the install's spend limit was reached\); the verifier didn't finish/);
   // Every finder failing is no review at all; an effort the engine doesn't take is refused by name.
   await assert.rejects(review({ spec: spec(), ...box({ head, base }), run: async () => ({ read: false, message: "", cause: "timed out" }) }), /no finder finished: timed out/);
   await assert.rejects(review({ spec: spec({ combo: combo({ engine: "claude-code", effort: "minimal" }) }), ...box({ head, base }), run }), /effort for claude-code/);
