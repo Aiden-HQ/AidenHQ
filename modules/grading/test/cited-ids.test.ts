@@ -132,3 +132,20 @@ test("a named task's unreadable file list is a transient wait, while the report'
   assert.match(named.awaiting, /the files on WOR-101 could not be read yet \(kernel GET +502: upstream down\)/);
   assert.equal(named.facts, undefined, "an unreadable named task is a wait, never evidence");
 });
+
+test("a job cited under a misspelled owner resolves to the graded PR's real owner/name; a refused repo is answered once", async () => {
+  const [job] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/424242"], "WOR-9");
+  const deps = citeDeps({
+    citedJob: async (repo: string, id: string) => {
+      if (repo !== "Aiden-HQ/AidenHQ") throw Object.assign(new Error(`grading has no read grant on ${repo}`), { status: 403 });
+      return { name: "ci-required", state: "completed", conclusion: "success" };
+    },
+  });
+  const real = await resolveCitation(job!, deps, ["Aiden-HQ/AidenHQ"]);
+  assert.equal(real.exists, true);
+  assert.equal(real.repo, "Aiden-HQ/AidenHQ");
+
+  const denied = await citedEvidence([job!], deps, ["acme/app"]);
+  assert.equal(denied.awaiting, undefined, "a refusal is never a retry every minute");
+  assert.match(denied.facts.join("\n"), /could not be read \(grading has no read grant on AidenHQ\/AidenHQ\)/);
+});

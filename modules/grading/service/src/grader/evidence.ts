@@ -674,6 +674,8 @@ export type ResolvedCitation = {
   conclusion?: string;
   name?: string;
   repo?: string;
+  /** Why the repo could not be read at all (a refusal): a final answer, not a wait. */
+  unreadable?: string;
 };
 
 /**
@@ -695,9 +697,20 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     const text = r.outcome_text ?? r.outcome?.text ?? "";
     return { citation: c, id: c.id, exists: true, state: String(r.state ?? "unknown"), outcome: { ...(typeof r.ok === "boolean" ? { ok: r.ok } : r.outcome?.ok !== undefined ? { ok: Boolean(r.outcome.ok) } : {}), text: String(text ?? "") } };
   }
-  const candidates = c.repo ? [c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): the graded PRs' and report's repos
+  // are looked at first, and one whose name matches ignoring case and dashes is the real owner/name.
+  const flat = (r: string) => r.toLowerCase().replace(/[^a-z0-9/]/g, "");
+  const known = repos.find((r) => c.repo && flat(r) === flat(c.repo));
+  const candidates = c.repo ? [known ?? c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
   for (const repo of candidates) {
-    const j = await deps.citedJob(repo, c.id);
+    let j: any;
+    try {
+      j = await deps.citedJob(repo, c.id);
+    } catch (err: any) {
+      // A refusal (no grant on that repo, not owner/name) never changes by waiting: it is the answer, once, not a retry.
+      if (c.repo && [400, 403].includes(Number(err?.status))) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      throw err;
+    }
     if (!j) continue;
     return { citation: c, id: c.id, exists: true, state: String(j.state ?? j.status ?? "unknown"), conclusion: String(j.conclusion ?? ""), name: String(j.name ?? ""), repo };
   }
@@ -736,7 +749,8 @@ export async function citedEvidence(citations: Citation[], deps: any, repos: str
     } else {
       const repo = r.repo ?? c.repo ?? "an unknown repo";
       const conclusion = r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : "";
-      facts.push(r.exists ? `cited Actions job ${c.id} in ${repo}: exists${state}${conclusion}; its name is in CITED_IDS` : `cited id ${c.id}: no such Actions job${c.repo ? ` in ${c.repo}` : ""}`);
+      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)}), so the repo is not one the report can cite`);
+      else facts.push(r.exists ? `cited Actions job ${c.id} in ${repo}: exists${state}${conclusion}; its name is in CITED_IDS` : `cited id ${c.id}: no such Actions job${c.repo ? ` in ${c.repo}` : ""}`);
       if (r.exists) lines.push(`${c.id} (Actions job in ${repo}): name ${oneLine(r.name, 120) || "(empty)"} (state ${oneLine(r.state, 40)}${r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : ""})`);
     }
     seen.push(`${c.kind}:${r.id}:${r.exists}:${r.state ?? ""}:${r.conclusion ?? ""}`);
