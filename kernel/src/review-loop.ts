@@ -172,14 +172,15 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
  * follows a rejection since the last comment that lifted and comes at least `gap` after it (owner, 2026-11-21). `by`: who
  * lifted what, for the log.
  */
-export function answered(records: (Prior & { review?: string | null })[], authored: { c: Comment; a: Author }[], gap = REVIEW_COOLDOWN_MS) {
+export function answered(records: (Prior & { review?: string | null })[], authored: { c: Comment; a: Author }[], gap = REVIEW_COOLDOWN_MS, task: Prior[] = records) {
   const judged = (r: Prior) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && !CODE_REJECTS.includes(r.reviewCode ?? "") && !r.answered;
   const owner = authored.filter((x) => x.a.who === "owner").at(-1);
   let agent: { c: Comment; a: Author } | undefined;
   for (const x of authored.filter((y) => y.a.who === "delegator" || y.a.who === "chief")) {
     const at = String(x.c.createdAt ?? ""), last = String(agent?.c.createdAt ?? "");
     if (agent && Date.parse(at) - Date.parse(last) < gap) continue;
-    if (records.some((r) => judged(r) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) agent = x;
+    // The rate limit is the task's: a lift of any run's rejections counts, whichever run this request is.
+    if (task.some((r) => judged(r) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) agent = x;
   }
   const before = (x: { c: Comment } | undefined) => (r: Prior) => Boolean(x) && String(r.decidedAt ?? "") < String(x!.c.createdAt);
   const out = records.map((r): Prior & { review?: string | null } => (judged(r) && before(owner)(r) ? { ...r, answered: "owner" } : judged(r) && before(agent)(r) ? { ...r, answered: "agent" } : r));
@@ -219,7 +220,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const aimed = requestTargets(action, r.args, !r.requester.agent);
   const own = aimed?.targets.every((t) => t.own) ?? false;
   const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args, !x.requester.agent)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
-  const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id && sameRun(x)).map(asPrior), authored);
+  const onTask = records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id);
+  const split = answered(onTask.filter(sameRun).map(asPrior), authored, REVIEW_COOLDOWN_MS, onTask.map(asPrior));
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed, now);
   const veto = priorPart(prior, now);
@@ -262,7 +264,10 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
  */
 export function modelSettings(agents: Record<string, { key?: string; engine?: string; model?: string | null; effort?: string | null; routines?: Record<string, { model?: string; effort?: string }> } | undefined> = {}): string {
   const lines = Object.values(agents).flatMap((a) => (a?.key ? [`${a.key}: ${[a.engine && `engine ${a.engine}`, a.model && `model ${a.model}`, a.effort && `effort ${a.effort}`].filter(Boolean).join(", ") || "no model set"}${Object.entries(a.routines ?? {}).map(([k, r]) => `; routine ${k}: ${[r.model, r.effort].filter(Boolean).join(" ")}`).join("")}`] : []));
-  return lines.sort().join("\n").slice(0, 6000);
+  const out: string[] = [];
+  let size = 0;
+  for (const l of lines.sort()) { if ((size += l.length + 1) > 5800) { out.push(`[… ${lines.length - out.length} more agents left out by code …]`); break; } out.push(l); }
+  return out.join("\n");
 }
 
 export function createReviewLoop({ records, writes, task, decisions, product, grade, pin = async () => "", settings = () => "", log = () => {} }: {

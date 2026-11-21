@@ -656,7 +656,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        let v = codeVerdict(input, model) ?? afterReview(input, failOpen(input, await ask(r, b.request ?? {}, model), r.panel));
+        let v = codeVerdict(input, model) ?? afterReview(input, failOpen(input, await ask(r, b.request ?? {}, model), Boolean(records.get(id)?.panel)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
           if (n < REVIEW_TRIES) {

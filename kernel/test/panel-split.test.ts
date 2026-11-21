@@ -28,6 +28,7 @@ test("a parked branch waits out the cooldown, gets a panel on another family, an
   const owner = priorPart(priorOf(more, t0 + 600 * 60_000));
   assert.deepEqual([owner?.tier, owner?.rule, owner?.reject], [2, "retries-owner", undefined]);
   assert.equal(meritOwner(owner).byMerit, true);
+  assert.equal(priorPart({ ownerVeto: false, same: "no", rejects: 7, panels: PANEL_TRIES, findings: [] })?.rule, "retries-owner", "the same content resent after two panels reaches the owner");
   // Rejections of requests reviewed side by side, before the park was recorded, are never a panel's.
   const burst = [...five, ...[5, 6].map((i) => rejected(String(i).repeat(40), at(4)))];
   const b = priorOf(burst, t0 + 10 * 60_000);

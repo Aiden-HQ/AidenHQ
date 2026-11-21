@@ -457,7 +457,7 @@ ${policy}`;
     : "";
   // The fleet's model choices now: code read each agent's engine, model and effort from the compiled settings (the kernel's
   // grants table), and the reviewer's own models are its code's. Model-name lines are data (names an agent's config chose).
-  const settings_ = settings ? `\n\nThe fleet's current model settings, read by code from the compiled settings this instance runs (never from this change, the request or the decisions' prose). The policy's "Recorded product decisions" says how they weigh against an entry that names models:\n${fence("MODEL_SETTINGS", `${settings ? `${settings}\n` : ""}AI reviewer (this review): ${LUNA}, then ${DEEPSEEK}; second and third opinions ${GLM}, ${DEEPSEEK}, ${LUNA}, never the requester's family where another is left.`, MAX_SETTINGS)}` : "";
+  const settings_ = settings ? `\n\nThe fleet's current model settings, read by code from the compiled settings this instance runs (never from this change, the request or the decisions' prose). The policy's "Recorded product decisions" says how they weigh against an entry that names models:\n${fence("MODEL_SETTINGS", `${settings ? `${settings}\n` : ""}The AI reviewer's models: ${LUNA}, ${DEEPSEEK} and ${GLM} (code picks them per review).`, MAX_SETTINGS)}` : "";
   // The security checklist: items code matched from the product's own checklist by this diff's paths and lines. Trusted
   // text (the deployed product's, like the policy), so it is not fenced; absent when nothing matched.
   const checks_ = checks.length
