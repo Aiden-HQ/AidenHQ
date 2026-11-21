@@ -1083,7 +1083,7 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
         }}
       >
         <h2>New task</h2>
-        <input className="new-title" autoFocus value={title} readOnly={!!created} placeholder="What needs doing?" onChange={(e) => setTitle(e.target.value)} />
+        <input className="new-title" autoFocus value={title} readOnly={busy || !!created} placeholder="What needs doing?" onChange={(e) => setTitle(e.target.value)} />
         <CrewPicker crew={crew} pick={pick} setPick={setPick} me />
         {agent && (
           <textarea

@@ -142,10 +142,11 @@ describe("POST /api/settings/change", () => {
 describe("where a settings change stands", () => {
   const card = (over: Record<string, unknown>) => ({ id: "A-1", action: "apply" as const, state: "pending" as const, outcome: null, tier: 2 as const, outcomeText: null, ...over });
   it("follows the task, then its apply card", () => {
-    expect(stageOf("in_progress", []).stage).toBe("working");
-    expect(stageOf("in_progress", [card({})])).toMatchObject({ stage: "waiting", tier: 2 });
-    expect(stageOf("done", [card({ state: "used" })]).stage).toBe("applying");
-    expect(stageOf("done", [card({ state: "used", outcome: "applied" })]).stage).toBe("applied");
-    expect(stageOf("done", [card({ state: "rejected" })]).stage).toBe("rejected");
+    expect(stageOf("in_progress", [], new Date().toISOString()).stage).toBe("working");
+    expect(stageOf("in_progress", [], new Date(Date.now() - 3_600_000).toISOString()).stage).toBe("failed");
+    expect(stageOf("in_progress", [card({})], new Date().toISOString())).toMatchObject({ stage: "waiting", tier: 2 });
+    expect(stageOf("done", [card({ state: "used" })], new Date().toISOString()).stage).toBe("applying");
+    expect(stageOf("done", [card({ state: "used", outcome: "applied" })], new Date().toISOString()).stage).toBe("applied");
+    expect(stageOf("done", [card({ state: "rejected" })], new Date().toISOString()).stage).toBe("rejected");
   });
 });
