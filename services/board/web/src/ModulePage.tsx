@@ -5,7 +5,7 @@ import { SignInRequired, api } from "./api";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
 import { useEvents } from "./events";
 import { STATUS_LABEL, connectionStatus, displayName, type ConnectionRow } from "./connections";
-import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
+import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded, useSetupPairing } from "./ModuleParts";
 import { SettingItem } from "./Settings";
 import { ChangePreview, ChangeProgress, ChangesScope, Group, useChanges } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
@@ -42,6 +42,7 @@ function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: Modul
   const [advisory, setAdvisory] = useState<Advisory | undefined>();
   const [error, setError] = useState("");
   const needsSetup = useSetupNeeded();
+  const needsPairing = useSetupPairing();
   const needsConnect = useConnectNeeded(can);
   useEffect(() => {
     api.module(name).then(setD, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
@@ -65,10 +66,10 @@ function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: Modul
         )}
       </main>
     );
-  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} connect={needsConnect.get(name)} can={can} advisory={advisory} />;
+  return <Loaded d={d} tab={tab} go={go} onSignIn={onSignIn} setup={needsSetup.has(name)} pairing={needsPairing.has(name)} connect={needsConnect.get(name)} can={can} advisory={advisory} />;
 }
 
-function Loaded({ d, tab, go, onSignIn, setup, connect, can, advisory }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
+function Loaded({ d, tab, go, onSignIn, setup, pairing, connect, can, advisory }: { d: ModuleDetail; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; pairing: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
   const m = d.module;
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);
@@ -76,7 +77,7 @@ function Loaded({ d, tab, go, onSignIn, setup, connect, can, advisory }: { d: Mo
   useEffect(() => {
     if (m.state === "off") api.browse(m.name, "").then((r) => setInfo(r.modules.find((b) => b.name === m.name)), () => {});
   }, [m.name, m.state]);
-  const s = moduleState(m, { filed: t.filed, setup, connect: Boolean(connect), advisory });
+  const s = moduleState(m, { filed: t.filed, setup, pairing, connect: Boolean(connect), advisory });
   const locked = lockedWhy(m);
   return (
     <main className={`mods ${hueClass(m.name)}`}>
@@ -96,12 +97,13 @@ function Loaded({ d, tab, go, onSignIn, setup, connect, can, advisory }: { d: Mo
         sub={m.description}
         actions={
           <>
-            <SetupButton module={m.name} primary={setup} />
+            <SetupButton module={m.name} primary={setup} word={s.action} />
             {connect && !setup && <ConnectButton c={connect.c} word={connect.word} variant="primary" />}
             {m.state === "off" && !t.busy && <button className="btn primary" onClick={() => setAsking(true)}>Turn on</button>}
             {m.state !== "off" && t.switchEl && (
               <span className="mod-switch">
-                {t.isOn ? "On" : "Off"}
+                {/* Enabled but unpaired is said once, by the status; the switch doesn't call it on. */}
+                {s.action ? null : t.isOn ? "On" : "Off"}
                 {t.switchEl}
               </span>
             )}

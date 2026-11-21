@@ -15,6 +15,18 @@ export function useSetupNeeded(): Set<string> {
   return needed;
 }
 
+/** The unfinished flows that finish by pairing a phone (Telegram): a module switched on with one of these isn't simply on. */
+export function useSetupPairing(): Set<string> {
+  const [needed, setNeeded] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    void flows().then((l) => setNeeded(new Set(l.filter((f) => !f.done && f.paired === false).map((f) => f.module))));
+  }, []);
+  return needed;
+}
+
+/** What an enabled but unpaired module's action says: pair the phone, then its setup is done. */
+export const PAIR_ACTION = "Pair your phone";
+
 type Toggled = Pick<ModuleRow, "name" | "agents" | "routines" | "neededBy" | "state">;
 
 /** A centred dialog over the page; a press outside closes it. */
@@ -114,14 +126,21 @@ export const lockedWhy = (m: Pick<ModuleRow, "state" | "neededBy">) => (m.state 
 
 const STAGE: Partial<Record<FiledChange["stage"], string>> = { working: "In review", applying: "Applying", failed: "Change failed", rejected: "Turned down" };
 
-/** A module's state in one tone and word: a change under way or stopped, a security fix, setup, a sign-in, then on or off. */
-export function moduleState(m: Pick<ModuleRow, "state">, o: { filed?: FiledChange; setup?: boolean; connect?: boolean; advisory?: Advisory }): { tone: StatusTone; word: string } {
+/**
+ * A module's state in one tone and word: a change under way or stopped, a security fix, setup, a sign-in, then on or off.
+ * `pairing`: the module's setup flow finished by pairing a phone. A module switched on with that unfinished says so,
+ * instead of reading on beside "Needs setup", and `action` names what closes it.
+ */
+export function moduleState(
+  m: Pick<ModuleRow, "state">,
+  o: { filed?: FiledChange; setup?: boolean; pairing?: boolean; connect?: boolean; advisory?: Advisory },
+): { tone: StatusTone; word: string; action?: string } {
   const f = o.filed;
   if (f && (f.stage === "failed" || f.stage === "rejected")) return { tone: "failed", word: STAGE[f.stage]! };
   if (f && f.stage === "waiting" && f.tier !== 1) return { tone: "needs", word: "Waiting for you" };
   if (f && IN_FLIGHT.includes(f.stage)) return { tone: "working", word: STAGE[f.stage] ?? "In review" };
   if (o.advisory) return { tone: "failed", word: "Security fix" };
-  if (o.setup) return { tone: "needs", word: "Needs setup" };
+  if (o.setup) return o.pairing && m.state !== "off" && m.state !== "core" ? { tone: "needs", word: "Enabled, not paired", action: PAIR_ACTION } : { tone: "needs", word: "Needs setup" };
   if (o.connect) return { tone: "needs", word: "Not connected" };
   if (m.state === "core") return { tone: "working", word: "Always on" };
   if (m.state === "off") return { tone: "done", word: "Off" };

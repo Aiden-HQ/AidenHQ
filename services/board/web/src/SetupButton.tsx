@@ -7,6 +7,8 @@ export interface Flow {
   module: string;
   title?: string;
   done?: boolean;
+  /** The flow finishes by pairing a phone: false until a chat is paired (the board's reads give it for every flow). */
+  paired?: boolean;
 }
 
 let cache: Promise<Flow[]> | undefined;
@@ -22,7 +24,7 @@ export function flows(): Promise<Flow[]> {
   return cache;
 }
 
-export function SetupButton({ module, primary, size }: { module: string; primary?: boolean; size?: "sm" }) {
+export function SetupButton({ module, primary, size, word }: { module: string; primary?: boolean; size?: "sm"; word?: string }) {
   const [flow, setFlow] = useState<Flow | undefined>();
   useEffect(() => {
     let live = true;
@@ -34,7 +36,7 @@ export function SetupButton({ module, primary, size }: { module: string; primary
   if (!flow) return null;
   return (
     <a className={`btn${primary && !flow.done ? " primary" : ""}${size ? ` ${size}` : ""}`} href={`#/setup/${module}${flow.done ? "?change=1" : ""}`}>
-      {flow.done ? "Change setup" : "Set up"}
+      {flow.done ? "Change setup" : (word ?? "Set up")}
     </a>
   );
 }

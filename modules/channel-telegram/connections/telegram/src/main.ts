@@ -105,7 +105,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.clo
 
 if (!cfg.telegramToken) log.warn("TELEGRAM_NOTIFY_BOT_TOKEN not set; the Telegram chat is off (owner messages go to the board and other channels)");
 else {
-  if (!cfg.telegramChatId) log.warn("no Telegram chat is paired yet: pair one from the board");
+  if (!cfg.telegramChatId) log.info("no Telegram chat is paired yet: a private message is answered with how to pair");
   const withButtons = async (text: string, markup: unknown) => {
     const out: { id?: number } = {};
     return (await postTelegram(cfg, text, markup, undefined, undefined, undefined, out)) && (out.id ?? true);
@@ -131,7 +131,7 @@ else {
   const sendTo = (chatId: string, text: string) =>
     fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }), signal: AbortSignal.timeout(15_000) });
   void startTelegramPoll(cfg, store, chat, log, {
-    start: (u) => handleStart(u, pairing, store, sendTo),
+    start: (u) => handleStart(u, pairing, store, sendTo, log),
     command: async (text) => (text.startsWith("/") ? quickCommand(text, (_m, p) => kernel.read(p), await chat.company(), kernel.openTasks) : null),
     // null: the voice module is off (the owner is told how to turn it on).
     transcribe: async (fileId: string) => ((await voiceOn(whisperUrl)) ? transcribe(cfg.telegramToken, whisperUrl, fileId) : null),
