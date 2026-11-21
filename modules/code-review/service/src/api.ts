@@ -11,7 +11,7 @@
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
 //   POST /findings/dismiss { repo, number, id, reason, by? } → { dismissed }   the owner dismisses an open finding (the board)
 //   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }] }   the github module's merge
-//                                        queue, with its own key (code_review_gate_key), never the board's token
+//                                        queue, with that module's own token (the kernel says whose), never the board's token
 // Errors are { error, detail }.
 //   GET  /healthz
 import { timingSafeEqual } from "node:crypto";
@@ -35,19 +35,19 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   throw new RequestError("send a JSON object");
 }
 
-export function handler(engine: Engine, token: () => string, gateKey: () => string) {
-  const holds = (req: IncomingMessage, key: () => string) => {
-    const want = key();
+export function handler(engine: Engine, token: () => string, isGithub: (authorization: string) => Promise<boolean | undefined>) {
+  const authorized = (req: IncomingMessage) => {
+    const want = token();
     const got = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     return !!want && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
   };
-  const authorized = (req: IncomingMessage) => holds(req, token);
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "")}`;
     if (route === "GET /healthz") return send(res, 200, { ok: true });
     if (route === "GET /v1/verdict") {
-      if (!holds(req, gateKey)) return send(res, 401, { error: "unauthorized", detail: "send the code review gate key" });
+      const ok = await isGithub(String(req.headers.authorization ?? ""));
+      if (!ok) return send(res, ok === undefined ? 503 : 401, { error: "unauthorized", detail: ok === undefined ? "the kernel couldn't say whose token this is; try again" : "only the github module's token" });
       const q = url.searchParams;
       const repo = (q.get("repo") ?? "").toLowerCase(), pr = Number(q.get("pr")), head = q.get("head") ?? "";
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(head)) return send(res, 400, { error: "bad_request", detail: "repo, pr and head (a 40-character sha)" });

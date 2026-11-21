@@ -165,6 +165,9 @@ Then watch the next PRs end to end and fix what misbehaves.
   model is of no family any `Co-authored-by: AidenHQ …` trailer on any of the PR's commits names (none named: the checker
   model); everything it reads is fenced data. A single dismissal suffices. Its spend counts in the day total.
 
+- **Wiring, as built:** the verdict route takes the github module's own token (checked with the kernel's `/v1/whoami`, as
+  github-mcp's internal routes check code review's), not a new shared key: the compiler refuses a secret two modules declare.
+
 ## Left to the builder
 
 The verdict cache and polling cadence, the judge prompt, the board's verdict and Dismiss UI (match the Reviews page),

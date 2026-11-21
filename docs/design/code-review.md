@@ -150,7 +150,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   reported: one that restates an open one on the same file at no higher severity is dropped (a mandatory review's important one
   only by a gating one). A result for a head the PR moved on from is discarded. Each change is a row in `dispositions` (finding,
   head, state, reason, evidence, who decided).
-- **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (the github module's key, `code_review_gate_key`): `pass`, or `wait` with each
+- **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's `/v1/whoami`: no shared secret): `pass`, or `wait` with each
   reason and how it unblocks (review not started, the PR moved, review queued or running, failed: `@aiden review`, partial:
   `@aiden review full`, important findings open). There is no fail.
 - **Merge gate.** `modules/github/service/src/review-gate.ts`: before the merge call at the bound head, a gated repo's PR asks

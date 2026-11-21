@@ -1,6 +1,6 @@
 // Code review's gate on the merge queue (docs/design/code-review.md "Merge gate"): for a repo code review gates (settings
 // code_review: a mandatory combo, compiled into GITHUB_REVIEW_GATED), the queue asks the code-review service's verdict for the
-// PR head it is about to merge, with its own key (code_review_gate_key). Anything but pass waits, the service unreachable
+// PR head it is about to merge, with this module's own token (code review checks it with the kernel). Anything but pass waits, the service unreachable
 // included; a repo not on the list never calls it, so an install without code review merges as before.
 
 /** undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks). */
