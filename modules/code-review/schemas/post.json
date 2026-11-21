@@ -249,6 +249,14 @@
   },
   "gated": {
    "type": "boolean"
+  },
+  "own": {
+   "type": "array",
+   "maxItems": 1000,
+   "items": {
+    "type": "integer",
+    "minimum": 1
+   }
   }
  }
 }

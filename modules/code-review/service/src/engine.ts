@@ -92,7 +92,8 @@ CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, findin
 CREATE TABLE IF NOT EXISTS judges (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, finding TEXT NOT NULL, comment INTEGER NOT NULL,
   reply INTEGER NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, head TEXT, model TEXT, status TEXT NOT NULL, check_job TEXT, verdict TEXT, reason TEXT,
   cost_usd REAL NOT NULL DEFAULT 0, created TEXT NOT NULL, ended TEXT, write_id TEXT);
-CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);`;
+CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
  * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
 export const DATA_VERSION = 1;
@@ -158,7 +159,11 @@ export function createEngine(d: EngineDeps) {
    */
   function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null } = {}): RunRow[] {
     const due = o.due ?? now();
-    if (kind === "auto") run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
+    if (kind === "auto") {
+      // The push they were for is superseded; a retry that already spent keeps its charge, as a skipped run.
+      run("UPDATE runs SET status = 'skipped', why = 'superseded: a newer push', ended = ?, cost_usd = billed_prior WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND billed_prior > 0", iso(), p.repo, p.number);
+      run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
+    }
     const batch = `b-${randomBytes(6).toString("hex")}`;
     // A one-off never gates; the recheck runs in the first mandatory run (whose verdict counts), else the first.
     const mand = (c: Combo) => kind !== "oneoff" && c.mandatory;
@@ -203,7 +208,9 @@ export function createEngine(d: EngineDeps) {
     // Disputes' judges count too: ended at their billed cost, running at their spend so far (unknown: their whole cap).
     const judged = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM judges WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
     const judging = all<{ id: string }>(`SELECT id FROM judges WHERE status = 'running'${where}`, ...(repo ? [repo] : [])).reduce((n, j) => n + Math.min(live.get(j.id) ?? JUDGE_USD, JUDGE_USD), 0);
-    return ended + judged + judging + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
+    // A failed attempt waiting for its retry (queued) has spent what it was billed.
+    const retrying = one<{ s: number }>(`SELECT COALESCE(SUM(billed_prior), 0) s FROM runs WHERE status = 'queued'${where}`, ...(repo ? [repo] : []))!.s;
+    return ended + judged + judging + retrying + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
   }
 
   /**
@@ -345,8 +352,10 @@ export function createEngine(d: EngineDeps) {
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
     // A result for a head the PR has moved on from is kept for analysis, never applied: its findings and fixes belong to an old head.
+    // The PR's head as GitHub has it now (a push since the last poll supersedes this result too); the last poll's when it can't say.
     const pr = prRow(r.repo, r.number);
-    const stale = !!pr && pr.open && pr.head !== r.head;
+    const now_ = pr?.open ? await d.source.get(r.repo, r.number).then((x) => (x.open ? x.head : pr.head)).catch(() => pr.head) : pr?.head;
+    const stale = !!pr && pr.open && now_ !== r.head;
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
       run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ? WHERE id = ?",
@@ -392,7 +401,8 @@ export function createEngine(d: EngineDeps) {
     const cfg = repoCfg(r.repo);
     let posted: Posted;
     try {
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!cfg && gated(cfg) && !!r.mandatory });
+      const own = all<{ comment: number }>("SELECT comment FROM comments WHERE repo = ? AND number = ? ORDER BY comment DESC LIMIT 1000", r.repo, r.number).map((c) => c.comment);
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!cfg && gated(cfg) && !!r.mandatory, own });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
     }
@@ -439,6 +449,8 @@ export function createEngine(d: EngineDeps) {
   /** A post's outcome is in: a posted one is the PR's baseline and keeps its link; a one-off's task is done either way. */
   function settled(r: RunRow, o: Posted) {
     if (o.state === "posted") {
+      // The comments it opened: what makes a thread Aiden's own (a dispute, a resolve), never a marker read back from GitHub.
+      for (const c of o.comments ?? []) run("INSERT OR IGNORE INTO comments (repo, number, comment, run) VALUES (?, ?, ?, ?)", r.repo, r.number, c, r.id);
       run("UPDATE runs SET review_url = ?, resolved = ?, identity = ? WHERE id = ?", o.url ?? null, o.resolved ?? null, o.identity ?? null, r.id);
       landed(r);
     }
@@ -658,9 +670,9 @@ export function createEngine(d: EngineDeps) {
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })) };
   }
-  /** Status writes GitHub or the kernel refused, by PR: tried again after STATUS_RETRY or once the verdict changes. */
+  /** Status writes GitHub or the kernel refused, by repo and head: tried again after STATUS_RETRY or once the verdict changes. */
   const statusFailed = new Map<string, { key: string; at: number }>();
-  /** Status writes filed and not settled yet, by PR: the key is saved only once GitHub has it. */
+  /** Status writes filed and not settled yet, by repo and head: the key is saved only once GitHub has it. */
   const statusFiled = new Map<string, { key: string; write: string }>();
   const STATUS_RETRY = 5 * 60_000;
   /**
@@ -670,8 +682,13 @@ export function createEngine(d: EngineDeps) {
   async function mirror() {
     for (const cfg of d.config().repos) {
       if (!gated(cfg)) continue;
-      for (const p of all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo)) {
-        const id = `${cfg.repo}#${p.number}`;
+      // A status is per commit: PRs sharing a head get one, the least ready of their verdicts (failure, then pending, then pass).
+      const prs = all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo);
+      const heads = new Map<string, Mirror>();
+      const rank = (m: Mirror) => (m.reason === "pass" ? 2 : ["queued", "running", "not_started", "moved"].includes(m.reason) ? 1 : 0);
+      for (const p of prs) { const m = mirrored(cfg.repo, p.number, p.head), had = heads.get(p.head); if (!had || rank(m) < rank(had)) heads.set(p.head, m); }
+      for (const p of prs) {
+        const id = `${cfg.repo}@${p.head}`;
         const saved = (key: string, o: Posted) => {
           if (o.state === "pending") {
             // A pending outcome read back carries no write id: keep the one filed. None known: nothing to settle, filed again later.
@@ -681,15 +698,15 @@ export function createEngine(d: EngineDeps) {
           statusFiled.delete(id);
           if (o.state === "refused") return void (statusFailed.set(id, { key, at: now() }), log("review status not set", { repo: cfg.repo, pr: p.number, why: String(o.why ?? "").slice(0, 200) }));
           statusFailed.delete(id);
-          run("UPDATE prs SET status_key = ? WHERE repo = ? AND number = ?", key, cfg.repo, p.number);
-          p.status_key = key;
+          run("UPDATE prs SET status_key = ? WHERE repo = ? AND head = ? AND open = 1", key, cfg.repo, p.head);
+          for (const q of prs) if (q.head === p.head) q.status_key = key;
         };
         const filed = statusFiled.get(id);
         if (filed) {
           saved(filed.key, await d.poster.outcome(filed.write).catch(() => ({ state: "pending" as const, write: filed.write })));
           if (statusFiled.has(id)) continue;
         }
-        const s = mirrored(cfg.repo, p.number, p.head);
+        const s = heads.get(p.head)!;
         const key = JSON.stringify(s), failed = statusFailed.get(id);
         if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
         saved(key, await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) })));
@@ -711,7 +728,7 @@ export function createEngine(d: EngineDeps) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
       if (!open.size) continue;
       for (const t of await d.source.threads(cfg.repo, p.number)) {
-        if (!t.ours || !t.finding || !open.has(t.finding)) continue;
+        if (!t.finding || !open.has(t.finding) || !one("SELECT 1 FROM comments WHERE repo = ? AND comment = ?", cfg.repo, t.comment)) continue;
         for (const r of t.replies) {
           const key = `reply:${r.id}`;
           if (r.ruling || one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;

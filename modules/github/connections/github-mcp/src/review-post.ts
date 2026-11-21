@@ -11,7 +11,7 @@ import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
   FINDING_MARK, ACK_MARK, RULING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RulingArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
-  renderReview, renderRuling, renderStatus, rightLines, commandsBlock, type NoticeArgs, type PostArgs, type StatusArgs,
+  renderReview, renderRuling, renderStatus, rightLines, type NoticeArgs, type PostArgs, type StatusArgs,
 } from "./review-render.js";
 
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
@@ -86,8 +86,8 @@ export class ReviewPoster {
   }
 
   /** Resolves the listed threads that are Aiden's own and still open; the others are reported, never touched. */
-  async resolve(ref: Ref, wanted: { thread_ids?: string[]; finding_ids?: string[] }): Promise<{ resolved: string[]; skipped: { thread: string; why: string }[] }> {
-    const all = await this.threads(ref);
+  async resolve(ref: Ref, wanted: { thread_ids?: string[]; finding_ids?: string[] }, mine: (t: Thread) => boolean = (t) => t.ours): Promise<{ resolved: string[]; skipped: { thread: string; why: string }[] }> {
+    const all = (await this.threads(ref)).map((t) => ({ ...t, ours: mine(t) }));
     const resolved: string[] = [];
     const skipped: { thread: string; why: string }[] = [];
     const picks = new Map<string, string>();
@@ -177,12 +177,12 @@ export class ReviewPoster {
     }
     const a = target(PostArgsSchema.parse(args));
     const r = a.review;
-    const { summary, comments } = renderReview(r, a.run, { gated: a.gated });
+    const { summary, comments } = renderReview(r, a.run, { gated: a.gated, card: true });
     const c = counts(r.findings);
     const details = [
-      // The fixed command words are named, not shown: `aiden review` lines read like instructions to the reviewer, which then
-      // refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
-      `Review summary (event COMMENT, at commit ${r.head}):`, "", summary.replace(commandsBlock(), "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]").replace(/`aiden review[^`]*`/g, "[AidenHQ's fixed command for another review]"), "",
+      // The fixed command words are named, not shown (`card`): `aiden review` lines read like instructions to the reviewer, which
+      // then refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
+      `Review summary (event COMMENT, at commit ${r.head}):`, "", summary, "",
       ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
       "(A comment whose line isn't on the diff goes on the nearest diff line of its file, or on the file, saying where it is.)", "",
       `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}`,
@@ -267,18 +267,20 @@ export class ReviewPoster {
     const made = mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] }));
     // A finding on a file without diff lines takes a file comment (its own thread, outside the review).
     for (const c of first.comments.filter((x) => x.file)) {
-      const f = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments`, { body: { commit_id: r.head, path: c.path, subject_type: "file", body: c.body } });
+      const f = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments`, { body: { commit_id: r.head, path: c.path, subject_type: "file", body: withFooter(c.body, AGENT) } });
       made.push({ id: f.id, url: f.html_url, finding: c.id });
     }
     const links = new Map(made.filter((m) => m.finding).map((m) => [m.finding!, m.url]));
     await this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}`, { body: { body: withFooter(renderReview(r, a.run, { place, earlier, links, gated: a.gated }).summary, AGENT) } });
-    // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only Aiden's own
-    // open threads for findings the review no longer reports are resolved.
+    // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only the threads it
+    // recorded as its own posts (`own`, its database) for findings the review no longer reports are resolved. The resolves and the
+    // acknowledgement speak for the PR's current head: a review of an older one leaves them to the newer head's review.
+    const current = pr.head.sha === r.head;
     const present = new Set(r.findings.map((f) => f.id));
-    const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
-    // The acknowledgement speaks for the PR's current head: a review of an older one leaves it to the newer head's review.
+    const own = new Set(a.own);
+    const done = current ? await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) }, (t) => own.has(t.comment)) : { resolved: [], skipped: [] };
     const c = counts(r.findings);
-    const ack = pr.head.sha === r.head ? await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`) : undefined;
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ...(ack ? { ack: ack.url } : {}) }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ...(ack ? [ack.object] : [])] };
+    const ack = current ? await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`) : undefined;
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ...(ack ? { ack: ack.url } : {}), comments: made.map((m) => m.id) }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ...(ack ? [ack.object] : [])] };
   }
 }

@@ -13,12 +13,13 @@ export type Command =
 /** Our own posts' markers (aidenhq-review, -review-run, -review-ack, -finding): a comment or review with one is never a command. */
 export const OWN_MARKERS = ["<!-- aidenhq-"];
 export const FOCUS_MAX = 300;
-const LINE = /^\s*@?aiden\s+review\b(.*)$/i;
+// Up to three spaces of indent: four (or a tab) is a Markdown code block, an example, never an ask.
+const LINE = /^ {0,3}@?aiden\s+review\b(.*)$/i;
 
 /** The comment's command (its first line), or undefined when it holds none. */
 export function parseCommand(body: string): Command | undefined {
   if (OWN_MARKERS.some((m) => body.includes(m))) return undefined;
-  const m = LINE.exec(body.trimStart().split(/\r?\n/)[0] ?? "");
+  const m = LINE.exec(body.split(/\r?\n/).find((l) => l.trim()) ?? "");
   if (!m) return undefined;
   const rest = m[1]!.trim();
   const focus = /^focus\s*:\s*(.*)$/i.exec(rest);
@@ -27,5 +28,5 @@ export function parseCommand(body: string): Command | undefined {
   if (!words.length) return { cmd: "review", full: false };
   if (words.length === 1 && ["always", "stop", "status", "help"].includes(words[0]!)) return { cmd: words[0] as "always" };
   if (words.length === 1 && words[0] === "full") return { cmd: "review", full: true };
-  return { cmd: "unknown", word: words.find((w) => w !== "full")!.slice(0, 40) };
+  return { cmd: "unknown", word: (words.find((w) => w !== "full") ?? "full").slice(0, 40) };
 }

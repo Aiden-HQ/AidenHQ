@@ -95,9 +95,9 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
   if (r.state === "done") {
     if (r.outcome && !r.outcome.ok) return { state: "refused", why: `write ${r.id}: ${r.outcome.text.slice(0, 200)}`, retry: true };
     // The executor's outcome (github-mcp review-post.ts): the review's link, the threads it resolved, the identity it posted as.
-    let o: { review?: unknown; resolved?: unknown; identity?: unknown } = {};
+    let o: { review?: unknown; resolved?: unknown; identity?: unknown; comments?: unknown } = {};
     try { o = JSON.parse(r.outcome?.text ?? "{}"); } catch {}
-    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" ? { identity: o.identity } : {}) };
+    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" ? { identity: o.identity } : {}), ...(Array.isArray(o.comments) ? { comments: o.comments.filter((c): c is number => Number.isInteger(c) && (c as number) > 0).slice(0, 200) } : {}) };
   }
   // Failed or stale (what it acted on changed, e.g. a restart between its approval and its run) may post when filed again; a
   // rejection is the AI reviewer's or the owner's answer, and a cancel is someone's decision.
@@ -129,7 +129,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
       const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },

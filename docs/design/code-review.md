@@ -101,7 +101,7 @@ post; the commenter needs write access now:
 | Comment | Effect |
 |---|---|
 | `aiden review [full]` | one review now with the repo's `on_open` combos (`full` is not incremental) |
-| `aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones |
+| `aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones (on a gated repo the mandatory combos still review each push: anyone posting as the owner can write a command) |
 | `aiden review focus: <text>` | a focus handed to the reviewers as data (300 characters) |
 | `aiden review status` / `help` | the last run's phase, combo, findings and cost / the command list |
 
@@ -143,9 +143,12 @@ Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the
 finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
 several combos it shows the latest run to finish (each review names its own combo).
 
-Identity: the owner's own GitHub sign-in, COMMENT reviews only, each text ending with the AidenHQ footer (each post still a
-Tier 1 write); "ours" is a thread whose first comment carries the finding marker and is by that sign-in (model text can't write a
-marker: the renderer escapes `<`; nobody else posts as the owner).
+Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment, ruling and notice ending with the
+AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a Tier 1 write). Every fleet write posts as
+that same login, so nothing that decides anything is read back from GitHub text: findings, coverage, dispositions and the verdict
+live in the service's database, and a thread is Aiden's own (a reply on it is a dispute; it may be resolved) only when its first
+comment's id is one the service recorded from its own post's outcome (table `comments`). Markers serve display, dedupe and mapping
+a reply to its finding only.
 
 **The status `aidenhq/review`.** On a gated repo, each open non-draft PR's head carries the commit status `aidenhq/review`, so
 people and `gh pr checks --watch` see the verdict: pending while the head's mandatory review is queued or running (naming the
@@ -182,7 +185,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   GitHub are not gated.
 - **Fail closed.** A mandatory run is never skipped for budget (its spend still counts, at its whole `run_usd` while unread),
   reviews a fork's PR by itself, and retries once like any run.
-- **Disputes.** A reply on Aiden's own finding thread (`ours`) for an open gating finding, from the PR's author or someone with
+- **Disputes.** A reply on Aiden's own finding thread (one the service recorded as its post) for an open gating finding, from the PR's author or someone with
   write access now, starts one judge: the recipe's judge mode (the same credential-free box at the head, $1 cap, counted in the
   day's spend), on a model of no family any `Co-authored-by: AidenHQ …` trailer on the PR's commits names (none named: the checker
   model, GPT Luna; `kernel/sdk/src/judge.ts`). Everything it reads is fenced data. It dismisses only after opening the code;

@@ -57,7 +57,13 @@ describe("rendering model text", () => {
     expect(clean).not.toMatch(/Incomplete|not a clean review|\|/);
     const partial = review([]);
     partial.coverage.incomplete = "the diff was cut at 300 files";
-    expect(renderReview(partial, "r").summary).toMatch(/Partial review/);
+    expect(renderReview(partial, "r", { gated: true }).summary).toMatch(/Partial review[\s\S]*/);
+    expect(renderReview(partial, "r", { gated: true }).summary).toContain("**blocks the merge**: the review isn't whole");
+    // The AI reviewer's card names the fixed command words, never hides model text that happens to quote them.
+    const quoting = review([finding("f_q_1", "src/pay.ts", 2, { title: "Docs say `aiden review full` reruns" })]);
+    const card = renderReview(quoting, "r", { card: true }).summary;
+    expect(card).toContain("Docs say `aiden review full` reruns");
+    expect(card).not.toContain("<summary>Commands</summary>");
   });
 
   it("states the verdict mirror in fixed words", () => {
@@ -130,9 +136,13 @@ describe("posting", () => {
     expect(post.body.body.endsWith(FOOTER)).toBe(true);
     expect(w.state.ack?.body).toContain("<!-- aidenhq-review-ack -->");
     expect(w.state.ack?.body.endsWith(FOOTER)).toBe(true);
-    // The same run again: no second review, the acknowledgement is edited, not duplicated.
+    expect(JSON.parse(done.text).comments).toEqual([501, 502, 601]); // the service records these as its own threads
+    expect(w.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/comments"))!.body.body.endsWith(FOOTER)).toBe(true);
+    // The same run again (a retry): no second review, no second file comment, the acknowledgement edited, not duplicated.
+    w.state.threads = [thread("T_file", "f_binary_1", "owner1", 601)];
     await p.execute("post", postArgs(r));
     expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toHaveLength(1);
+    expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/comments"))).toHaveLength(1);
     expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/issues/12/comments"))).toHaveLength(1);
     expect(w.calls.some((c) => c.method === "PATCH")).toBe(true);
   });
@@ -166,14 +176,15 @@ describe("posting", () => {
     expect(out).toMatchObject({ inline: 0, earlier: 1 });
   });
 
-  it("resolves only Aiden's own open threads (the marker, posted as the owner) for findings no longer reported", async () => {
-    const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41), thread("T_person", null, "alice", 43), thread("T_forged", "f_forged_1", "alice", 44)] });
+  it("resolves only the threads code review recorded as its own posts (its database), for findings no longer reported", async () => {
+    // T_owner carries the marker as the owner's login too (any fleet write does): only the service's record tells them apart.
+    const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41), thread("T_owner", "f_owner_1", "owner1", 42), thread("T_person", null, "alice", 43), thread("T_forged", "f_forged_1", "alice", 44)] });
     const p = poster(w);
-    const out = JSON.parse((await p.execute("post", postArgs(review([]), { resolve: ["f_fixed_1", "f_forged_1"] }))).text);
+    const out = JSON.parse((await p.execute("post", postArgs(review([]), { resolve: ["f_fixed_1", "f_forged_1", "f_owner_1"], own: [41] }))).text);
     expect(out.resolved).toBe(1);
     const resolves = w.calls.filter((c) => c.path === "/graphql" && String(c.body.query).includes("resolveReviewThread"));
     expect(resolves.map((c) => c.body.variables.thread)).toEqual(["T_ours"]);
-    expect(out.skipped.map((x: { thread: string }) => x.thread).sort()).toEqual(["T_forged"]);
+    expect(out.skipped.map((x: { thread: string }) => x.thread).sort()).toEqual(["T_forged", "T_owner"]);
     const r = await p.resolve({ owner: "acme", repo: "payments", number: 12 }, { thread_ids: ["T_person"] });
     expect(r.resolved).toEqual([]);
   });

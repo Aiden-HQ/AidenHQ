@@ -111,12 +111,14 @@ export type Posted = {
   retry?: boolean;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
   url?: string; resolved?: number; identity?: "owner";
+  /** The comment ids it opened (its threads' first comments): what makes a thread Aiden's own. */
+  comments?: number[];
 };
 export interface Poster {
   /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
-  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean }): Promise<Posted>;
+  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean; own?: number[] }): Promise<Posted>;
   /** The commit status aidenhq/review on a gated repo's PR head: its merge verdict's reason, the open important findings and the
    * mandatory reviewers still queued or running (a Tier 0 write: fixed words). */
   status(s: Status): Promise<Posted>;

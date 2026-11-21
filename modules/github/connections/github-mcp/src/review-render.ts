@@ -57,6 +57,9 @@ export const PostArgsSchema = z.object({
   run: RUN,
   /** The repo is gated (a mandatory combo): the summary says whether this review blocks the merge. */
   gated: z.boolean().default(false),
+  /** The comment ids the code-review service recorded as its own posts on this PR (its database, never a marker read back):
+   * only their threads are ever resolved. */
+  own: z.array(z.number().int().min(1)).max(1000).default([]),
 });
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
@@ -167,6 +170,7 @@ const ORDER = ["important", "nit", "pre_existing"] as const;
 // Sized so a whole review fits the card the AI reviewer reads (80,000 characters): 15 inline comments of at most ~3,200 plus a
 // summary of about 30,000.
 export const INLINE_MAX = 15;
+const LISTED_MAX = 4;
 const EVIDENCE_MAX = 500;
 
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
@@ -276,7 +280,7 @@ const fileLine = (f: Finding) => code(`${f.path.split("/").pop()}:${f.line}`);
  * merges wait on code review. Each finding appears once: a table row (its title linking to its thread) or, with no thread, a
  * collapsed block with its reasoning.
  */
-export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
+export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean; card?: boolean } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
   const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
   const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
@@ -291,7 +295,10 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const c = counts(r.findings);
   const incomplete = r.coverage.incomplete;
   const withheld = r.withheld.important + r.withheld.nit + r.withheld.pre_existing;
-  const blocks = opts.gated ? (c.important ? " · **blocks the merge** until each important one is fixed or dismissed" : " · doesn't block the merge") : "";
+  // Fixed command words, named on the AI reviewer's card instead (they read like instructions to it); model text is never touched.
+  const cmd = (words: string) => (opts.card ? "[AidenHQ's fixed command for another review]" : `\`${words}\``);
+  const partial = !!incomplete || r.withheld.important > 0;
+  const blocks = !opts.gated ? "" : c.important ? " · **blocks the merge** until each important one is fixed or dismissed" : partial ? " · **blocks the merge**: the review isn't whole" : " · doesn't block the merge";
   const row = (f: Finding) => { const url = links.get(f.id) || earlier.get(f.id); const t = cell(plain(f.title, 160)); return `| ${ICON[f.severity]} | ${url ? `[${t}](${url})` : t} | ${fileLine(f)} |`; };
   const table = (fs: Finding[]) => ["| | Finding | Where |", "|---|---|---|", ...fs.map(row)].join("\n");
   const important = ranked.filter((f) => f.severity === "important" && threaded(f));
@@ -302,8 +309,8 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
     `### Aiden review · ${modelName(r.model)} (${r.effort})`,
     "",
     r.findings.length ? `${countLine(c)}${blocks}` : `${incomplete ? "No findings in what it read" : "✅ No findings"}${blocks}`,
-    ...(incomplete ? ["", `> **Partial review:** ${plain(incomplete, 300)}. \`aiden review full\` reviews the whole pull request again.`] : []),
-    ...(withheld ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. \`aiden review full\` shows more.`] : []),
+    ...(incomplete ? ["", `> **Partial review:** ${plain(incomplete, 300)}. ${cmd("aiden review full")} reviews the whole pull request again.`] : []),
+    ...(withheld ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. ${cmd("aiden review full")} shows more.`] : []),
   ];
   if (important.length) lines.push("", table(important));
   if (minor.length) {
@@ -311,9 +318,12 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
     const what = [nits ? `${nits} ${nits === 1 ? "nit" : "nits"}` : "", pre ? `${pre} pre-existing` : ""].filter(Boolean).join(" · ");
     lines.push("", `<details><summary>${what}</summary>\n\n${table(minor)}\n\n</details>`);
   }
-  for (const f of listed) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
+  // and the card's size.
+  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  if (listed.length > LISTED_MAX) lines.push("", `<details><summary>${listed.length - LISTED_MAX} more without a thread</summary>\n\n${listed.slice(LISTED_MAX, LISTED_MAX + 40).map((f) => `- ${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}`).join("\n")}${listed.length > LISTED_MAX + 40 ? "\n- \u2026" : ""}\n\n</details>`);
   if (r.stale_guidance.length) lines.push("", `<details><summary>Guidance this change may make stale</summary>\n\n${r.stale_guidance.map((s) => `- ${plain(s, 300)}`).join("\n")}\n\n</details>`);
-  lines.push("", commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);
+  lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);
   return { summary: lines.join("\n"), comments, listed };
 }
 
