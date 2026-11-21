@@ -123,4 +123,8 @@ test("aidenhq clone: clones a repo from the kernel's bundle, then refreshes it w
   assert.equal(git(clone, "rev-parse", "origin/main"), tip);
   assert.equal(git(clone, "rev-parse", "HEAD"), mine, "the job's branch and checkout stay as they were");
   assert.equal(git(clone, "rev-parse", "main"), git(up, "rev-parse", "HEAD~1"), "local main isn't moved");
+  // Another org's repo of the same name is refused, never fetched into this clone.
+  const before = asked.length;
+  assert.equal(await run(process.execPath, [CLI, "clone", "other-org/aidenhq-instance"], { env }).then(() => 0, (e) => e.code), 2);
+  assert.equal(asked.length, before);
 });

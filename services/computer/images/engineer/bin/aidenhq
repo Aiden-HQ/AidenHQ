@@ -210,8 +210,13 @@ if (command === "publish" || command === "review") {
 } else if (command === "clone") {
   if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone <org/name>", 2);
   const [org, name] = words[0].split("/");
-  // The clone already here (as the job's start made it, <name> or <org>--<name>) is refreshed; else a new one at <name>.
-  const have = [name, `${org}--${name}`].map((d) => join(workspace, d)).find((d) => existsSync(join(d, ".git")));
+  // The clone already here (as the job's start made it, <name> or <org>--<name>) is refreshed; else a new one at <name>. A
+  // clone whose origin names another repository (another org's <name>) is never fetched into.
+  const repoOf = (d) => { try { return execFileSync("git", ["-C", d, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\.git$/, ""); } catch { return ""; } };
+  const want = words[0].toLowerCase();
+  const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
+  const have = there.find((d) => { const o = repoOf(d); return !o || o.endsWith(`/${want}`) || o.endsWith(`:${want}`); });
+  if (!have && there.length) fail(`${there[0]} is a clone of another repository (${repoOf(there[0])}), not ${words[0]}`, 2);
   const dest = have ?? join(workspace, name);
   if (!have && existsSync(dest)) fail(`${dest} is already there and isn't a clone`, 2);
   // Exit 75 when the kernel or the code host can't answer now: the kernel's job start (boxes.ts) then tries again later.

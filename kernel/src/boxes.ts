@@ -141,7 +141,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   /**
    * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned by its box itself from the
    * code host's bundle (`aidenhq clone <org/name>` in the box, as the job) into /workspace/<name> on its default branch, before
-   * the run starts; one already there (<name> or <org>--<name>) is kept as it is. Host git and host fs writes never run in the
+   * the run starts; one already there (<name> or <org>--<name>, its origin this repo or none) is kept as it is. Host git and host fs writes never run in the
    * workspace. A refusal is told to the job (its notes); a kernel or code host that can't answer now makes the launch a 503, so
    * admission tries again.
    */
@@ -150,7 +150,9 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const notes: string[] = [];
     for (const repo of named) {
       const [org, name] = repo.split("/");
-      const r = await boxExec(box, ["sh", "-c", 'test -d "$1/.git" || test -d "$2/.git" || exec aidenhq clone "$3"', "sh", `/workspace/${name}`, `/workspace/${org}--${name}`, repo]);
+      // A clone there is kept when its origin names this repo (or it has none); one of another org's same-named repo isn't
+      // (aidenhq clone then refuses it, told to the job).
+      const r = await boxExec(box, ["sh", "-c", 'for d in "$1" "$2"; do test -d "$d/.git" && case "$(git -C "$d" remote get-url origin 2>/dev/null | tr A-Z a-z)" in ""|*[/:]"$4"|*[/:]"$4".git) exit 0;; esac; done; exec aidenhq clone "$3"', "sh", `/workspace/${name}`, `/workspace/${org}--${name}`, repo, repo.toLowerCase()]);
       const said = r.out.replace(/^aidenhq: /, "").slice(0, 200);
       if (r.code === 0) { log("repository cloned into the job's workspace", { job: job.id, repo }); continue; }
       if (r.code === CLONE_UNAVAILABLE) throw new JobError(503, "clone-failed", `${repo} couldn't be cloned now (${said})`);
@@ -203,7 +205,9 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const { container, workspace } = JSON.parse(r.box) as Box & { workspace?: string };
     if (workspace) await shareOutFiles(id, r.task, workspace);
     try {
-      await call("/job/release", { container });
+      // A 2xx with the box still there (Docker didn't remove it) is no release: the claim goes back for the next tend.
+      const { state } = await call("/job/release", { container });
+      if (state !== "missing") throw new Error(`the computer launcher left ${container} ${String(state)}`);
     } catch (e) {
       db.prepare("UPDATE jobs SET released = NULL WHERE id = ? AND released = -1").run(id);
       throw e;
@@ -217,12 +221,15 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     log("job's computer released", { job: id, container });
   }
 
-  /** Every few minutes and at start: live jobs' leases renewed, ended jobs' boxes released (retried until the launcher agrees). */
+  /**
+   * Every few minutes and at start: live jobs' leases renewed (an admitted one's too: its box is cloning before the run),
+   * ended jobs' boxes released (retried until the launcher agrees).
+   */
   async function tend() {
     const rows = db.prepare("SELECT id, task, state, box, renewed FROM jobs WHERE authority IS NOT NULL AND box IS NOT NULL AND released IS NULL").all() as { id: string; task: string; state: string; box: string; renewed: number | null }[];
     for (const r of rows) {
       try {
-        if (r.state !== "running") await release(r.id);
+        if (r.state !== "running" && r.state !== "admitted") await release(r.id);
         else if (now() - (r.renewed ?? 0) >= RENEW_MS) {
           await call("/job/renew", { container: (JSON.parse(r.box) as Box).container, issueId: r.task });
           db.prepare("UPDATE jobs SET renewed = ? WHERE id = ?").run(now(), r.id);

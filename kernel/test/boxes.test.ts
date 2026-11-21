@@ -55,7 +55,7 @@ async function host(t) {
     req.on("end", () => {
       const body = JSON.parse(b);
       calls.push({ route: req.url, auth: req.headers.authorization, body });
-      if (req.url !== "/job") return res.writeHead(200).end(JSON.stringify({ state: "missing" }));
+      if (req.url !== "/job") { const state = launcher.releaseState ?? "missing"; delete launcher.releaseState; return res.writeHead(200).end(JSON.stringify({ state })); }
       if (launcher.fail) { const status = launcher.fail; launcher.fail = 0; return res.writeHead(status).end(JSON.stringify({ error: "launcher trouble" })); }
       const container = `aidenhq-computer-k${++n}`, outDir = join(cfg.boxDir, container), envFile = join(cfg.boxDir, `${container}.env`);
       mkdirSync(outDir);
@@ -162,7 +162,7 @@ test("an engineer job's box clones its task's repos itself before the run: the n
   assert.deepEqual(h.cloned.map(([c, argv]) => [c, argv.at(-1)]), [[box, "acme/widget"], [box, "acme/api"], [box, "acme/gone"]]);
   assert.deepEqual(h.cloned[0][1].slice(0, 2), ["sh", "-c"]);
   assert.match(h.cloned[0][1][2], /exec aidenhq clone "\$3"$/);
-  assert.deepEqual(h.cloned[0][1].slice(4), ["/workspace/widget", "/workspace/acme--widget", "acme/widget"]);
+  assert.deepEqual(h.cloned[0][1].slice(4), ["/workspace/widget", "/workspace/acme--widget", "acme/widget", "acme/widget"]);
   assert.equal(existsSync(join(h.cfg.workDir, "tasks", "PEN-3", "widget", ".git")), true);
   const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8"));
   assert.match(spec.prompt, /^\(Kernel note: `acme\/gone` is named in the task but couldn't be cloned/);
@@ -230,6 +230,24 @@ test("a release runs once however often it is asked; a cleanup spares a workspac
   await boxes.tend();
   assert.ok(existsSync(two));
   assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-2'").get().released > 0);
+});
+
+test("tend keeps an admitted job's box (it is cloning) and renews its lease; a release the launcher leaves running is retried", async (t) => {
+  const h = await host(t);
+  let at = 1_000_000;
+  const boxes = h.make(() => at);
+  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, box, renewed) VALUES ('j-1', 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', 1, '[]', 0, 0, 'admitted', '{}', ?, ?)").run(JSON.stringify({ container: "c-1" }), at);
+  at += 6 * 60_000;
+  await boxes.tend();
+  assert.deepEqual(h.calls.map((c) => c.route), ["/job/renew"]);
+  h.db.prepare("UPDATE jobs SET state = 'done' WHERE id = 'j-1'").run();
+  h.calls.length = 0;
+  h.launcher.releaseState = "running";
+  await boxes.tend();
+  assert.equal(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-1'").get().released, null);
+  await boxes.tend();
+  assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-1'").get().released > 0);
+  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 2);
 });
 
 test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {
