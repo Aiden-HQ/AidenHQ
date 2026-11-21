@@ -95,16 +95,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   stopping?: () => boolean;
 }) {
 
-  /** Jobs this process is launching (their rows are admitted, their boxes cloning). */
-  const launching = new Set<string>();
-
   /** admission.ts `launch`: the job's token, its engine home and workspace, its box, then the run. */
   async function launch(job: Admitted) {
-    launching.add(job.id);
-    try { await launchJob(job); } finally { launching.delete(job.id); }
-  }
-
-  async function launchJob(job: Admitted) {
     const { authority: a } = job;
     const workspace = join(cfg.workDir, "tasks", job.identifier);
     const state = engineState(cfg, a.engine, `${job.agent}/${job.task}`, a.skills);
@@ -149,7 +141,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   /**
    * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned by its box itself from the
    * code host's bundle (`aidenhq clone <org/name>` in the box, as the job) into /workspace/<name> on its default branch, before
-   * the run starts; one already there (<name> or <org>--<name>, its origin this repo or none) is kept as it is. Host git and host fs writes never run in the
+   * the run starts; one already there (`--keep`: <name> or <org>--<name>, its origin this repo or none) is kept as it is; one
+   * of another org's same-named repo is refused. Host git and host fs writes never run in the
    * workspace. A refusal is told to the job (its notes); a kernel or code host that can't answer now makes the launch a 503, so
    * admission tries again.
    */
@@ -157,10 +150,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const named = mentionedRepos(await clones.text(job.task)).filter((r) => clones.may(job.module, r)).slice(0, MAX_CLONES);
     const notes: string[] = [];
     for (const repo of named) {
-      const [org, name] = repo.split("/");
-      // A clone there is kept when its origin names this repo (or it has none); one of another org's same-named repo isn't
-      // (aidenhq clone then refuses it, told to the job).
-      const r = await boxExec(box, ["sh", "-c", 'for d in "$1" "$2"; do test -d "$d/.git" && case "$(git -C "$d" remote get-url origin 2>/dev/null | tr A-Z a-z)" in ""|*[/:]"$4"|*[/:]"$4".git) exit 0;; esac; done; exec aidenhq clone "$3"', "sh", `/workspace/${name}`, `/workspace/${org}--${name}`, repo, repo.toLowerCase()]);
+      const r = await boxExec(box, ["aidenhq", "clone", "--keep", repo]);
       const said = r.out.replace(/^aidenhq: /, "").slice(0, 200);
       if (r.code === 0) { log("repository cloned into the job's workspace", { job: job.id, repo }); continue; }
       if (r.code === CLONE_UNAVAILABLE) throw new JobError(503, "clone-failed", `${repo} couldn't be cloned now (${said})`);
@@ -250,14 +240,6 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
 
   return {
     launch,
-    /**
-     * Once the previous kernel has exited (main.ts, before admission.recover drops their rows): the boxes of launches it left
-     * admitted go back, all at once. One the launcher can't take back now lapses with its lease.
-     */
-    async abandoned() {
-      const rows = db.prepare("SELECT id FROM jobs WHERE state = 'admitted' AND box IS NOT NULL AND released IS NULL").all() as { id: string }[];
-      await Promise.all(rows.filter((r) => !launching.has(r.id)).map((r) => release(r.id).catch((e: Error) => log("couldn't release an abandoned launch's computer", { job: r.id, err: e.message }))));
-    },
     /** jobs.ts onEnd: the job is over, its box goes. */
     ended: (id: string) => void release(id).catch((e: Error) => log("couldn't release a job's computer", { job: id, err: e.message })),
     tend,

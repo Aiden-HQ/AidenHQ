@@ -160,9 +160,7 @@ test("an engineer job's box clones its task's repos itself before the run: the n
   // In the job's own box, as the job (the box's env file), in task order: the clone is the box's `aidenhq clone`.
   const box = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).container;
   assert.deepEqual(h.cloned.map(([c, argv]) => [c, argv.at(-1)]), [[box, "acme/widget"], [box, "acme/api"], [box, "acme/gone"]]);
-  assert.deepEqual(h.cloned[0][1].slice(0, 2), ["sh", "-c"]);
-  assert.match(h.cloned[0][1][2], /exec aidenhq clone "\$3"$/);
-  assert.deepEqual(h.cloned[0][1].slice(4), ["/workspace/widget", "/workspace/acme--widget", "acme/widget", "acme/widget"]);
+  assert.deepEqual(h.cloned[0][1], ["aidenhq", "clone", "--keep", "acme/widget"]);
   assert.equal(existsSync(join(h.cfg.workDir, "tasks", "PEN-3", "widget", ".git")), true);
   const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8"));
   assert.match(spec.prompt, /^\(Kernel note: `acme\/gone` is named in the task but couldn't be cloned/);
@@ -232,7 +230,7 @@ test("a release runs once however often it is asked; a cleanup spares a workspac
   assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-2'").get().released > 0);
 });
 
-test("tend keeps an admitted job's box (it is cloning) and renews its lease; a release the launcher leaves running is retried; an abandoned launch's box goes back", async (t) => {
+test("tend keeps an admitted job's box (it is cloning) and renews its lease; a release the launcher leaves running is retried", async (t) => {
   const h = await host(t);
   let at = 1_000_000;
   const boxes = h.make(() => at);
@@ -248,11 +246,6 @@ test("tend keeps an admitted job's box (it is cloning) and renews its lease; a r
   await boxes.tend();
   assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-1'").get().released > 0);
   assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 2);
-  // A launch the previous kernel left admitted: its box goes back once that kernel has exited.
-  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, box) VALUES ('j-2', 'acme-dispatch', 'agent-1', 'task-2', 'wait', 0, '', '', 1, '[]', 0, 0, 'admitted', '{}', ?)").run(JSON.stringify({ container: "c-2" }));
-  await boxes.abandoned();
-  assert.equal(h.calls.at(-1).body.container, "c-2");
-  assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-2'").get().released > 0);
 });
 
 test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {

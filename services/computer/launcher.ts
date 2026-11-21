@@ -129,12 +129,14 @@ const jobState = async (name: string) => {
 const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
+// A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping.
 async function destroy(name: string, why: string) {
+  const r = await docker(["rm", "-f", name]);
+  if (r.exitCode !== 0 && (await jobState(name)) !== "missing") return log("couldn't destroy", name, why, r.stderr.trim());
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
   rmSync(path.join(jobEnvDir, name), { recursive: true, force: true });
-  await docker(["rm", "-f", name]);
   log("destroyed", name, why);
 }
 

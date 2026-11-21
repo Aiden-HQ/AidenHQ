@@ -602,7 +602,7 @@ const admission = createAdmission({
     return (await r.json()) as never;
   } },
 });
-afterPrevious(() => void boxes.abandoned().then(() => admission.recover()));
+afterPrevious(() => admission.recover());
 const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver,
