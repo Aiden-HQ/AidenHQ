@@ -354,11 +354,12 @@ records the checkout's git HEAD for `repo:product` and `repo:instance`, and the 
 Watch's webhook when anything changed. On demand:
 `ops/security-sbom.sh`, then `docker compose exec security-scanner node dist/src/main.js once`.
 
-To enable, before adding `security` to the instance's modules:
+The apply installs and enables the timer while the module is on, and its `AIDENHQ_DIR` follows the checkout the apply applied
+(`~/.config/aidenhq-security-sbom.env`, written every apply), so a batch never runs an older checkout that
+`~/.config/aidenhq-checkout.env` names. `scripts/healthcheck.sh` fails an apply whose SBOM unit would run another checkout's
+`ops/security-sbom.sh`. To run the first batch once the module is on:
 
 ```sh
-cp ops/units/aidenhq-security-sbom.service ops/units/aidenhq-security-sbom.timer ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now aidenhq-security-sbom.timer
 systemctl --user start aidenhq-security-sbom   # first batch; also creates data/modules/security/sbom as you (not root)
 ```
 

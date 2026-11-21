@@ -1,7 +1,7 @@
-// scripts/healthcheck.sh against fake `systemctl`, `curl` and `docker`: the host-metrics check (the unit's ExecStart must
-// name the applied checkout's ops/host-metrics.sh, read the way systemd resolves it) and the sign-in checks for a
-// connection whose /healthz says it is unconfigured (a skip) or signed out (a FAIL printing the detail, apostrophes and
-// all).
+// scripts/healthcheck.sh against fake `systemctl`, `curl` and `docker`: the host-metrics and security-sbom checks (the
+// unit's ExecStart must name the applied checkout's ops/<name>.sh, read the way systemd resolves it) and the sign-in checks
+// for a connection whose /healthz says it is unconfigured (a skip) or signed out (a FAIL printing the detail, apostrophes
+// and all).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
@@ -15,21 +15,22 @@ const NOT_LINUX = process.platform !== "linux" && "compares realpaths; macOS tem
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
- * A checkout with the real healthcheck.sh and host-metrics.sh, a module catalog, and a fake systemctl serving ExecStart.
- * `healthz` maps a service's port to its /healthz body (a fake curl serves it; every other request fails).
+ * A checkout with the real healthcheck.sh and the given timers' ops/<name>.sh scripts, a module catalog, and a fake
+ * systemctl serving the named service's ExecStart. `healthz` maps a service's port to its /healthz body (a fake curl
+ * serves it; every other request fails).
  */
-function checkout({ modules = true, timer = true, healthz = {} } = {}) {
+function checkout({ modules = true, timer = true, healthz = {}, name = "host-metrics", service = "aidenhq-host-metrics.service", timerUnit = "aidenhq-host-metrics.timer" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "healthcheck-"));
   for (const d of ["scripts", "ops", "bin", "config", "home/.config/systemd/user", "healthz"]) mkdirSync(join(dir, d), { recursive: true });
   copyFileSync(join(here, "../healthcheck.sh"), join(dir, "scripts/healthcheck.sh"));
-  writeFileSync(join(dir, "ops/host-metrics.sh"), "#!/usr/bin/env bash\n");
-  writeFileSync(join(dir, "config/modules.json"), JSON.stringify([{ name: "monitoring", enabled: modules }]) + "\n");
-  if (timer) writeFileSync(join(dir, "home/.config/systemd/user/aidenhq-host-metrics.timer"), "[Timer]\n");
+  writeFileSync(join(dir, `ops/${name}.sh`), "#!/usr/bin/env bash\n");
+  writeFileSync(join(dir, "config/modules.json"), JSON.stringify([{ name: "monitoring", enabled: modules }, { name: "security", enabled: modules }]) + "\n");
+  if (timer) writeFileSync(join(dir, "home/.config/systemd/user", timerUnit), "[Timer]\n");
   writeFileSync(join(dir, "execstart"), "");
   for (const [port, body] of Object.entries(healthz)) writeFileSync(join(dir, `healthz/${port}`), body);
   writeFileSync(join(dir, "bin/systemctl"), `#!/usr/bin/env bash
 case "$*" in
-  *"show aidenhq-host-metrics.service"*) cat "$EXECSTART" ;;
+  *"show ${service}"*) cat "$EXECSTART" ;;
   *) exit 1 ;;
 esac
 `);
@@ -89,6 +90,33 @@ test("the host-metrics check passes when the unit runs this checkout's script", 
   writeFileSync(join(dir, "execstart"), execStart(join(dir, "ops/host-metrics.sh")) + "\n");
   const r = await run(dir);
   assert.match(r.out, /^  ok    host metrics timer runs the applied checkout$/m, r.out);
+});
+
+test("the security-sbom check fails when the unit runs another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
+  const dir = checkout({ name: "security-sbom", service: "aidenhq-security-sbom.service", timerUnit: "aidenhq-security-sbom.timer" });
+  const other = join(dir, "old-checkout/ops/security-sbom.sh");
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, "#!/usr/bin/env bash\n");
+  // ~/.config/aidenhq-checkout.env names the checkout setup recorded, as on a host the applies never moved, and no
+  // per-apply file exists yet: that checkout's script is what the unit would run.
+  writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
+  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/security-sbom.sh") + "\n");
+  const r = await run(dir);
+  const line = r.out.split("\n").find((l) => l.includes("security sbom timer runs the applied checkout"));
+  assert.ok(line, r.out);
+  assert.match(line, /^  FAIL  security sbom timer runs the applied checkout  /, line);
+  assert.ok(line.includes(realpathSync(other)), line);
+  assert.ok(line.includes(join(realpathSync(dir), "ops/security-sbom.sh")), line);
+});
+
+test("the security-sbom check passes when the unit runs this checkout's script", async () => {
+  const dir = checkout({ name: "security-sbom", service: "aidenhq-security-sbom.service", timerUnit: "aidenhq-security-sbom.timer" });
+  // The checkout setup recorded is another one; the apply's per-apply file, read after it, names this checkout and wins.
+  writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
+  writeFileSync(join(dir, "home/.config/aidenhq-security-sbom.env"), `AIDENHQ_DIR=${dir}\n`);
+  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/security-sbom.sh") + "\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  ok    security sbom timer runs the applied checkout$/m, r.out);
 });
 
 const services = [
