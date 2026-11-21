@@ -87,7 +87,10 @@ export function addDays(d: string, n: number): string {
 }
 
 /** Today's YYYY-MM-DD in the board's timezone. */
-export const todayIn = (timeZone: string) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+export function todayIn(timeZone: string): string {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
 
 /** Where Snooze parks a task until `date`: tomorrow waits in Tomorrow, 2 to 7 days out in Later, further out in Backlog. */
 export function parkBucket(today: string, date: string): Bucket {
