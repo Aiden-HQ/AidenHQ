@@ -26,10 +26,18 @@
 //   review (the session's ExitedReviewMode, which the shell can't write) is mapped to ours. It doesn't use our repo tools, so which
 //   parts of the change it read isn't tracked (said as a note, `untracked`: real partial coverage, a failed or cut-off run, is
 //   still incomplete). Recheck goes to codex.
-import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+// skill:<option id>: an installed upstream skill or plugin (the engineer image's /opt/review, pinned) run by its own harness
+//   (claude-code or codex, the catalog's `run.harness`) over the change or, in tree mode, the whole tree (the empty tree as base):
+//   the skill's own slash command with the range as its argument, then, in the same session, our "restate the findings as JSON"
+//   step. Same sandbox and token rules as the harness's own engine; only that skill (never the repo's) is loaded. It reads the tree
+//   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
+// deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deepsec } from "./deepsec.ts";
+import { run, stopped } from "./proc.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Each engine's efforts (what it accepts), and whether it answers our prompts (verify, recheck) or only reviews. */
@@ -38,22 +46,36 @@ export const ENGINES: Record<string, { efforts: string[]; asks: boolean }> = {
   "claude-code": { efforts: ["low", "medium", "high", "xhigh", "max"], asks: true },
   codegenie: { efforts: ["low", "medium", "high", "xhigh", "max"], asks: false },
   "codex-native": { efforts: ["minimal", "low", "medium", "high", "xhigh"], asks: false },
+  deepsec: { efforts: ["minimal", "low", "medium", "high", "xhigh"], asks: false },
 };
+/** The harnesses a `skill:<option id>` engine runs in. */
+const HARNESSES = ["claude-code", "codex"];
 const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 
 /** One review run's engine, model and effort (JSON from the spec, with the repo's ignore globs and max_nits). */
-export interface Combo { engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean }
+export interface Combo {
+  engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean;
+  /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skill` (see resolveSkill). */
+  harness?: string; skill?: string;
+}
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
   /** The finder step: an engine with a review of its own runs it, then answers `prompt` from it. */
   own?: boolean;
   /** The merge base (trusted): where an engine that reads repo config takes it from. */
   trusted?: string;
+  /** `tree`: the whole tree at the head (base is the empty tree); else the change. */
+  target?: "tree" | "pr";
+  /** Skill engines: the harness, the skill (resolveSkill) and where the image keeps skills (default /opt/review). */
+  harness?: string; skill?: string; skillsRoot?: string;
+  /** deepsec: its spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
+  budget_usd?: number; setupFiles?: Record<string, string>;
 }
 /** `calls`: the repo tools a run called, with the arguments code checks coverage by (path, the page `from`, `stat`). */
 /** `incomplete`: the engine covered only part of the change. `untracked`: it reads the change its own way, so which parts it read
  * isn't tracked (its tool calls aren't reported): a note, never partial coverage. */
-export interface EngineResult { message: string; read: boolean; calls?: Call[]; cause?: string; incomplete?: string; untracked?: string }
+/** `covered`: the files the engine reports it analysed (deepsec). `setup`: files the engine set the repo up with (deepsec init). */
+export interface EngineResult { message: string; read: boolean; calls?: Call[]; cause?: string; incomplete?: string; untracked?: string; covered?: string[]; setup?: Record<string, string> }
 /** `whole`: a read through the shell (`git diff`) whose output came back whole, of the paths after `--` or, with none, all. */
 export type Call = { tool: string; path?: string; from?: number; stat?: boolean; whole?: boolean };
 /**
@@ -83,10 +105,12 @@ export const callOf = (tool: string, a: Record<string, unknown> | undefined): Ca
 /** Why a combo can't run, or undefined. */
 export function comboProblem(c: Combo | null | undefined) {
   if (!c || typeof c !== "object") return "a combo is an object";
-  const e = ENGINES[c.engine];
-  if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}`;
+  const skill = typeof c.engine === "string" && c.engine.startsWith("skill:");
+  if (skill && (!HARNESSES.includes(c.harness as string) || typeof c.skill !== "string" || !c.skill)) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skill`;
+  const e = skill ? ENGINES[c.harness!] : ENGINES[c.engine];
+  if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}, skill:<option>`;
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return "model is an OpenRouter model id (e.g. ~deepseek/deepseek-flash-latest)";
-  if (!e.efforts.includes(c.effort)) return `effort for ${c.engine} is one of ${e.efforts.join(", ")}`;
+  if (!e.efforts.includes(c.effort)) return `effort for ${skill ? c.harness : c.engine} is one of ${e.efforts.join(", ")}`;
   return undefined;
 }
 
@@ -97,7 +121,8 @@ export function plan(c: Combo) {
 }
 
 /** The engine that answers our prompts for this combo, and at what effort: its own, or codex on the same model (max is its xhigh). */
-export function asker(c: Pick<Combo, "engine" | "effort">) {
+export function asker(c: Pick<Combo, "engine" | "effort" | "harness">) {
+  if (c.engine.startsWith("skill:")) return { engine: c.harness!, effort: c.effort };
   if (ENGINES[c.engine]?.asks) return { engine: c.engine, effort: c.effort };
   return { engine: "codex", effort: ENGINES.codex!.efforts.includes(c.effort) ? c.effort : "xhigh" };
 }
@@ -107,42 +132,98 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
   if (engine === "claude-code") return claudeCode(i);
   if (engine === "codegenie") return codegenie(i);
   if (engine === "codex-native") return codexNative(i);
+  if (engine === "deepsec") return deepsecEngine(i);
+  if (engine.startsWith("skill:")) return skillEngine(i);
   throw new Error(`no engine ${engine}`);
+}
+
+/** An installed skill: how its harness invokes it, the skill folders to load and the plugin folders to enable. */
+export interface Skill { invocation: string; skillDirs: string[]; pluginDirs: string[] }
+/** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
+const SKILLS_ROOT = "/opt/review";
+
+/**
+ * The catalog's `run.skill` as an installed skill. `/<plugin>:<command>` is a Claude Code plugin (plugins/<plugin>); `/<name>` a
+ * skill of that name under skills/ (or, when none is installed, the harness's own command, e.g. `/code-review`); and
+ * `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>` (`$<name>` in codex).
+ * Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
+ */
+export function resolveSkill(skill: string, harness: string, root = SKILLS_ROOT): Skill {
+  const repo = /^([\w.-]+)\/([\w.-]+):([\w.-]+)$/.exec(skill);
+  const cmd = /^\/([\w.-]+)(?::([\w.-]+))?$/.exec(skill);
+  if (!repo && !cmd) throw new Error(`skill "${skill}" is /<name>, /<plugin>:<command> or <owner>/<repo>:<name>`);
+  const sigil = harness === "codex" ? "$" : "/";
+  if (cmd?.[2]) {
+    const dir = join(root, "plugins", cmd[1]!);
+    if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${cmd[1]} isn't installed for ${harness}`);
+    return { invocation: skill, skillDirs: [], pluginDirs: [dir] };
+  }
+  const name = (repo ? repo[3] : cmd![1])!;
+  const base = repo ? join(root, "skills", `${repo[1]}__${repo[2]}`) : join(root, "skills");
+  let found: string[] = [];
+  try { found = readdirSync(base, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(base, dirname(f))); } catch {}
+  if (!found.length && repo) throw new Error(`skill ${name} isn't installed from ${repo[1]}/${repo[2]}`);
+  return { invocation: `${sigil}${name}`, skillDirs: found.slice(0, 1), pluginDirs: [] };
+}
+
+/** The skill's folders linked into the harness's user skills folder (a fresh one per run: nothing else is loaded). */
+function linkSkills(sk: Skill | undefined, dir: string) {
+  if (!sk?.skillDirs.length) return;
+  mkdirSync(dir, { recursive: true });
+  for (const d of sk.skillDirs) symlinkSync(d, join(dir, basename(d)));
+}
+
+async function skillEngine(i: EngineInput): Promise<EngineResult> {
+  const sk = resolveSkill(String(i.skill), String(i.harness), i.skillsRoot);
+  if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
+  const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
+  // It ran its own way: a finished run counts as read, and says its coverage isn't tracked.
+  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocation} reads the code its own way, so which files it read isn't tracked` };
+}
+
+/** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
+async function deepsecEngine({ model, effort, root, base, minutes, scratch, target, budget_usd, setupFiles }: EngineInput): Promise<EngineResult> {
+  try {
+    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, model, effort, budget_usd: budget_usd ?? 5, scratch, setupFiles, minutes });
+    return { message: JSON.stringify({ findings: review.findings, stale_guidance: [] }), read: true, covered: review.covered, ...(review.incomplete ? { incomplete: review.incomplete } : {}), ...(setup ? { setup } : {}) };
+  } catch (e) {
+    return { message: "", read: false, cause: String((e as Error).message ?? e).slice(0, 300) };
+  }
 }
 
 const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$/, "");
 
-async function codex({ prompt, instructions, model, effort, root, base, minutes, scratch }: EngineInput): Promise<EngineResult> {
+async function codex({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "codex-"));
   const home = join(tmp, "home"), cwd = join(tmp, "cwd"); // cwd: empty, not a repository, so codex loads nothing of the repo
   mkdirSync(home);
   mkdirSync(cwd);
+  linkSkills(sk, join(home, "skills"));
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions, repo: { root, base } }));
   const out = join(tmp, "answer.txt");
-  const r = await run("codex", ["exec", "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, prompt], { cwd, minutes, env: codexEnv(home) });
-  const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  const calls = events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
-    .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []);
-  const done = r.code === 0 && events.some((e) => e?.type === "turn.completed");
-  const said = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
+  const calls: Call[] = [];
+  const turn = async (task: string, resume?: string) => {
+    const r = await run("codex", ["exec", ...(resume ? ["resume", resume] : []), "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, task], { cwd, minutes, env: codexEnv(home) });
+    const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+    calls.push(...events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
+      .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []));
+    const done = r.code === 0 && events.some((e) => e?.type === "turn.completed");
+    const said = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
+    return { r, done, said, thread: events.find((e) => e?.type === "thread.started")?.thread_id };
+  };
+  let session: string | undefined;
+  if (sk && own) {
+    // The skill's own run over the range, its findings then restated as our JSON in the same thread.
+    const first = await turn(`${sk.invocation} ${base}..HEAD`);
+    if (!first.done || !first.thread) return { message: "", read: false, calls, cause: first.done ? "codex gave no thread to continue" : stopped(first.r, first.said) };
+    session = first.thread;
+    prompt = `Now restate every finding of that run, and only those, in this shape. Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+  }
+  const last = await turn(prompt, session);
   let message = "";
   try { message = readFileSync(out, "utf8"); } catch {}
-  return { message: done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: done ? undefined : stopped(r, said) };
+  return { message: last.done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: last.done ? undefined : stopped(last.r, last.said) };
 }
-
-/** A child process to its end (killed at `minutes`): exit code, stdout, the tail of stderr. */
-async function run(cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; minutes?: string | number }) {
-  const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = "", stderr = "", timedOut = false;
-  child.stdout.on("data", (d: Buffer) => (stdout += d));
-  child.stderr.on("data", (d: Buffer) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
-  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, Number(o.minutes ?? 20) * 60_000);
-  const code = await new Promise<number | null>((ok) => { child.on("close", ok); child.on("error", () => ok(null)); });
-  clearTimeout(timer);
-  return { code, stdout, stderr, timedOut };
-}
-const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, said = "") =>
-  r.timedOut ? "timed out" : /\b402\b|cap_reached|budget/i.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
 
 /** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
  * result (never a word inside the diff itself). */
@@ -150,10 +231,10 @@ const CUT = /^"?(<persisted-output>|Output too large|\[?\d+ (characters|lines) t
 
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
-type CodexEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string } };
+type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string } };
 type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
-async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
+async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
   const home = join(tmp, "home"), cwd = join(tmp, "cwd");
   mkdirSync(home);
@@ -161,6 +242,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its empty cwd, no network restriction
   // (none set, so no network namespace), never run outside it.
   mkdirSync(join(home, ".claude"));
+  linkSkills(sk, join(home, ".claude", "skills"));
   writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false } }));
   const mcp = join(tmp, "mcp.json");
   writeFileSync(mcp, JSON.stringify({ mcpServers: { repo: { command: process.execPath, args: [join(HERE, "review-tools.ts"), root, base] } } }));
@@ -176,7 +258,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", // its Bash never sees the token
   };
   const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", "Agent,Bash",
-    "--allowedTools", ["Agent", "Bash", ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
+    ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
   const calls: Call[] = [];
   const turn = async (task: string, resume?: string) => {
     const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes });
@@ -199,11 +281,12 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   };
   let session: string | undefined;
   if (own) {
-    // Claude Code's own review of the change (base..HEAD in the box's history), its findings then restated as our JSON.
-    const first = await turn(`/code-review ${effort} ${base}..HEAD --max-findings all`);
+    // Claude Code's own review of the change (base..HEAD in the box's history), or the skill's command over that range, its
+    // findings then restated as our JSON.
+    const first = await turn(sk ? `${sk.invocation} ${base}..HEAD` : `/code-review ${effort} ${base}..HEAD --max-findings all`);
     if (!first.ok) return { message: "", read: false, calls, cause: stopped(first.r, first.end?.result ?? "") };
     session = first.end?.session_id;
-    prompt = `Now restate every finding of that review, and only those, in this shape. Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    prompt = `Now restate every finding of that ${sk ? "run" : "review"}, and only those, in this shape. Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
   }
   const last = await turn(prompt, session);
   if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };
