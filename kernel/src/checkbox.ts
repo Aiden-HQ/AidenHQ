@@ -71,6 +71,7 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
         }
       }
       const { container } = box;
+      const at = Date.now();
       boxed(container);
       // The env file, the log and its exit status sit beside the out folder, in the attempt's own folder: the kernel's, never
       // mounted in the box. The env file stays until the attempt's folder goes (docker reads it as the run starts).
@@ -78,7 +79,7 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
       try {
         writeFileSync(envFile, Object.entries(env).map(([k, v]) => `${k}=${String(v).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { mode: 0o600 });
         const pid = spawnRun(["docker", "exec", "--env-file", envFile, "-w", posix.join(BOX_WORKSPACE, cwd), container, ...argv], log);
-        return { container, pid, log, deadline: Date.now() + timeoutMs };
+        return { container, pid, log, deadline: Date.now() + timeoutMs, at };
       } catch (e) {
         await release(container);
         throw e;

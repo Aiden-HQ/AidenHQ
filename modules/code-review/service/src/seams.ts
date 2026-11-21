@@ -64,12 +64,12 @@ export type ReviewSpec = {
   /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };
-/** `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
+/** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
  * the run is charged its whole run_usd. `waiting`: its check job has no computer yet. A running one's is its spend so far (what the day budget counts). */
 export type RunResult =
-  | { state: "running"; billed_usd?: number; waiting?: boolean }
-  | { state: "done"; review: Review; billed_usd?: number }
-  | { state: "failed"; why: string; billed_usd?: number };
+  | { state: "running"; billed_usd?: number; waiting?: boolean; box_at?: string }
+  | { state: "done"; review: Review; billed_usd?: number; box_at?: string }
+  | { state: "failed"; why: string; billed_usd?: number; box_at?: string };
 export interface ReviewRunner {
   /** Starts the run; returns its check job's id. */
   start(spec: ReviewSpec): Promise<{ check: string }>;

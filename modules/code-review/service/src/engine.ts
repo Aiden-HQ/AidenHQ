@@ -32,6 +32,8 @@ export type RunRow = {
   id: string; repo: string; number: number; head: string; base: string; engine: string; model: string; effort: string; run_usd: number;
   kind: Kind; status: Status; why: string | null;
   cost_usd: number; important: number; nit: number; pre_existing: number; started: string | null; ended: string | null; check_job: string | null;
+  /** When its check job got its box (ISO): a review's wall time runs from here, excluding queueing. */
+  box_at: string | null;
   focus: string | null; full: number; incremental_from: string | null; due: number; created: number;
   posted: string | null; author: string; attempts: number;
   /** The trigger it ran for (its combos share it), and whether it rechecks the PR's still-open findings (the batch's first run). */
@@ -96,6 +98,7 @@ export function createEngine(d: EngineDeps) {
     db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
   db.exec(DDL);
+  if (!(db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "box_at")) db.exec("ALTER TABLE runs ADD COLUMN box_at TEXT");
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
@@ -465,6 +468,7 @@ export function createEngine(d: EngineDeps) {
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       waiting.delete(r.id);
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
+      if (res.box_at && !("err" in res)) run("UPDATE runs SET box_at = COALESCE(box_at, ?) WHERE id = ?", res.box_at, r.id);
       if (res.state !== "running") await finish(r, res);
       else {
         if (res.waiting && !("err" in res)) waiting.add(r.id);
@@ -548,7 +552,7 @@ const round = (n: number) => Math.round(n * 10_000) / 10_000;
 function view(r: RunRow & { title?: string | null }, waiting = false) {
   return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: waiting ? "waiting" : r.status, why: r.why, cost_usd: round(r.cost_usd),
     tokens_in: r.tokens_in, tokens_cached: r.tokens_cached, tokens_out: r.tokens_out, duration_ms: r.duration_ms,
-    important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, check_job: r.check_job,
+    important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, box_at: r.box_at, check_job: r.check_job,
     full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, url: `https://github.com/${r.repo}/pull/${r.number}`,
     ...(r.title ? { title: r.title } : {}), ...(r.review_url ? { review_url: r.review_url } : {}), ...(r.resolved != null ? { resolved: r.resolved } : {}) };
 }

@@ -2,7 +2,7 @@
 // Aiden's one-offs go through the same routes):
 //   GET  /reviews?repo=&status=&limit=   → { runs }
 //   GET  /reviews/:id                    → { run, review: Review | null }
-//   GET  /reviews?repo=… runs carry engine, model, effort, cost_usd (billed), tokens_in/cached/out and duration_ms
+//   GET  /reviews?repo=… runs carry engine, model, effort, cost_usd (billed), tokens_in/cached/out, duration_ms and box_at (when its check job got its box; wall time excludes queueing)
 //   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
 //   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any open or merged PR the instance can read, one run per
 //                                        combo (default: the repo's on_open), each posted

@@ -58,7 +58,7 @@ export function fakeBox(run) {
       const p = Promise.resolve().then(() => run(o));
       p.catch(() => {});
       runs.set(container, p);
-      return { container, pid: 0, log: "", deadline: 0 };
+      return { container, pid: 0, log: "", deadline: 0, at: Date.now() };
     },
     async follow(h) { return runs.has(h.container) ? runs.get(h.container) : "gone"; },
   };
