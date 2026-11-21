@@ -381,8 +381,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       return false;
     });
     if (noted) return true;
-    const id = (await kernel.task(w.task).catch(() => undefined))?.identifier ?? w.task;
-    return kernel.notify({ kind: "decision", task: w.task, dedupe_key: `refused-wake:${w.key}`, text: refusalForOwner(id, e) }).then(() => true, (err: Error) => {
+    // The owner's notice names its task by identifier (WOR-123): the kernel refuses a Paperclip id there.
+    const id = (await kernel.task(w.task).catch(() => undefined))?.identifier;
+    return kernel.notify({ kind: "decision", ...(id ? { task: id } : {}), dedupe_key: `refused-wake:${w.key}`, text: refusalForOwner(id ?? w.task, e) }).then(() => true, (err: Error) => {
       log("refused wake: the owner's notice wasn't posted either", { wake: w.key, task: w.task, err: err.message });
       return false;
     });

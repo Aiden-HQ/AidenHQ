@@ -838,7 +838,7 @@ test("a refused wake is not dropped until its refusal landed: the owner is told 
   await k.dispatch.tick();
   assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"]);
   assert.equal(k.notified.length, 1, "the owner hears when the task can't carry the notice");
-  assert.equal(k.notified[0].task, "t1");
+  assert.equal(k.notified[0].task, "WOR-1", "by identifier: the kernel's notify takes no Paperclip id");
   assert.equal(k.notified[0].dedupe_key, "refused-wake:issue:t1:1", "once per wake");
   assert.match(k.notified[0].text, /WOR-1 was not started/);
   assert.match(k.notified[0].text, /task-closed/);
