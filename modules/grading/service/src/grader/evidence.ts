@@ -707,8 +707,9 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     try {
       j = await deps.citedJob(repo, c.id);
     } catch (err: any) {
-      // A refusal (no grant on that repo, not owner/name) never changes by waiting: it is the answer, once, not a retry.
-      if (c.repo && [400, 403].includes(Number(err?.status))) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      // Only our own definite refusals are final (kernel/src/codehost.ts: no grant on the repo, not owner/name): they never change
+      // by waiting. A rate limit or any other transient failure is rethrown so the next look retries it.
+      if (c.repo && /\bhas no \w+ grant on |\bis not owner\/name\b/.test(String(err?.message ?? ""))) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
       throw err;
     }
     if (!j) continue;

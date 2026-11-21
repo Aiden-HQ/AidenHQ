@@ -148,4 +148,7 @@ test("a job cited under a misspelled owner resolves to the graded PR's real owne
   const denied = await citedEvidence([job!], deps, ["acme/app"]);
   assert.equal(denied.awaiting, undefined, "a refusal is never a retry every minute");
   assert.match(denied.facts.join("\n"), /could not be read \(grading has no read grant on AidenHQ\/AidenHQ\)/);
+
+  const limited = citeDeps({ citedJob: async () => { throw Object.assign(new Error("API rate limit exceeded"), { status: 403 }); } });
+  assert.match((await citedEvidence([job!], limited, [])).awaiting, /could not be read yet/, "a rate-limit 403 is retried");
 });
