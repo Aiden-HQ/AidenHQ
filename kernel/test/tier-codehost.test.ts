@@ -34,15 +34,22 @@ test("three rejected github.pr cards park their branch, not the task's other bra
   assert.deepEqual([actionOf("acme.post"), actionOf("primer.publish"), actionOf("apps-platform.deploy")], ["acme.post", "primer.publish", "deploy_app"]);
 });
 
-test("the same head on a renamed branch is refused as rejected content", () => {
-  const records = [rejectedPr("b1", HEAD, "2026-11-19T10:00:00.000Z")];
+test("the same head on a renamed branch is refused as rejected content; one rejection gets one fresh review on another family", () => {
+  const at = "2026-11-19T10:00:00.000Z", min = (n) => Date.parse(at) + n * 60_000;
+  const records = [{ ...rejectedPr("b1", HEAD, at), requestChain: "chain-hash" }];
   // A module PR record carries `only`, so its key (the commit) is read the same as a verified request's `branches`.
   const renamed = target("b3", HEAD);
   assert.equal(requestKey("pr", renamed), requestKey("pr", { branches: renamed.only }));
-  const prior = priorDecisions(records, "pr", [], requestKey("pr", renamed), undefined, "chain-hash", requestTargets("pr", renamed));
-  assert.equal(prior.same, "it leaks a secret");
-  const part = priorPart(prior);
+  const prior = (chain, now, list = records) => priorDecisions(list, "pr", [], requestKey("pr", renamed), undefined, chain, requestTargets("pr", renamed), now);
+  assert.equal(prior("chain-hash", min(5)).same, "it leaks a secret");
+  const part = priorPart(prior("chain-hash", min(5)), min(5));
   assert.deepEqual([part?.rule, part?.reject], ["rejected-content", true]);
+  // Its inputs changed (the request, the comments, the decisions or the pin), or the cooldown passed: one fresh review, the
+  // rejecting model's family asked last.
+  for (const p of [prior("chain-new", min(5)), prior("chain-hash", min(31))]) assert.deepEqual([p.same, p.avoid, priorPart(p)], [undefined, "~acme/model-a", undefined]);
+  // A second rejection of the same content is final, whatever changed.
+  const twice = [...records, { ...rejectedPr("b3", HEAD, "2026-11-19T11:00:00.000Z"), requestChain: "chain-new" }];
+  assert.equal(priorPart(prior("chain-newer", min(600), twice), min(600))?.rule, "rejected-content");
   // The patch key reads `only` too (an amended resubmission on a new branch).
   const patched = [{ repo: REPO, branch: "b4", sha: NEW, patch: "patch-key" }];
   assert.deepEqual([requestPatches("pr", { only: patched }), requestPatches("pr", { branches: patched })], ["patch-key", "patch-key"]);

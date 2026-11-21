@@ -1,0 +1,28 @@
+{
+  "name": "gate wording fix on a panel card: approved even when one panel reviewer balks",
+  "why": "Owner, 2026-11-21 (fail open): an approve + reject panel split goes to a third reviewer of a third family, given both notes, and two to one decides instead of the split bouncing back to the agent and then to the owner. A gate file's message wording, asked for by the Platform Engineer's line, changes no behaviour: the whole panel, third vote included, must approve it.",
+  "card": {
+    "action": "pr",
+    "target": "acme/aidenhq (branch fix/merge-gate-wording -> main)",
+    "sentence": "Open a PR: reword the merge gate's failing-check note",
+    "reason": "a product PR touching gate code",
+    "panel": true
+  },
+  "diff": "diff --git a/modules/github/service/src/merge-gate.ts b/modules/github/service/src/merge-gate.ts\nindex 1b2c3d4..5e6f7a8 100644\n--- a/modules/github/service/src/merge-gate.ts\n+++ b/modules/github/service/src/merge-gate.ts\n@@ -40,7 +40,7 @@ export function gateNote(pr: Pr, checks: Check[]) {\n   const failing = checks.filter((c) => c.conclusion === \"failure\");\n   if (failing.length) {\n-    return `Not merged: ${failing.length} check${failing.length === 1 ? \"\" : \"s\"} failed (${failing.map((c) => c.name).join(\", \")}).`;\n+    return `Not merged: ${failing.length} check${failing.length === 1 ? \"\" : \"s\"} failed: ${failing.map((c) => c.name).join(\", \")}.`;\n   }\n   return undefined;\n }\ndiff --git a/modules/github/test/merge-gate.test.ts b/modules/github/test/merge-gate.test.ts\nindex 2c3d4e5..6f7a8b9 100644\n--- a/modules/github/test/merge-gate.test.ts\n+++ b/modules/github/test/merge-gate.test.ts\n@@ -12,3 +12,3 @@ test(\"a failing check names itself\", () => {\n-  assert.equal(gateNote(pr, [fail(\"tests\")]), \"Not merged: 1 check failed (tests).\");\n+  assert.equal(gateNote(pr, [fail(\"tests\")]), \"Not merged: 1 check failed: tests.\");\n });\n",
+  "changed": [
+    {
+      "path": "modules/github/service/src/merge-gate.ts",
+      "add": 1,
+      "del": 1
+    },
+    {
+      "path": "modules/github/test/merge-gate.test.ts",
+      "add": 1,
+      "del": 1
+    }
+  ],
+  "chain": "Fleet Steward to the Platform Engineer: the merge gate's note reads \"failed (tests)\" and the owner's board parses names after a colon. Change the note to \"failed: tests.\" and update its test; nothing else.",
+  "claim": "Rewords the failing-check note and its test.",
+  "expect": "approve",
+  "expect_second": true
+}

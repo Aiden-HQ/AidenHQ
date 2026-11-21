@@ -58,7 +58,7 @@ import { createConnectionState, type ConnectionState } from "./connection-state.
 import { CHIEF, CONVERSING_MS, createEscalate, ownerWroteAt } from "./escalate.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
-import { createReviewLoop } from "./review-loop.ts";
+import { createReviewLoop, modelSettings } from "./review-loop.ts";
 import { createNotices, type NoticeOpts } from "./notices.ts";
 import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
@@ -335,6 +335,9 @@ const gitIn = (dir: string, args: string[]) => new Promise<string>((ok, no) => e
 let ownerUser: string | undefined;
 const reviewLoop = createReviewLoop({
   records, writes, log,
+  // The product commit this kernel runs (its reviewer's policy and models) and the fleet's model settings: what a rejection read.
+  pin: async () => (await gitIn(repo, ["rev-parse", "HEAD"])).trim(),
+  settings: () => modelSettings(grantsTable().agents as never),
   // Declared after this (it needs the finish checks); asked only once a sweep runs.
   grade: (id) => checks.grade(id),
   product: () => (repos().product ? [repos().product!] : []),

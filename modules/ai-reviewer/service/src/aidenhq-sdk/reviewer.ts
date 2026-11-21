@@ -45,6 +45,10 @@ export interface ReviewRequest {
   comments?: string;
     /** `decisions`: the instance's decisions.md, read by the requester from the instance repo's default branch. */
   decisions?: { where: string; text: string };
+  /** The fleet's current model and engine choices, rendered by the kernel from the compiled grants table (code's, never prose). */
+  settings?: string;
+  /** A model whose rejection this review follows (a fresh review of the same content, a parked target's panel): its family is asked last. */
+  avoid?: string;
   /** The ledger's name for the model calls (the card's review, or an agent's check before filing). */
   component?: string;
 }
@@ -57,7 +61,7 @@ export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: s
 /** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */
 export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "grader_note", "comments"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "settings", "requesterModel", "avoid", "panel", "previous", "grader_note", "comments"] as const;
 
 /** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;

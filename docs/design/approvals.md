@@ -28,14 +28,19 @@ a change too large to read) goes back to the agent, never to the owner.
   request of it there is the owner's until they approve one. The reviewer's rejection holds for exactly that content (the same
   commits or patch, under any branch name): such a request is refused by code before any review until a decision on the task
   answers it: the owner's own comment, or a comment by the agent that created the task or the chief of staff (owner,
-  2026-11-20: a delegator's or chief of staff's decision may lift a rejection and a park, once per target; never the
+  2026-11-20: a delegator's or chief of staff's decision may lift a rejection and a park, at most once per 30 minutes on a
+  task (owner, 2026-11-21); never the
   requester's own comment, nor an edit of the title or description); the agent changes it or reports back (owner,
   2026-11-18: refile only after a fix). The reviewer reads the task's comments (TASK_COMMENTS), each under a label code writes from its author:
   the owner's words, the delegator's or chief of staff's amendment of their request (an agent's, never the owner's), the
   requester's own context. Changed content is reviewed afresh with every earlier note attached. After `MAX_REJECTS` (5; owner,
-  2026-11-20, raised from 3) unanswered reviewer rejections of one branch or PR since the owner's last yes, that target is parked with a note to the
-  agent; the task's other targets are still reviewed. A decision on the task lifts the park: agents' decisions once per
-  target (`AGENT_LIFTS`), the owner's always. A triage write (label, comment, close) is judged on the verdict the triaging
+  2026-11-20, raised from 3) unanswered reviewer rejections of one branch or PR since the owner's last yes, that target is parked for
+  `REVIEW_COOLDOWN_MS` (30 minutes), then a panel reviews it again (the last rejector's family asked last); after
+  `PANEL_TRIES` (2) panel rejections the next request is the owner's card, reviewed first (owner, 2026-11-21: fail open,
+  never a permanent park). The task's other targets are still reviewed. A decision on the task lifts the park sooner.
+  The same content rejected once gets one fresh review once the reviewer's inputs change (the request chain, the task's
+  comments, the decisions digest, the product pin) or after the cooldown, on another family where one is left; a second
+  rejection of it is final. A triage write (label, comment, close) is judged on the verdict the triaging
   agent reached: whether a stranger's issue is credible is that agent's judgement, not evidence the reviewer is owed (owner,
   2026-11-20). A rejection counts on the branch it was raised against, by name or by the
   change's content key; an action that names no branch or PR (an apply, a module digest) has the task as its target. Code's own
@@ -58,15 +63,16 @@ a change too large to read) goes back to the agent, never to the owner.
 - **Tier 1: AI reviewer.** A card is filed and the reviewer decides. With `panel`, a second reviewer (another model family
   than the first's and the requester's) answers the same question blind to the first's verdict after a first approve; the
   first rejecting sends it back without asking the second. A first reviewer's `unsure` goes to a second reviewer (another
-  family) given the first's note. Two votes decide (owner, 2026-11-20: under full autonomy no panel outcome is the owner's
-  but the 4th split below):
+  family) given the first's note. Two votes decide, and a third reviewer of a third family breaks a tie (owner,
+  2026-11-21; it may be the requester's own family when no other is left):
 
   | Votes | Outcome |
   |---|---|
   | approve + approve | approved (`reviewer:A+B`) |
   | approve + unsure | approved, the unsure one recorded as `second_unsure` (`reviewer:A;unsure:B`), only when code verified the input whole; otherwise back to the agent (`reviewer_unsure`) |
-  | unsure + unsure | back to the agent with both notes (`reviewer_unsure`), never the owner |
-  | approve + reject | back to the agent with both notes (`panel_split`), up to 3 times on a target; the 4th goes to the owner (Tier 2). Splits have their own count and never count toward the 3-rejection park bound |
+  | unsure + unsure | on input code verified whole, a third reviewer decides (its unsure: back to the agent, `reviewer_unsure`); otherwise back to the agent. Never the owner |
+  | approve + reject | a third reviewer reads both notes and decides two to one; its unsure, or none left, sends it back to the agent (`panel_split`, an ordinary rejection). Never the owner |
+  | no independent model left (`no_independent_model`) | the kernel approves a Tier 1 card (`kernel/code`); a card that is the owner's on its merits still goes to him |
   | reject (first, or after an unsure) | rejected, back to the agent |
   | escalate (either) | the owner, as one reviewer's escalate |
 

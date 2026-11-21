@@ -21,7 +21,7 @@ const ok = { content: JSON.stringify({ decision: "approve", reason: "matches the
 const flagged = { content: JSON.stringify({ decision: "approve", reason: "a gate fix as asked", second_review: true }) };
 const no = { content: JSON.stringify({ decision: "reject", reason_code: "gate_change", reason: "it fails open", second_review: true }) };
 
-test("the panel: code's flag or the reviewer's own asks a second family; approve + reject goes back to the agent", async () => {
+test("the panel: code's flag or the reviewer's own asks a second family; approve + reject goes to a third family, whose vote decides", async () => {
   // Code says authority-expanding: Luna, then GLM (never DeepSeek for a DeepSeek requester, never OpenAI after Luna).
   let r = asker([ok, ok]);
   const both = await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: r.ask, panel: true });
@@ -29,10 +29,24 @@ test("the panel: code's flag or the reviewer's own asks a second family; approve
   assert.equal(both.decision, "approve");
   assert.equal(both.second, GLM);
   // The first reviewer's own flag adds the second reviewer; a missing flag counts as set.
-  r = asker([flagged, no]);
+  // Approve + reject: a third reviewer of the family neither used reads both notes; two to one decides (owner, 2026-11-21).
+  let prompts = [];
+  r = asker([flagged, no, ok]);
+  const twoToOne = await review({ card, diff: "+x", policy: "p", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
+  assert.deepEqual(r.asked, [LUNA, GLM, DEEPSEEK]);
+  assert.deepEqual([twoToOne.decision, twoToOne.model, twoToOne.second], ["approve", LUNA, DEEPSEEK]);
+  assert.match(prompts[2].user, /<<<EARLIER_REVIEWERS\n[^]*approve \(a gate fix as asked\)\n[^]*reject \(it fails open\)\nEARLIER_REVIEWERS>>>/);
+  r = asker([flagged, no, no]);
+  const outvoted = await review({ card, diff: "+x", policy: "p", ask: r.ask });
+  assert.deepEqual([outvoted.decision, outvoted.code, outvoted.model], ["reject", "gate_change", DEEPSEEK]);
+  // A third that is unsure, or none left (a DeepSeek requester: Luna, GLM, then only its own family, which is asked), sends it back.
+  r = asker([flagged, no, { content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "can't tell", second_review: false }) }]);
   const split = await review({ card, diff: "+x", policy: "p", ask: r.ask });
-  assert.deepEqual([split.decision, split.code, split.model], ["reject", "panel_split", GLM]);
+  assert.deepEqual([split.decision, split.code], ["reject", "panel_split"]);
   assert.match(split.reason, /fix what the rejecting one names.*approve \(a gate fix as asked\).*reject \(it fails open\)/);
+  r = asker([flagged, no, ok]);
+  assert.equal((await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: r.ask })).decision, "approve");
+  assert.deepEqual(r.asked, [LUNA, GLM, DEEPSEEK], "the requester's own family breaks the tie when no other is left");
   r = asker([{ content: JSON.stringify({ decision: "approve", reason: "fine" }) }, ok]);
   assert.equal((await review({ card, diff: "+x", policy: "p", ask: r.ask })).second, GLM, "no flag in the answer: asked anyway");
   // A first reject never needs the second: back to the agent.
@@ -72,13 +86,22 @@ test("two votes (owner, 2026-11-20): approve + unsure approves only on input cod
   // The code host's own count of the change (numstat at filing) matches the diff, and there is a chain: verified whole.
   const diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new";
   const whole = { diff, chain: "Owner: change old to new.", files: { list: [], leftOut: [], changed: [{ path: "src/a.ts", add: 1, del: 1 }] } };
-  // Unsure twice: rejected (back to the agent) with both notes, decided by the second reviewer (GLM after Luna), never the owner.
-  let r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing")]);
+  // Unsure twice on input verified whole: a third family decides (owner, 2026-11-21); unsure again, back to the agent with
+  // every note, never the owner.
+  let r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing"), unsure("still can't tell")]);
   let prompts = [];
   const twice = await review({ card, ...whole, policy: "p", requesterModel: "deepseek/deepseek-flash", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
-  assert.deepEqual(r.asked, [LUNA, GLM]);
-  assert.deepEqual([twice.decision, twice.code, twice.model], ["reject", "reviewer_unsure", GLM]);
-  assert.match(twice.reason, /^Two AI reviewers were unsure; fix the request: .*the brief contradicts itself.*37 files are missing/);
+  assert.deepEqual(r.asked, [LUNA, GLM, DEEPSEEK]);
+  assert.deepEqual([twice.decision, twice.code, twice.model], ["reject", "reviewer_unsure", DEEPSEEK]);
+  assert.match(twice.reason, /^Three AI reviewers were unsure; fix the request: .*the brief contradicts itself.*37 files are missing.*still can't tell/);
+  r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing"), ok]);
+  const third = await review({ card, ...whole, policy: "p", ask: r.ask });
+  assert.deepEqual([third.decision, third.model, third.second_unsure, third.whole], ["approve", DEEPSEEK, GLM, true]);
+  // Not verified whole: two unsures go back without a third.
+  r = asker([unsure("the brief contradicts itself"), unsure("37 files are missing")]);
+  const back2 = await review({ card, diff: "+x", chain: "c", policy: "p", ask: r.ask });
+  assert.deepEqual([back2.decision, back2.code, r.asked.length], ["reject", "reviewer_unsure", 2]);
+  assert.match(back2.reason, /^Two AI reviewers were unsure; fix the request: /);
   // The second reviewer reads the first's note, fenced as data; the first never sees one.
   assert.doesNotMatch(prompts[0].user, /FIRST_REVIEWER/);
   assert.match(prompts[1].user, /<<<FIRST_REVIEWER\nthe brief contradicts itself\nFIRST_REVIEWER>>>/);
