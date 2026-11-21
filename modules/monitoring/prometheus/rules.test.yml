@@ -1,5 +1,6 @@
-# The alert rules' behaviour (docs/design/monitoring.md, "Alerts and routing"), run by promtool in CI's `rules` job:
+# The alert rules' behaviour (docs/design/monitoring.md, "Alerts and routing"):
 #   promtool test rules modules/monitoring/prometheus/rules.test.yml
+# CI does not run it yet (no workflow step does; see docs/design/monitoring.md for the change that adds one).
 # Prometheus's own rule test: synthetic series in, alerts out at each eval time.
 rule_files:
   - rules.yml
@@ -107,6 +108,45 @@ tests:
               unit: aidenhq-ci-runner@7.service
             exp_annotations:
               summary: "CI runner unit aidenhq-ci-runner@7.service stopped reporting (it was in units.prom within the last day)"
+
+  # Restart=always reaches neither CiRunnersDown nor UnitFailed: a runner unit dropping out of `active` over and over
+  # (a refused registration token) is a loop, and it fires CiRunnerRestartLooping once it has stayed that way for 5 minutes.
+  - name: a CI runner unit that keeps dropping out is a restart loop
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x36'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x36'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerRestartLooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scope: user
+              unit: aidenhq-ci-runner@3.service
+            exp_annotations:
+              summary: "CI runner unit aidenhq-ci-runner@3.service keeps restarting and isn't staying up: its registration token is probably refused"
+
+  # A runner holding steady (waiting for a job, or on one) is not a loop, however long it is watched: no alert.
+  - name: a CI runner unit holding steady is not a restart loop
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '1x36'
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@4.service"}'
+        values: '0x36'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x36'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x36'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerRestartLooping
+        exp_alerts: []
 
   # A unit that failed is still in the snapshot, so it reads as UnitFailed and the missing-unit rule leaves it alone.
   - name: a failed CI runner unit reads as UnitFailed, not as missing
