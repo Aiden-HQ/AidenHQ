@@ -54,7 +54,7 @@ const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
   mode TEXT NOT NULL DEFAULT 'auto', focus TEXT, updated TEXT NOT NULL,
   author TEXT NOT NULL DEFAULT '', draft INTEGER NOT NULL DEFAULT 0, fork INTEGER NOT NULL DEFAULT 0, open INTEGER NOT NULL DEFAULT 1,
-  last_reviewed_base TEXT, title TEXT, PRIMARY KEY (repo, number));
+  last_reviewed_base TEXT, title TEXT, close_due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, number));
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL,
   engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, run_usd REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
   cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
@@ -99,6 +99,7 @@ export function createEngine(d: EngineDeps) {
   }
   db.exec(DDL);
   if (!(db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "box_at")) db.exec("ALTER TABLE runs ADD COLUMN box_at TEXT");
+  if (!(db.prepare("PRAGMA table_info(prs)").all() as { name: string }[]).some((c) => c.name === "close_due")) db.exec("ALTER TABLE prs ADD COLUMN close_due INTEGER NOT NULL DEFAULT 0");
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
@@ -427,18 +428,10 @@ export function createEngine(d: EngineDeps) {
         run("UPDATE runs SET status = 'skipped', why = 'closed', ended = ? WHERE id = ?", iso(), q.id);
         end(runRow(q.id)!);
       }
-      // Its review task held only its posts' approvals: done with the PR.
-      // The PR stays open here until the close lands, so a failed close is tried again next poll.
-      if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL", cfg.repo, gone.number)) {
-        try {
-          await d.poster.close(cfg.repo, gone.number, "The pull request is closed.");
-        } catch (e) {
-          log("review task not closed", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) });
-          if (!permanent(e)) continue;
-        }
-      }
-      run("UPDATE prs SET open = 0 WHERE repo = ? AND number = ?", cfg.repo, gone.number);
+      // Its review task held only its posts' approvals: done with the PR. The close is retried after the tick's main work (closeTasks).
+      run("UPDATE prs SET open = 0, close_due = EXISTS (SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL) WHERE repo = ? AND number = ?", cfg.repo, gone.number, cfg.repo, gone.number);
     }
+    reconciled.add(cfg.repo);
     if (!cursor) return void run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
     const got = await d.source.comments(cfg.repo, cursor.comments);
     for (const c of got.comments) {
@@ -459,8 +452,34 @@ export function createEngine(d: EngineDeps) {
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
+  const CLOSE_MS = 10_000;
+  /** Closes the review tasks of PRs a poll found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */
+  const reconciled = new Set<string>(); // repos whose open and closed PRs this tick's poll has read
+  async function closeTasks() {
+    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").filter((g) => reconciled.has(g.repo)).map(async (g) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([d.poster.close(g.repo, g.number, "The pull request is closed."), new Promise((_, no) => { timer = setTimeout(() => no(new Error("close timed out")), CLOSE_MS); })]);
+      } catch (e) {
+        log("review task not closed", { repo: g.repo, pr: g.number, err: String((e as Error).message).slice(0, 200) });
+        if (!permanent(e)) return;
+      } finally {
+        clearTimeout(timer);
+      }
+      run("UPDATE prs SET close_due = 0 WHERE repo = ? AND number = ?", g.repo, g.number);
+    }));
+  }
+
   const errors = new Map<string, string>();
   async function tick() {
+    reconciled.clear();
+    try {
+      await tickWork();
+    } finally {
+      await closeTasks();
+    }
+  }
+  async function tickWork() {
     for (const cfg of d.config().repos) {
       try {
         await poll(cfg);

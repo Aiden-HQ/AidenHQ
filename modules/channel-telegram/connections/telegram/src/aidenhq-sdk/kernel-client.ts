@@ -76,7 +76,7 @@ export function factEmitter(client: KernelClient, log: (msg: string, f?: Record<
   timer.unref?.();
   return {
     /** `at` is queued as UTC (`Z`): offsets from a source never reach the log (an unparsable one is left for the kernel to refuse). */
-    emit(f: FactIn) { const ms = Date.parse(f.at); queue.push(Number.isNaN(ms) ? f : { ...f, at: new Date(ms).toISOString() }); if (queue.length > max) queue = queue.slice(-max); },
+    emit(f: FactIn) { const ms = Date.parse(f.at); queue.push(Number.isNaN(ms) ? { ...f } : { ...f, at: new Date(ms).toISOString() }); if (queue.length > max) queue = queue.slice(-max); },
     flush,
     stop: () => clearInterval(timer),
   };

@@ -39,7 +39,7 @@ function world(settings = {}) {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
       result: async (c) => results.get(c) ?? { state: "running" },
     },
-    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => void closed.push(a) },
+    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); } },
     emit: (f) => facts.push(f),
   });
   const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.merge_base, head: s.head, ...s.combo, incremental_from: s.incremental_from, full: s.full,
@@ -89,6 +89,20 @@ test("a new PR runs each on_open combo, each posted with its combo; a push debou
   w.prs.set(2, { ...w.prs.get(2), open: false, merged: true }); await w.tick();
   assert.deepEqual(w.engine.run(cc.id).findings.map((f) => f.outcome), ["open_at_merge"]);
   assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 2]]);
+});
+
+test("a review task whose close fails is closed on a later tick", async () => {
+  const w = world();
+  await w.tick(); w.later(1000);
+  w.pr(2, sha("2")); await w.tick();
+  w.finish(0); w.later(5000); await w.tick();
+  w.prs.set(2, { ...w.prs.get(2), open: false, merged: true });
+  w.perms.closeDown = true; await w.tick();
+  assert.deepEqual(w.closed, []);
+  await w.tick();
+  assert.deepEqual(w.closed.map((c) => c.slice(0, 2)), [[REPO, 2]]);
+  await w.tick();
+  assert.equal(w.closed.length, 1);
 });
 
 test("a PR open at the first look, or seen before any run, gets its on_open review once; a draft waits; a merge while the review ran still posts, a close does not", async () => {

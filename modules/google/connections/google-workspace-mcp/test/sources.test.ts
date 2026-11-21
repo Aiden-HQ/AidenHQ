@@ -61,3 +61,18 @@ it("src_docs: summaries only for quiet docs whose revision changed, stamped with
   expect(writes[0]!.row).toMatchObject({ doc_id: "d1", summary: "A Q4 plan for Atlas.", summary_rev: "12", summary_model: "~z-ai/glm-flash-latest", summary_prompt: PROMPT_VERSION, summary_error: null });
   expect(writes[1]!.row).toMatchObject({ doc_id: "d2", summary: null, summary_rev: "3", summary_error: expect.stringContaining("404") }); // not retried until it changes
 });
+
+it("src_docs: a transient failure (a 5xx, a rate limit 403) skips that doc unstamped and the pass goes on to older docs", async () => {
+  const due = [{ doc_id: "d1", title: "A", revision: "1" }, { doc_id: "d2", title: "B", revision: "2" }, { doc_id: "d3", title: "C", revision: "3" }];
+  const { store, writes } = fakeStore(due);
+  const drive = {
+    changedFiles: async () => ({ files: [] }),
+    readFile: async (id: string) => {
+      if (id === "d1") throw new Error("Google API 503: unavailable");
+      if (id === "d2") throw new Error('Google API 403: {"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}');
+      return { text: "text", truncated: false };
+    },
+  };
+  await expect(summariseDocs(store, drive, async () => "S", "m")).rejects.toThrow(/503/); // the pass finished, then reported
+  expect(writes.map((w) => w.row.doc_id)).toEqual(["d3"]);
+});
