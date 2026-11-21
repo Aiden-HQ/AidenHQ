@@ -30,7 +30,7 @@ const KEEP_MS = 7 * 24 * 3600_000;
 /** How long GitHub may keep failing on one PR before it is reported not merged. */
 const ERROR_MINUTES = 30;
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
-/** The fixed start of a merge outcome's first line: the PRs this queue merged (finish). */
+/** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
 export const MERGED_LINE = "merged-prs: ";
 
 export function createMerges(d: {
@@ -125,11 +125,13 @@ export function createMerges(d: {
       // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
       if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
-        // Merged after a merge call that got no answer: that call merged it.
-        const ours = p.unanswered && pull?.mergeCommit?.oid;
-        if (ours) Object.assign(p, { status: "merged", sha: pull.mergeCommit.oid, mergedAt: pull.mergedAt ?? now().toISOString() });
-        else Object.assign(p, { status: "skipped", note: v.why });
-        if (pull?.mergeCommit?.oid) d.flow?.merged(p.repo, p.number, p.head, pull.mergeCommit.oid, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
+        // Merged after a merge call that got no answer: that call merged it. Merged at the bound head without our call (GitHub's
+        // own auto-merge, or the owner): it stays skipped, so it gates no further merge here, but its merge commit is evidence.
+        const sha: string | undefined = pull?.mergeCommit?.oid ?? undefined;
+        const ours = Boolean(p.unanswered && sha);
+        if (ours) Object.assign(p, { status: "merged", sha, mergedAt: pull.mergedAt ?? now().toISOString() });
+        else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
+        if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         delete p.wait;
         if (ours) merged.add(p.repo.toLowerCase());
         return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
@@ -179,16 +181,20 @@ export function createMerges(d: {
   }
 
   /**
-   * ok only when every PR the record named merged (or was merged already). The text's first line is MERGED_LINE and the PRs this
-   * queue merged itself, as JSON ({ repo, number, head, sha }, an empty list when none): what readers of the record (the grading
-   * module) take as merged, never the record's args. Then what the queue said, last word last.
+   * ok only when every PR the record named merged (or was merged already). The text's first line is MERGED_LINE and the PRs that
+   * merged at their bound head, as JSON ({ repo, number, head, sha }, an empty list when none): this queue's own merges and the
+   * ones already merged when it polled them (a merge commit at the bound head, its sha), what readers of the record (the grading
+   * module) take as merged, never the record's args. `objects` names only the merge commits this queue made. Then what the queue
+   * said, last word last.
    */
   function finish(id: string, q: Queue) {
     const ok = q.prs.every((p) => p.status === "merged" || p.status === "skipped");
     const n = q.prs.filter((p) => p.status === "merged" || p.status === "skipped").length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
-    const merged = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
-    const objects = merged.map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
+    // A skipped row (already merged at the bound head) is evidence with its merge commit too, but it isn't ours.
+    const evidence = (p: Pr) => (p.status === "merged" || p.status === "skipped") && typeof p.sha === "string";
+    const merged = q.prs.filter(evidence).map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
+    const objects = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
     q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}`, ...(objects.length ? { objects } : {}) };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });

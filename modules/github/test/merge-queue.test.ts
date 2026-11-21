@@ -31,6 +31,7 @@ function fakeGitHub(prs) {
       if (body.query.includes("pullRequest(number")) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
+          mergedAt: p.mergedAt ?? null, mergeCommit: p.merged ? { oid: p.merged } : null,
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: "main",
           files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
@@ -267,6 +268,34 @@ test("a merge-queue wait and its end become waiting and resumed facts with the r
   assert.deepEqual([resumed.version, resumed.data], [waiting.version, { reason: "checks" }], "the end pairs with its wait by version");
   assert.deepEqual(facts.filter((f) => f.type === "pr.merged").map((f) => [f.task, f.data.head]), [["WOR-9", HEAD]]);
   assert.deepEqual(facts.filter((f) => f.type === "pr.checks_completed").map((f) => [f.subject, f.data.conclusion]), [[`pr:acme-agents/widget#1@${HEAD}`, "success"]]);
+});
+
+test("a PR already merged at its bound head before the queue polled it is merged evidence with its merge commit", async (t) => {
+  const mergeSha = "d".repeat(40);
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs });
+  await merge("k-00000000000000c4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.deepEqual(github.merges(), [], "it was already merged: the queue calls nothing");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/);
+  const [line] = outcomes[0].text.split("\n");
+  const listed = JSON.parse(line.replace(/^merged-prs: /, ""));
+  assert.deepEqual(listed, [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the bound head and its real merge commit, what the grader reads");
+  assert.match(listed[0].head, /^[0-9a-f]{40}$/);
+  assert.match(listed[0].sha, /^[0-9a-f]{40}$/);
+  assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's, so it names no object as made here");
+
+  // Merged by someone else at another head: never evidence for this record's bound head.
+  outcomes.length = 0;
+  prs["acme-agents/widget"] = { head: "e".repeat(40), checks: "SUCCESS", state: "MERGED", merged: mergeSha };
+  await merge("k-00000000000000c5", [{ repo: "acme-agents/widget", number: 2, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, false);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/);
+  assert.match(outcomes[0].text, /merged by someone else at/);
 });
 
 test("a merge call that times out after GitHub merged is reported merged, and an outcome the kernel didn't take is delivered again", async () => {
