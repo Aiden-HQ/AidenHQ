@@ -251,6 +251,31 @@ test("checks: a cap the eval names as the install's daily one is the budget the 
   assert.doesNotMatch(v.error, /eval-day/);
 });
 
+test("checks: a capped list that isn't the run's cases is malformed, never read as empty and passed", async () => {
+  // A judge whose `capped` field is not a list of this run's cases could be hiding a capped case: no receipt either way.
+  for (const bad of ["not-a-list", ["a case this run doesn't have"], [42], null]) {
+    const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+      const cases = readdirSync(join(o.workspace, CASES)).sort();
+      writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [], capped: bad }));
+      return { exit: 0, out: "", timedOut: false };
+    });
+    const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+    assert.deepEqual([v.state, v.receipt], ["error", null], `capped: ${JSON.stringify(bad)}`);
+    assert.match(v.error, /`capped` list isn't a list of its cases/);
+  }
+});
+
+test("checks: a result that omits the capped list is an older judge's passing run, not a malformed result", async () => {
+  // The field is the eval's to write: a judge from before it passes with no list at all.
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [] }));
+    return { exit: 0, out: "", timedOut: false };
+  });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt?.verdict, v.capped], ["done", "pass", null]);
+});
+
 test("checks: a result that lists one failed case twice is malformed, never counted twice into the pass rule", async () => {
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
@@ -260,7 +285,7 @@ test("checks: a result that lists one failed case twice is malformed, never coun
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
   assert.deepEqual([v.state, v.receipt], ["error", null], "no receipt for a malformed result");
-  assert.match(v.error, /counts don't match/);
+  assert.match(v.error, /lists one failed case twice/);
 });
 
 test("checks: a restart's re-run never shares the draining kernel's folder, and the old run's late end doesn't overwrite it", async () => {
