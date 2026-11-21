@@ -429,6 +429,8 @@ export async function review({ spec, ws, out, run = runEngine }: { spec: Spec; w
 export function bound(result: Result, max = 200_000) {
   const cov = result.coverage;
   for (const k of ["reviewed", "excluded"] as const) if (cov[k].length > 500) { cov.incomplete = [cov.incomplete, `${cov[k].length - 500} more ${k} files not listed`].filter(Boolean).join("; "); cov[k] = cov[k].slice(0, 500); }
+  // The post takes at most 500 characters of it (schemas/post.json): a long list of gaps is cut, never the post refused.
+  if (cov.incomplete && cov.incomplete.length > 500) cov.incomplete = `${cov.incomplete.slice(0, 497)}…`;
   while (result.findings.length && Buffer.byteLength(JSON.stringify(result)) > max) result.withheld[result.findings.pop()!.severity]++;
   return result;
 }
