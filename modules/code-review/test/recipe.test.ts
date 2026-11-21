@@ -2,13 +2,13 @@
 // folder, the spec file): a fake engine stands in for the model, a fake codex for the codex adapter.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bound, history, review } from "../recipe/review.ts";
 import { argsProblem, page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
-import { callOf, runEngine } from "../recipe/engines.ts";
+import { asker, callOf, nativeFindings, nativeReview, plan, runEngine } from "../recipe/engines.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 const lay = (dir, files) => { for (const [f, t] of Object.entries(files)) (mkdirSync(dirname(join(dir, f)), { recursive: true }), writeFileSync(join(dir, f), t)); };
@@ -296,6 +296,47 @@ JSON
   assert.match(seen, /ARG:--depth\nARG:normal\n/);
   assert.match(seen, /^CODEGENIE_GATEWAY=http:\/\/10\.0\.0\.1:8201\/api\/v1$/m);
   assert.match(seen, /^NODE_OPTIONS=--import=.*gateway-fetch\.ts$/m);
+});
+
+test("the codex-native engine: codex's own review in the checkout, read-only sandbox, through the gateway; its real output mapped to ours", async () => {
+  const fx = join(import.meta.dirname, "fixtures", "codex-native"); // a real `codex exec review` run (codex 0.166.0), its root renamed /workspace
+  assert.deepEqual(nativeFindings(nativeReview([readFileSync(join(fx, "rollout.jsonl"), "utf8")]), ["/workspace"]).map((f) => [f.severity, f.path, f.line, f.title]), [
+    ["important", "lib.js", 12, "Keep filenames out of the shell in lineCount"],
+    ["important", "lib.js", 8, "Restore iteration over every value in sum"],
+    ["important", "lib.js", 4, "Preserve actionable configuration errors"],
+    ["important", "lib.js", 15, "Store cache keys as own data properties"],
+  ]);
+  assert.deepEqual(nativeFindings({ findings: [{ title: "[P3] Tidy", body: "b", priority: 3, code_location: { absolute_file_path: "/w/a.ts", line_range: { start: 2, end: 4 } } }] }, ["/w"]),
+    [{ severity: "nit", path: "a.ts", line: 2, end_line: 4, title: "Tidy", why: "b", evidence: "", fix_brief: "" }]);
+  assert.deepEqual([plan({ engine: "codex-native", effort: "high" }), asker({ engine: "codex-native", effort: "minimal" })], [{ finders: 1, verify: false }, { engine: "codex", effort: "minimal" }]);
+
+  const bin = mkdtempSync(join(tmpdir(), "cr-native-"));
+  const repo = mkdtempSync(join(tmpdir(), "cr-native-repo-"));
+  const run = (rollout) => {
+    writeFileSync(join(bin, "codex"), `#!/bin/sh
+{ pwd; env | sort; for a in "$@"; do echo "ARG:$a"; done; cat "$CODEX_HOME/config.toml"; } > "${bin}/seen"
+mkdir -p "$CODEX_HOME/sessions/2026/11/21"
+${rollout ? `sed "s#/workspace#$PWD#g" "${join(fx, "rollout.jsonl")}" > "$CODEX_HOME/sessions/2026/11/21/rollout.jsonl"` : ""}
+cat "${join(fx, "events.jsonl")}"
+`);
+    chmodSync(join(bin, "codex"), 0o755);
+    const old = { ...process.env };
+    Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, OPENROUTER_API_KEY: "ahqj_run", OPENROUTER_BASE_URL: "http://10.0.0.1:8201/api/v1" });
+    return runEngine("codex-native", { prompt: "ignored", instructions: "the brief", model: "~openai/gpt-terra-latest", effort: "medium", root: repo, base: B, minutes: 5, scratch: mkdtempSync(join(tmpdir(), "cr-s-")), own: true })
+      .finally(() => { process.env = old; });
+  };
+  const r = await run(true);
+  assert.equal(r.read, true);
+  assert.match(r.incomplete, /isn't tracked/);
+  assert.deepEqual(JSON.parse(r.message).findings.map((f) => [f.path, f.line]), [["lib.js", 12], ["lib.js", 8], ["lib.js", 4], ["lib.js", 15]]);
+  const seen = readFileSync(join(bin, "seen"), "utf8");
+  assert.equal(seen.split("\n")[0], realpathSync(repo)); // it reviews the box's checkout itself
+  assert.match(seen, new RegExp(`ARG:exec\nARG:review\nARG:--base\nARG:${B}\nARG:--ignore-rules\n`));
+  assert.match(seen, /^CI_REVIEW_KEY=ahqj_run$/m);
+  assert.ok(!/OPENROUTER_API_KEY/.test(seen), "only the model key, under codex's own name");
+  for (const line of ['sandbox_mode = "read-only"', 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "core"', "hooks = false"]) assert.ok(seen.includes(line), line);
+  // A run with no review in its rollout (codex couldn't read the model's answer) is no review, never a clean one.
+  assert.deepEqual(await run(false), { message: "", read: true, cause: "codex review gave no review" });
 });
 
 test("a review whose finders didn't page through a big file's diff is incomplete and names it; read to the end, it isn't", async () => {

@@ -67,7 +67,8 @@
      "enum": [
       "codex",
       "claude-code",
-      "codegenie"
+      "codegenie",
+      "codex-native"
      ]
     },
     "model": {

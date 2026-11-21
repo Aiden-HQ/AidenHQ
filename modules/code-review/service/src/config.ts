@@ -12,6 +12,8 @@ export const ENGINES = {
     models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"] },
   codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 5,
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "z-ai/glm-5.3"] },
+  "codex-native": { label: "Codex review", efforts: ["minimal", "low", "medium", "high", "xhigh"], run_usd: 5,
+    models: ["~openai/gpt-terra-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "~deepseek/deepseek-flash-latest"] },
 } as const;
 export type Engine = keyof typeof ENGINES;
 

@@ -9,7 +9,7 @@ const SHA = /^[0-9a-f]{40}$/;
 const NAME = "[A-Za-z0-9_.-]{1,100}";
 const oneLine = z.string().max(500).regex(/^[^\r\n]*$/);
 /** Which reviewer a run was: its engine, model and effort (code-review's combo). */
-const ENGINE = z.enum(["codex", "claude-code", "codegenie"]);
+const ENGINE = z.enum(["codex", "claude-code", "codegenie", "codex-native"]);
 const MODEL = z.string().regex(/^~?[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.:~-]{1,100}$/);
 const EFFORT = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
 /** A combo as the posts name it: `codex · ~deepseek/deepseek-flash-latest · medium effort`. */

@@ -2,7 +2,8 @@
 // and hands back its final message; fan-out, verification, dedupe, ranking and the schema are the recipe's (review.ts), the same
 // for every engine. An engine runs in the check box: no credentials but the run's capped model token (OPENROUTER_API_KEY, through
 // the gateway at OPENROUTER_BASE_URL), no shell, its only view of the repo the read-only repo tools (review-tools.ts: the head
-// tree and the box's own history; nothing runs or connects), and nothing of the PR loaded as its config.
+// tree and the box's own history; nothing runs or connects), and nothing of the PR loaded as its config. The exception is
+// codex-native, whose shell runs under codex's read-only sandbox (below).
 //
 // codex: the CI reviewer's own runner and config (code-review.ts, synced from the CI template): shell, hooks, plugins, apps,
 //   memories and web search off, an empty cwd, project docs off. Every task is our prompt.
@@ -15,8 +16,14 @@
 //   .codegenie/skills are the base branch's, never the PR's) with the head as review data, its OpenRouter calls sent to the gateway
 //   by gateway-fetch.ts. It only reviews: its findings are mapped to ours, and the recipe's other prompts (recheck) go to codex on
 //   the same model.
+// codex-native: OpenAI's built-in reviewer, `codex exec review --base <base>` (its own prompt; the brief as its developer
+//   instructions), in the box's checkout (review.ts history: base, head), through the gateway like codex. It reads the change with
+//   git through its shell, which runs under codex's read-only sandbox (no writes, no network), with only the core environment
+//   (never the run's token); project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project
+//   never trusted (so none of the PR's .codex config loads). Its review (the rollout's ExitedReviewMode) is mapped to ours; it
+//   doesn't use our repo tools, so which parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, runCodex } from "./code-review.ts";
@@ -27,6 +34,7 @@ export const ENGINES: Record<string, { efforts: string[]; asks: boolean }> = {
   codex: { efforts: ["minimal", "low", "medium", "high", "xhigh"], asks: true },
   "claude-code": { efforts: ["low", "medium", "high", "xhigh", "max"], asks: true },
   codegenie: { efforts: ["low", "medium", "high", "xhigh", "max"], asks: false },
+  "codex-native": { efforts: ["minimal", "low", "medium", "high", "xhigh"], asks: false },
 };
 const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 
@@ -77,6 +85,7 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
   if (engine === "codex") return codex(i);
   if (engine === "claude-code") return claudeCode(i);
   if (engine === "codegenie") return codegenie(i);
+  if (engine === "codex-native") return codexNative(i);
   throw new Error(`no engine ${engine}`);
 }
 
@@ -198,4 +207,95 @@ async function codegenie({ model, effort, root, base, minutes, scratch, own, tru
   const partial = b?.completeness && b.completeness !== "complete" ? `codegenie's review was ${b.completeness}` : cov?.totalHunks && (cov.reviewedHunks ?? 0) < cov.totalHunks ? `codegenie reviewed ${cov.reviewedHunks ?? 0} of ${cov.totalHunks} hunks` : undefined;
   // It read the change when it reviewed any of it (its coverage), or the change was empty.
   return { message: JSON.stringify({ findings: genieFindings(v), stale_guidance: [] }), read: !cov?.totalHunks || (cov.reviewedHunks ?? 0) > 0, ...(partial ? { incomplete: partial } : {}) };
+}
+
+/** codex review's own output (its ReviewOutputEvent), as far as the mapping reads it. */
+type NativeFinding = { title?: string; body?: string; priority?: number; code_location?: { absolute_file_path?: string; line_range?: { start?: number; end?: number } } };
+export type NativeReview = { findings?: NativeFinding[]; overall_correctness?: string; overall_explanation?: string };
+type NativeEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; command?: string; exit_code?: number | null } };
+
+/** The review in codex's session rollouts (JSONL): the last ExitedReviewMode item's output, or undefined. */
+export function nativeReview(rollouts: string[]): NativeReview | undefined {
+  let found: NativeReview | undefined;
+  for (const text of rollouts) for (const l of text.split("\n")) {
+    if (!l.includes("ExitedReviewMode")) continue;
+    try { const e = JSON.parse(l); if (e?.payload?.item?.type === "ExitedReviewMode" && e.payload.item.review_output) found = e.payload.item.review_output; } catch {}
+  }
+  return found;
+}
+
+/** codex review's findings as our finder JSON: P0-P2 important, P3 (or none) a nit; its absolute paths made relative to `roots`. */
+export function nativeFindings(v: NativeReview, roots: string[]) {
+  return (v.findings ?? []).flatMap((f) => {
+    const p = f.code_location?.absolute_file_path, start = f.code_location?.line_range?.start, end = f.code_location?.line_range?.end;
+    if (typeof p !== "string" || !Number.isInteger(start)) return [];
+    const root = roots.find((r) => p.startsWith(`${r}/`));
+    return [{
+      severity: [0, 1, 2].includes(f.priority as number) ? "important" : "nit", path: root ? p.slice(root.length + 1) : p, line: start!,
+      ...(Number.isInteger(end) && end! > start! ? { end_line: end! } : {}),
+      title: String(f.title ?? "").replace(/^\s*\[P\d\]\s*/, ""), why: String(f.body ?? ""), evidence: "", fix_brief: "",
+    }];
+  });
+}
+
+/** The codex config for its built-in review: the model through the gateway, the shell under the read-only sandbox, nothing of the repo loaded. */
+export function nativeConfig({ model, effort, url, instructions }: { model: string; effort: string; url: string; instructions: string }) {
+  const q = (s: unknown) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
+  return `model = ${q(model)}
+model_provider = "review"
+model_reasoning_effort = ${q(effort)}
+model_context_window = 262144
+sandbox_mode = "read-only"
+approval_policy = "never"
+web_search = "disabled"
+check_for_update_on_startup = false
+project_doc_max_bytes = 0
+developer_instructions = ${q(instructions)}
+
+[model_providers.review]
+name = "review"
+base_url = ${q(url)}
+env_key = "CI_REVIEW_KEY"
+wire_api = "responses"
+
+[features]
+hooks = false
+plugins = false
+apps = false
+memories = false
+
+[skills]
+include_instructions = false
+
+[shell_environment_policy]
+inherit = "core"
+
+[analytics]
+enabled = false
+
+[history]
+persistence = "none"
+`;
+}
+
+async function codexNative({ instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
+  if (!own) throw new Error("codex-native only reviews");
+  const tmp = mkdtempSync(join(scratch, "codex-native-"));
+  const home = join(tmp, "home");
+  mkdirSync(home);
+  writeFileSync(join(home, "config.toml"), nativeConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));
+  const r = await run("codex", ["exec", "review", "--base", base, "--ignore-rules", "--json", "-o", join(tmp, "answer.txt")], {
+    cwd: root, minutes, env: { PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") },
+  });
+  const events: NativeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+  // It read the change: a git diff it ran that succeeded (inside the sandbox).
+  const read = events.some((e) => e.type === "item.completed" && e.item?.type === "command_execution" && e.item.exit_code === 0 && /\bgit\b[^|;&]*\bdiff\b/.test(String(e.item.command)));
+  let rollouts: string[] = [];
+  try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
+  const v = nativeReview(rollouts);
+  // A review is one codex finished whose output parsed (codex leaves overall_correctness empty when the model's answer didn't).
+  const done = r.code === 0 && events.some((e) => e.type === "turn.completed") && !!v && ["patch is correct", "patch is incorrect"].includes(String(v.overall_correctness));
+  const said = events.filter((e) => e.type === "error" || e.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
+  if (!done) return { message: "", read, cause: r.code === 0 && !r.timedOut ? "codex review gave no review" : stopped(r, said) };
+  return { message: JSON.stringify({ findings: nativeFindings(v!, [root.replace(/\/$/, ""), realpathSync(root)]), stale_guidance: [] }), read, incomplete: "codex review read the change with git itself, so which parts it read isn't tracked" };
 }

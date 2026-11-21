@@ -96,7 +96,7 @@ export interface ReposView {
   errors?: string[];
 }
 /** GET /engines: the catalog the pickers offer (the module's ENGINES). */
-export type Engine = "codex" | "claude-code" | "codegenie";
+export type Engine = "codex" | "claude-code" | "codegenie" | "codex-native";
 export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[]; run_usd: number }>;
 /** One review run's reviewer: its engine, model and effort, and the most the run may spend. */
 export interface Combo {
@@ -115,10 +115,11 @@ const EFFORTS: Record<Engine, readonly string[]> = {
   codex: ["minimal", "low", "medium", "high", "xhigh"],
   "claude-code": ["low", "medium", "high", "xhigh", "max"],
   codegenie: ["low", "medium", "high", "xhigh", "max"],
+  "codex-native": ["minimal", "low", "medium", "high", "xhigh"],
 };
 export const ComboSchema = z
   .object({
-    engine: z.enum(["codex", "claude-code", "codegenie"]),
+    engine: z.enum(["codex", "claude-code", "codegenie", "codex-native"]),
     model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id, like ~deepseek/deepseek-flash-latest"),
     effort: z.string(),
     run_usd: z.number().min(0.01).max(20),
