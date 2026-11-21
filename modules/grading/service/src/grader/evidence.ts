@@ -703,10 +703,13 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     const text = r.outcome_text ?? r.outcome?.text ?? "";
     return { citation: c, id: c.id, exists: true, state: String(r.state ?? "unknown"), outcome: { ...(typeof r.ok === "boolean" ? { ok: r.ok } : r.outcome?.ok !== undefined ? { ok: Boolean(r.outcome.ok) } : {}), text: String(text ?? "") } };
   }
-  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): the graded PRs' and report's repos
-  // are looked at first, and one whose name matches ignoring case and dashes is the real owner/name.
-  const flat = (r: string) => r.toLowerCase().replace(/[^a-z0-9/]/g, "");
-  const known = repos.find((r) => c.repo && flat(r) === flat(c.repo));
+  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): an exact (case-insensitive) match among
+  // the graded PRs' and report's repos wins; otherwise the one known repo that differs only by dashes and case is the real owner/name.
+  const lower = (r: string) => r.toLowerCase();
+  const nodash = (r: string) => lower(r).replace(/-/g, "");
+  const exact = repos.find((r) => c.repo && lower(r) === lower(c.repo));
+  const variants = repos.filter((r) => c.repo && nodash(r) === nodash(c.repo));
+  const known = exact ?? (variants.length === 1 ? variants[0] : undefined);
   const candidates = c.repo ? [known ?? c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
   for (const repo of candidates) {
     let j: any;
@@ -716,7 +719,11 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
       // A 403 or 404 on a cited repo is a definite refusal (no grant, not owner/name, "Resource not accessible by integration",
       // no such repo) that waiting never changes: the answer, shown once. A rate limit (message, x-ratelimit-remaining: 0 or a
       // retry-after header) and any other failure are rethrown so the next look retries them.
-      if (c.repo && [403, 404].includes(Number(err?.status)) && !rateLimited(err)) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      if ([403, 404].includes(Number(err?.status)) && !rateLimited(err)) {
+        // A bare citation tries each known repo: one the grader cannot read is skipped, not a reason to wait.
+        if (!c.repo) continue;
+        return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      }
       throw err;
     }
     if (!j) continue;
@@ -757,7 +764,7 @@ export async function citedEvidence(citations: Citation[], deps: any, repos: str
     } else {
       const repo = r.repo ?? c.repo ?? "an unknown repo";
       const conclusion = r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : "";
-      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)}), so the repo is not one the report can cite`);
+      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)})`);
       else facts.push(r.exists ? `cited Actions job ${c.id} in ${repo}: exists${state}${conclusion}; its name is in CITED_IDS` : `cited id ${c.id}: no such Actions job${c.repo ? ` in ${c.repo}` : ""}`);
       if (r.exists) lines.push(`${c.id} (Actions job in ${repo}): name ${oneLine(r.name, 120) || "(empty)"} (state ${oneLine(r.state, 40)}${r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : ""})`);
     }
