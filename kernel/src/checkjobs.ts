@@ -243,7 +243,8 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
   return out;
 }
 type Failure = { file: string; want?: string; got?: string; reason?: string };
-/** A budget's name for a person: the eval's day cap, the install's daily cap, or (unrecognised) a spend cap. */
+/** A budget's name for a person, from the name the eval reports (module/ai-reviewer/scripts/reviewer-eval.ts one place): the
+ * eval's day cap, the install's daily cap, or (unrecognised) a spend cap. */
 const capName = (cap: string) => (cap === "eval-day" ? "eval-day cap" : cap === "install" ? "install's daily cap" : "spend cap");
 /** A case the reviewer never judged: its call stopped at the spend cap (`review_cap`), so it is neither a pass nor a miss. */
 type EvalResult = { total: number; passed: number; failed: Failure[]; capped: string[]; cap: string; broken?: true };
@@ -253,7 +254,7 @@ const evalPasses = (failed: Failure[], total: number, added: string[]) =>
 /** The judge's result, checked against the cases it was given; missing, malformed or miscounted, every case failed (broken). */
 function readResult(file: string, cases: string[]): EvalResult {
   let r: any;
-  try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], cap: "eval-day", broken: true }; }
+  try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], cap: "unknown", broken: true }; }
   const failed: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
   // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list): the judge and the kernel
   // read one contract. A malformed list is the harness's failure, as any malformed result is: a name that isn't one of the cases
@@ -261,9 +262,10 @@ function readResult(file: string, cases: string[]): EvalResult {
   const named: unknown = r?.capped === undefined ? [] : r.capped;
   const cappedOk = Array.isArray(named) && named.every((f: unknown) => typeof f === "string" && cases.includes(f));
   const capped = cappedOk ? [...new Set<string>(named as string[])] : [];
-  // Which cap stopped it (the eval names it: "eval-day", "install", or `unknown`): a name, never a path or free text, and
-  // `eval-day` when an older judge wrote no scope (its only case then was the eval's own day cap).
-  const cap = typeof r?.capScope === "string" && /^[a-z][a-z-]{0,30}$/.test(r.capScope) ? r.capScope : "eval-day";
+  // Which cap stopped it, when the eval names one ("eval-day" or "install"): a name, never a path or free text. A judge whose
+  // harness predates `capScope` (the gate judges a PR by its base's tip, so that is a normal case) names none: the error then
+  // says a spend cap, never a budget it wasn't told about.
+  const cap = r?.capScope === "eval-day" || r?.capScope === "install" ? r.capScope : "unknown";
   // Each case counts once, capped or failed: a capped case's line may sit in `failed` beside the `capped` list. A duplicate
   // row in `failed` is malformed, never counted twice into the pass rule.
   const failedFiles = failed.map((f) => f.file);
@@ -271,7 +273,7 @@ function readResult(file: string, cases: string[]): EvalResult {
   const why = !cappedOk ? "its `capped` list isn't a list of its cases"
     : new Set(failedFiles).size !== failedFiles.length ? "it lists one failed case twice"
     : r?.total !== cases.length || r?.passed !== cases.length - notPassed.size ? `its counts don't match its ${cases.length} cases` : "";
-  if (why) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's result is malformed: ${why}` })), capped: [], cap: "eval-day", broken: true };
+  if (why) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's result is malformed: ${why}` })), capped: [], cap: "unknown", broken: true };
   return { total: cases.length, passed: r.passed, failed, capped, cap };
 }
 /** A case folder's JSON files, read as small regular files (a link or a special file is a case that can't be read: its text is empty). */
@@ -490,8 +492,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     if (res.broken) throw new Error(`${r.title} wrote no usable result (${res.failed[0]?.reason ?? "no cases"})\n${tail(o)}`);
     // A spend cap cut the run short: the reviewer didn't judge those cases, so it is no verdict on the change. No receipt,
     // the check ends in error with a budget reason (the cap the eval names, so the operator waits on the right one), and
-    // asking again runs it again once that cap frees. A second pass would only spend into the same exhausted cap, so the run
-    // ends here, at step 1.
+    // asking again runs it again once that cap frees. Either pass ends here: in particular step 1 never goes on to the partial
+    // second pass, which would only spend into the same exhausted cap.
     if (res.capped.length) throw new CapReached(res.cap, `${capName(res.cap)} reached; retry when it frees: ${r.title} judged ${res.total - res.capped.length} of its ${res.total} case(s) before the cap (${res.capped.slice(0, 6).join(", ")}${res.capped.length > 6 ? `, … ${res.capped.length - 6} more` : ""})`);
     const first = step.first ?? { passed: res.passed, total: res.total };
     const score = `${first.passed}/${first.total}`;

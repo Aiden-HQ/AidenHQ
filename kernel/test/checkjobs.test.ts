@@ -206,7 +206,7 @@ test("checks: a judged run the eval-day cap cut short ends in error with no rece
     calls++;
     const cases = readdirSync(join(o.workspace, CASES)).sort();
     writeFileSync(join(o.out, "result.json"), capped
-      ? JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [], capped: [cases[0]] })
+      ? JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [], capped: [cases[0]], capScope: "eval-day" })
       : JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [], capped: [] }));
     return { exit: 0, out: "402 cap_reached", timedOut: false };
   });
@@ -224,11 +224,24 @@ test("checks: a judged run the eval-day cap cut short ends in error with no rece
   assert.deepEqual([second.state, second.receipt.verdict, second.capped], ["done", "pass", null]);
 });
 
+test("checks: a cap the eval doesn't name is reported as a spend cap, never as the eval-day one", async () => {
+  // A judge whose harness predates `capScope` names no budget: the error must not claim the eval-day cap (which may have room).
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases }));
+    return { exit: 0, out: "", timedOut: false };
+  });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "unknown"]);
+  assert.match(v.error, /^spend cap reached; retry when it frees/);
+  assert.doesNotMatch(v.error, /eval-day/);
+});
+
 test("checks: the budget reason survives the error row's 300-character cut, however many cases the cap cut", async () => {
   // The row keeps the first 300 characters of the error: with many capped cases named, the reason must still be there.
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
-    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases }));
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases, capScope: "eval-day" }));
     return { exit: 0, out: "", timedOut: false };
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
@@ -266,7 +279,8 @@ test("checks: a capped list that isn't the run's cases is malformed, never read 
 });
 
 test("checks: a result that omits the capped list is an older judge's passing run, not a malformed result", async () => {
-  // The field is the eval's to write: a judge from before it passes with no list at all.
+  // The gate judges a PR by its base's tip, so the harness that writes the result can predate the `capped` list: a passing run
+  // with no list at all is that judge's normal result, not malformed (a capped case it scores as a miss is still a verdict).
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
     writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [] }));
