@@ -43,6 +43,16 @@ const CI_WORKFLOW = ".github/workflows/ci.yml";
 const CI_AREAS = ".github/ci/areas.json";
 const CI_SELECT = ".github/ci/select.ts";
 const CI_RUNNER = ".github/ci/run-suites.sh";
+/**
+ * The part of CI's selector the grader shares: `suitesFor` and `shard`, from `export interface Suite` to the `reuse` section
+ * that follows them. Grading keeps that region byte for byte and nothing else — no CLI, no `process.env`, no token, no git
+ * or network — so the drift check compares this region of the base's own `select.ts` to the copy's, never the whole file.
+ */
+const pureOf = (text: string): string | undefined => {
+  const from = text.indexOf("export interface Suite"), to = text.indexOf("/** The suites to run again on a rebased head");
+  return from >= 0 && to > from ? text.slice(from, to) : undefined;
+};
+// The copy is that region and nothing else, so it is compared as it stands.
 const SELECT_TEXT = readFileSync(new URL("../ci-select.ts", import.meta.url), "utf8");
 
 type CiMap = { everything: string[]; markdown: string[]; suites: any[] };
@@ -137,7 +147,7 @@ async function commandFacts(pr: any, repo: string, checks: any[], deps: any): Pr
   for (const [i, b] of bases.entries()) {
     const [at, ci, sel, run] = texts.slice(3 + i * 4, 7 + i * 4) as (string | null | undefined)[];
     const baseMap = ciMap(at ?? null);
-    if (!baseMap || !ci || ci !== headCi || !run || run !== headRun || String(sel ?? "") !== SELECT_TEXT) continue;
+    if (!baseMap || !ci || ci !== headCi || !run || run !== headRun || pureOf(String(sel ?? "")) !== SELECT_TEXT) continue;
     runs.set(b, { baseMap, plan: planShards(baseMap, headMap, files) });
   }
   if (!runs.size) return [];

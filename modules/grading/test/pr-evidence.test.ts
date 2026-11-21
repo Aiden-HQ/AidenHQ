@@ -74,9 +74,16 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
 });
 
 import { readFileSync } from "node:fs";
-const SELECT = readFileSync(new URL("../service/src/ci-select.ts", import.meta.url), "utf8");
-test("grading's copy of CI's selector is byte-identical", () => {
-  assert.equal(SELECT, readFileSync(new URL("../../../.github/ci/select.ts", import.meta.url), "utf8"), "copy .github/ci/select.ts over it");
+const SELECT = readFileSync(new URL("../../../.github/ci/select.ts", import.meta.url), "utf8");
+const COPY = readFileSync(new URL("../service/src/ci-select.ts", import.meta.url), "utf8");
+const pureOf = (text) => {
+  const from = text.indexOf("export interface Suite"), to = text.indexOf("/** The suites to run again on a rebased head");
+  return from >= 0 && to > from ? text.slice(from, to) : undefined;
+};
+test("grading's copy is CI's pure selector, and holds no CLI", () => {
+  const ci = readFileSync(new URL("../../../.github/ci/select.ts", import.meta.url), "utf8");
+  assert.equal(COPY, pureOf(ci), "grading's copy is exactly CI's suitesFor/shard region");
+  for (const forbidden of ["process.env", "GH_TOKEN", "execFileSync", "fetch(", "readFileSync"]) assert.ok(!COPY.includes(forbidden), `the copy must not carry ${forbidden}`);
 });
 const KERNEL_RUN = "node --disable-warning=ExperimentalWarning --test --test-shard=1/2 test/*.test.ts";
 const KERNEL_RUN_2 = "node --disable-warning=ExperimentalWarning --test --test-shard=2/2 test/*.test.ts";
@@ -158,7 +165,8 @@ test("a check named the suite but failed, or a Test step that failed, claims not
 
 test("an untrusted base map or selector, or a changed workflow, claims nothing", async () => {
   const suites = [suite("kernel#1", ext(1, "packages"))];
-  const untrusted = [{ base: null }, { select: `${SELECT}// x\n` }];
+  // A base whose selector drifts in the shared region (a changed rule) is no fact; a marker outside it is irrelevant.
+  const untrusted = [{ base: null }, { select: SELECT.replace("const under = (f: string, p: string) => f === p", "const under = (f: string, p: string) => p === p") }];
   for (const opts of untrusted) {
     const ev = await graded(235, commandDeps([withJobs(235, "a", "b", [job("packages (1)", 118)], undefined, suites)], opts));
     assert.ok(!ev.facts.some((f) => f.includes('ran "')), JSON.stringify(opts));
