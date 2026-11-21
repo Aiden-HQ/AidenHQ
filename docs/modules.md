@@ -22,7 +22,7 @@ as a `KernelError`:
 is the kernel's own words, so a module can say on a task what it was refused and by which rule without re-parsing the
 message. `body` is absent when the answer carried none. Retry a refusal the kernel can clear on a recompile or a
 re-queue (`no-grants`, `not-your-agent`, `bad-profile`, `task-not-assigned`, `provenance-unsettled`) a bounded number
-of times; a refusal that never changes (`task-closed`) is final. Never retry a 429 as a refusal: that is "busy", and
+of times; a refusal that never changes is final. A refusal that shows the wake stale (`task-not-assigned`, `task-closed`, a missing task) drops it with no notice. Never retry a 429 as a refusal: that is "busy", and
 the work stays where it is until it comes back.
 
 ## What a connection answers: a need, or a signed-in success
