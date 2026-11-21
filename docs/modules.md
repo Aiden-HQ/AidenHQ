@@ -74,15 +74,24 @@ is byte-identical to the head's, never the branch tip. Because the workflows, th
 inputs that decide what a shard ran, a PR that changes anything under `.github/workflows/` or `.github/ci/` mints no
 command fact at all.
 
-Two conditions that look stronger are deliberately absent, because GitHub cannot supply them for an API-posted check:
-such a check is filed in the head's older check suite for the posting App (on this repository `community.yml`'s
-`pull_request_target` suite, which exists from the moment a PR opens), so its `checkSuite` is never the posting run;
-and it has no job, so its `detailsUrl` is its own `/runs/<check id>` page rather than `…/actions/runs/<run>/job/<job>`.
-Requiring either refuses every real per-suite check (measured on PR #1243 at `d275911`, and at `5c9381c`). Which suites
-a shard ran is likewise not re-derived: CI writes the plan to the `checks` job's outputs, which GitHub does not expose
-on the job, and a recomputation would accept a suite the shard legitimately skipped. The residual class — a same-repo
-PR minting its own check — is the owner's accepted policy ([PR #1281](https://github.com/Aiden-HQ/AidenHQ/pull/1281)'s
-merge note, [PR #1291](https://github.com/Aiden-HQ/AidenHQ/pull/1291)), not a bug in this binding.
+What the fact proves, and what it does not: it proves a green shard job existed in that `ci.yml` run at that head and
+that CI's own `post-checks` job ran in the same attempt. It does not prove, from the check record alone, that that
+shard ran that suite — GitHub gives an API-posted check no link back to the job that posted it. Nor is the
+suite-to-shard assignment re-derived: CI writes the plan to the `checks` job's outputs, which GitHub does not expose
+on the job, and a recomputation from `areas.json` and the diff would accept a suite the shard legitimately skipped.
+The assignment is carried by `post-checks`, which reads the trusted base-map plan and runs no PR code, and the
+practical forgery path — a PR adding a `checks: write` step to its own run — needs a `ci.yml` edit, which the
+`.github/` guard above refuses.
+
+Two conditions that would look stronger are deliberately absent, because GitHub cannot supply them for an
+API-posted check: such a check is filed in the head's older check suite for the posting App (on this repository
+`community.yml`'s `pull_request_target` suite, which exists from the moment a PR opens), so its `checkSuite` is never
+the posting run; and it has no job, so its `detailsUrl` is its own `/runs/<check id>` page rather than
+`…/actions/runs/<run>/job/<job>`. Requiring either refuses every real per-suite check (measured on PR #1243 at
+`d275911`, and at `5c9381c`). The residual class — a same-repo PR that otherwise reaches a workflow token with
+`checks: write` and posts a check at another head — is the owner's accepted policy
+([PR #1281](https://github.com/Aiden-HQ/AidenHQ/pull/1281)'s merge note,
+[PR #1291](https://github.com/Aiden-HQ/AidenHQ/pull/1291)); this binding does not claim to be unforgeable.
 
 ## `POST /v1/tasks` — file a task
 

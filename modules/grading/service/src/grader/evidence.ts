@@ -68,10 +68,18 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * proves nothing: GitHub's check API answers any App token, so PR code holding the workflow token could post one. So the fact
  * also needs the shard's own Actions job record behind that `job id` — its `run_id` is the check's `<run_id>`, its name is
  * the shard the check names, and it concluded `success` — plus, in that same run and the same attempt, a completed `success`
- * `post-checks` job: the poster CI itself ran, which a posted check cannot invent. A re-run may keep an earlier attempt's
- * passing shard (CI's own `filter=latest` list), so the attempt is not narrowed beyond requiring the poster in the shard's
- * attempt: every attempt of that run ran the same head. Then the run must be the repository's own CI on the graded head:
- * `.github/workflows/ci.yml`, active, `pull_request`, `head_sha` the graded head.
+ * `post-checks` job: the poster CI itself ran in that run. A re-run may keep an earlier attempt's passing shard (CI's own
+ * `filter=latest` list), so the attempt is not narrowed beyond requiring the poster in the shard's attempt: every attempt of
+ * that run ran the same head. Then the run must be the repository's own CI on the graded head: `.github/workflows/ci.yml`,
+ * active, `pull_request`, `head_sha` the graded head.
+ *
+ * What this proves, exactly: a green shard job existed in that `ci.yml` run at that head, and CI's own `post-checks` job ran
+ * in the same attempt. It does not prove, from the check record alone, that that shard ran that suite: GitHub gives an
+ * API-posted check no link back to the job that posted it. The suite-to-shard assignment is carried by `post-checks`, which
+ * reads the trusted base-map plan and runs no PR code, and the practical forgery path — a PR adding a `checks: write` step to
+ * its own run — needs a `ci.yml` edit, which the `.github/` guard below refuses. This is deliberately not called unforgeable:
+ * a same-repo PR that otherwise reaches a workflow token with `checks: write` can post a check at any head, and no field on a
+ * check record separates that from CI's own. That class is the owner's accepted policy (PR #1281's merge note, PR #1291).
  *
  * Two bindings that would look stronger are not usable, and their absence is deliberate, not an oversight. A check posted
  * through the API is filed by GitHub under the head's existing check suite for the posting App — on this repo, `community.yml`'s
@@ -80,9 +88,7 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * `/runs/<check id>` page, never the runner form `…/actions/runs/<run>/job/<job>` that only the job's own check run carries.
  * Measured on PR #1243 at `d275911` (posted check `136946586698` in suite `121621144682` = run `44937127396`, `community.yml`)
  * and again at `5c9381c` (suite `121603408900`). Requiring either would refuse every real per-suite check, so the job record
- * and the `post-checks` job are the evidence that the check came from this run, and the rest is the owner's accepted policy:
- * a same-repo PR that reaches a workflow token with `checks: write` can post a check at any head, and no field on a check
- * record separates that from CI's own (PR #1281's merge note, PR #1291).
+ * and the `post-checks` job are what this fact binds to.
  *
  * The command and directory come from `areas.json` at the run's own base, byte-identical to the head's: CI reads the map from
  * the base commit, so the two agree unless main's map moved or the PR edited it, and either way the base can't name a command
