@@ -149,6 +149,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
   // A refused wake start: how many tries so far, not before when, and whether its notice went out. Kept until the drop is confirmed, never
   // cleared ahead of it, so a wake that comes back on its lease neither restarts the retries nor says the same thing twice.
   const refusals = new Map<string, { tries: number; noticed: boolean; next: number }>();
+  // A wake the kernel handed back (no computer free, the launcher unreachable): how many times, and not before when.
+  const deferred = new Map<string, { tries: number; next: number }>();
 
   /**
    * After a run of an agent's task ends, whoever asked hears what it needs: a task left blocked, with the run's reply as the reason;
@@ -383,7 +385,12 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, down, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
     const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
     // Busy (429), or admitted but deferred for want of a computer (the kernel handed the wake back): nothing ran, so nothing is seen.
-    if ("busy" in r || r.job.state === "deferred") return log("busy: the wake comes back", { task: task.identifier, wake: w.key });
+    if ("busy" in r || r.job.state === "deferred") {
+      const tries = (deferred.get(w.key)?.tries ?? 0) + 1;
+      deferred.set(w.key, { tries, next: now() + retryIn(tries) });
+      return log("busy: the wake comes back later", { task: task.identifier, wake: w.key, tries, retry_in_s: retryIn(tries) / 1000 });
+    }
+    deferred.delete(w.key);
     q("INSERT INTO seen (task, comment) VALUES (?, ?) ON CONFLICT DO UPDATE SET comment = excluded.comment").run(w.task, comments.at(-1)?.id ?? "");
     log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
@@ -410,7 +417,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       const tick = { agents: new Map<string, Agent>(), redirected: new Set<string>() };
       for (const w of await kernel.claim(20)) {
         // A wake refused for a reason a recompile clears waits out its backoff: left alone, its lease runs out and it comes back.
-        if ((refusals.get(w.key)?.next ?? 0) > now()) continue;
+        if (Math.max(refusals.get(w.key)?.next ?? 0, deferred.get(w.key)?.next ?? 0) > now()) continue;
         // A claim whose handling was lost (the answer never came) leaves the row claimed: its lease brings it back if no job came of
         // it, and a job that did is in the open list. A refusal that a recompile or a re-queue clears is retried that way, later each
         // time; any other refusal is final, and says so on the task before the row goes, so it is never a silent

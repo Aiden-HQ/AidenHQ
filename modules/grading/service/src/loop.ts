@@ -55,7 +55,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           const now = await pc.issue(task);
           // An empty recorded version (no deliverable then) is stale once one appears.
           const found = now.status === "done" || now.status !== s.status ? "" : (await gather(s.deliverable, gradeDeps(now), s.rubric)).version ?? "";
-          if (now.status !== "done" && (now.status !== s.status || (s.version ? found !== s.version : Boolean(found)))) {
+          // A versionless close also waits out work that has started since: an open sub-task or a card on the task.
+          const active = !s.version && now.status !== "done" && ((await pc.children(now.id)).length > 0 || (await recordsOn(now).catch(() => [])).some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome)));
+          if (now.status !== "done" && (now.status !== s.status || active || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
             steps.length = 1;
@@ -71,7 +73,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         }
         log("a verdict's move was refused: dropped", { issue: task, step: s.do, err: String(err.message ?? err).slice(0, 300) });
         // A refused close (the task is already done, or moved on): "is done" is told only when it is done.
-        if (s.do === "done" && (await pc.issue(task).then((i: Json) => i.status, () => "")) !== "done") steps.length = 1;
+        if (s.do === "done" && (await pc.issue(task).then((i: Json) => i.status, () => "")) !== "done") {
+          // An ungraded close the kernel refuses (its change request is still open): the row goes back to waiting, so the next pass tries again.
+          if (s.ungraded && status === 409) await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
+          steps.length = 1;
+        }
       }
       steps.shift();
       state.set(`owed:${task}`, steps.length ? JSON.stringify(steps) : "");
@@ -222,7 +228,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const note = gradeNote(v, rubric, ungraded ? "ungraded" : row.state, { version: ev.version, reason: ungraded || undefined });
     if (row.state === "satisfied") {
       // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.
-      await owe(issue.id, [{ do: "done", note, version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });

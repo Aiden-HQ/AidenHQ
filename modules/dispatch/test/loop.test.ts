@@ -71,12 +71,18 @@ const wake = (key, cause, extra = {}) => ({ key, task: "t1", agent: "eng", cause
 
 test("a claimed wake becomes one job and one reply; a busy kernel leaves it to come back", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix the login", description: "The login page 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  let clock = 1_000_000;
+  k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana", now: () => clock });
   k.busy = 1;
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 0, "busy: no job");
   assert.equal(k.dropped.length, 0, "busy: the wake is kept");
-  k.inbox.push(wake("issue:t1:1", "assigned")); // its lease ran out: claimed again
+  k.inbox.push(wake("issue:t1:1", "assigned")); // its lease ran out, but its backoff has not: left alone
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 0, "still backing off");
+  clock += 2 * 60_000;
+  k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 1);
   assert.equal(k.started[0].wake, "issue:t1:1");
@@ -943,6 +949,8 @@ test("a connected wake with no new words starts a resume run", async () => {
 test("a deferred admission is no start: the comment stays unseen and starts the job when the wake comes back", async () => {
   const comments = [];
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Fix it.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  let clock = 1_000_000;
+  k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana", now: () => clock });
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   k.end("j1", "Fixed.");
@@ -951,6 +959,7 @@ test("a deferred admission is no start: the comment stays unseen and starts the 
   k.defer = 1;
   k.inbox.push(wake("comment:c1", "comment"));
   await k.dispatch.tick();
+  clock += 2 * 60_000;
   k.inbox.push(wake("comment:c1", "comment")); // the kernel handed it back
   await k.dispatch.tick();
   assert.equal(k.started.length, 2);

@@ -7,8 +7,9 @@ import type { DatabaseSync } from "node:sqlite";
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
  * assignee), grading_failed (the grader failed or returned no usable criteria: retried on a bounded ladder, never the
- * owner's) or escalated (3 rejected versions, cannot_judge, or 5 failed grader passes: the delegator decides, accepting
- * by closing the task or reopening it with what to change). not_graded: the task was cancelled or otherwise closed before
+ * owner's) or escalated (3 rejected versions, or one resubmitted unchanged: the delegator decides, accepting by closing the task
+ * or reopening it with what to change). A grader that is down, can't judge or can't verify settles the row satisfied: the task
+ * closes done, ungraded. not_graded: the task was cancelled or otherwise closed before
  * the grader settled it, so there is nothing left to grade.
  */
 export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated" | "not_graded";
@@ -385,7 +386,8 @@ export class Grades {
       if (failures >= MAX_GRADER_FAILURES) return set("satisfied", g.attempts, verdicts, 0, null, now);
       return set("grading_failed", g.attempts, verdicts, failures, new Date(now).toISOString(), now);
     }
-    if (v.outcome !== "needs_revision" || unverifiedOnly(v.criteria)) return set("satisfied", g.attempts, verdicts, 0, null, now);
+    // A verdict that marks a criterion unmet is a rejection whatever its outcome says.
+    if ((v.outcome !== "needs_revision" && !v.criteria.some((c) => c.met === "no")) || unverifiedOnly(v.criteria)) return set("satisfied", g.attempts, verdicts, 0, null, now);
     if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("escalated", g.attempts, verdicts, 0, null, now);
     const attempts = g.attempts + 1;
     return set(attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);

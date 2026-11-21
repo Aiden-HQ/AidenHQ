@@ -145,6 +145,14 @@ describe("graded done", () => {
     expect(grades.escalated()).toEqual([]);
   });
 
+  it("a cannot_judge that marks a criterion unmet is a rejection, not an ungraded close", () => {
+    const { grades } = new Store();
+    grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }, "agent:cos");
+    completionGate(grades, "t", "task_finish");
+    const criteria = [{ id: "1", met: "no", evidence: "open" }];
+    expect(grades.record("t", { version: "c1", outcome: "cannot_judge", model: "glm", criteria })).toMatchObject({ state: "needs_revision", attempts: 1 });
+  });
+
   it("cannot_judge settles the row ungraded on the first pass, with no retry ladder", () => {
     const { grades } = new Store();
     grades.file("t", [], { kind: "report", ref: "" }, "agent:cos");
