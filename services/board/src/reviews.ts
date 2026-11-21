@@ -98,6 +98,8 @@ export interface RepoRow {
 }
 export interface ReposView {
   repos: RepoRow[];
+  /** Repo reviews and the option catalog are on (settings.code_review.lenses); the service refuses both while off. */
+  lenses?: boolean;
   day_usd: number;
   day_spent_usd: number;
   errors?: string[];

@@ -78,7 +78,7 @@ const MODEL_ID = /^~?[\w.-]+\/[\w.:~-]+$/;
 const CUSTOM = "__custom";
 /** One moment's (or one ask's) combos: a row each of engine, model and effort, up to MAX_COMBOS. */
 /** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
-function ComboPicker({ label, value, onChange, engines, none, gates, single }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean; single?: boolean }) {
+function ComboPicker({ label, value, onChange, engines, none, gates, single, noEngine }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean; single?: boolean; noEngine?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
   const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium", run_usd: engines.codex.run_usd });
   return (
@@ -89,7 +89,7 @@ function ComboPicker({ label, value, onChange, engines, none, gates, single }: {
         const custom = !e.models.includes(c.model);
         return (
           <div key={i} className="rv-combo">
-            <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", run_usd: engines[k].run_usd, ...(c.mandatory ? { mandatory: true } : {}) })} />
+            {!noEngine && <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", run_usd: engines[k].run_usd, ...(c.mandatory ? { mandatory: true } : {}) })} />}
             <span className="rv-combo-model">
               <Select aria-label={`${label} ${i + 1} model`} value={custom ? CUSTOM : c.model} options={[...e.models.map((m) => [m, m.replace(/^~/, "")] as const), [CUSTOM, "Other model…"] as const]} onChange={(m) => set(i, { ...c, model: m === CUSTOM ? "" : m })} />
               {custom && <Input aria-label={`${label} ${i + 1} model id`} aria-invalid={!MODEL_ID.test(c.model)} placeholder="vendor/model, like z-ai/glm-5.3" value={c.model} autoFocus={!c.model} onChange={(ev) => set(i, { ...c, model: ev.target.value.trim() })} />}
@@ -199,7 +199,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const spent = repos?.day_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
-  if ("create" in route) return !config?.lenses ? <RepoReviewsOff /> : engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
+  if ("create" in route) return repos && !repos.lenses ? <RepoReviewsOff /> : repos && engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
   if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} />;
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
 
@@ -873,7 +873,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
         }
       </Field>
       <div className="rv-split">
-        <Field label="Model options run by" help="The model and effort for options that call a model">{() => <ComboPicker single label="Reviewer" value={combos} engines={engines} onChange={setCombos} />}</Field>
+        <Field label="Model options run by" help="The model and effort for options that call a model">{() => <ComboPicker single noEngine label="Reviewer" value={combos} engines={engines} onChange={setCombos} />}</Field>
         <Field label="Run cap" help={`One cap over every option. Up to $${TREE_RUN_USD.max}.`} error={capOk ? null : `Between $${TREE_RUN_USD.min} and $${TREE_RUN_USD.max}`}>
           {(id, d) => (
             <span className="rv-money">
