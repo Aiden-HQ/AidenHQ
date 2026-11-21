@@ -458,4 +458,8 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   down.set([3, 2, 1].map((n) => down.agentPr(n)));
   await down.watch.tick();
   assert.deepEqual([calls, down.woke.length], [1, 0], "an unreachable gate is asked once per pass, and wakes nobody");
+  const five = await rig(t, { reviewGate: async (_r, n) => n === 1 ? { wait: "code review is unreachable (it answered 500)" } : verdicts[1], merge: () => [200, { skip: "merging" }] });
+  five.set([2, 1].map((n) => five.agentPr(n)));
+  await five.watch.tick();
+  assert.deepEqual(five.woke.map((w) => w.task), ["ACME-2"], "an HTTP 500 about one PR doesn't stop the next PR's verdict");
 });

@@ -11,7 +11,8 @@ export const DOWN_MS = 10 * 60_000;
 /** A failure more than this after the last one starts a new streak: the queue asks every 30 s while a merge waits, so a longer
  * silence means nobody watched, not that code review stayed down. */
 const GAP_MS = 2 * 60_000;
-/** undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks; `findings`: the reasons when
+/** `down`: code review gave no answer at all (connection failure or timeout), not an HTTP answer about one PR.
+ * undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks; `findings`: the reasons when
  * the only thing left is open important findings, none still running or queued: the author's to fix); bypass: it may merge
  * without the verdict, code review unreachable for over DOWN_MS (why). */
 export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string; findings?: string; down?: true } | { bypass: string; down?: true }>;
@@ -23,10 +24,10 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
   /** The current streak of failures (one service for every repo): since its first and its latest. Any answer ends it. */
   let down: number | undefined;
   let last = 0;
-  const unreachable = (why: string) => {
+  const unreachable = (why: string, noAnswer = false) => {
     if (down === undefined || now() - last > GAP_MS) down = now();
     last = now();
-    return now() - down > DOWN_MS ? { bypass: `code review has been unreachable for ${Math.round((now() - down) / 60_000)} minutes (${why})`, down: true as const } : { wait: `code review is unreachable (${why})`, down: true as const };
+    return now() - down > DOWN_MS ? { bypass: `code review has been unreachable for ${Math.round((now() - down) / 60_000)} minutes (${why})`, ...(noAnswer && { down: true as const }) } : { wait: `code review is unreachable (${why})`, ...(noAnswer && { down: true as const }) };
   };
   return async (repo, number, head) => {
     if (!gated.has(repo.toLowerCase())) return undefined;
@@ -35,7 +36,7 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
       const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), head });
       r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/verdict?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
     } catch (e) {
-      return unreachable(String((e as Error).message).slice(0, 200));
+      return unreachable(String((e as Error).message).slice(0, 200), true);
     }
     if (r.status >= 500) return unreachable(`it answered ${r.status}`);
     down = undefined;
