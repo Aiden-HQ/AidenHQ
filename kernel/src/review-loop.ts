@@ -47,7 +47,7 @@ const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed"
 /** A record as earlier decisions are read (tier.ts Prior). */
 const asPrior = (r: Rec): Prior & { review?: string | null } => ({
   id: r.id, action: actionOf(r.kind), args: r.args, state: STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
-  service: !r.requester.agent, panel: Boolean(r.panel), reviewCode: r.review_code ?? null, review: r.review, requestChain: r.chain ?? undefined, digest: r.digest,
+  service: !r.requester.agent, panel: Boolean(r.panel), createdAt: r.created_at, reviewCode: r.review_code ?? null, review: r.review, requestChain: r.chain ?? undefined, digest: r.digest,
 });
 
 const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -229,7 +229,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const onTask = records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id);
   // The delegator's and the chief of staff's comments read apart from this requester: they hold the task-wide lift limit.
   const lifters = comments.filter((c) => ["delegator", "chief"].includes(authorOf(c, { owner, requester: "", delegator, agent: task.agent })?.who ?? ""));
-  const split = answered(onTask.filter(sameRun).map(asPrior), authored, REVIEW_COOLDOWN_MS, onTask.map(asPrior), lifters);
+  // Lifts come only from comments the reviewer is shown; the task-wide limit reads every lifter's comment.
+  const split = answered(onTask.filter(sameRun).map(asPrior), authored.slice(-COMMENTS), REVIEW_COOLDOWN_MS, onTask.map(asPrior), lifters);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed, now);
   const veto = priorPart(prior, now);
@@ -327,7 +328,7 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
     // hears it once per park and may lift it with a decision on the task. The chief of staff's own task (escalate.ts would
     // tell the owner) just waits out the cooldown: a park moves on by itself.
     const chiefs = (task.agent?.(r.requester.agent)?.roles ?? []).includes(CHIEF);
-    if (prior && !chiefs && judged && prior.rejects + 1 === MAX_REJECTS) {
+    if (prior && !chiefs && judged && prior.rejects + 1 >= MAX_REJECTS) {
       await parked(out.record, prior, out.posted.reason).catch((e: Error) => log("park escalation failed", { record: r.id, err: e.message.slice(0, 200) }));
     }
   }

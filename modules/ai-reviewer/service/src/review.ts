@@ -576,7 +576,8 @@ function verdictOf(raw: { content?: unknown; refusal?: unknown } | undefined, sh
   const second = v.second_review !== false;
   const findings = keepQuoted(v.findings, shown);
   // An explicit false fails whatever the decision said (an approve or an unsure); only an escalation stays the owner's call.
-  if (v.decision !== "escalate" && failed.length) return { decision: "reject", code: "policy_other", reason: `A security checklist item fails (${failed.join(", ")}). ${reason}`.slice(0, 1500), second, findings, security: failed };
+  // An unsure coded as an escalation is still an unsure here: only a genuine owner escalation keeps its decision.
+  if ((v.decision !== "escalate" || v.reason_code === UNSURE) && failed.length) return { decision: "reject", code: "policy_other", reason: `A security checklist item fails (${failed.join(", ")}). ${reason}`.slice(0, 1500), second, findings, security: failed };
   // Unsure (or an escalation the model coded as unsure) comes back as an escalation coded reviewer_unsure; review() asks a
   // second reviewer before anything reaches the owner.
   if (v.decision === "unsure" || (v.decision === "escalate" && v.reason_code === UNSURE)) return { decision: "escalate", code: UNSURE, reason, second, findings };
@@ -622,7 +623,8 @@ async function askFirst(models: string[], mk: () => Prompt, ask: Ask, checks: Ch
       const w = verdictOf(raw, prompt.user, checks);
       // Left out again, or no usable second answer: code's unsure on the first answer, never its approval dropped unread.
       if (!w || w.missing?.length) return { ...first, missing: undefined, decision: "escalate", code: UNSURE, reason: `code: the reviewer approved without reporting the checklist item${first.missing!.length === 1 ? "" : "s"} ${first.missing!.join(", ")}, ${w ? "twice" : "and its second answer was unusable"}. ${first.reason}`.slice(0, 1500), model };
-      v = w;
+      // The panel requirement a reviewer added stays: a later answer can add it, never drop it.
+      v = { ...w, second: w.second || first.second };
     }
     // An approval that left a file's diff unread (not inline, never read to the end with the diff tool) is code's unsure.
     const unread = v?.decision === "approve" ? (prompt.unread?.() ?? []) : [];
@@ -668,7 +670,7 @@ export async function review({ card, diff, files = { list: [], leftOut: [] }, ch
   // Every later vote too: the earlier rejector's family is asked last where another is eligible.
   const other = avoid ? new Set(secondModels("", avoid)) : undefined;
   const last = (ms: string[]) => (other ? [...ms.filter((m) => other.has(m)), ...ms.filter((m) => !other.has(m))] : ms);
-  const models = last([...new Set([...(avoid ? secondModels(requesterModel, avoid) : []), ...judgeModels(requesterModel)])]);
+  const models = last([...new Set([...(avoid ? secondModels(requesterModel, avoid) : []), ...judgeModels(requesterModel), ...(avoid ? secondModels(requesterModel) : [])])]);
   const byCode = (decision: "reject" | "escalate", reason: string, code: string) => ({ decision, code, reason, model: models[0] ?? LUNA });
   if (!String(diff ?? "").trim()) return byCode("reject", "no change to review (the diff is missing): ask again once the change is there", "no_diff");
   // Only a file the reviewer can't read at all (an executable or opaque binary) is missing evidence: back to the agent,

@@ -173,7 +173,7 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
  * requester; at most one agent lift per REVIEW_COOLDOWN_MS). An answered rejection no longer refuses the same content nor
  * counts toward MAX_REJECTS.
  */
-export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean; /** Reviewed as a panel (two families). */ panel?: boolean };
+export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean; /** Reviewed as a panel (two families). */ panel?: boolean; /** When it was filed. */ createdAt?: string | null };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
 /** A no on a stale or duplicate card (decided_by `stale:account:<id>`) judged nothing: neither a veto nor a rejection. */
@@ -336,7 +336,9 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   const at = (r: Prior | undefined) => Date.parse(String(r?.decidedAt ?? ""));
   const state = (list: Prior[]) => {
     let parkAt = list.length >= MAX_REJECTS ? at(list[MAX_REJECTS - 1]) : NaN, panels = 0;
-    for (const r of list.slice(MAX_REJECTS)) if (r.panel && at(r) >= parkAt + cooldown) { panels++; parkAt = at(r); }
+    // A panel's: filed after the cooldown (a request filed during it is refused as parked), so a review already in flight
+    // when the target parked never takes a panel's place.
+    for (const r of list.slice(MAX_REJECTS)) if (r.panel && Date.parse(String(r.createdAt ?? "")) >= parkAt + cooldown) { panels++; parkAt = at(r); }
     return { list, panels, parkedUntil: Number.isFinite(parkAt) ? parkAt + cooldown : undefined };
   };
   const states = (targets?.targets.length ? [...onTarget.values()] : [open]).map(state);
@@ -371,11 +373,12 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined, now 
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   const scope = p.scope ?? "this task";
-  // After the panel rejected twice the owner decides, the same content resent included (it never stalls as rejected content).
+  // A parked target's own path comes first, the same content resent included: its cooldown, its panel retries, then the
+  // owner. Rejected content holds for ordinary retries only.
   if (p.panels >= PANEL_TRIES) return T(2, "retries-owner", `the AI reviewer rejected this action ${p.rejects} times on ${scope}, ${PANEL_TRIES} of them as a panel after a cooldown, so the owner decides`);
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer rejected exactly this request on this task and it isn't reviewed again unchanged now (its note: ${String(p.same).slice(0, 400)}). One rejection gets one fresh review once the request, the task's comments or the reviewer's inputs change, or ${REVIEW_COOLDOWN_MS / 60_000} minutes after it; a second is final. Change what it found and file the changed request, or report back to whoever asked why it can't change`);
   if (p.rejects >= MAX_REJECTS && (p.parkedUntil ?? 0) > now) return REJECT("retries-exhausted", `parked until ${new Date(p.parkedUntil!).toISOString().slice(0, 16)}Z: the AI reviewer rejected this action ${p.rejects} times on ${scope}. After that a panel of two reviewers reviews it again, and a decision on the task by whoever delegated it or the chief of staff lifts it now. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   if (p.rejects >= MAX_REJECTS) return { tier: 1, rule: "retries-panel", reason: `the AI reviewer rejected this action ${p.rejects} times on ${scope}: a panel reviews it again`, panel: true };
+  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer rejected exactly this request on this task and it isn't reviewed again unchanged now (its note: ${String(p.same).slice(0, 400)}). One rejection gets one fresh review once the request, the task's comments or the reviewer's inputs change, or ${REVIEW_COOLDOWN_MS / 60_000} minutes after it; a second is final. Change what it found and file the changed request, or report back to whoever asked why it can't change`);
   return undefined;
 }
 

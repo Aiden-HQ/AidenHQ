@@ -24,7 +24,7 @@ test("a parked branch waits out the cooldown, gets a panel on another family, an
   const panel = priorPart(priorOf(five, later), later);
   assert.deepEqual([panel?.tier, panel?.panel, panel?.reject, priorOf(five, later).avoid], [1, true, undefined, "~acme/model-b"]);
   // The panel rejects twice (each after its cooldown): the next request is the owner's card, reviewed first.
-  const more = [...five, ...Array.from({ length: PANEL_TRIES }, (_, i) => rejected(String(i + 5).repeat(40), at(40 + i * 40), { reviewCode: "gate_change", panel: true }))];
+  const more = [...five, ...Array.from({ length: PANEL_TRIES }, (_, i) => rejected(String(i + 5).repeat(40), at(40 + i * 40), { reviewCode: "gate_change", panel: true, createdAt: at(39 + i * 40) }))];
   const owner = priorPart(priorOf(more, t0 + 600 * 60_000));
   assert.deepEqual([owner?.tier, owner?.rule, owner?.reject], [2, "retries-owner", undefined]);
   assert.equal(meritOwner(owner).byMerit, true);
@@ -36,6 +36,9 @@ test("a parked branch waits out the cooldown, gets a panel on another family, an
   // Ordinary (non-panel) reviews whose verdicts land after the cooldown aren't a panel's either.
   const late = [...five, ...[5, 6].map((i) => rejected(String(i).repeat(40), at(40 + i * 40)))];
   assert.equal(priorOf(late, t0 + 600 * 60_000).panels, 0);
+  // A panel review already in flight when the target parked (filed before the cooldown ended) isn't a post-park retry.
+  const inflight = [...five, rejected("9".repeat(40), at(60), { panel: true, createdAt: at(3) })];
+  assert.equal(priorOf(inflight, t0 + 600 * 60_000).panels, 0);
 });
 
 test("no reviewer model independent of the requester's approves a Tier 1 write; the owner's own cards still go to the owner", () => {
