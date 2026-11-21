@@ -96,9 +96,26 @@ function readSettings(instanceDir: string): Record<string, unknown> | undefined 
   return existsSync(f) ? (parse(readFileSync(f, "utf8")) as { settings?: Record<string, unknown> } | null)?.settings : undefined;
 }
 
-/** The fleet org: settings.github_fleet_org; unset means none. */
-export function readFleetOrg(instanceDir: string): string | undefined {
-  return (readSettings(instanceDir)?.github_fleet_org as string) || undefined;
+/**
+ * The compiled catalog's fleet org (`<repo>/config/kernel/modules.json` `repos.fleet_org`), the value compile resolves
+ * once (the github_fleet_org setting, else the one-release legacy host variable) and the kernel serves `@agents` from
+ * (scripts/modules.ts). None when the file is missing or unreadable: today's "no fleet org", never a crash at boot.
+ */
+function readCompiledFleetOrg(repoDir: string): string | undefined {
+  try {
+    const v = (JSON.parse(readFileSync(join(repoDir, "config/kernel/modules.json"), "utf8")) as { repos?: { fleet_org?: unknown } } | null)?.repos?.fleet_org;
+    return typeof v === "string" && v ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The fleet org: settings.github_fleet_org from instance.yaml where it is set, else the compiled catalog's
+ * repos.fleet_org, so an org compile resolves for the kernel is resolved here too. Unset means none.
+ */
+export function readFleetOrg(instanceDir: string, repoDir: string): string | undefined {
+  return (readSettings(instanceDir)?.github_fleet_org as string) || readCompiledFleetOrg(repoDir) || undefined;
 }
 
 /** settings.github_orgs: the GitHub orgs/users apps may be built from, besides the fleet org. */

@@ -38,9 +38,10 @@ if (!internalToken) throw new Error("APPS_INTERNAL_TOKEN(_FILE) is required");
 const serviceKey = file("APPS_SERVICE_KEY");
 if (!serviceKey) throw new Error("APPS_SERVICE_KEY(_FILE) is required");
 const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
-// The fleet org (github_fleet_org; unset means none) is always allowed; its repos are fetched and commented on through the
-// kernel's code host operations, as the owner, so no token reaches this service.
-const agentsOrg = readFleetOrg(instanceDir);
+// The fleet org (github_fleet_org where instance.yaml sets it, else the compiled catalog's repos.fleet_org; unset means
+// none) is always allowed; its repos are fetched and commented on through the kernel's code host operations, as the owner,
+// so no token reaches this service.
+const agentsOrg = readFleetOrg(instanceDir, repoDir);
 const orgs = readOrgs(instanceDir);
 const ops = codeHostOps(kernelUrl, serviceKey);
 // This server's repos (codehost-local), read-only at /codehost when the instance enables it: `local/*` apps build from them.
