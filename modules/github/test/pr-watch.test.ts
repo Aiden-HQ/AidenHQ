@@ -131,7 +131,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}] } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -154,7 +154,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, merges, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
@@ -435,4 +435,22 @@ test("more than 50 open PRs are all seen", async (t) => {
   const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": prs });
   await m.watch.tick();
   assert.equal(m.tasks.length, 60);
+});
+
+test("a green PR waiting on open review findings wakes its task once per head, 3 per tick oldest first; a running review wakes nobody", async (t) => {
+  const verdicts = { 1: { wait: "code review: 1 important finding open: x (a.ts:1)", findings: "code review: 1 important finding open: x (a.ts:1)" }, 9: { wait: "code review: the review is running" } };
+  const c = await rig(t, { reviewGate: async (_repo, n) => verdicts[n] ?? verdicts[1], merge: () => [200, { skip: "merging" }] });
+  c.set([5, 4, 3, 2, 1].map((n) => c.agentPr(n)));
+  await c.watch.tick();
+  assert.deepEqual(c.woke.map((w) => w.task), ["ACME-1", "ACME-2", "ACME-3"], "three per tick, oldest first");
+  assert.match(c.woke[0].text, /waiting on open important findings.*```text\ncode review: 1 important finding open.*fixed: <what changed, commit>.*disputed: <reason, file:line>/s);
+  assert.match(c.woke[0].text, /pull\/1/);
+  await c.watch.tick();
+  assert.deepEqual(c.woke.map((w) => w.task), ["ACME-1", "ACME-2", "ACME-3", "ACME-4", "ACME-5"], "the rest next tick, none twice");
+  await c.watch.tick();
+  assert.equal(c.woke.length, 5);
+  const running = await rig(t, { reviewGate: async () => verdicts[9], merge: () => [200, { skip: "merging" }] });
+  running.set([running.agentPr(6)]);
+  await running.watch.tick();
+  assert.equal(running.woke.length, 0);
 });

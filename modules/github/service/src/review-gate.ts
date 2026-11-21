@@ -11,9 +11,10 @@ export const DOWN_MS = 10 * 60_000;
 /** A failure more than this after the last one starts a new streak: the queue asks every 30 s while a merge waits, so a longer
  * silence means nobody watched, not that code review stayed down. */
 const GAP_MS = 2 * 60_000;
-/** undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks); bypass: it may merge
+/** undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks; `findings`: the reasons when
+ * the only thing left is open important findings, none still running or queued: the author's to fix); bypass: it may merge
  * without the verdict, code review unreachable for over DOWN_MS (why). */
-export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string } | { bypass: string }>;
+export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string; findings?: string } | { bypass: string }>;
 
 export function createReviewGate(o: { gated: string[]; url: string; key: () => string; fetchFn?: typeof fetch; now?: () => number }): ReviewGate {
   const gated = new Set(o.gated.map((r) => r.toLowerCase()));
@@ -38,10 +39,11 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
     }
     if (r.status >= 500) return unreachable(`it answered ${r.status}`);
     down = undefined;
-    const v = (await r.json().catch(() => ({}))) as { verdict?: string; reasons?: { text?: string; unblock?: string }[] };
+    const v = (await r.json().catch(() => ({}))) as { verdict?: string; reasons?: { code?: string; text?: string; unblock?: string }[] };
     if (!r.ok) return { wait: `code review answered ${r.status}` };
     if (v.verdict === "pass") return undefined;
     const reasons = (v.reasons ?? []).map((x) => `${String(x.text ?? "").slice(0, 600)}${x.unblock ? ` (${String(x.unblock).slice(0, 300)})` : ""}`);
-    return { wait: `code review: ${reasons.join("; ") || "not passed yet"}` };
+    const wait = `code review: ${reasons.join("; ") || "not passed yet"}`;
+    return reasons.length && (v.reasons ?? []).every((x) => x.code === "findings") ? { wait, findings: wait } : { wait };
   };
 }
