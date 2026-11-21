@@ -330,3 +330,41 @@ test("gateway: a reviewer token's own cap (REVIEW_USD): calls go ahead while its
   assert.equal((await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("job-secret", { kind: "reviewer", component: "AI reviewer", capUsd: 0.05 })}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) })).status, 200);
   assert.deepEqual(filed, [], "a review's cap is never filed for raising: the review escalates to the owner instead");
 });
+
+test("gateway: an in-stream provider error is retried before the first byte and never billed; a stream with no usage settles free", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  writeFileSync(join(dir, "gateway.json"), "{}");
+  const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+  const ok = sse([{ type: "response.created", response: { id: "gen-ok" } }, { type: "response.completed", response: { id: "gen-ok", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } }]);
+  const boom = sse([{ type: "error", error: { code: "server_error", message: "boom" } }]);
+  let answers = [];
+  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`: OPENROUTER PROCESSING\n\n${answers.shift()}`);
+  }); });
+  const logged = [];
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0], log: (m, f) => logged.push([m, f]) });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
+  const token = mintToken("job-secret", { kind: "reviewer" });
+  const call = async () => { const r = await fetch(`${front.url}/api/v1/responses`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: "m", stream: true, input: [] }) }); return { status: r.status, text: await r.text() }; };
+  const rows = () => gw.db.prepare("SELECT status, cost_usd, input, output FROM calls ORDER BY rowid").all().map((x) => ({ ...x }));
+
+  // The first event is an error: retried before any byte reaches the caller; the call bills only the answer that completed.
+  answers = [boom, ok];
+  const retried = await call();
+  assert.equal(retried.status, 200);
+  assert.doesNotMatch(retried.text, /boom/);
+  assert.match(retried.text, /response\.completed/);
+  assert.deepEqual(rows(), [{ status: "ok", cost_usd: 0.02, input: 10, output: 5 }]);
+  assert.match(logged.find(([m]) => m === "upstream retry")[1].stream_error, /boom/);
+
+  // Errors on every attempt: passed through once retries run out, settled free as an upstream error.
+  answers = [boom, boom];
+  assert.match((await call()).text, /boom/);
+  // A stream that ends cleanly with neither usage nor a finish event: free, and its last data line logged.
+  answers = [sse([{ type: "response.created", response: { id: "gen-gone" } }])];
+  assert.equal((await call()).status, 200);
+  assert.deepEqual(rows().slice(1), [{ status: "upstream_error", cost_usd: 0, input: 0, output: 0 }, { status: "upstream_error", cost_usd: 0, input: 0, output: 0 }]);
+  assert.match(logged.filter(([m]) => m === "upstream stream error").at(-1)[1].last, /gen-gone/);
+});
