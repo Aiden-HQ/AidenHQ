@@ -130,8 +130,8 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
   };
   const settingsChange: Records["settingsChange"] = async (task, changes, credential) => {
     if (!k) throw Object.assign(new Error("the board has no kernel to write the change"), { refused: true });
-    // Only the kernel's own 4xx says nothing was written; a lost response, a timeout or a 5xx may follow a write.
-    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) });
+    // Only the kernel's own 4xx says nothing was written; a refused connection never reached it, but a lost response, a timeout or a 5xx may follow a write.
+    const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) }).catch((e: Error & { cause?: { code?: string } }) => { throw Object.assign(e, { refused: ["ECONNREFUSED", "ENOTFOUND"].includes(String(e.cause?.code)) }); });
     const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
     if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
