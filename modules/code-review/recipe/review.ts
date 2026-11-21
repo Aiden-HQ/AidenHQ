@@ -428,13 +428,13 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const hidden = excluded.filter((e) => e.gap);
   if (hidden.length) gaps.push(`${hidden.length} changed file${hidden.length > 1 ? "s" : ""} got no findings pass (${hidden.slice(0, 5).map((e) => `${e.path}: ${e.why}`).join("; ")}${hidden.length > 5 ? "; …" : ""})`);
   /** The PR's earlier findings at this head (`again`: found or restated by this run): which are fixed, which answers unsafe. */
-  async function recheck(again: Set<string>) {
+  async function recheck(again: Set<string>, claimsOnly = false) {
     const root = ws.replace(/\/$/, "");
     const fixed = [];
     // A gating finding is always rechecked; any other only where the change since the last reviewed head touched it.
     const near = (t: ReturnType<typeof touched>, line: number) => t === "all" || (Array.isArray(t) && t.some(([a, b]) => line >= a - 3 && line <= b + 3));
     // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
-    const ask = addressed ? [] : previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
+    const ask = addressed ? [] : previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
     const unsafe: string[] = [];
     if (ask.length) {
       // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
@@ -459,8 +459,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   }
   if (!reviewed.length) {
     // Nothing to review (lockfiles, ignored or binary files only) is no gap; a hiding place the change adds is.
-    // The answered and gating findings carried forward are still rechecked at this head.
-    await recheck(new Set());
+    // The answered findings carried forward are still rechecked at this head (code unchanged since: nothing else to recheck).
+    await recheck(new Set(), true);
     result.coverage.incomplete = gaps.join("; ") || null;
     if (tree) Object.assign(result.coverage, { eligible: [], reviewed: [], counts: { eligible: 0, reviewed: 0 } });
     return bound(result);

@@ -398,12 +398,15 @@ export function createEngine(d: EngineDeps) {
     // it came back (its row links its earlier thread).
     const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
     for (const id of unsafe) {
-      const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, why, evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, id);
+      const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, COALESCE(why, '') AS why, COALESCE(evidence, '') AS evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, id);
       if (!f) continue;
       const at = review.findings.findIndex((x) => x.id === id), was = at >= 0 ? review.findings[at]! : { ...f, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
       const reopened = { ...was, title: `${REOPENED.title}${was.title.replace(REOPENED.title, "")}`.slice(0, 200), why: `${REOPENED.why}${was.why.replace(REOPENED.why, "")}`.slice(0, 3000) };
-      if (at >= 0) review.findings[at] = reopened;
-      else if (review.findings.length < 200) review.findings.push(reopened);
+      if (at >= 0) { review.findings[at] = reopened; continue; }
+      // At the post's 200, the lowest-ranked advice makes room (withheld): a reopened finding always says why on GitHub.
+      const cut = review.findings.length >= 200 ? review.findings.findLastIndex((x) => x.severity !== "important") : -1;
+      if (cut >= 0) review.withheld[review.findings.splice(cut, 1)[0]!.severity]++;
+      if (review.findings.length < 200) review.findings.push(reopened);
     }
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
