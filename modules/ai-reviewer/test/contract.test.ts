@@ -12,9 +12,18 @@ import { reviewWith } from "../service/src/server.ts";
 const JOB_SECRET = "j".repeat(64);
 const listen = (handler) => new Promise((ok) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => ok(s)); });
 const url = (s) => `http://127.0.0.1:${s.address().port}`;
+const until = async (f) => { for (let end = Date.now() + 2000; !f();) { if (Date.now() > end) throw new Error("timed out"); await new Promise((ok) => setTimeout(ok, 5)); } };
 const resolver = { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; }, forget() {} };
 
 let gateway, module_, kernel, up = true;
+let serviceInstance = "instance-a";
+// The module's handler, as its process builds it: one per service start (a new instance is a new process).
+let moduleHandle;
+// How long the model gateway takes to answer (a slow model call shows the keepalive).
+let slowMs = 0;
+const beats = [];
+// Each review the module is dispatched, in order: its id (so a test counts its own review's beats, never another's).
+const dispatched = [];
 const calls = [];
 const answers = [];
 const verdicts = [];
@@ -23,13 +32,25 @@ before(async () => {
     let body = "";
     for await (const c of req) body += c;
     calls.push({ auth: req.headers.authorization, ...JSON.parse(body) });
+    if (slowMs) await new Promise((ok) => setTimeout(ok, slowMs));
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }], usage: {} }));
   });
   let kernelUrl = "";
   module_ = await listen(async (req, res) => {
     if (!up) return void res.writeHead(503).end();
     // The verdict goes to the kernel this test started (its port is known only after it listens).
-    if (!(await serveReviewer(reviewWith(`${url(gateway)}/api/v1/chat/completions`), { key: "svc-key", kernelUrl })(req, res))) res.writeHead(404).end();
+    moduleHandle ??= serveReviewer(reviewWith(`${url(gateway)}/api/v1/chat/completions`), { key: "svc-key", kernelUrl, instance: serviceInstance, beatMs: 40 });
+    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance: moduleHandle.instance }));
+    if (req.method === "POST" && String(req.url).endsWith("/review")) {
+      // Peek at the dispatch for its review id, then hand the same body to the service.
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const body = Buffer.concat(chunks).toString("utf8");
+      dispatched.push(JSON.parse(body || "{}").id);
+      const replay = Object.assign(Object.create(req), { [Symbol.asyncIterator]: async function* () { yield Buffer.concat(chunks); } });
+      return void (await moduleHandle(replay, res));
+    }
+    if (!(await moduleHandle(req, res))) res.writeHead(404).end();
   });
   const reviews = createReviews({
     slot: () => ({ module: "ai-reviewer", url: `${url(module_)}/aidenhq/v1/reviewer`, auth_secret: "ai_reviewer_key" }),
@@ -40,8 +61,16 @@ before(async () => {
   });
   const backplane = createBackplane({ whoami: async () => { throw new Error("no"); }, asserter: {}, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), reviews, reviewerKey: () => "runner-key" });
   kernel = await listen(async (req, res) => {
-    if (req.method === "POST" && /^\/v1\/reviews\/r-/.test(req.url)) verdicts.push({ url: req.url, auth: req.headers.authorization });
-    await backplane(req, res);
+    const kept = /^\/v1\/reviews\/r-/.test(String(req.url)) && req.method === "POST";
+    if (!kept) return void (await backplane(req, res));
+    // Peek at the review's POST (a keepalive or a verdict), then hand it to the backplane again.
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    if (body.keepalive === true) beats.push(req.url);
+    else verdicts.push({ url: req.url, auth: req.headers.authorization });
+    const replay = Object.assign(Object.create(req), { [Symbol.asyncIterator]: async function* () { yield Buffer.concat(chunks); } });
+    await backplane(replay, res);
   });
   kernelUrl = url(kernel);
 });
@@ -90,3 +119,40 @@ test("a reviewer that can't be reached fails the review (the runner retries it);
     up = true;
   }
 });
+
+test("a working review reports progress: the service beats the kernel as the review's calls advance, and /healthz names its instance", async () => {
+  const before = beats.length;
+  answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
+  const health = await (await fetch(`${url(module_)}/healthz`)).json();
+  assert.equal(health.instance, serviceInstance, "a fresh instance each start: the kernel fails what a recreated service lost");
+  // A slow model call: its answer is the progress, and the beat interval has passed, so the kernel sees a keepalive.
+  slowMs = 140;
+  try {
+    assert.equal((await ask({ card, diff: "+x" })).status, 200);
+  } finally {
+    slowMs = 0;
+  }
+  assert.ok(beats.length > before, "the kernel saw a keepalive when the work advanced");
+});
+
+test("a hung model call stops reporting progress: one beat when the call starts, none while it waits", async () => {
+  const known = new Set(dispatched);
+  answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
+  // The gateway hangs for 140 ms: several beat intervals (40 ms each) pass with no answer at all.
+  slowMs = 140;
+  try {
+    const asking = ask({ card, diff: "+x" });
+    // This test's own review, by the id the module was dispatched with: never a leftover review of an earlier test.
+    await until(() => dispatched.some((id) => !known.has(id)));
+    const mine = `/v1/reviews/${dispatched.filter((id) => !known.has(id))[0]}`;
+    // The call starting is progress: one beat for this review, as the review works.
+    await until(() => beats.includes(mine));
+    const starts = beats.filter((b) => b === mine).length;
+    await new Promise((ok) => setTimeout(ok, 110));
+    assert.equal(beats.filter((b) => b === mine).length, starts, "the clock alone never keeps a hung call alive");
+    assert.equal((await asking).status, 200);
+  } finally {
+    slowMs = 0;
+  }
+});
+

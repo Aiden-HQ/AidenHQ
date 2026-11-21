@@ -334,7 +334,7 @@ once(updatesTick, 60_000);
 const gitIn = (dir: string, args: string[]) => new Promise<string>((ok, no) => execFile("git", ["-C", dir, ...args], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => (e ? no(e) : ok(String(out)))));
 let ownerUser: string | undefined;
 const reviewLoop = createReviewLoop({
-  records, writes, log,
+  records, writes, reviews, log,
   // Declared after this (it needs the finish checks); asked only once a sweep runs.
   grade: (id) => checks.grade(id),
   product: () => (repos().product ? [repos().product!] : []),

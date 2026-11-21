@@ -14,6 +14,7 @@
 // task (tier.ts priorDecisions: the owner's veto, the same content rejected, retries parked, lifted by a decision on the task:
 // answered), and the instance's decisions digest from the instance repo's main. Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import type { Rec, Records, State } from "./records.ts";
+import type { Reviews } from "./reviews.ts";
 import { CODE_REJECTS, MAX_REJECTS, afterReview, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
@@ -240,8 +241,10 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   return { input, request, prior, lifted: split.by };
 }
 
-export function createReviewLoop({ records, writes, task, decisions, product, grade, log = () => {} }: {
+export function createReviewLoop({ records, writes, task, decisions, product, grade, reviews, log = () => {} }: {
   records: Records; writes: Writes; task: TaskApi;
+  /** The bound reviewer (reviews.ts): each sweep asks it whether its service restarted (a review it lost is failed, not waited out). */
+  reviews?: Reviews;
   /** The task's latest sent-back grade (checks.ts grade); absent: no grading module. */
   grade?: (task: string) => Promise<GraderNote | undefined>;
   /** The instance's decisions digest, from the instance repo's main (never a card's branch); none is no block. Read once a sweep. */
@@ -326,6 +329,9 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
      * burst never starves its first records. Resolves when they are done.
      */
     tick(): Promise<void> {
+      // A reviewer service recreated since a review went out (an apply) lost it: failed now, so the record is retried by its own
+      // backoff once this sweep lets go of it. Asked alongside the sweep, never ahead of it.
+      void reviews?.check().catch((e: Error) => log("reviewer health unread", { err: String(e.message ?? e).slice(0, 200) }));
       const now = Date.now();
       const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
       if (!due.length) return Promise.resolve();
