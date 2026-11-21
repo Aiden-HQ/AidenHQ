@@ -4,7 +4,7 @@
 //   GET  /reviews/:id                    → { run, review: Review | null }
 //   GET  /reviews?repo=… runs carry engine, model, effort, cost_usd (billed), tokens_in/cached/out and duration_ms
 //   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
-//   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any PR the instance can read, one run per
+//   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any open or merged PR the instance can read, one run per
 //                                        combo (default: the repo's on_open), each posted
 //   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
 //   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap

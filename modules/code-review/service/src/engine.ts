@@ -113,9 +113,9 @@ export function createEngine(d: EngineDeps) {
   const ack = (a: Ack) => d.poster.ack(a).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
 
   function upsertPr(p: PullRequest) {
-    run(`INSERT INTO prs (repo, number, head, base, updated, author, draft, fork, open, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    run(`INSERT INTO prs (repo, number, head, base, updated, author, draft, fork, open, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (repo, number) DO UPDATE SET head = excluded.head, base = excluded.base, updated = excluded.updated, author = excluded.author,
-      draft = excluded.draft, fork = excluded.fork, open = 1, title = excluded.title`, p.repo, p.number, p.head, p.base, iso(), p.author.toLowerCase(), p.draft ? 1 : 0, p.fork ? 1 : 0, p.title?.slice(0, 200) ?? null);
+      draft = excluded.draft, fork = excluded.fork, open = excluded.open, title = excluded.title`, p.repo, p.number, p.head, p.base, iso(), p.author.toLowerCase(), p.draft ? 1 : 0, p.fork ? 1 : 0, p.open ? 1 : 0, p.title?.slice(0, 200) ?? null);
   }
 
   // ---- runs: queue, skip, start, finish ---------------------------------------------------------------------------------------
@@ -241,6 +241,9 @@ export function createEngine(d: EngineDeps) {
   /** What a run is charged: the kernel's billing of its check job, within its reservation; unknown or invalid is the whole of it. */
   const charge = (r: RunRow, billed: unknown) => (typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? Math.min(r.billed_prior + billed, r.reserved_usd) : r.reserved_usd);
 
+  /** A run posts on a task of its own (closed once its post settles) unless its PR is open on a watched repo (the PR's task, closed with the PR). */
+  const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
+
   async function finish(r: RunRow, res: { state: "failed"; why: string; billed_usd?: number } | { state: "done"; review: Review; billed_usd?: number }) {
     // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
     if (res.state === "done") {
@@ -289,7 +292,7 @@ export function createEngine(d: EngineDeps) {
     const previous = lastPosted(r);
     let posted: Posted;
     try {
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: !repoCfg(r.repo) }, review, previous: previous ? JSON.parse(previous.json) : null });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null });
     } catch (e) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200) };
     }
@@ -304,7 +307,7 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE runs SET review_url = ?, resolved = ?, identity = ? WHERE id = ?", o.url ?? null, o.resolved ?? null, o.identity ?? null, r.id);
       landed(r);
     }
-    if (r.write_id && !repoCfg(r.repo)) void d.poster.close(r.repo, r.number, "The one-off review's post is settled.", r.id).catch((e) => log("review task not closed", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
+    if (r.write_id && ownTask(r)) void d.poster.close(r.repo, r.number, "The one-off review's post is settled.", r.id).catch((e) => log("review task not closed", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
   }
 
   /** A posted review is the PR's baseline for the next incremental run; one only filed (or refused) never is. */
@@ -457,7 +460,7 @@ export function createEngine(d: EngineDeps) {
     if (!m) throw new RequestError("pr_url is a GitHub pull request link (https://github.com/owner/repo/pull/123)");
     let p: PullRequest;
     try { p = await d.source.get(m[1]!.toLowerCase(), Number(m[2])); } catch (e) { throw new RequestError(`that PR can't be read: ${String((e as Error).message).slice(0, 200)}`); }
-    if (!p.open) throw new RequestError("that PR is closed");
+    if (!p.open && !p.merged) throw new RequestError("that PR was closed without merging"); // a merged one is reviewed (a backtest)
     // Only where a review can post: as the owner, once GitHub is connected.
     const can = await d.source.postable(p.repo).catch((e) => { throw new RequestError(`can't tell who would post on ${p.repo}: ${String((e as Error).message).slice(0, 200)}`); });
     if (!can.identity) throw new RequestError(`reviews can't post on ${p.repo}: GitHub isn't connected`);
@@ -469,7 +472,7 @@ export function createEngine(d: EngineDeps) {
     tick,
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) { const r = runRow(id); return r ? { repo: r.repo, number: r.number, head: r.head } : undefined; },
-    /** A one-off review of any PR the instance can read, by each combo asked for (default: the repo's on_open); posted like any other. */
+    /** A one-off review of any open or merged PR the instance can read, by each combo asked for (default: the repo's on_open); posted like any other. */
     async oneoff(b: { pr_url?: unknown; combos?: unknown; focus?: unknown; full?: unknown }) {
       if (b.focus !== undefined && (typeof b.focus !== "string" || b.focus.length > 300)) throw new RequestError("focus is a short text");
       const asked = b.combos === undefined ? undefined : parseCombos(b.combos, "combos");
