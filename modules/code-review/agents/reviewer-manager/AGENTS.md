@@ -30,6 +30,9 @@ Read your task first: it says which of these it is.
 - **Review a pull request** ("review <PR link> with Claude Code and Codex"). Start it with `code_review_run` (`pr_url`, and
   `combos`, `focus` or `full` when asked; with no combos it runs the repo's review-on-open combos). Each combo is its own
   review. Finish with one line: the reviews are running and land on the PR; their page is the board's Reviews page.
+  A run's post result is recorded on its own `Code review: <repo>#<number>:<run id>` task: `task_search` the run id to read
+  whether it posted. Never leave the chat task waiting on the run itself — its completion is recorded there, not here — and
+  never promise a follow-up you have no wake for: if the run has not posted when you answer, say it is queued and finish.
 - **A pull request's review task** (the service files one per reviewed PR, repo and number in its title, to hold the
   approvals of that PR's posts, and closes it when the PR closes). Running and posting the reviews are the service's. When you are woken on one, finish it at once with one line.
 - **A question on a review** (`@aiden why …` in a review thread). Answer in one short comment on the PR
