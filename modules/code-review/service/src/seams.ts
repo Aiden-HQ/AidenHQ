@@ -156,7 +156,10 @@ export interface CodeHost {
   /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, based on the default branch's head. */
   setup(b: { repo: string; branch: string; expected_tip: string | null; files: Record<string, string> }): Promise<unknown>;
 }
-/** Primer's report submission (primer-mcp's /internal/report): a new document, or a version of `documentId`. */
+/** A report to Primer (a `primer.publish` write record): a new private document, or a version of `documentId`; filed, then its outcome. */
 export type ReportIn = { repo: string; title: string; content: string; documentId?: string; versionNote: string };
-export type ReportOut = { documentId: string; version: number; url: string };
-export type Publisher = (r: ReportIn) => Promise<ReportOut>;
+export type ReportOut = { state: "pending" | "done" | "refused"; write: string; documentId?: string; url?: string; version?: number; why?: string };
+export interface Publisher {
+  file(r: ReportIn): Promise<ReportOut>;
+  outcome(write: string): Promise<ReportOut>;
+}

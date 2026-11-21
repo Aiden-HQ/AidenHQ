@@ -93,11 +93,15 @@ export type BatchRow = {
   /** The deepsec setup branch when the review started (deepsec picked and not set up at the commit): its tip and files, which
    * deepsec scans with; a branch there means its PR is pending, so no second one is asked for. */
   setup_tip: string | null; setup_files: string | null;
+  /** The report's primer.publish write record, while its outcome is pending. */
+  report_write: string | null;
 };
 /** A repo review's cap (USD, across all its options): the default and the most. */
 export const RUN_USD = { default: 25, min: 1, max: 150 };
 /** The most one check of a repo review may spend (module.yaml check_jobs.code-review model.max_usd). */
 export const CHECK_MAX_USD = 100;
+/** The deepsec set-up files a run's box gets from a pending setup branch: its summary, config and matchers (the spec's json cap). */
+const BOX_SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** A deepsec setup PR asked for and not on the code host yet (refused, or still with the AI reviewer) is asked for again after this. */
 const SETUP_RETRY = 24 * 3600_000;
 const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
@@ -130,7 +134,7 @@ CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, options TEXT NOT NULL, combo TEXT NOT NULL, run_usd REAL NOT NULL,
   status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
-  author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0, setup_tip TEXT, setup_files TEXT);
+  author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0, setup_tip TEXT, setup_files TEXT, report_write TEXT);
 CREATE TABLE IF NOT EXISTS documents (repo TEXT PRIMARY KEY, document TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS setups (repo TEXT PRIMARY KEY, asked INTEGER NOT NULL, answer TEXT);`;
 /** The data's format (module.yaml data_version), migrated forward at start. 1: combos and findings; a database from before starts
@@ -142,8 +146,8 @@ export const DATA_VERSION = 2;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
-  /** Repo reviews: the code host's snapshots (a tree's commit and paths), the option catalog, and Primer (absent: the report is on the board only). */
-  codehost: CodeHost; catalog: () => Option[]; publisher?: Publisher;
+  /** Repo reviews: the code host (snapshots, the deepsec setup PR), the option catalog, and Primer (the report's document). */
+  codehost: CodeHost; catalog: () => Option[]; publisher: Publisher;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -420,7 +424,8 @@ export function createEngine(d: EngineDeps) {
       const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", profile: tools ? "code-review-tools" : "code-review",
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skill: o.run.skill } : {}) },
         ...(tools ? { tools: toolSpec(r.option!.split(",").map((id) => opts.get(id)).filter((x): x is Option => !!x)) } : { option: r.option!, lens: o?.lens ?? "" }),
-        ...(r.engine === "deepsec" && b.setup_files ? { setup_files: JSON.parse(b.setup_files) as Record<string, string> } : {}),
+        // Only deepsec's small files go to the box (a json spec field holds 16 KB): its package.json and lockfile stay in the setup PR.
+        ...(r.engine === "deepsec" && b.setup_files ? { setup_files: Object.fromEntries(Object.entries(JSON.parse(b.setup_files) as Record<string, string>).filter(([p]) => BOX_SETUP.test(p))) } : {}),
         focus: null, incremental_from: null, full: true, previous: [], mandatory: false, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -574,16 +579,23 @@ export function createEngine(d: EngineDeps) {
       return void log("repo review report not rendered", { batch: id, err: String((e as Error).message).slice(0, 200) });
     }
     run("UPDATE batches SET status = 'done', verdict = ?, report = ?, ended = ? WHERE id = ?", out.verdict, out.markdown, iso(), id);
-    if (!d.publisher) return void run("UPDATE batches SET report_why = ? WHERE id = ?", "Primer can't be reached from code review: the report is on the board only", id);
     const doc = one<{ document: string }>("SELECT document FROM documents WHERE repo = ?", b.repo)?.document;
     try {
-      const p = await d.publisher({ repo: b.repo, title: `Repo review: ${b.repo}`, content: out.markdown, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 12)} · ${iso().slice(0, 10)} · ${out.verdict}` });
-      run("INSERT INTO documents (repo, document) VALUES (?, ?) ON CONFLICT (repo) DO UPDATE SET document = excluded.document", b.repo, p.documentId);
-      run("UPDATE batches SET report_url = ?, report_version = ? WHERE id = ?", p.url, p.version, id);
-    } catch (e) {
-      log("repo review report not sent to Primer", { batch: id, err: String((e as Error).message).slice(0, 200) });
-      run("UPDATE batches SET report_why = ? WHERE id = ?", `not sent to Primer: ${String((e as Error).message).slice(0, 300)}`, id);
+      const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: out.markdown, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 7)} ${iso().slice(0, 10)}` });
+      run("UPDATE batches SET report_write = ? WHERE id = ?", o.write, id);
+      published(id, o);
+    } catch (e) { published(id, { state: "refused", write: "", why: String((e as Error).message).slice(0, 300) }); }
+  }
+  /** The report's publish record settled: its document saved for the repo (later reviews add versions to it), or why it isn't in Primer. */
+  function published(id: string, o: Awaited<ReturnType<Publisher["outcome"]>>) {
+    if (o.state === "pending") return;
+    const b = batchRow(id)!;
+    if (o.state === "refused") {
+      log("repo review report not published to Primer", { batch: id, why: String(o.why ?? "").slice(0, 200) });
+      return void run("UPDATE batches SET report_write = NULL, report_why = ? WHERE id = ?", `not in Primer: ${String(o.why ?? "refused").slice(0, 300)}`, id);
     }
+    run("INSERT INTO documents (repo, document) VALUES (?, ?) ON CONFLICT (repo) DO UPDATE SET document = excluded.document", b.repo, o.documentId!);
+    run("UPDATE batches SET report_write = NULL, report_url = ?, report_version = ? WHERE id = ?", o.url ?? null, o.version ?? null, id);
   }
 
   /**
@@ -878,6 +890,8 @@ export function createEngine(d: EngineDeps) {
         else live.delete(r.id); // no figure this tick: back to the whole run_usd
       }
     }
+    for (const b of all<{ id: string; report_write: string }>("SELECT id, report_write FROM batches WHERE report_write IS NOT NULL"))
+      published(b.id, await d.publisher.outcome(b.report_write).catch(() => ({ state: "pending" as const, write: b.report_write })));
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {

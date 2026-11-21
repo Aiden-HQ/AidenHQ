@@ -63,3 +63,12 @@ test("a done notice's review link is a field the notice kind takes (schemas/noti
   assert.equal(args.review, "https://github.com/acme/x/pull/3#pullrequestreview-9");
 });
 
+
+test("a repo review's report is filed as Primer's own publish record, private, keyed by repo; its outcome names the document", async () => {
+  const { primerPublisher } = await import("../service/src/primer-client.ts");
+  const calls = [];
+  const p = primerPublisher({ call: async (m, path, body) => (calls.push([m, path, body]), m === "POST" ? { id: "k-1", state: "review" } : { id: "k-1", state: "done", outcome: { ok: true, text: JSON.stringify({ documentId: "d-1", url: "https://primer.example.com/d/d-1", version: 2 }) } }) });
+  assert.deepEqual(await p.file({ repo: "acme/x", title: "Repo review: acme/x", content: "# r", documentId: "d-1", versionNote: "abcdef0 2026-11-22" }), { state: "pending", write: "k-1" });
+  assert.deepEqual(calls[0][2], { kind: "primer.publish", args: { title: "Repo review: acme/x", content: "# r", format: "markdown", documentId: "d-1", versionNote: "abcdef0 2026-11-22", private: true, repo_key: "acme/x" } });
+  assert.deepEqual(await p.outcome("k-1"), { state: "done", write: "k-1", documentId: "d-1", url: "https://primer.example.com/d/d-1", version: 2 });
+});

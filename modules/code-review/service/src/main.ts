@@ -37,8 +37,8 @@ const engine = createEngine({
   codehost: kernelCodeHost(kernelUrl, token),
   // The option catalog (catalog.json beside this file), read when a repo review asks for it.
   catalog: () => loadCatalog(readFileSync(new URL("./catalog.json", import.meta.url), "utf8")),
-  // Primer (primer-mcp's report route, CODE_REVIEW_PRIMER_URL): the report's document, one per repo, a version per review.
-  ...(env.CODE_REVIEW_PRIMER_URL ? { publisher: primerPublisher(env.CODE_REVIEW_PRIMER_URL, token) } : {}),
+  // Primer: the report as a primer.publish write record, one document per repo, a version per review.
+  publisher: primerPublisher(kernel),
   emit: (f) => facts.emit(f),
   log,
 });
