@@ -178,10 +178,13 @@ describe("posting", () => {
       return w.impl(u, i);
     }) as typeof fetch;
     const p = new ReviewPoster(new GitHub(accessFor((u, i) => flaky(u, i)), flaky), accessFor((u, i) => flaky(u, i)), records());
-    const out = JSON.parse((await p.execute("post", postArgs(review([finding("f_partial_1", "src/pay.ts", 2)])))).text);
+    const posted = await p.execute("post", postArgs(review([finding("f_partial_1", "src/pay.ts", 2)])));
+    const out = JSON.parse(posted.text);
     expect(out.review).toBe("https://github.com/acme/payments/pull/12#pullrequestreview-1");
     expect(out.partial).toBeTruthy();
     expect(w.state.reviews).toHaveLength(1);
+    // The comment ids it did read are kept for the records, so a later run resolves its own thread rather than posting again.
+    expect(posted.objects).toContain("github:acme/payments#12/comment/501");
     // The same failure before the review exists is still a refusal: nothing was posted, and the head check still refuses.
     failAck = false;
     const moved = world({ headSha: "c".repeat(40) });
