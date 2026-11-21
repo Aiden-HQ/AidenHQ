@@ -198,9 +198,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       if (open === "unknown") return { sent: "open" };
       // A legacy marker doesn't say which recipient waits: never replace it on a guess; the caller refuses, actionably.
       if (open === "ambiguous") return { sent: "ambiguous" };
-      // One open ask at a time. The same routed recipient may be replaced; a recipient change waits, except that an ask whose
-      // delegator has since closed may move on to whoever now settles it (the chief of staff, or the owner for the chief's task).
-      if (open && open.to !== to && !(open.to === "delegator" && !(await delegatorOf(t)))) return { sent: "open", to: open.to };
+      // One open ask at a time: only the same routed recipient may be replaced; any other change waits for its answer.
+      if (open && open.to !== to) return { sent: "open", to: open.to };
       if (asked && to === "owner") return { sent: "recorded", to };
       // A looping agent can't fill the chief of staff's list: at most CHIEF_ASKS a day per agent, whatever requested the ask.
       const asker = to === "chief_of_staff" ? (await agentOf(t))?.key : undefined;
