@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, candidateMarked, check, compareRelease, createUpdates, pinText, pinTo, readState, updateTask, verify, verifyMain, writeState } from "../src/updates.ts";
+import { Refused, candidateMarked, check, compareRelease, createUpdates, gitOwn, ownCredentials, pinText, pinTo, readState, updateTask, verify, verifyMain, writeState } from "../src/updates.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -482,4 +482,36 @@ test("after a main commit, a release behind it is skipped quietly and the next o
   w.runs[44] = { path: ".github/workflows/release.yml", head_sha: D4, head_branch: "2026.11.4", event: "push", status: "completed", conclusion: "success" };
   s = await check({ ...w.d, now: () => NIGHT });
   assert.deepEqual([s.available?.name, s.ready?.release, s.ready?.kernel], ["2026.11.4", "2026.11.4", K4]);
+});
+
+test("the instance checkout is fetched with its own credential helper; a URL that isn't ours never sees one", () => {
+  const w = world();
+  git(w.d.inst, "config", "credential.helper", "!f() { echo username=owner; echo password=secret; }; f");
+  git(w.d.inst, "config", "credential.useHttpPath", "true");
+  // What git would run for a fetch here: the checkout's helper is last, and so wins, only when nothing resets it after.
+  const helpers = (...a) => execFileSync("git", [...a, "config", "--get-all", "credential.helper"], { cwd: w.d.inst, encoding: "utf8" }).replace(/\n$/, "").split("\n");
+  assert.deepEqual(gitOwn(w.d.inst, ["config", "--get-all", "credential.helper"]).trim().split("\n").length, 1);
+  assert.deepEqual(helpers("-c", "credential.helper="), [helpers()[0], ""]);
+  // A fresh clone of its origin gets the same settings as -c arguments.
+  assert.deepEqual(gitOwn(tmpdir(), ["config", "--get-all", "credential.helper"], ownCredentials(w.d.inst)).trim().split("\n"), [helpers()[0]]);
+  assert.deepEqual(ownCredentials(join(w.root, "product")), []);
+  // A failing git names its subcommand and git's words, never the argv (which holds the credential settings).
+  assert.throws(() => gitOwn(tmpdir(), ["clone", "-q", "--", join(w.root, "missing"), "c"], ownCredentials(w.d.inst)), (e) => /^git clone failed/.test(e.message) && !/secret|credential/.test(e.message));
+  // Only "none configured" (exit 1) is no credentials; an unreadable checkout throws.
+  assert.throws(() => ownCredentials(join(w.root, "missing")));
+});
+
+test("a check that keeps failing tells the owner once, with the error's first line, and again only after a pass succeeds", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "upd-")), alerts = [];
+  let clock = 0, fail = true;
+  const v = createUpdates({ db: new DatabaseSync(":memory:"), dir, ownerLine() {}, alert: (t) => alerts.push(t), now: () => clock,
+    check: async () => { if (fail) throw new Error("git fetch: fatal: could not read Username\nsecond line"); }, file: async () => ({ record: "", task: "" }), record: () => undefined, close: async () => {} });
+  for (let i = 0; i < 5; i++) { clock += 2 * 3_600_000; await v.tick(); }
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0], /could not read Username/);
+  assert.doesNotMatch(alerts[0], /second line/);
+  fail = false; clock += 2 * 3_600_000; await v.tick();
+  fail = true;
+  for (let i = 0; i < 3; i++) { clock += 2 * 3_600_000; await v.tick(); }
+  assert.equal(alerts.length, 2);
 });

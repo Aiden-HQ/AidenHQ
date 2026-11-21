@@ -134,10 +134,29 @@ export type State = {
 
 const url = (d: Pick<Deps, "base">, repo: string) => `${d.base}/${repo}.git`;
 const at = (d: Pick<Deps, "base">, repo: string, sha: string): Where => ({ url: url(d, repo), path: "", sha, owned: true });
-const git = (cwd: string, args: string[], input?: string) =>
-  execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", "-c", "credential.helper=", ...args], {
-    cwd, encoding: "utf8", input, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
-  });
+const runGit = (cred: string[], cwd: string, args: string[], input?: string) => {
+  try {
+    return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", ...cred, ...args], {
+      cwd, encoding: "utf8", input, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+    });
+  } catch (e) {
+    // The failure's own words (git's first stderr line) go with the subcommand, so a log or an alert says why. Never the argv:
+    // it carries the checkout's credential.* settings.
+    const why = String((e as { stderr?: unknown }).stderr ?? "").trim().split("\n")[0];
+    const sub = args.find((a, i) => !a.startsWith("-") && !["-c", "--git-dir"].includes(args[i - 1] ?? "")) ?? "command";
+    throw Object.assign(new Error(`git ${sub} failed${why ? `: ${why}` : ""}`), { status: (e as { status?: number }).status });
+  }
+};
+/** git for a URL that isn't ours (the release repos, the distro): no credential helper, so none is ever offered to it. */
+const git = (cwd: string, args: string[], input?: string) => runGit(["-c", "credential.helper="], cwd, args, input);
+/** git for the owner's own instance repo, in its checkout (or with `cred`, in a clone of it): the checkout's configured credentials. */
+export const gitOwn = (cwd: string, args: string[], cred: string[] = []) => runGit(cred, cwd, args);
+/** The checkout's credential.* settings as -c arguments, for a fresh clone of its origin (which has none of its own). */
+export function ownCredentials(inst: string): string[] {
+  let out = "";
+  try { out = runGit([], inst, ["config", "--get-regexp", "^credential\\."]); } catch (e) { if ((e as { status?: number }).status !== 1) throw e; /* none configured: exit 1 */ }
+  return out.split("\n").filter(Boolean).flatMap((l) => ["-c", l.replace(/ /, "=")]);
+}
 /** Whether commit a is an ancestor of b in repo: false when it isn't (or a isn't there at all); any other git failure throws. */
 function isAncestor(repo: string, a: string, b: string): boolean {
   if (spawnSync("git", ["--git-dir", repo, "cat-file", "-e", `${a}^{commit}`]).status !== 0) return false;
@@ -337,7 +356,7 @@ const event = (s: State, id: string, text: string) => { s.events = [...(s.events
 
 /** instance.yaml on the instance's main, as text (fetched first). */
 function instanceText(inst: string) {
-  git(inst, ["fetch", "-q", "origin", "main"]);
+  gitOwn(inst, ["fetch", "-q", "origin", "main"]);
   return git(inst, ["show", "origin/main:instance.yaml"]);
 }
 
@@ -432,14 +451,14 @@ function landKernel(d: Pick<Deps, "base" | "fetch" | "product">, kernel: string)
 /** A commit of instance.yaml on the instance repo's `branch`, made in a temporary clone of its main and pushed. Returns the commit. */
 function commitOn(inst: string, branch: string, message: string, change: (clone: string) => void): string {
   const origin = git(inst, ["remote", "get-url", "origin"]).trim();
-  const tmp = mkdtempSync(join(tmpdir(), "aidenhq-update-"));
+  const tmp = mkdtempSync(join(tmpdir(), "aidenhq-update-")), cred = ownCredentials(inst);
   try {
-    git(tmp, ["clone", "-q", "--", origin, "c"]);
+    gitOwn(tmp, ["clone", "-q", "--", origin, "c"], cred);
     const c = join(tmp, "c");
     change(c);
     git(c, ["-c", "user.name=AidenHQ updates", "-c", "user.email=updates@aidenhq.invalid", "commit", "-q", "-m", message, "--", "instance.yaml"]);
     // main is only ever fast-forwarded (setup's bootstrap); a release branch is this updater's own, so a new preparation replaces it.
-    git(c, ["push", "-q", ...(branch === "main" ? [] : ["--force"]), "origin", `HEAD:refs/heads/${branch}`]);
+    gitOwn(c, ["push", "-q", ...(branch === "main" ? [] : ["--force"]), "origin", `HEAD:refs/heads/${branch}`], cred);
     return git(c, ["rev-parse", "HEAD"]).trim();
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
@@ -499,7 +518,7 @@ export function pinTo(d: Pick<Deps, "base" | "fetch" | "inst">, name: string, sh
 const MOVING = ["review", "owner", "approved", "claimed"];
 const HOUR = 3_600_000;
 /** Checks an Update now gets (a failed child: the network, a timeout), the waits between them growing from ASK_WAIT. */
-const ASK_TRIES = 3, ASK_WAIT = 2 * 60_000;
+const ALERT_AFTER = 3, ASK_TRIES = 3, ASK_WAIT = 2 * 60_000;
 /** Times an owner-asked release is prepared again after another change reached main first. */
 const MOVED_TRIES = 3;
 
@@ -507,11 +526,13 @@ const MOVED_TRIES = 3;
  * The kernel's half: runs the check (hourly, and at once on Update now), files the release it prepared as a kernel.apply and
  * follows that record to its end, tells the owner each event once (kernel.db), and the /updates page reads the state.
  */
-export function createUpdates({ db, dir, board, inst, ownerLine, check, main, file, record, close, log = () => {}, now = Date.now }: {
+export function createUpdates({ db, dir, board, inst, ownerLine, alert = () => {}, check, main, file, record, close, log = () => {}, now = Date.now }: {
   db: DatabaseSync; dir: string; board?: string;
   /** The instance checkout: until the first check has run, the page reads the release followed from its instance.yaml. */
   inst?: string;
   ownerLine: (text: string) => void;
+  /** Pages the owner: the check has failed ALERT_AFTER passes in a row (said once; a passing check clears it). */
+  alert?: (text: string) => void;
   /** Runs `node kernel/src/updates.ts check [release by]` (a child process: its git and network work stays off the kernel's loop). */
   check: (asked: Asked) => Promise<void>;
   /** Runs `node kernel/src/updates.ts main <to>` (verifyMain, a child): the commit, or Refused with the reason. */
@@ -526,7 +547,7 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, main, fi
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS update_notices (id TEXT PRIMARY KEY, at TEXT NOT NULL)");
   const d = { dir, board };
-  let running: Promise<void> | null = null, checked = 0, asked: Asked = null;
+  let running: Promise<void> | null = null, checked = 0, asked: Asked = null, failing = 0;
 
   /** The filed record's end: installed, or failed with its reason (the night doesn't file that release again). */
   async function follow(s: State) {
@@ -578,6 +599,8 @@ export function createUpdates({ db, dir, board, inst, ownerLine, check, main, fi
       checked = now();
       let failed: Error | undefined;
       await check(ask ? { release: ask.release, by: ask.by } : null).catch((e: Error) => { failed = e; log("update check failed", { err: e.message.slice(0, 300) }); });
+      failing = failed ? failing + 1 : 0;
+      if (failing === ALERT_AFTER) alert(`The release train can't check for updates (${failing} passes failed in a row, so no release or pin bump is being prepared). First line of the error: ${plain(failed!.message.split("\n")[0], 300)}`);
       // A check that ran has told the owner itself (filed, or why not). One that failed is tried again, bounded; then said.
       if (ask) await locked(dir, async () => {
         const s = readState(dir);

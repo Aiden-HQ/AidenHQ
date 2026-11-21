@@ -313,7 +313,7 @@ once(() => void certWatch.tick(), 10 * 60_000);
 const moduleTasks = createModuleTasks({ db: records.db, owner: ownerApi, agents: () => grantsTable().agents ?? {}, plugin: () => plugin, rubric: (task, module, b) => checks.rubric(task, module, b), log });
 const updates = createUpdates({
   db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
-  ownerLine: toOwner("done"), check: runCheck(repo), main: runMain(repo), log,
+  ownerLine: toOwner("done"), alert: toOwner("alert"), check: runCheck(repo), main: runMain(repo), log,
   file: async (r) => {
     const task = await moduleTasks.file("kernel", updateTask(r));
     try {
