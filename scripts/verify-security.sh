@@ -753,12 +753,7 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
   -e '  { method: "PUT", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },' \
-  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },' \
-  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/git/trees$`) },' \
-  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/git/commits$`) },' \
-  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/git/refs$`) },' \
-  -e '  { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/git/refs/heads/${SETUP_BRANCH}$`) },' \
-  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls$`) },' || true)"
+  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },' || true)"
 [ -n "$gh_routes" ] && [ -z "$bad_gh" ] && grep -q 'guard(method, path, opts.body)' modules/github/connections/github-mcp/src/github.ts && [ "$(grep -c 'fetchImpl(' modules/github/connections/github-mcp/src/github.ts)" = 2 ] \
   && grep -q '!to || !logHostAllowed(to)' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF 'await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) })' modules/github/connections/github-mcp/src/github.ts \
@@ -768,10 +763,7 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
   && grep -qF '{ method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '?.subject_type !== "file") throw new GitHubRefused' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '?.context !== STATUS) throw new GitHubRefused' modules/github/connections/github-mcp/src/github.ts \
-  && grep -qF 'refused a branch outside aidenhq/' modules/github/connections/github-mcp/src/github.ts \
-  && grep -qF 'refused a pull request from a branch outside aidenhq/' modules/github/connections/github-mcp/src/github.ts \
-  && grep -qF "refused a tree that isn't plain files" modules/github/connections/github-mcp/src/github.ts \
-  && pass "github-mcp: every request goes through the guard (the one other fetch is a job-log download from GitHub log hosts only, without the token); the only writes are issue comments, new issues, issue state/labels/assignees, reviews, the review comment edited in place, an agent's reply on a review thread (body only), a review's text updated (body only), file comments, the aidenhq/review commit status only, failed-job re-runs, code review's setup commit (allowlisted .deepsec/ files on an aidenhq/ branch, never forced, and its PR) and GraphQL (modules/github/connections/github-mcp/src/github.ts)" || fail "github-mcp: unexpected GitHub requests allowed: $bad_gh"
+  && pass "github-mcp: every request goes through the guard (the one other fetch is a job-log download from GitHub log hosts only, without the token); the only writes are issue comments, new issues, issue state/labels/assignees, reviews, the review comment edited in place, an agent's reply on a review thread (body only), a review's text updated (body only), file comments, the aidenhq/review commit status only, failed-job re-runs and GraphQL (modules/github/connections/github-mcp/src/github.ts)" || fail "github-mcp: unexpected GitHub requests allowed: $bad_gh"
 gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/connections/github-mcp/src/github.ts | grep -oE 'mutation\([^)]*\) \{ [A-Za-z0-9]+' | awk '{print $NF}' | sort -u | tr '\n' ' ')"
 [ "$gh_mutations" = "addProjectV2ItemById resolveReviewThread updateProjectV2ItemFieldValue " ] && grep -q 'GRAPHQL_DOCS.has(' modules/github/connections/github-mcp/src/github.ts \
   && pass "github-mcp: GraphQL limited to fixed documents whose only mutations add an issue to a project, set its status and resolve a review thread" || fail "github-mcp: unexpected GraphQL mutations: $gh_mutations"

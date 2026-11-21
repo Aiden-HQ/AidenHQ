@@ -323,6 +323,9 @@ writes:
   merge: { args: schemas/merge.json, floor: 0, paths: true, card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
+  # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on an aidenhq/
+  # branch and its PR, which the AI reviewer reads whole (service/src/setup.ts).
+  setup: { args: schemas/setup.json, floor: 1, card: *card }
 # github_service_key: the kernel's bearer for github-mcp (both connections). github_auth_token: the board's, for its sign-in.
 # codehost_github_token: the code host's own token (the kernel knows the module by it; the name it had as codehost-github).
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates them when missing.

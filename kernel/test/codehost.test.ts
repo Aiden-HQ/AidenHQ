@@ -20,6 +20,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
   const op = createCodehost({
     grants: () => [
       { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
+      { module: "code-review", setup: { repos: ["*/*"], paths: [".deepsec/data/*/INFO.md", ".deepsec/package.json"] } },
       { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
       { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
       { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
@@ -172,10 +173,24 @@ test("without the github module there is no GitHub code host: 404", async (t) =>
   assert.match(r.error, /no GitHub code host/);
 });
 
+test("setup passes only the grant's paths, an aidenhq/ branch and the fields it names, to the code host", async (t) => {
+  const { call, seen } = await setup(t);
+  const body = { repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: { ".deepsec/data/w/INFO.md": "# w\n", ".deepsec/package.json": "{}" }, title: "Add deepsec", body: "Setup.", task: "T-1" };
+  assert.equal((await call("code-review", "setup", { ...body, files: { "src/a.ts": "x" } })).status, 403, "a path outside the grant");
+  assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/../x/INFO.md": "x" } })).status, 403, "a glob star is one segment, never ..");
+  assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/a/b/INFO.md": "x" } })).status, 403, "a glob star is one segment");
+  assert.equal((await call("code-review", "setup", { ...body, branch: "main" })).status, 400, "only aidenhq/ branches");
+  assert.equal((await call("code-review", "setup", { ...body, expected_tip: "main" })).status, 400);
+  assert.equal((await call("github", "setup", body)).status, 403, "no setup grant");
+  assert.equal(seen.length, 0);
+  assert.equal((await call("code-review", "setup", { ...body, base: "b".repeat(40), junk: 1 })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "code-review", repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: body.files, allow: [".deepsec/data/*/INFO.md", ".deepsec/package.json"], title: "Add deepsec", body: "Setup.", task: "T-1" });
+});
+
 test("no grant names a token: the schema lists the typed ops only", async () => {
   const { readFileSync } = await import("node:fs");
   const schema = JSON.parse(readFileSync(new URL("../schemas/codehost.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(schema.properties).sort(), ["clone", "comment", "commit", "fetch", "read", "runner", "snapshot"]);
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["clone", "comment", "commit", "fetch", "read", "runner", "setup", "snapshot"]);
 });
 
 test("with both code hosts, each repo goes to its own: local/… to this server's, the agents org's to GitHub", async (t) => {

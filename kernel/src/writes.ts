@@ -27,7 +27,7 @@ import { OWNER_AFTER_TRIES, ownerAfterFailure, retryWait, afterReview, requestHa
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
-export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
+export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; filed_by?: string[]; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
 /**
  * A plan (executor@1's, or the kernel's own planner's). `review_first` with a Tier 2 raise: how the reviewer's verdict on it
  * stands ("final": its reject is final, its approve goes on to the owner; "owner", the default: both go on to the owner).
@@ -450,13 +450,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const k = kindOf_(kind);
     if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
     // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
-    // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds; a kernel
+    // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds, and another module's only when that kind's `filed_by` names it (the owner of the kind consents); a kernel
     // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
     // a request of a defined kernel role (KERNEL_ROLES) and the authority diff marks as owner authority.
     const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
     // A kernel job (its identity is a run) by the kinds its frozen authority names, or by its tools.
     const named = Boolean(who.task && who.writes?.includes(kind));
-    const granted = (who.kind === "module" && (who.module === k.module || kernelRole)) || named || k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); });
+    const granted = (who.kind === "module" && (who.module === k.module || kernelRole || Boolean(who.module && k.filed_by?.includes(who.module)))) || named || k.tools.some((ct) => { const [c, t] = ct.split("."); return who.tools[c!]?.includes(t!); });
     if (!granted) throw fail(403, "no-grant", `no grant on ${kind}`);
     // An agent's record is on the task its run is on (its notices land there, as the owner); only a module names one.
     const t = who.kind === "module" && typeof task === "string" && task ? task : who.task ?? "";

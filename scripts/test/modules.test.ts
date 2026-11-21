@@ -349,10 +349,11 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const product = join(here, "../..");
   const kinds = {};
   const writes = [];
-  for (const { name } of JSON.parse(readFileSync(join(product, "modules/marketplace.json"), "utf8")).plugins) {
+  const names = JSON.parse(readFileSync(join(product, "modules/marketplace.json"), "utf8")).plugins.map((p) => p.name);
+  for (const name of names) {
     const root = join(product, "modules", name);
     const def = YAML.parse(readFileSync(join(root, "module.yaml"), "utf8"));
-    Object.assign(kinds, writeKinds(name, def, root, {}, kinds));
+    Object.assign(kinds, writeKinds(name, def, root, {}, kinds, names));
     for (const [c, x] of Object.entries(def.connections ?? {})) writes.push(...x.tools.write.map((t) => [`${c}.${t}`, 0]), ...(x.tools.destructive ?? []).map((t) => [`${c}.${t}`, 1]));
   }
   const routed = Object.fromEntries(Object.entries(kinds).flatMap(([id, k]) => k.tools.map((ct) => [ct, id])));
@@ -361,11 +362,15 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "code-review.post": 1, "code-review.notice": 0, "code-review.status": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "code-review.post": 1, "code-review.notice": 0, "code-review.status": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0, "github.setup": 1 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version", "primer.primer_reply_to_thread", "primer.primer_resolve_thread"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish", "primer.reply", "primer.reply"]);
   assert.equal(kindOf["slack_live.slack_post"], "slack.post");
   assert.equal(kindOf["slack_live.channel_memory"], "slack.memory");
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.
+  // filed_by names other modules that exist, never itself or the kernel.
+  const withFiled = (filed_by) => ({ providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], writes: { k: { floor: 1, filed_by } } });
+  assert.deepEqual(writeKinds("m", withFiled(["n"]), product, {}, {}, ["m", "n"])["m.k"].filed_by, ["n"]);
+  for (const bad of [["m"], ["kernel"], ["ghost"], [], "n"]) assert.throws(() => writeKinds("m", withFiled(bad), product, {}, {}, ["m", "n"]), /filed_by lists other modules/);
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: ["r"], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["r"] } } }, product), /r is no write or destructive tool/);
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: [], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["w"] }, j: { floor: 1, tools: ["w"] } } }, product), /c\.w is already routed/);
 });
