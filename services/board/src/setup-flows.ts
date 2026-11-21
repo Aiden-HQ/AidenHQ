@@ -104,7 +104,7 @@ export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatch
 
 const DISMISSED = "setup_dismissed";
 
-export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; states: () => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]> } {
+export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; states: (module?: string) => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]> } {
   const doFetch = d.fetchImpl ?? fetch;
   const dismissed = (): string[] => {
     try {
@@ -155,9 +155,9 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
     f.signin || f.connect_url || f.pair_url ? signedIn && (f.pair_url ? paired : true) : (f.secrets ?? []).every((x) => present[x]);
   const signedInOf = async (f: SetupFlowPoint, connected?: boolean) => (f.signin ? await d.signedIn(f.signin) : f.connect_url ? connected === true : true);
   /** Each flow's done and dismissed state as the setup page counts it: the owner MCP's `status` lists the open ones, `connect` marks the done ones. */
-  const states = async () => {
+  const states = async (module?: string) => {
     const gone = new Set(dismissed());
-    return Promise.all(d.flows.map(async (f) => ({ module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), await pairedOf(f)), dismissed: gone.has(f.module) })));
+    return Promise.all(d.flows.filter((f) => !module || f.module === module).map(async (f) => ({ module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), await pairedOf(f)), dismissed: gone.has(f.module) })));
   };
 
   const routes: SetupRoute[] = [
