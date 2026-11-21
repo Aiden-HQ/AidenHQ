@@ -4,7 +4,6 @@
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
-import { MAX_DIFF } from "../aidenhq-sdk/judge.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
