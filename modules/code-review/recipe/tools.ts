@@ -108,7 +108,8 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
     // unremovable stays behind: the box is thrown away, and the next tool gets a folder of its own.
     const work = join(tmp, `work-${Object.keys(counts).length + failed.length}`);
     const drop = () => { try { rmSync(work, { recursive: true, force: true }); } catch {} };
-    cpSync(ws, work, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory(); } });
+    try { cpSync(ws, work, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory(); } }); }
+    catch (e) { drop(); fail(`not run: its copy of the checkout failed: ${String((e as Error).message).slice(0, 200)}`); continue; }
     const left = timeLeft(); // the copy took time too
     if (left < 1000) { drop(); usedUp(); continue; }
     const r = await exec(o.cmd, work, toolEnvVars, tmp, left).finally(drop);
