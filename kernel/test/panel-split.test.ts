@@ -111,3 +111,15 @@ test("an agent's request is never aimed at a run it names: minting run ids doesn
   assert.equal(requestTargets("code-review.post", { run: "run-1" }), undefined);
   assert.equal(requestTargets("code-review.post", { run: "run-1" }, false), undefined);
 });
+
+test("an agent lift is rate-limited task-wide: a delegator comment counts even when that delegator is the requester now", async () => {
+  const { answered } = await import("../src/review-loop.ts");
+  const rej = (id, at) => ({ id, action: "pr", state: "rejected", decidedBy: "reviewer:~acme/m", decidedAt: at, review: "no" });
+  const by = (at) => ({ c: { body: "go on", createdAt: at, authorAgentId: "ag-cos" }, a: { who: "chief", key: "cos" } });
+  const kai = { body: "Decided: go on.", createdAt: "2026-11-21T10:10:00.000Z", authorAgentId: "ag-kai" };
+  const records = [rej("r1", "2026-11-21T10:00:00.000Z"), rej("r2", "2026-11-21T10:20:00.000Z")];
+  // kai (the delegator, the requester now) lifted at 10:10; the chief's comment at 10:25 is inside the gap: nothing lifts r2.
+  const out = answered(records, [by("2026-11-21T10:25:00.000Z")], undefined, records, [kai]);
+  assert.equal(out.records.find((r) => r.id === "r2").answered, undefined);
+  assert.equal(answered(records, [by("2026-11-21T10:45:00.000Z")], undefined, records, [kai]).records.find((r) => r.id === "r2").answered, "agent");
+});

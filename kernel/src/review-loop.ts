@@ -172,15 +172,21 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
  * follows a rejection since the last comment that lifted and comes at least `gap` after it (owner, 2026-11-21). `by`: who
  * lifted what, for the log.
  */
-export function answered(records: (Prior & { review?: string | null })[], authored: { c: Comment; a: Author }[], gap = REVIEW_COOLDOWN_MS, task: Prior[] = records) {
+export function answered(records: (Prior & { review?: string | null })[], authored: { c: Comment; a: Author }[], gap = REVIEW_COOLDOWN_MS, task: Prior[] = records, lifters: Comment[] = []) {
   const judged = (r: Prior) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && !CODE_REJECTS.includes(r.reviewCode ?? "") && !r.answered;
   const owner = authored.filter((x) => x.a.who === "owner").at(-1);
-  let agent: { c: Comment; a: Author } | undefined;
-  for (const x of authored.filter((y) => y.a.who === "delegator" || y.a.who === "chief")) {
-    const at = String(x.c.createdAt ?? ""), last = String(agent?.c.createdAt ?? "");
-    if (agent && Date.parse(at) - Date.parse(last) < gap) continue;
-    // The rate limit is the task's: a lift of any run's rejections counts, whichever run this request is.
-    if (task.some((r) => judged(r) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) agent = x;
+  // The rate limit is the task's, whoever asks now: every comment by the task's delegator or a chief of staff (`lifters`,
+  // read apart from this requester) that followed a rejection of any run uses up the gap; one may lift this request's
+  // rejections only when it is the delegator's or chief's relative to this requester (never the requester's own).
+  const may = new Map(authored.filter((y) => y.a.who === "delegator" || y.a.who === "chief").map((y) => [y.c, y]));
+  const all = [...new Set([...lifters, ...may.keys()])].sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
+  let agent: { c: Comment; a: Author } | undefined, last = "";
+  for (const c of all) {
+    const at = String(c.createdAt ?? "");
+    if (last && Date.parse(at) - Date.parse(last) < gap) continue;
+    if (!task.some((r) => judged(r) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) continue;
+    last = at;
+    if (may.has(c)) agent = may.get(c);
   }
   const before = (x: { c: Comment } | undefined) => (r: Prior) => Boolean(x) && String(r.decidedAt ?? "") < String(x!.c.createdAt);
   const out = records.map((r): Prior & { review?: string | null } => (judged(r) && before(owner)(r) ? { ...r, answered: "owner" } : judged(r) && before(agent)(r) ? { ...r, answered: "agent" } : r));
@@ -221,7 +227,9 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const own = aimed?.targets.every((t) => t.own) ?? false;
   const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args, !x.requester.agent)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
   const onTask = records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id);
-  const split = answered(onTask.filter(sameRun).map(asPrior), authored, REVIEW_COOLDOWN_MS, onTask.map(asPrior));
+  // The delegator's and the chief of staff's comments read apart from this requester: they hold the task-wide lift limit.
+  const lifters = comments.filter((c) => ["delegator", "chief"].includes(authorOf(c, { owner, requester: "", delegator, agent: task.agent })?.who ?? ""));
+  const split = answered(onTask.filter(sameRun).map(asPrior), authored, REVIEW_COOLDOWN_MS, onTask.map(asPrior), lifters);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed, now);
   const veto = priorPart(prior, now);
