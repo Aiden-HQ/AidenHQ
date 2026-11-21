@@ -174,7 +174,7 @@ test("a cited repo resolves exactly first, then by dashes and case only when one
   await resolveCitation(job!, deps, ["acme/my.app", "acme/my_app"]);
   assert.equal(seen.pop(), "acme/my.app", "an exact match wins");
   const [dashed] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/7"], "WOR-9");
-  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "aiden-hq/aidenhq"]);
+  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "AidenHQ/Aiden-HQ"]);
   assert.equal(seen.pop(), "AidenHQ/AidenHQ", "two variants are ambiguous: the cited spelling is used");
 
   const [bare] = citedIds(["ci: job 424242"], "WOR-9");
