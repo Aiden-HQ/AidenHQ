@@ -224,9 +224,9 @@ export function createEngine(d: EngineDeps) {
       if (r.kind === "command") void ack({ repo: r.repo, number: r.number, head: r.head, state: "running", run: r.id, combo: comboOf(r) });
     }
     try {
-      // The merge base is what a full review diffs against (GitHub's compare). The baseline counts only while it is still an
+      // The merge base is what a full review diffs against (the PR's own, not its stale base sha). The baseline counts only while it is still an
       // ancestor of the head (a force-push or rebase drops it): else, or when GitHub can't say, the review is full.
-      const { merge_base } = await d.source.compare(r.repo, r.base, r.head);
+      const { merge_base } = await d.source.mergeBase(r.repo, r.number, r.head);
       if (incremental_from) {
         const a = await d.source.compare(r.repo, incremental_from, r.head).catch(() => undefined);
         if (a?.status !== "ahead") incremental_from = null;

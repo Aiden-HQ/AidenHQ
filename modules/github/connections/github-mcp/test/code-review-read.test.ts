@@ -17,6 +17,12 @@ const gh = (async (input: URL | string) => {
     { id: 10, body: "an issue", created_at: "2026-01-03T00:00:00Z", html_url: "https://github.com/Acme/App/issues/5#issuecomment-10", issue_url: "https://api.github.com/repos/Acme/App/issues/5", user: { login: "dev" } },
   ]);
   if (u.pathname === `/repos/Acme/App/compare/${"a".repeat(40)}...${"b".repeat(40)}`) return Response.json({ status: "ahead", merge_base_commit: { sha: "a".repeat(40) } });
+  if (u.pathname === "/repos/Acme/App/pulls/1") return Response.json(pr(1, "Acme/App"));
+  if (u.pathname === "/repos/Acme/App/pulls/5") return Response.json({ ...pr(5, "Acme/App"), state: "closed", merged_at: "2026-01-04T00:00:00Z", merge_commit_sha: "c".repeat(40) });
+  if (u.pathname === `/repos/Acme/App/commits/${"c".repeat(40)}`) return Response.json({ parents: [{ sha: "d".repeat(40) }] });
+  if (u.pathname === `/repos/Acme/App/compare/${"d".repeat(40)}...${"b".repeat(40)}`) return Response.json({ status: "ahead", merge_base_commit: { sha: "e".repeat(40) } });
+  if (u.pathname === `/repos/Acme/App/compare/${"1".repeat(40)}...${"b".repeat(40)}`) return Response.json({ status: "ahead", merge_base_commit: { sha: "f".repeat(40) } });
+  if (u.pathname === "/repos/Acme/App/branches/main") return Response.json({ commit: { sha: "1".repeat(40) } });
   if (u.pathname === "/user/repos") return Response.json([{ full_name: "Acme/App", private: true, html_url: "https://github.com/Acme/App" }, { full_name: "Acme/Other", html_url: "https://github.com/Acme/Other" }]);
   return new Response("{}", { status: 404 });
 }) as typeof fetch;
@@ -61,4 +67,10 @@ it("a comment flood returns what was read with a cursor that moves on", async ()
   const r = await new CodeReviewReader(new GitHub(accessFor(flood, "t"), flood)).comments("Acme/App", "2026-01-01T00:00:00Z");
   expect(r.comments).toHaveLength(3000);
   expect(r.cursor).toBe(r.comments.at(-1)!.created_at);
+});
+
+it("a PR's merge base is taken from its base branch (open) or its merge commit's first parent (merged), never its recorded base sha", async () => {
+  const q = (n: number) => new URLSearchParams({ repo: "Acme/App", number: String(n), head: "b".repeat(40) });
+  expect((await codeReviewRoute(reader, "merge-base", q(5))).body).toEqual({ merge_base: "e".repeat(40) });
+  expect((await codeReviewRoute(reader, "merge-base", q(1))).body).toEqual({ merge_base: "f".repeat(40) });
 });

@@ -29,6 +29,9 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/collaborators/${NAME}/permission$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/compare/[0-9a-f]{40}\\.\\.\\.[0-9a-f]{40}$`) },
   { method: "GET", path: /^\/user\/repos$/ },
+  // A PR's true merge base (code-review-read.ts mergeBase): its base branch's tip, or a merge commit's first parent.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/branches/${LABEL}$`) },
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   // A review's own line comments (review-post.ts records their ids).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}/comments$`) },
