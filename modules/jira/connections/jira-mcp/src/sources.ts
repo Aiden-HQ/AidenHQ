@@ -196,7 +196,7 @@ export async function syncJira(store: SourceStore, call: CallJira, site: string,
         const ours = await store.pool.query(`SELECT key FROM src_jira.issue WHERE NOT deleted AND source_updated_at > now() - interval '28 days'`);
         const gone = ours.rows.map((r: { key: string }) => r.key).filter((k: string) => !live.has(k));
         // Deletes are rare: an empty or short answer (paging not followed, a permission change) must not tombstone the site.
-        if (ours.rows.length && (!live.size || gone.length > Math.max(5, ours.rows.length * 0.1)) throw new Error(`delete check refused: ${gone.length} of ${ours.rows.length} recent issues missing from Jira's answer (${live.size} returned)`);
+        if (ours.rows.length && (!live.size || gone.length > Math.max(5, ours.rows.length * 0.1))) throw new Error(`delete check refused: ${gone.length} of ${ours.rows.length} recent issues missing from Jira's answer (${live.size} returned)`);
         for (const key of gone) await put(ISSUE, { key, deleted: true }, false);
         return gone.length;
       })

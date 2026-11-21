@@ -56,7 +56,7 @@ it("src_docs: a pass that hits the file cap resumes the same query at its page t
   };
   const now = Date.parse("2026-11-11T00:00:00Z");
   await syncDrive(store, drive, now);
-  expect(scopes.get("drive")).toEqual({ baselined: false, cursor: "2026-10-12T00:00:00.000Z#2" });
+  expect(scopes.get("drive")).toEqual({ baselined: false, cursor: `2026-10-12T00:00:00.000Z#2#${same}` });
   await syncDrive(store, drive, now);
   expect(pages.at(-1)).toEqual(["2026-10-12T00:00:00.000Z", "2"]);
   expect(scopes.get("drive")).toEqual({ baselined: true, cursor: same });
