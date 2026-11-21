@@ -11,7 +11,7 @@ export interface GitEnv {
   gitDir: string; // bare repos, outside appsData: an app can write anywhere it may mount, so it must never reach a .git
   sshCommand?: string;
   orgs?: string[]; // GitHub orgs/users apps may be built from (setting github_orgs), besides the fleet org
-  agentsOrg?: string; // the instance's fleet org (setting github_fleet_org): always allowed; its repos are fetched through the code host's fetch op
+  agentsOrg?: string; // the fleet org (setting github_fleet_org, else the compiled catalog's repos.fleet_org): always allowed; its repos are fetched through the code host's fetch op
   ops?: CodeHostOps;
   productDir?: string; // the host's product checkout (REPO_DIR): module apps are fetched from it, never from GitHub
   localRoot?: string; // this server's repos (codehost-local), mounted read-only: `local/*` apps are fetched from there

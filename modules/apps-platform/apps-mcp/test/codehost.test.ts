@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { codeHostOps, localChanges, readFleetOrg, readOrgs, withLocal } from "../src/codehost.js";
 import { createEngine } from "../src/deploy.js";
-import { checkOrg, checkout, checkoutPr, commitPush, syncRegistry } from "../src/git.js";
+import { checkOrg, checkout, checkoutPr, commitPush, remoteHead, syncRegistry } from "../src/git.js";
 import { previewApp, previewTick, type PreviewDeps } from "../src/previews.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
@@ -101,15 +101,31 @@ async function fakeKernel(answer: (op: string, body: any) => { status?: number; 
 }
 
 describe("fleet org and allowed orgs", () => {
+  // The instance checkout (instance.yaml, the owner's) and the product checkout (config/kernel/modules.json, compile's).
   const inst = (yaml: string) => {
     const d = mkdtempSync(`${tmpdir()}/inst-`);
     writeFileSync(`${d}/instance.yaml`, yaml);
     return d;
   };
+  const compiled = (modules: unknown) => {
+    const d = mkdtempSync(`${tmpdir()}/repo-`);
+    mkdirSync(`${d}/config/kernel`, { recursive: true });
+    writeFileSync(`${d}/config/kernel/modules.json`, typeof modules === "string" ? modules : JSON.stringify(modules));
+    return d;
+  };
   it("reads github_fleet_org with no default, and github_orgs", () => {
-    expect(readFleetOrg(inst("settings:\n  instance_name: demo\n  github_fleet_org: my-agents\n"))).toBe("my-agents");
-    expect(readFleetOrg(inst("settings:\n  instance_name: demo\n"))).toBeUndefined();
+    expect(readFleetOrg(inst("settings:\n  instance_name: demo\n  github_fleet_org: my-agents\n"), compiled({}))).toBe("my-agents");
+    expect(readFleetOrg(inst("settings:\n  instance_name: demo\n"), compiled({}))).toBeUndefined();
     expect(readOrgs(inst("settings:\n  github_orgs: [Example-Org, acme]\n"))).toEqual(["Example-Org", "acme"]);
+  });
+  it("falls back to the compiled repos.fleet_org; instance.yaml's own value wins, and a bad compiled file is no fleet org", () => {
+    const cat = compiled({ repos: { fleet_org: "compiled-org" } });
+    const bare = inst("settings:\n  instance_name: demo\n");
+    expect(readFleetOrg(bare, cat)).toBe("compiled-org");
+    expect(readFleetOrg(inst("settings:\n  github_fleet_org: set-org\n"), cat)).toBe("set-org");
+    expect(readFleetOrg(bare, compiled({ repos: { fleet_org: "" } }))).toBeUndefined();
+    expect(readFleetOrg(bare, compiled("{not json"))).toBeUndefined();
+    expect(readFleetOrg(bare, mkdtempSync(`${tmpdir()}/none-`))).toBeUndefined();
   });
   it("allows the fleet org alongside the configured list, and nothing else", () => {
     const app = (repo: string) => ({ name: "x", repo, untrusted: false }) as never;
@@ -118,6 +134,16 @@ describe("fleet org and allowed orgs", () => {
     expect(() => checkOrg(env("my-agents"), app("EXAMPLE-ORG/x"))).not.toThrow();
     expect(() => checkOrg(env("my-agents"), app("someone/else"))).toThrow(/outside the allowed orgs/);
     expect(() => checkOrg(env(), app("my-agents/roadmap-keeper"))).toThrow(/outside the allowed orgs/);
+  });
+  it("an org that reaches apps-mcp only through the compiled settings passes checkOrg and takes the ops path in remoteHead", async () => {
+    const agentsOrg = readFleetOrg(inst("settings:\n  instance_name: demo\n"), compiled({ repos: { fleet_org: "compiled-org" } }));
+    const seen: string[] = [];
+    const env = { appsData: "/a", gitDir: "/g", agentsOrg, ops: { head: async (repo: string, branch: string) => (seen.push(`${repo}@${branch}`), "a".repeat(40)) } } as never;
+    const a = { name: "roadmap-keeper", repo: "Compiled-Org/roadmap-keeper", branch: "main", untrusted: false } as never;
+    expect(() => checkOrg(env, a)).not.toThrow();
+    // Only ops.head answers: had remoteHead fallen back to `git ls-remote https://github.com/...`, it would have called git here.
+    expect(await remoteHead(env, a)).toBe("a".repeat(40));
+    expect(seen).toEqual(["Compiled-Org/roadmap-keeper@main"]);
   });
 });
 
