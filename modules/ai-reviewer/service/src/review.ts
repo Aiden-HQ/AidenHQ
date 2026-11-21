@@ -373,11 +373,25 @@ const recordLine = (r: Record<string, unknown>, inDiff: boolean, elsewhere = fal
 /** The most of a tool call's arguments shown inline: the kernel caps a carded call's arguments at 100,000 characters. */
 export const MAX_TOOL_CALL = MAX_DIFF;
 /**
- * A connection tool call's arguments as the reviewer reads them: one line per argument, named exactly as the tool takes it
- * (a nested object is a dotted name, `evidence.module`). Values are JSON, so a newline inside one is escaped and the argument
- * stays one readable field. The connection and tool are code's own names from the record; every argument is the requesting
- * agent's text. `unreadable` names what code could not read, so the reviewer names that field instead of calling the whole
- * call body-only.
+ * One character of an argument's name as the prompt shows it: a plain letter, digit, `_`, `$` or `-` stays as written, and
+ * every other character (a newline, a colon, a quote, a dot) is escaped (`\n`, `\u003a`, …), so a name the requesting agent
+ * chose can never open a line, forge another argument's line or close the block. Ordinary names (`title`, `fingerprint`,
+ * `issue_number`) render exactly as the tool takes them.
+ */
+const nameChar = (c: string) => /[A-Za-z0-9_$-]/.test(c) ? c
+  : (c.codePointAt(0)! > 0xffff ? `\\u{${c.codePointAt(0)!.toString(16)}}` : `\\u${c.codePointAt(0)!.toString(16).padStart(4, "0")}`);
+/** An argument's name, escaped per character. An empty name is quoted so its line is never a bare ": value". */
+const argName = (name: string) => name === "" ? '""' : [...name].map(nameChar).join("");
+/** A dotted path name code chose (an `unreadable` entry): dots stay separators, every other unsafely-placed character escapes. */
+const pathName = (name: string) => name === "" ? '""' : [...name].map((c) => (/[A-Za-z0-9_$.-]/.test(c) ? c : nameChar(c))).join("");
+
+/**
+ * A connection tool call's arguments as the reviewer reads them: one line per argument, named as the tool takes it (a nested
+ * object is a dotted name, `evidence.module`). Names are escaped (`argName`), so a key the agent chose can never add a line,
+ * forge a field or close the block; a literal dot inside one name is escaped, so it reads differently from a nested path. Values
+ * are JSON, so a newline inside one is escaped and the argument stays one readable field. The connection and tool are code's
+ * own names from the record; every argument is the requesting agent's text. `unreadable` names what code could not read, so
+ * the reviewer names that field instead of calling the whole call body-only.
  */
 export function toolCallText(tc: ToolCall): string {
   const lines = [`connection: ${JSON.stringify(tc.connection)}`, `tool: ${JSON.stringify(tc.tool)}`];
@@ -385,16 +399,17 @@ export function toolCallText(tc: ToolCall): string {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const entries = Object.entries(value as Record<string, unknown>);
       if (!entries.length) lines.push(`${prefix}: {}`);
-      for (const [k, v] of entries) walk(`${prefix}.${k}`, v);
+      for (const [k, v] of entries) walk(`${prefix}.${argName(k)}`, v);
       return;
     }
     lines.push(`${prefix}: ${JSON.stringify(value)}`);
   };
-  for (const [k, v] of Object.entries(tc.arguments ?? {})) walk(k, v);
-  const unreadable = (tc.unreadable ?? []).filter((x) => typeof x === "string" && x.trim());
+  for (const [k, v] of Object.entries(tc.arguments ?? {})) walk(argName(k), v);
+  const unreadable = (tc.unreadable ?? []).filter((x) => typeof x === "string" && x.trim()).map(pathName);
   if (unreadable.length) lines.push(`code could not read: ${unreadable.join(", ")}`);
   if (!Object.keys(tc.arguments ?? {}).length && !unreadable.length) lines.push("code read no arguments: the call carried none");
-  return lines.join("\n");
+  // A line terminator JSON.stringify leaves literal (U+2028/U+2029 is valid in JSON) still can't split a line.
+  return lines.join("\n").replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
 }
 
 export function reviewPrompt({ policy, card, diff, full = diff, rest = [], whole = false, files = "", chain, comments = "", panel = false, previous = [], unsure, siblings = "", sources, checks = [], decisions, graderNote = "", toolCall }: {
