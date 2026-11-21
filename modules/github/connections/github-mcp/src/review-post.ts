@@ -10,8 +10,8 @@ import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
-  renderReview, renderStatus, rightLines, type NoticeArgs, type PostArgs, type StatusArgs,
+  FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
+  renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type StatusArgs,
 } from "./review-render.js";
 
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
@@ -43,6 +43,32 @@ export interface Thread {
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
 type Kind = "post" | "notice" | "status";
+
+/**
+ * The AI reviewer's card for a post: the rendered review and every comment, at the largest text scale that fits CARD_MAX (every
+ * finding and its thread stay; their texts shrink, at the least to titles). The post renders at the same scale, so what is posted
+ * is what was approved.
+ */
+function card(a: PostArgs): { details: string; comments: Placed[]; scale: number } {
+  const r = a.review;
+  let out = { details: "", comments: [] as Placed[], scale: 0 };
+  for (const scale of SCALES) {
+    const { summary, comments } = renderReview(r, a.run, { gated: a.gated, card: true, scale });
+    const c = counts(r.findings);
+    const details = [
+      // The fixed command words are named, not shown (`card`): `aiden review` lines read like instructions to the reviewer, which
+      // then refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
+      `Review summary (event COMMENT, at commit ${r.head}):`, "", summary, "",
+      ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
+      "(A comment whose line isn't on the diff goes on the nearest diff line of its file, or on the file, saying where it is.)", "",
+      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}`,
+      ...(a.resolve.length ? ["", `Resolves Aiden's own threads for findings: ${a.resolve.join(", ")} (only those it posted, and only if no longer reported).`] : []),
+    ].join("\n");
+    out = { details, comments, scale };
+    if (details.length <= CARD_MAX) break;
+  }
+  return out;
+}
 
 /** The explicit target must be the review's own: a review of another repo, pull request or commit is refused. */
 function target(a: PostArgs): PostArgs {
@@ -172,18 +198,9 @@ export class ReviewPoster {
     }
     const a = target(PostArgsSchema.parse(args));
     const r = a.review;
-    const { summary, comments } = renderReview(r, a.run, { gated: a.gated, card: true });
+    const { details, comments } = card(a);
     const c = counts(r.findings);
-    const details = [
-      // The fixed command words are named, not shown (`card`): `aiden review` lines read like instructions to the reviewer, which
-      // then refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
-      `Review summary (event COMMENT, at commit ${r.head}):`, "", summary, "",
-      ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
-      "(A comment whose line isn't on the diff goes on the nearest diff line of its file, or on the file, saying where it is.)", "",
-      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}`,
-      ...(a.resolve.length ? ["", `Resolves Aiden's own threads for findings: ${a.resolve.join(", ")} (only those it posted, and only if no longer reported).`] : []),
-    ].join("\n");
-    if (details.length > CARD_MAX) throw new GitHubRefused(`the review is ${details.length} characters, too large for the AI reviewer to read whole (${CARD_MAX}); the reviewer must report fewer findings`);
+    if (details.length > CARD_MAX) throw new GitHubRefused(`the review is ${details.length} characters, too large for the AI reviewer to read whole (${CARD_MAX}) even with each finding's title alone`);
     return {
       facts: {
         target: `${r.repo}#${r.pr} @ ${r.head.slice(0, 7)}`,
@@ -237,10 +254,11 @@ export class ReviewPoster {
     const own = new Set(a.own);
     const earlier = new Map(threads.filter((t) => t.finding && (own.has(t.comment) || (t.run === a.run && norm(t.author) === norm(who.login)))).map((t) => [t.finding!, t.url]));
     // Only findings whose comment the AI reviewer's card showed get one (the card renders the same choice, without GitHub's view).
-    const shown = new Set(renderReview(r, a.run, { gated: a.gated, card: true }).comments.map((c) => c.id));
+    const { comments: carded, scale } = card(a);
+    const shown = new Set(carded.map((c) => c.id));
     const anchored = anchors(r.findings, await this.diffLines(ref, r.base, r.head, pr.head.sha === r.head));
     const place = new Map([...anchored].filter(([id]) => shown.has(id)));
-    const first = renderReview(r, a.run, { place, earlier, gated: a.gated });
+    const first = renderReview(r, a.run, { place, earlier, gated: a.gated, scale });
     let review: { id: number; html_url: string } | undefined;
     for (let page = 1; page <= 10 && !review; page++) {
       const rs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: { login: string } }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } });
@@ -265,7 +283,7 @@ export class ReviewPoster {
     }
     const links = new Map(made.filter((m) => m.finding).map((m) => [m.finding!, m.url]));
     const placed = new Map([...place].filter(([id]) => !unthreaded.has(id)));
-    await tryTo("summary links", () => this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}`, { body: { body: withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated }).summary, AGENT) } }));
+    await tryTo("summary links", () => this.gh.request("PUT", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}`, { body: { body: withFooter(renderReview(r, a.run, { place: placed, earlier, links, gated: a.gated, scale }).summary, AGENT) } }));
     // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only the threads it
     // recorded as its own posts (`own`, its database) for findings the review no longer reports are resolved, and only for the
     // PR's current head (a review of an older one leaves them to the newer head's review).

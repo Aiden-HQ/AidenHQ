@@ -45,3 +45,13 @@ test("a check that failed before it got a box spent nothing, so its run retries;
   assert.deepEqual(await runner({ state: "failed", error: "github is unreachable", receipt: null, box_at: null, billed_usd: null }).result("c"), { state: "failed", why: "github is unreachable", billed_usd: 0 });
   assert.equal((await runner({ state: "failed", error: "x", receipt: null, box_at: "2026-11-21T09:00:00Z", billed_usd: null }).result("c")).billed_usd, undefined);
 });
+
+test("a done notice's review link is a field the notice kind takes (schemas/notice.json)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { validate } = await import("../../../kernel/src/writes.ts");
+  let args;
+  const poster = kernelPoster({ call: async (m, path, body) => (path === "/v1/writes" && (args = body.args), { id: "k-1", state: "done" }) });
+  await poster.ack({ repo: "acme/x", number: 3, head, state: "done", run: "cr-1", combo: { engine: "codex", model: "~a/b", effort: "low" }, counts: { important: 1, nit: 0, pre_existing: 0, cost_usd: 0.1 }, review: "https://github.com/acme/x/pull/3#pullrequestreview-9", ack: 7 });
+  validate(JSON.parse(readFileSync(new URL("../schemas/notice.json", import.meta.url), "utf8")), args);
+  assert.equal(args.review, "https://github.com/acme/x/pull/3#pullrequestreview-9");
+});

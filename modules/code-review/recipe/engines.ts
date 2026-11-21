@@ -64,8 +64,10 @@ export type Call = { tool: string; path?: string; from?: number; stat?: boolean;
 export function shellDiff(command: unknown, base: string): Call[] {
   const c = String(command ?? "").replace(/^\s*cd\s+\S+\s*&&\s*/, ""); // `cd <repo> && git diff …`
   if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]|--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw)\b/.test(c)) return [];
+  // The range ends the command, or ends what comes before ` -- <paths>`: `git diff <base> HEAD src/x` names paths without `--`,
+  // which isn't a read of the whole diff (nor one counted per path).
   const range = c.split(/\s--\s/)[0]!;
-  if (!/^[0-9a-f]{7,40}$/.test(base) || !new RegExp(`(^|\\s)${base.slice(0, 7)}[0-9a-f]*(\\.\\.\\.?|\\s+)HEAD(\\s|$)`).test(range)) return [];
+  if (!/^[0-9a-f]{7,40}$/.test(base) || !new RegExp(`(^|\\s)${base.slice(0, 7)}[0-9a-f]*(\\.\\.\\.?|\\s+)HEAD\\s*$`).test(range)) return [];
   const paths = c.split(/\s--\s/)[1]?.trim().split(/\s+/).map((x) => x.replace(/^['"]|['"]$/g, "")).filter(Boolean) ?? [];
   return paths.length ? paths.map((path) => ({ tool: "diff", path, whole: true })) : [{ tool: "diff", whole: true }];
 }
@@ -142,6 +144,10 @@ async function run(cmd: string, args: string[], o: { cwd: string; env: Record<st
 const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, said = "") =>
   r.timedOut ? "timed out" : /\b402\b|cap_reached|budget/i.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
 
+/** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
+ * result (never a word inside the diff itself). */
+const CUT = /^"?(<persisted-output>|Output too large|\[?\d+ (characters|lines) truncated)/i;
+
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
 type CodexEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string } };
@@ -186,7 +192,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     }
     for (const e of events) for (const c of e.type === "user" ? e.message?.content ?? [] : []) {
       const reads = c.type === "tool_result" && c.tool_use_id ? shell.get(c.tool_use_id) : undefined;
-      if (reads && !c.is_error && !/truncated/i.test(JSON.stringify(c.content ?? ""))) calls.push(...reads);
+      if (reads && !c.is_error && !CUT.test(JSON.stringify(c.content ?? "").slice(0, 400))) calls.push(...reads);
     }
     const end = events.findLast((e) => e.type === "result");
     return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error };

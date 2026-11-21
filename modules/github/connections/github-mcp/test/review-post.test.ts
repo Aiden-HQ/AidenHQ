@@ -59,6 +59,11 @@ describe("rendering model text", () => {
     partial.coverage.incomplete = "the diff was cut at 300 files";
     expect(renderReview(partial, "r", { gated: true }).summary).toMatch(/Partial review[\s\S]*/);
     expect(renderReview(partial, "r", { gated: true }).summary).toContain("doesn't block the merge (a partial review: see below)");
+    // A review too large for the AI reviewer's card keeps every finding and its thread; their texts shrink.
+    const many = review(Array.from({ length: 150 }, (_, i) => finding(`f_big_${100 + i}`, "src/pay.ts", 2, { why: "w".repeat(3000), evidence: "e".repeat(4000), fix_brief: "b".repeat(2000) })));
+    const big = poster(world()).preview("post", postArgs(many)).facts.details!;
+    expect(big.length).toBeLessThanOrEqual(79_000);
+    expect(big.match(/<!-- aidenhq-finding: f_big_/g)).toHaveLength(150);
     // Every important finding gets a thread, past INLINE_MAX too (answering it there is how it closes).
     expect(renderReview(review(Array.from({ length: 20 }, (_, i) => finding(`f_imp_${100 + i}`, "src/pay.ts", 2))), "r").comments).toHaveLength(20);
     // The AI reviewer's card names the fixed command words, never hides model text that happens to quote them.

@@ -176,7 +176,8 @@ const ZWSP = "​";
  * `@name` broken so nobody is pinged.
  */
 export function plain(text: string, max: number): string {
-  const t = redact(text)
+  // Only what can show is scanned (a secret cut at the far end is past `max`, so never shown).
+  const t = redact(text.slice(0, max * 2 + 400))
     .replace(/[\p{Cc}\p{Cf}]/gu, (c) => (c === "\n" || c === "\t" ? c : ""))
     .replace(/</g, "&lt;")
     .replace(/!\[[^\]]{0,200}\]\([^)]{0,500}\)/g, "[image removed]")
@@ -215,20 +216,25 @@ export function modelName(model: string): string {
 
 /** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. `at`: where the
  * comment sits when that isn't the finding's own line (the nearest diff line, or the file). */
-export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file"): string {
+export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file", scale = 1): string {
   const where = `${f.path}:${f.line}${f.end_line && f.end_line > f.line ? `-${f.end_line}` : ""}`;
-  const evidence = redact(f.evidence).slice(0, EVIDENCE_MAX);
-  const brief = [`Fix ${where} (${r.repo} PR #${r.pr} at ${short(r.head)})`, `Problem: ${plain(f.title, 200)}`, ...(evidence ? [`Evidence: ${evidence}`] : []), `Wanted: ${plain(f.fix_brief, 500)}`].join("\n");
+  const head = [`<!-- ${MARK.finding}: ${f.id} -->`, `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, scale ? 200 : 100)}`, ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : [])];
+  // A review too large for the AI reviewer's card keeps every finding and its thread, with shorter texts (scale), at the least
+  // its title alone.
+  if (!scale) return head.join("\n");
+  const n = (x: number) => Math.max(40, Math.floor(x * scale));
+  const evidence = redact(f.evidence.slice(0, n(EVIDENCE_MAX) + 400)).slice(0, n(EVIDENCE_MAX));
+  const brief = [`Fix ${where} (${r.repo} PR #${r.pr} at ${short(r.head)})`, `Problem: ${plain(f.title, 200)}`, ...(evidence ? [`Evidence: ${evidence}`] : []), `Wanted: ${plain(f.fix_brief, n(500))}`].join("\n");
   return [
-    `<!-- ${MARK.finding}: ${f.id} -->`,
-    `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, 200)}`,
-    ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : []),
+    ...head,
     "",
-    `<details><summary>Why flagged</summary>\n\n${plain(f.why, 800)}${evidence ? `\n\n${fence(evidence)}` : ""}\n\n</details>`,
+    `<details><summary>Why flagged</summary>\n\n${plain(f.why, n(800))}${evidence ? `\n\n${fence(evidence)}` : ""}\n\n</details>`,
     "",
     `<details><summary>Copy as fix brief</summary>\n\n${fence(brief)}\n\n</details>`,
   ].join("\n");
 }
+/** How much of each finding's text a review keeps (renderFinding's scale): the largest that fits `fits`, at the least titles. */
+export const SCALES = [1, 0.4, 0.15, 0] as const;
 
 /** Where a finding's thread goes: lines on the diff (`line`, a range's `start_line`), or the file itself. */
 export type Anchor = { line: number; start_line?: number } | "file";
@@ -265,7 +271,7 @@ const fileLine = (f: Finding) => code(`${f.path.split("/").pop()}:${f.line}`);
  * merges wait on code review. Each finding appears once: a table row (its title linking to its thread) or, with no thread, a
  * collapsed block with its reasoning.
  */
-export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean; card?: boolean } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
+export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean; card?: boolean; scale?: number } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
   const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
   const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
@@ -275,7 +281,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
-    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file") } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line) };
+    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale) };
   });
   const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
   const listed = ranked.filter((f) => !threaded(f));
@@ -307,7 +313,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   }
   // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
   // and the card's size.
-  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence.slice(0, EVIDENCE_MAX + 400)).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
   if (listed.length > LISTED_MAX) lines.push("", `<details><summary>${listed.length - LISTED_MAX} more without a thread</summary>\n\n${listed.slice(LISTED_MAX, LISTED_MAX + 40).map((f) => `- ${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}`).join("\n")}${listed.length > LISTED_MAX + 40 ? "\n- \u2026" : ""}\n\n</details>`);
   if (r.stale_guidance.length) lines.push("", `<details><summary>Guidance this change may make stale</summary>\n\n${r.stale_guidance.map((s) => `- ${plain(s, 300)}`).join("\n")}\n\n</details>`);
   lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);

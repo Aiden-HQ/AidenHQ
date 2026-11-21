@@ -109,6 +109,10 @@
   "ack": {
    "type": "integer",
    "minimum": 1
+  },
+  "review": {
+   "type": "string",
+   "pattern": "^https://github\\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/pull/\\d{1,9}#pullrequestreview-\\d{1,15}$"
   }
  }
 }
