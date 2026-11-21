@@ -89,22 +89,23 @@ export function createAdvisories({ db, repo, catalog, ownerLine, log = () => {},
     try { open.push(...await openIn((a) => git(repo, a), text, listed, Object.fromEntries(official.map((m) => [m.name, m.revision!])))); } catch (e) { log("advisories: the file is malformed; ignored", { err: (e as Error).message }); return undefined; }
     // Third-party marketplaces: each one's head, for the modules installed from it only (A16). No file there is no advisory.
     // A marketplace that couldn't be read this pass keeps its stored rows, so a failed read never shows as clear.
-    const kept = (name: string) => { open.push(...(db.prepare("SELECT data FROM advisories WHERE substr(id, 1, ?) = ?").all(name.length + 1, `${name}:`) as { data: string }[]).map((r) => JSON.parse(r.data) as Open)); };
-    for (const name of new Set(rows.filter((m) => (m.marketplace ?? OFFICIAL) !== OFFICIAL && m.source && fetch).map((m) => m.marketplace!))) {
+    const kept = (name: string, modules: string[]) => { open.push(...(db.prepare("SELECT data FROM advisories WHERE substr(id, 1, ?) = ?").all(name.length + 1, `${name}:`) as { data: string }[]).map((r) => JSON.parse(r.data) as Open).filter((o) => modules.includes(o.module))); };
+    for (const name of new Set(rows.filter((m) => (m.marketplace ?? OFFICIAL) !== OFFICIAL).map((m) => m.marketplace!))) {
       const mine = rows.filter((m) => m.marketplace === name);
-      const src = mine[0]!.source!;
-      const dir = cacheRepo(src.url, fetch!);
-      if (!existsSync(dir)) { kept(name); continue; }
+      const modules = mine.map((m) => m.name);
+      const src = mine[0]!.source;
+      if (!src || !fetch || !existsSync(cacheRepo(src.url, fetch))) { kept(name, modules); continue; }
+      const dir = cacheRepo(src.url, fetch);
       const cred = fetch!.credentialHelper ? ["-c", "credential.helper=", "-c", `credential.helper=${fetch!.credentialHelper}`, "-c", "credential.useHttpPath=true"] : ["-c", "credential.helper="];
       const g = (a: string[]) => git(dir, ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", ...cred, ...a]);
       await g(["fetch", "-q", "--no-tags", "--", src.url, `+HEAD:${LOCAL_REF}`]).catch((e: Error) => log(`advisories: ${name}: fetch failed; reading the last head`, { err: e.message.slice(0, 300) }));
       const t = await g(["show", `${LOCAL_REF}:${posix.join(src.path, "advisories.json")}`]).catch(() => undefined);
       if (t === undefined) {
-        if (await g(["rev-parse", "--verify", "-q", LOCAL_REF]).then(() => false, () => true)) kept(name);
+        if (await g(["rev-parse", "--verify", "-q", LOCAL_REF]).then(() => false, () => true)) kept(name, modules);
         continue;
       }
       // Ids are namespaced by marketplace, so one can't shadow another's (or an official) advisory or its notice.
-      try { open.push(...(await openIn(g, t, mine.map((m) => m.name), Object.fromEntries(mine.map((m) => [m.name, m.revision!])))).map((o) => ({ ...o, id: `${name}:${o.id}` }))); } catch (e) { log(`advisories: ${name}: the file is malformed; ignored`, { err: (e as Error).message }); kept(name); }
+      try { open.push(...(await openIn(g, t, mine.map((m) => m.name), Object.fromEntries(mine.map((m) => [m.name, m.revision!])))).map((o) => ({ ...o, id: `${name}:${o.id}` }))); } catch (e) { log(`advisories: ${name}: the file is malformed; ignored`, { err: (e as Error).message }); kept(name, modules); }
     }
     db.exec("BEGIN");
     try {

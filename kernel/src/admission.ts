@@ -231,7 +231,12 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
     launching.delete(id);
     nextTurn.taken(task);
-    for (const k of wakes.endWaits(b.wake)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } });
+    // The job is running: its waits and their facts end together, and a failure here never fails the admission.
+    try {
+      inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
+    } catch (e) {
+      log("a started job's waits stay armed", { job: id, task, err: (e as Error).message });
+    }
     return view(id);
   }
 
