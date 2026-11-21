@@ -182,9 +182,9 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
-async function deepsecEngine({ model, effort, root, base, minutes, scratch, target, budget_usd, setupFiles }: EngineInput): Promise<EngineResult> {
+async function deepsecEngine({ model, effort, root, base, trusted, minutes, scratch, target, budget_usd, setupFiles }: EngineInput): Promise<EngineResult> {
   try {
-    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, model, effort, budget_usd: budget_usd ?? 5, scratch, setupFiles, minutes });
+    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, trusted: trusted ?? base, model, effort, budget_usd: budget_usd ?? 5, scratch, setupFiles, minutes });
     return { message: JSON.stringify({ findings: review.findings, stale_guidance: [] }), read: true, covered: review.covered, ...(review.incomplete ? { incomplete: review.incomplete } : {}), ...(setup ? { setup } : {}) };
   } catch (e) {
     return { message: "", read: false, cause: String((e as Error).message ?? e).slice(0, 300) };

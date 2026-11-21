@@ -27,7 +27,9 @@ import { plain, readSmall, run, stopped } from "./proc.ts";
 /** A finding in the finder JSON the recipe takes (the recipe adds each finding's option and lens). */
 export interface DeepsecFinding { severity: "important" | "nit"; path: string; line: number; title: string; why: string; evidence: string; fix_brief: string }
 export interface DeepsecInput {
-  root: string; target: "tree" | "pr"; base?: string; model: string; effort?: string; budget_usd: number; scratch: string;
+  /** base: what a change is diffed from (the last reviewed head on an incremental review); trusted: the merge base, where its
+   * summary (INFO.md) is read from. */
+  root: string; target: "tree" | "pr"; base?: string; trusted?: string; model: string; effort?: string; budget_usd: number; scratch: string;
   /** A pending setup branch's files (path to text): scan with them instead of setting up. */
   setupFiles?: Record<string, string>;
   /** The project id (default `repo`); an existing `.deepsec/data/<id>/` names its own. */
@@ -76,7 +78,7 @@ export function readRecords(dir: string) {
   return { findings, covered, pending };
 }
 
-export async function deepsec({ root, target, base, model, effort, budget_usd, scratch, setupFiles, id, minutes }: DeepsecInput): Promise<DeepsecOutput> {
+export async function deepsec({ root, target, base, trusted = base, model, effort, budget_usd, scratch, setupFiles, id, minutes }: DeepsecInput): Promise<DeepsecOutput> {
   const tmp = mkdtempSync(join(scratch, "deepsec-"));
   const home = join(tmp, "home"), pi = join(tmp, "pi"), data = join(tmp, "data");
   for (const d of [home, pi, data]) mkdirSync(d);
@@ -114,10 +116,10 @@ export async function deepsec({ root, target, base, model, effort, budget_usd, s
   let setup: Record<string, string> | undefined;
 
   if (committed || pending.length) {
-    // INFO.md in as data: the committed one (a regular file, never through a link; for a change, the base's: the PR's own copy is
-    // its author's text), else the pending setup's.
+    // INFO.md in as data: the committed one (a regular file, never through a link; for a change, the merge base's: the PR's own
+    // copy, in any of its revisions, is its author's text), else the pending setup's.
     const rel = `.deepsec/data/${pid}/INFO.md`;
-    const committedInfo = target === "pr" ? baseFile(root, String(base), rel) : plain(root, rel) ? readSmall(join(ws, "data", pid, "INFO.md"), 64_000) : undefined;
+    const committedInfo = target === "pr" ? baseFile(root, String(trusted), rel) : plain(root, rel) ? readSmall(join(ws, "data", pid, "INFO.md"), 64_000) : undefined;
     const info = committedInfo ?? pending.find(([p]) => p === rel)?.[1];
     mkdirSync(join(data, pid));
     if (info !== undefined) writeFileSync(join(data, pid, "INFO.md"), info);
