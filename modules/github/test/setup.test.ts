@@ -96,6 +96,13 @@ test("an existing branch moves forward from its tip; an open PR is reused, never
   assert.deepEqual(other.writes, []);
 });
 
+test("a branch that is the default branch is refused", async () => {
+  const g = github();
+  const api = async (m: string, path: string, body?: any) => (path === "/repos/acme/widgets" ? { default_branch: "aidenhq/deepsec-setup" } : g.api(m, path, body));
+  await assert.rejects(setup.run(api, args()), /default branch/);
+  assert.deepEqual(g.writes, []);
+});
+
 test("the plan shows the files to add whole and binds the branch's tip and the base's head", async () => {
   const p = await setup.plan(github({ has: [".deepsec/deepsec.config.ts"] }).api, args());
   assert.deepEqual(p.targets, { "acme/widgets aidenhq/deepsec-setup": { repo: "acme/widgets", ref: "aidenhq/deepsec-setup", commit: null, base_sha: HEAD } });

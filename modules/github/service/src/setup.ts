@@ -34,6 +34,7 @@ export function check(a: SetupArgs): SetupArgs {
 async function read(api: Api, a: SetupArgs) {
   const def = String((await api("GET", `/repos/${a.repo}`)).default_branch ?? "");
   if (!def) throw fail(502, `${a.repo} has no default branch`);
+  if (def === a.branch) throw fail(409, `${a.branch} is ${a.repo}'s default branch: a setup only opens a pull request into it`);
   const head = String((await api("GET", `/repos/${a.repo}/branches/${enc(def)}`)).commit?.sha ?? "");
   const tip = await api("GET", `/repos/${a.repo}/branches/${enc(a.branch)}`).then((b) => String(b.commit?.sha ?? ""), (e: Error) => { if (/ 404\b/.test(e.message)) return null; throw e; });
   if (tip !== a.expected_tip) throw fail(409, `${a.branch} is at ${tip ? tip.slice(0, 12) : "nothing"}, not ${a.expected_tip ? a.expected_tip.slice(0, 12) : "a new branch"}: ask again`);
