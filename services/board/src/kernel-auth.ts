@@ -86,6 +86,11 @@ export function createKernelAuth(o: KernelAuthOptions) {
     void res
       .writeHead(502, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(cookies.length ? { "set-cookie": cookies } : {}) })
       .end("The board can't reach the AidenHQ kernel, so sign-in didn't finish.\n\nCheck the host firewall: it must allow this container to reach the kernel's host listener (10.231.0.1:3130). Setup adds that rule when ufw is active and warns when it can't.\n");
+  /** The browser's answer when the kernel answered but failed the exchange: what it said, and nothing secret. */
+  const refused = (res: ServerResponse, said: string, cookies: string[] = []) =>
+    void res
+      .writeHead(502, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(cookies.length ? { "set-cookie": cookies } : {}) })
+      .end(`${said}\n`);
 
   const auth = {
     /** The signed-in admin behind the request's board cookie, or null (none, ended, or not a ready admin any more). */
@@ -119,11 +124,19 @@ export function createKernelAuth(o: KernelAuthOptions) {
       try {
         r = await post<{ token: string; expires: string }>("/v1/auth/exchange", { code, origin: origin(req), state });
       } catch (e) {
-        // A code the kernel refused (a spent, expired or foreign one) still goes quietly back to the sign-in screen.
-        if (e instanceof AccountError) return redirect(res, "/", [clear]);
-        // The kernel wasn't reachable at all (a fetch rejection or the timeout): usually the host firewall dropping the
-        // board container's traffic to the kernel's host listener. Sign-in can't finish, so say so instead of looping.
-        o.log?.error({ err: String((e as Error)?.message ?? e).slice(0, 300), kernel: o.kernel.url }, "sign-in: the board can't reach the kernel");
+        // A code the kernel rejected as spent, expired or foreign (400) still goes quietly back to the sign-in screen.
+        if (e instanceof AccountError && e.status === 400) return redirect(res, "/", [clear]);
+        // Anything else leaves sign-in unfinished, so say so instead of looping. A kernel that answered with an error
+        // (a 401 on the board's key, a 5xx) is a different failure from one that couldn't be reached at all.
+        const err = String((e as Error)?.message ?? e).slice(0, 300);
+        if (e instanceof AccountError) {
+          o.log?.error({ err, status: e.status, kernel: o.kernel.url }, "sign-in: the kernel refused the exchange");
+          const said = e.status === 401 || e.status === 403
+            ? "The AidenHQ kernel refused the board's key, so sign-in can't finish. Signing in again won't help; check the board's key on the kernel."
+            : "The AidenHQ kernel failed the sign-in exchange, so it didn't finish. Try again; if it keeps failing, check the kernel's log.";
+          return refused(res, said, [clear]);
+        }
+        o.log?.error({ err, kernel: o.kernel.url }, "sign-in: the board can't reach the kernel");
         return unreachable(res, [clear]);
       }
       const maxAge = Math.max(0, Math.floor((new Date(r.expires).getTime() - now()) / 1000));

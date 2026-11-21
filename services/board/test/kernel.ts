@@ -21,8 +21,8 @@ export async function fakeKernel(): Promise<{
   /** Answers for other account ops by path (a status and a body); anything unlisted is a 404. */
   ops: Record<string, [number, unknown]>;
   close: () => void;
-  /** Drop the code exchange's socket, as a host firewall dropping the board's traffic would: a transport failure, no HTTP. */
-  refuseExchange: (on: boolean) => void;
+  /** Drop the code exchange's socket (a transport failure, no HTTP), or answer it with a status (a kernel-side refusal). */
+  refuseExchange: (on: boolean | number) => void;
 }> {
   const codes = new Map<string, { account: FakeAccount; origin: string; state: string }>();
   const sessions = new Map<string, FakeAccount>();
@@ -32,7 +32,7 @@ export async function fakeKernel(): Promise<{
   const calls: { path: string; body: any }[] = [];
   const saved: Record<string, boolean> = {};
   const ops: Record<string, [number, unknown]> = {};
-  let refuseExchange = false;
+  let refuseExchange: boolean | number = false;
   const server: Server = createServer(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
@@ -42,6 +42,7 @@ export async function fakeKernel(): Promise<{
     if (req.headers.authorization !== `Bearer ${BOARD_KEY}`) return send(401, { error: { message: "the board's key is required" } });
     switch (req.url) {
       case "/v1/auth/exchange": {
+        if (typeof refuseExchange === "number") return send(refuseExchange, { error: { message: "the board's key is not valid" } });
         if (refuseExchange) return void req.socket.destroy();
         const c = codes.get(body.code);
         codes.delete(body.code);

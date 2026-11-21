@@ -152,4 +152,22 @@ describe("the board's sign-in through the kernel's handoff", () => {
     expect(cookie(r.cookies, "aidenhq-board")).toBe("");
     expect(errors.length).toBe(before);
   });
+
+  it("a kernel that answers with an error, not a stale code, is shown too", async () => {
+    const start = await get("/auth/start");
+    const state = new URL(start.location).searchParams.get("state")!;
+    const stateCookie = cookie(start.cookies, "aidenhq-board-state");
+    const code = kernel.code(ANN, ORIGIN, state);
+    // The kernel is reachable but refuses the board's key: signing in again won't fix that, so don't loop on it.
+    kernel.refuseExchange(401);
+    try {
+      const r = await get(`/auth/handoff?code=${code}&state=${state}`, { cookie: stateCookie });
+      expect(r.status).toBe(502);
+      expect(r.location).toBe("");
+      expect(r.text).toMatch(/refused the board's key/);
+      expect(errors.at(-1)).toMatchObject({ status: 401, msg: "sign-in: the kernel refused the exchange" });
+    } finally {
+      kernel.refuseExchange(false);
+    }
+  });
 });
