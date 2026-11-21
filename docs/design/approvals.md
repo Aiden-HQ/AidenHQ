@@ -142,6 +142,13 @@ about authority, secrets, exposure and scope (`security/checklist.json`: `review
 review's, CI's and the grader's: the reliability items (`data-mount-dirs`, `timeout-sized`, `sync-shared`,
 `schema-setup-race`, `progress-after-success`, `drain-on-restart`, `module-contract-docs`), the PR's Evidence section and the
 screenshot nit left the reviewer.
+
+**Which pushes and PRs it reviews** (`ai_review_code`, the ai-reviewer module's setting, owner-only): `all` (default);
+`none` (no code-host push or PR on any repo); or `unless_code_review_mandatory` (none on a repo whose `code_review` entry is
+`mandatory: true`, "code review is a required merge step for this repo"; nothing enforces that flag as a merge gate yet, a
+later change does). A skipped push or PR is code's approval (`code_review_owns`, model `kernel/code`), held like any verdict
+to the record's review-first. Merges, closes, create_repo, sends, settings, deploys and tool calls are always reviewed. The
+one predicate is `codeReviewOwns` (`kernel/src/writes.ts`), on the record's kind and the repos its targets name.
 `kernel/src/review-loop.ts` builds the review from the record and sends it through `kernel/src/reviews.ts` with a single-use
 token. It returns `{decision: approve | reject | escalate | unsure, reason_code, reason, second_review}`.
 

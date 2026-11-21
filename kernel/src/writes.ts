@@ -420,8 +420,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
   const reviewing = new Set<string>();
   const retries = new Map<string, { n: number; next: number }>();
 
-  /** The bound reviewer's verdict on one request; a review that couldn't finish is reviewer_failed (tried again later). */
+  /**
+   * The bound reviewer's verdict on one request; a review that couldn't finish is reviewer_failed (tried again later). A push
+   * or PR the owner leaves to code review (ai_review_code, codeReviewOwns) is code's approval instead, held like any verdict to
+   * the record's review-first.
+   */
   async function ask(r: Rec, request: Record<string, unknown>, model: string): Promise<Verdict> {
+    if (codeReviewOwns(r, reviewCode())) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
     let v: Verdict & { panel_marked?: boolean };
     try {
       if (!reviews) throw new Error("reviews are off");
@@ -648,9 +653,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
         // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
         const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        // A push or PR the owner leaves to code review (ai_review_code) is code's approval, held to the record's review-first.
-        const owns = codeReviewOwns(r, reviewCode());
-        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, owns ? { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" } : await ask(r, b.request ?? {}, model)));
+        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
         if (v.code === "reviewer_failed") {
           const n = (wait?.n ?? 0) + 1;
           if (n < REVIEW_TRIES) {
