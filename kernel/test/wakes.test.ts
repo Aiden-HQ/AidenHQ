@@ -489,3 +489,23 @@ test("the poll heals every open task's facts: created, the owner as holder, an o
   await w.wakes.poll();
   assert.equal(w.db.prepare("SELECT count(*) AS n FROM facts").get().n, n);
 });
+
+test("a task put back in a scanned status reaches the wait reconcile on its own event, before any settle tick", async () => {
+  const w = world();
+  w.issue("t1", { status: "todo" });
+  await w.wakes.poll();
+  // idle.ts's reconcile, as main.ts wires it: the event path must call it with the issue, before any timer pass.
+  const calls = [];
+  w.wakes.settleOn(async (i) => { calls.push(i.id); });
+  w.tick();
+  w.issues.t1 = { ...w.issues.t1, status: "in_progress", updatedAt: iso(0) };
+  await w.wakes.event({ issueId: "t1" });
+  assert.deepEqual(calls, ["t1"], "the event re-parked the restored task at once, not at the next tick");
+  // A status the sweep does not scan (backlog, blocked, done) is not the event's business: nothing to hold out of the sweep.
+  for (const status of ["backlog", "blocked", "done"]) {
+    calls.length = 0;
+    w.issues.t1 = { ...w.issues.t1, status, updatedAt: iso(Date.now()) };
+    await w.wakes.event({ issueId: "t1" });
+    assert.deepEqual(calls, [], status);
+  }
+});

@@ -16,6 +16,24 @@
 //   task. Past that cap nothing more wakes it: the Fleet Steward reads the count (`idle_wakes`) and raises the task as a critical
 //   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: the state's
 //   holder says no agent holds it.
+// - parked waits: Paperclip's recovery sweep (the pinned image's reconcileStrandedAssignedIssues) blocks every `todo`,
+//   `in_progress` or `in_review` issue whose assignee agent is not invokable (paused, terminated, pending approval, or an
+//   invalid org chain), and escalates a board decision for each. A kernel-armed wait leaves the issue in exactly that status,
+//   so a task that waits for a paused holder is re-blocked within a minute or two, and re-blocked again after every restore.
+//   `backlog` is not in that sweep's candidate set (verified against the pinned build), and Paperclip ignores comments, agent
+//   comments and recovery resolution there: a task whose wait is armed is parked in `backlog` instead, and reconciled back to
+//   the status it had (`in_progress`; `in_review` for a review task) exactly once when the wait ends (its wake bound to a job,
+//   dropped, superseded or cancelled). `in_review` is parked only in the one shape that sweep escalates (a pending agent
+//   execution-review participant); the finish gate's own `in_review` is left to the gate. A supported comment or a manual
+//   restore that puts it back in a scanned status while the wait is armed is parked again at once, from the task's own Paperclip
+//   event (wakes.ts event → settleOne below), with the settle tick only as the backstop: the sweep's tick and the poll are both
+//   60–90 s, so a poll-only pass would leave a window in which the sweep acts first. The kernel's own state still reads the task
+//   as waiting (`agent_wait`), never backlog.
+//   A stale `stranded_assigned_issue` hold left by the loop is resolved once, and only when the holder is invokable again, so
+//   the restore does not drop the issue straight back into the sweep.
+//   What a park does touch is Paperclip's blocked-inbox liveness read (issue-graph-liveness.ts): a task *blocked by* a parked
+//   task reads `blocked_by_assigned_backlog_issue`. In this build that only annotates attention: no issue is filed, no comment
+//   is posted, and a park lasts only as long as our own armed wait.
 import type { Api } from "./channels.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { inTx, iso, strictFact, type Log } from "./factlog.ts";
@@ -34,19 +52,270 @@ const MIN_WAIT = 15 * 60_000;
 const SWEPT = new Set(["todo", "in_progress"]);
 /** The idle reasons a wake could move a task out of; `unpolled` is one the sweep then skips (its wake would never be taken). */
 const IDLE_REASONS = new Set(["orphaned", "unknown", "unpolled"]);
+/** The statuses a park always moves: the sweep's plain agent-assigned candidates, blocked on the holder's invokability. */
+const PARKABLE = new Set(["todo", "in_progress"]);
+/** Paperclip's invokable agent statuses (packages/shared/src/agent-eligibility.ts, INVOKABLE_AGENT_STATUSES). */
+const INVOKABLE = new Set(["active", "idle", "running", "error"]);
+/** The status an ended wait goes back to. Never `todo`: that move files a status wake, a second job beside the wait's. */
+const RESUMED = "in_progress";
+const CLOSED = new Set(["done", "cancelled"]);
+/** A park's comment is tagged: wakes.ts records no fact of it and dispatch never reads it as words. */
+const PARK_TAG = "<!-- aidenhq:job=kernel kind=wait-park -->";
 
-export function createIdle({ db, facts, state, wakes, owner, team = () => false, escalate, now = Date.now, log = () => {} }: {
-  /** kernel.db: a wait's fact and its wake are one transaction. */
+/** A task the kernel parked in backlog while its wait is armed (wait_parks): whose it is, and where the wait's end puts it. */
+type Park = { task: string; agent: string; from_status: string };
+const PARK_DDL = `CREATE TABLE IF NOT EXISTS wait_parks (task TEXT PRIMARY KEY, agent TEXT NOT NULL, from_status TEXT NOT NULL, at INTEGER NOT NULL)`;
+type AgentRow = { id: string; companyId?: string; status?: string; lifecycleHolds?: string[]; reportsTo?: string | null };
+/** An issue as the park logic needs it (Paperclip's single-issue read). */
+type ParkedIssue = { id: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; companyId?: string; activeRecoveryAction?: { id: string; cause?: string; status?: string; ownerType?: string } | null; executionState?: { status?: string; currentParticipant?: { type?: string; agentId?: string } | null } | null; monitorNextCheckAt?: string | null };
+/**
+ * Whether an `in_review` issue is one the pinned sweep re-blocks: its review branch escalates only when the issue carries a
+ * pending execution-review participant held by an agent (service.ts: participantAgentId && pendingExecutionState; with either
+ * absent it skips). Only that shape is parked: a plain `in_review` — the kernel's finish gate holding a task under its check's
+ * label (checks.ts holds(), which reads the status) — must stay in review, and so must one carrying the gate's own monitor.
+ */
+const reviewParkable = (i: ParkedIssue) => String(i.status) === "in_review" && i.executionState?.status === "pending" && i.executionState?.currentParticipant?.type === "agent" && Boolean(i.executionState?.currentParticipant?.agentId) && !i.monitorNextCheckAt;
+
+export function createIdle({ db, facts, state, wakes, owner, team = () => false, keyOf = (agent: string) => agent, escalate, now = Date.now, log = () => {} }: {
+  /** kernel.db: a wait's fact, its wake and its park row are one transaction (the status PATCH is the one write outside). */
   db: DatabaseSync;
-  facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls">; owner: Api;
+  facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls" | "settleOn" | "settleEach">;
+  /** The control plane as the owner: the issue read, its status PATCH, a stale recovery hold's resolution, and an agent's status. */
+  owner: Api;
   /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
   escalate?: Pick<Escalate, "ask" | "record">;
   /** Whether an agent id is a team record (its tasks go to a member; it never runs). */
   team?: (agent: string) => boolean;
+  /** An agent id's key, for the notes a park writes (the grants table's key; the id when it has none). */
+  keyOf?: (agent: string) => string;
   now?: () => number; log?: Log;
 }) {
   const fact = facts ? strictFact(facts) : () => {};
-  return {
+  db.exec(PARK_DDL);
+  const q = (sql: string) => db.prepare(sql);
+  /** Whether a task's own wait is armed: an open `wait:` wake (a new wait replaces the last; a bound, dropped or replaced one
+   *  is no longer open). This is the one definition of "settled wait" here, read from the inbox that also schedules it. */
+  const armed = (task: string) => Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND state = 'open' AND key LIKE 'wait:%'").get(task));
+  const parkOf = (task: string) => q("SELECT task, agent, from_status FROM wait_parks WHERE task = ?").get(task) as Park | undefined;
+  const remember = (task: string, agent: string, from: string) => q("INSERT INTO wait_parks (task, agent, from_status, at) VALUES (?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, from_status = excluded.from_status, at = excluded.at").run(task, agent, from, now());
+  const forget = (task: string) => q("DELETE FROM wait_parks WHERE task = ?").run(task);
+  /**
+   * Where an adopted park goes back to, from the fact log: the newest status recorded before the park. The park's own write is a
+   * `to: backlog` fact, so that one is skipped — reading only the newest record would read our own park and lose the review.
+   */
+  const adoptedFrom = (task: string) => {
+    for (const r of q("SELECT data FROM facts WHERE subject = ? AND type = 'task.status_changed' ORDER BY seq DESC").all(`task:${task}`) as { data?: string }[]) {
+      let to: unknown;
+      try { to = (JSON.parse(String(r.data ?? "{}")) as { to?: unknown }).to; } catch { continue; }
+      if (to === "backlog") continue;
+      return to === "in_review" ? "in_review" : "in_progress";
+    }
+    return "in_progress";
+  };
+  const issue = async (task: string) => {
+    const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).catch((e: Error) => ({ status: 503, json: { error: e.message } }));
+    return r.status === 404 ? null : r.status === 200 ? (r.json as ParkedIssue) : undefined;
+  };
+  const patch = async (id: string, body: Record<string, unknown>) => {
+    const r = await owner("PATCH", `/api/issues/${encodeURIComponent(id)}`, body);
+    if (r.status >= 300) throw new Error(`control plane PATCH issue → ${r.status}`);
+    return r.json as ParkedIssue;
+  };
+  /**
+   * Whether Paperclip's pinned recovery sweep would leave this agent's work alone: an invokable status and no lifecycle hold
+   * (the product's one definition, sdk/src/agent-paused.ts, widened to the status set its eligibility check reads), and a
+   * healthy org chain (a missing manager, a terminated ancestor or a cycle also reads as not invokable there; a paused
+   * ancestor only warns). A read that fails counts as not invokable: then the safer answer is to leave the hold to the board.
+   * `company` is the issue's company, whose agent list is read once per pass (agentsIn).
+   */
+  // One company's agent list per pass (a status change mid-pass must not be missed: the next pass reads it again).
+  let agentsFor = "", agentsIn: Map<string, AgentRow> | undefined;
+  const freshAgents = () => { agentsFor = ""; agentsIn = undefined; };
+  const agentsOf = async (company: string) => {
+    if (agentsIn && agentsFor === company) return agentsIn;
+    const l = company ? await owner("GET", `/api/companies/${encodeURIComponent(company)}/agents`).catch(() => undefined) : undefined;
+    if (l?.status !== 200 || !Array.isArray(l.json)) return undefined;
+    agentsFor = company; agentsIn = new Map((l.json as AgentRow[]).map((x) => [x.id, x]));
+    return agentsIn;
+  };
+  const invokable = async (agent: string, company: string) => {
+    if (!agent) return false;
+    const all = await agentsOf(company);
+    const a = all?.get(agent);
+    if (!a || !INVOKABLE.has(String(a.status)) || a.lifecycleHolds?.length) return false;
+    // The org chain, as packages/shared/src/agent-eligibility.ts walks it.
+    const seen = new Set<string>([a.id]);
+    let cur: AgentRow | undefined = a;
+    while (cur?.reportsTo) {
+      if (seen.has(cur.reportsTo)) return false;
+      seen.add(cur.reportsTo);
+      const parent: AgentRow | undefined = all!.get(cur.reportsTo);
+      if (!parent || (parent.companyId ?? a.companyId) !== a.companyId) return false;
+      if (parent.status === "terminated") return false;
+      cur = parent;
+    }
+    return true;
+  };
+  /**
+   * One task's wait and its issue, reconciled:
+   * - a wait armed → `todo`/`in_progress` becomes `backlog`, unconditionally: the sweep re-blocks on the holder's invokability
+   *   *at its own tick*, which can change under a wait already armed (a pause mid-wait is today's repro), so the status — not a
+   *   snapshot of the holder — is what keeps it out. An `in_review` task is parked too when it is the one shape that sweep acts
+   *   on (a pending execution-review participant, reviewParkable); the row marks the task as the kernel's to restore, once.
+   * - no wait → back to where it came from once (`in_progress`; `in_review` for a review task, from the row), and the row goes —
+   *   but only when the holder is invokable now: restoring work for an agent the sweep would block straight away is the loop this
+   *   fixes, so it stays parked and the pass restores it once it can.
+   * - a `blocked` task with a stale `stranded_assigned_issue` hold → resolved once (resolveStale), re-parked if it still waits.
+   * A park writes its row before its issue and keeps it unless a read confirms the park did not land, so neither a crash nor an
+   * unknown answer leaves a parked task with no row; an armed `backlog` task without one (a row lost some other way) is adopted,
+   * and a `blocked` task whose own wait is armed is released and re-parked, so every interruption is recovered by the next pass.
+   * Returns what this pass wrote. Idempotent: each pass re-reads the issue, writes only the transition it named, and drops the
+   * row only after the write, so a re-run after a successful write writes nothing.
+   */
+  async function reconcileOne(i: ParkedIssue, p: Park | undefined): Promise<"parked" | "resumed" | "resolved" | undefined> {
+    const task = i.id, status = String(i.status ?? "");
+    // Who holds the task now, not who held it when it was parked: a task reassigned while it waits is restored only if its
+    // current holder is invokable (the row's agent answers for an issue the control plane reports with no assignee).
+    const agent = i.assigneeAgentId || p?.agent || "";
+    const company = String(i.companyId ?? "");
+    if (status === "blocked") {
+      // A park row for a task Paperclip already blocked is this loop's own work: release the hold once, then settle it. So is a
+      // task with no row whose wait is still armed: the same loop blocked it before the park could land, and the armed wait is
+      // what keeps it out once released (it is parked again in this pass). A hold on a task with neither is the board's.
+      if (!p && !armed(task)) return undefined;
+      // The retryable state is recorded before the hold is resolved, not after the move: the resolve puts the issue in `todo`,
+      // and the wait can stop being armed at any point while it is in flight. Without a row, a resolve that landed while its
+      // answer was lost — or a follow-up PATCH that failed — would leave `todo` with neither a row nor an open wait to select
+      // it again. With one, the next pass finishes whatever this one started (both paths below drop it only on success).
+      const from = p ? p.from_status : adoptedFrom(task);
+      if (!p) remember(task, agent, from);
+      if (!(await resolveStale(i, agent))) {
+        // The answer was an error. If the resolve landed anyway the issue is no longer blocked and the row just recorded keeps
+        // it selectable; if it is still blocked, this pass leaves the task to the obsolescence it was already in.
+        const after = await issue(task).catch(() => undefined);
+        if (!after || after.status === "blocked") { forget(task); return undefined; }
+      }
+      if (armed(task)) { await park(task, agent, keyOf(agent), false); return "resolved"; }
+      // The resolve lands the issue in `todo`, the one scanned status the route accepts, and a task sitting there files a
+      // status wake — a second dispatch beside the one the wait's wake already started — so it is moved on in this pass.
+      const back = from === "in_review" ? "in_review" : RESUMED;
+      const moved = await patch(task, { status: back }).then(() => true, (e: Error) => { log("task wait resume after resolve failed", { task, err: e.message }); return false; });
+      if (moved) forget(task);
+      return "resolved";
+    }
+    if (status !== "backlog") {
+      if (armed(task) && (PARKABLE.has(status) || reviewParkable(i))) return (await park(task, agent, keyOf(agent), !p)) ? "parked" : undefined;
+      if (p && !armed(task)) {
+        // The resolve that releases a held task lands it in `todo`, and moving it on from there is the rest of that pass's
+        // work. If that move's PATCH failed, the row is still here and the issue is still in a scanned status, so this pass
+        // finishes the transition and keeps the row until it succeeds — never a row dropped over an issue left in `todo`.
+        // `todo` is never a resting place for a task this loop parked: it is the status whose move files a status wake, a
+        // second job beside the one the wait's wake started. A row for a task a person moved out of backlog leaves as before.
+        if (status === "todo") {
+          if (!(await invokable(agent, company))) return undefined;
+          const back = p.from_status === "in_review" ? "in_review" : RESUMED;
+          const moved = await patch(task, { status: back }).then(() => true, (e: Error) => { log("task wait resume after resolve failed", { task, err: e.message }); return false; });
+          // Left in todo with its row: the next pass tries the move again, instead of dropping the row over a swept status.
+          if (!moved) return undefined;
+          forget(task);
+          return "resumed";
+        }
+        forget(task);
+      }
+      return undefined;
+    }
+    if (armed(task)) {
+      // A crash between the park's PATCH and its row leaves exactly this: an armed task in backlog with no row. Take it back
+      // (the pass's set is open waits and rows, so no other backlog task is read), so the wait's end still restores it once.
+      if (!p) { remember(task, agent, adoptedFrom(task)); log("task wait park adopted", { task }); }
+      return undefined;
+    }
+    if (!p) return undefined;
+    if (!(await invokable(agent, company))) return undefined;
+    await patch(task, { status: p.from_status === "in_review" ? "in_review" : RESUMED });
+    forget(task);
+    return "resumed";
+  }
+  /**
+   * `todo`/`in_progress` → `backlog` while a wait is armed. The row goes in first, so the intent is discoverable from the
+   * moment anything can change: a crash or a failed write can no longer leave a parked issue nothing knows about. A park that
+   * did not land is then rolled back, but only on proof: the row is dropped when a read shows the issue is not parked, and kept
+   * when the outcome is unknown — a write can land and still answer with an error, and a kept row is harmless (an armed wait
+   * parks the task again; the next pass drops a row for a task that is not parked).
+   */
+  async function park(task: string, agent: string, key: string, announce: boolean) {
+    const i = await issue(task);
+    const from = String(i?.status ?? "");
+    if (!i || !(PARKABLE.has(from) || reviewParkable(i))) return false;
+    // The note is tagged (PARK_TAG): wakes.ts records no task.change fact of it and dispatch never reads it as words.
+    const noted = !parkOf(task) && announce;
+    remember(task, agent, from);
+    try {
+      await patch(task, { status: "backlog", ...(noted ? { comment: `Parked while ${key} waits: Paperclip's recovery sweep must not read an armed wait as stranded work.\n\n${PARK_TAG}` } : {}) });
+    } catch (e) {
+      // The row stays unless the issue is *read* and found not parked: "unknown" (the read failed too) is not proof the write
+      // missed, and dropping the row then would leave a parked task that no pass selects once its wait ends. Keeping it is
+      // always safe — an armed wait simply parks the task again, and a row for a task that is not parked is dropped by the
+      // next pass (no wait) or by the restore (wait ended).
+      const after = await issue(task).catch(() => undefined);
+      const landed = after ? String(after.status) === "backlog" : undefined;
+      if (landed === false) forget(task);
+      log("task wait park failed", { task, err: (e as Error).message, landed: String(landed) });
+      return landed === true;
+    }
+    log("task wait parked", { task, from: i.status, agent: key });
+    return true;
+  }
+  /**
+   * A `stranded_assigned_issue` hold left by this loop's own blocks, resolved once through the route that exists for it
+   * (`recovery-actions/resolve`, restored → todo, one of the statuses it accepts), and only when resolving it does not drop the
+   * issue straight back into the sweep: its wait is armed (the pass parks it again at once) or its holder is invokable again.
+   * Any other hold, or a holder still not invokable with no wait to park for, is left to the board: one pass, no retry loop.
+   */
+  async function resolveStale(i: ParkedIssue, agent: string) {
+    const a = i.activeRecoveryAction;
+    if (!a?.id || a.cause !== "stranded_assigned_issue") return false;
+    const rePark = armed(i.id);
+    if (!rePark && !(await invokable(agent, String(i.companyId ?? "")))) return false;
+    const r = await owner("POST", `/api/issues/${encodeURIComponent(i.id)}/recovery-actions/resolve`, {
+      actionId: a.id, outcome: "restored", sourceIssueStatus: "todo",
+      resolutionNote: rePark
+        ? "AidenHQ: a settled task_wait keeps this task out of automatic recovery; release the hold so the wait is not read as stranded work."
+        : "AidenHQ: the assignee is invokable again; release the automatic-recovery hold left while it was not.",
+    }).catch((e: Error) => ({ status: 502, json: { error: e.message } }));
+    if (r.status >= 300) {
+      log("stale recovery hold not resolved", { task: i.id, action: a.id, status: r.status, err: String(r.json?.error ?? "").slice(0, 200) });
+      return false;
+    }
+    log("stale recovery hold resolved", { task: i.id, action: a.id, reparked: rePark });
+    return true;
+  }
+  /** One reconcile pass over every task with a park row or an armed wait (reconcileOne, each in its own try: one failure never
+   *  hides the others). */
+  async function settle() {
+    freshAgents();
+    const tasks = new Set<string>([
+      ...(q("SELECT DISTINCT task FROM wakes WHERE state = 'open' AND key LIKE 'wait:%'").all() as { task: string }[]).map((r) => r.task),
+      ...(q("SELECT task FROM wait_parks").all() as { task: string }[]).map((r) => r.task),
+    ]);
+    const out = { parked: [] as string[], resumed: [] as string[], resolved: [] as string[] };
+    for (const task of tasks) {
+      try {
+        const i = await issue(task);
+        // Only a 404 (gone) or a closed task drops the row: an unread issue is a failure, and dropping its row would
+        // strand a parked task in backlog with nothing to restore it.
+        if (i === null || (i && CLOSED.has(String(i.status)))) { forget(task); continue; }
+        if (!i) continue;
+        const did = await reconcileOne(i, parkOf(task));
+        if (did) out[did].push(task);
+      } catch (e) {
+        log("task wait settle failed", { task, err: (e as Error).message });
+      }
+    }
+    if (out.parked.length || out.resumed.length || out.resolved.length) log("task wait settle", { parked: out.parked.length, resumed: out.resumed.length, resolved: out.resolved.length });
+    return out;
+  }
+  const api = {
     /**
      * The job's own task waits: `reason` (its words), `until` (ISO) and/or `on` (the event it waits for); `for` owner or
      * delegator, with the `question` they answer (`asked: true`, with `for: owner`: the question went already, notify's decision or the agent's own reply, so it is recorded and not sent when it may go to them directly; `handoff: true` marks a wait on the owner's reply to a handoff).
@@ -93,6 +362,12 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
         wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });
+      // The wait is durable now; the issue is parked at once so the pinned recovery sweep (next tick: 60–90 s) never reads an
+      // armed wait as stranded work, whoever holds the task and whatever the holder's status does while it waits. A write that
+      // fails is logged and retried on the next settle pass: never a reason to fail the wait the agent already relies on.
+      const after = await issue(caller.task).catch(() => undefined);
+      freshAgents();
+      if (after && !CLOSED.has(String(after.status))) await reconcileOne(after, parkOf(caller.task)).catch((e: Error) => log("task wait park failed", { task: caller.task, err: e.message }));
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until), ...(who ? { to } : {}) });
       const chief = to === "chief_of_staff" ? { note: "Your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : {};
       return { waiting: true, until: iso(until), ...(who ? { to } : {}), ...(r?.sent === "asked" ? { asked: true } : {}), ...chief };
@@ -100,6 +375,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
 
     /** One sweep: the tasks whose holders it woke. */
     async sweep() {
+      // First the waits: a task whose wait is armed stays out of the sweep's eligible set, and one whose wait ended is restored
+      // once (settle). A failure here never stops the idle sweep below.
+      await settle().catch((e: Error) => log("task wait settle failed", { err: e.message }));
       const t = now(), opened: string[] = [];
       for (const i of state.read({ open: true }).tasks) {
         // Idle with nothing pending (or a wake nothing took) and an agent holds it; an owner's or unassigned task is not read.
@@ -120,6 +398,23 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       if (opened.length) log("idle sweep", { woken: opened.length });
       return opened;
     },
+    /** The wait-park reconcile pass (see settle above): exposed for the backplane's tick and its tests. */
+    settle,
+    /**
+     * One task's reconcile, from its own issue as Paperclip just reported it (wakes.ts event): a task put back into a scanned
+     * status while its wait is armed is parked again at once, not at the next settle tick, so the recovery sweep's own tick
+     * never sees a settled wait it could act on. Only tasks with an armed wait or a park row do anything.
+     */
+    async settleOne(i: ParkedIssue) {
+      if (!armed(i.id) && !parkOf(i.id)) return;
+      freshAgents();
+      await reconcileOne(i, parkOf(i.id)).catch((e: Error) => log("task wait settle failed", { task: i.id, err: e.message }));
+    },
   };
+  // The task's own Paperclip event re-parks a restored wait at once (wakes.ts event → settleOne), so the sweep's 60–90 s tick
+  // never sees a settled wait in a status it scans; the post-poll pass and the 5-minute idle sweep are the backstops.
+  wakes.settleOn?.(api.settleOne);
+  wakes.settleEach?.(api.settle);
+  return api;
 }
 export type Idle = ReturnType<typeof createIdle>;
