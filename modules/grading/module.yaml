@@ -34,7 +34,7 @@ codehost:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
   evidence:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-    paths: [ ".github/ci/areas.json" ]
+    paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ]
   exists:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
 labels:

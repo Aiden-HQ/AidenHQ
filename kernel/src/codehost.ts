@@ -123,7 +123,7 @@ function ownerNeed(answer: string): Need | undefined {
   const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: n as Record<string, unknown> } });
   return need && { ...need, detail: typeof j!.error === "string" ? j!.error : need.detail };
 }
-const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "run", "exists"];
+const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "run", "exists", "commit"];
 /** The kinds their own narrow grant covers: a `file` read (a listed path's text) is `evidence`; `exists` (only whether a path is a directory) has its own grant. */
 const KIND_GRANT: Record<string, "evidence" | "exists"> = { file: "evidence", exists: "exists" };
 const PATH = /^[\w.-][\w./-]{0,499}$/;
@@ -155,6 +155,11 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
     if (kind === "prs") return { kind };
     if (kind === "job") return { kind, id: int(b.id, "id") };
     if (kind === "run") return { kind, id: int(b.id, "id") };
+    if (kind === "commit") {
+      const ref = String(b.ref ?? "");
+      if (!SHA40.test(ref)) throw fail(400, "ref is a full commit sha");
+      return { kind, ref };
+    }
     if (kind === "file" || kind === "exists") {
       const path = String(b.path ?? ""), ref = String(b.ref ?? "");
       if (!PATH.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw fail(400, `${path.slice(0, 100)} is not a path in the repository`);

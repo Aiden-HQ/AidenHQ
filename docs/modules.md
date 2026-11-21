@@ -51,7 +51,7 @@ calls the code host module, which holds the GitHub sign-in: no op returns a toke
 ```yaml
 codehost:
   read:     { repos: [ "@product" ] }                 # a PR, issue, diff, job, workflow run, open PRs
-  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json" ] }  # a listed file at a commit, nothing else
+  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ] }  # listed files at a commit, nothing else
   exists:   { repos: [ "@product" ] }                 # whether a path is a directory at a commit: a boolean, never contents
 ```
 
@@ -60,7 +60,10 @@ sha) and nothing else, so a module reads only the files its grant names. `run`
 answers a workflow run's identity (`workflow_path`, `workflow_state`, `event`, `head_sha`, `run_attempt`, the run's
 own `base_sha`, and the `post_checks` instances of its `post-checks` job: `run_attempt`, `state`, `conclusion`), which
 a `job` read does not: a graded job names the workflow it belongs to, and its run says whether that workflow is the
-repository's CI on the head being graded and whether CI's own poster ran. `exists` (`{path, ref}`) answers only whether
+repository's CI on the head being graded and whether CI's own poster ran. `commit` (`{ref}`) answers a commit's
+parents in the API's order, first parent first: a merged PR's run no longer records its own base, and its merge
+commit's first parent is the tree the merge was made on — the base CI read `areas.json` from — which is the only
+stand-in used. `exists` (`{path, ref}`) answers only whether
 a path is a directory at a commit — the contents API lists a directory as an array, 404s for a missing one, and a file
 is not one — which is how `post-checks` itself decides whether a suite's directory exists before posting its check.
 
@@ -69,13 +72,16 @@ command fact comes from a completed `success` check named exactly a suite in `.g
 `external_id` is CI's `<run_id>/<job id>/<shard>`. Stationary evidence in the check alone proves nothing — the checks
 API answers any App token, and a same-repo PR that reaches a workflow token with `checks: write` could post one — so
 the fact also needs, from the code host, the `<job id>` as a real Actions job of that run and shard
-(`packages (<shard>)`/`modules (<shard>)`, conclusion `success`) whose `run_attempt` has a completed `success`
-`post-checks` job: the poster CI itself ran. The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
+(`packages (<shard>)`/`modules (<shard>)`, conclusion `success`) and a completed `success`
+`post-checks` job in that run at or after the shard's own `run_attempt` (never before it): the poster CI itself ran.
+A failed-job re-run keeps an earlier attempt's passing shard and posts its checks in the newer attempt, so the poster's
+attempt may be the higher one. The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
 whose `head_sha` is the graded head. The fact names the suite's `run` and directory from `areas.json` at the run's own
 base (`base_sha`), and only when that map is byte-identical to the head's, never the branch tip. That `base_sha` is the
-only immutable base: GitHub drops a run's `pull_requests` entry once the PR merges, so a merged run may answer no base,
-and the PR's `baseRef` is where its base branch points now, not where it pointed when the run started — it is never a
-stand-in, and such a run mints nothing. Two of CI's own preconditions are checked too: `ci.yml` at the run's base must
+only immutable base: GitHub drops a run's `pull_requests` entry once the PR merges, so a merged run answers no base,
+and there the base is the PR's merge commit's first parent (`commit`), the tree the merge was made on. The PR's
+`baseRef` is where its base branch points now, not where it pointed when the run started — it is never a stand-in, so
+a run with neither its own base nor a readable merge commit mints nothing. Two of CI's own preconditions are checked too: `ci.yml` at the run's base must
 be the graded head's own, byte for byte (a PR that rewrote the workflow ran its own CI), and the suite's directory must
 be a directory at the graded head (`post-checks` posts nothing for one `run-suites.sh` reported `gone:`, so a deleted
 directory is a green job with nothing run). Because the workflows, the suite runner and the map are the

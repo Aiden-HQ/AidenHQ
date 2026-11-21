@@ -173,6 +173,19 @@ async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
 }
 
 /**
+ * A commit's parents, first parent first: the tree a merge was made on. For a merged PR, whose CI run no longer records its own
+ * base (`pull_requests` is dropped on merge), the merge commit's first parent is that base. A commit GitHub has no answer for
+ * is 404 to the caller; its parent list is the API's own order, and nothing here reorders or picks a different one.
+ */
+async function commitOf(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/commits/${String(b.ref)}`);
+  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no commit ${String(b.ref)}` } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/commits/${String(b.ref)}: ${r.status}`);
+  const parents = Array.isArray(r.body?.parents) ? r.body.parents.map((p: any) => String(p?.sha ?? "")).filter(Boolean) : [];
+  return { status: 200, json: { sha: String(r.body?.sha ?? ""), parents } };
+}
+
+/**
  * Whether a path is a directory at an exact commit, as CI's own `post-checks` decides it before posting a suite's check
  * (`.github/workflows/ci.yml`): the contents API lists a directory as an array, 404s for a missing one, and an unreadable
  * answer is neither. A 404 is "not there" (a real answer); anything else unreadable throws, so the caller mints nothing.
@@ -233,6 +246,7 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
   if (op === "read" && b.kind === "file") return file(ctx, s, b);
   if (op === "read" && b.kind === "exists") return exists(ctx, s, b);
+  if (op === "read" && b.kind === "commit") return commitOf(ctx, s, b);
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));

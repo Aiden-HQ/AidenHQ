@@ -67,14 +67,14 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * `success` check per suite a shard ran, named exactly the suite, with `external_id: <run_id>/<job id>/<shard>`. A check alone
  * proves nothing: GitHub's check API answers any App token, so PR code holding the workflow token could post one. So the fact
  * also needs the shard's own Actions job record behind that `job id` — its `run_id` is the check's `<run_id>`, its name is
- * the shard the check names, and it concluded `success` — plus, in that same run and the same attempt, a completed `success`
- * `post-checks` job: the poster CI itself ran in that run. A re-run may keep an earlier attempt's passing shard (CI's own
- * `filter=latest` list), so the attempt is not narrowed beyond requiring the poster in the shard's attempt: every attempt of
- * that run ran the same head. Then the run must be the repository's own CI on the graded head: `.github/workflows/ci.yml`,
+ * the shard the check names, and it concluded `success` — plus, in that same run, a completed `success` `post-checks` job at
+ * or after the shard's own `run_attempt`, never before it: the poster CI itself ran. A failed-job re-run keeps the earlier
+ * attempt's passing shard (CI's own `filter=latest` list) and posts its checks in the newer attempt, so the poster's attempt
+ * may be the higher one. Then the run must be the repository's own CI on the graded head: `.github/workflows/ci.yml`,
  * active, `pull_request`, `head_sha` the graded head.
  *
  * What this proves, exactly: a green shard job existed in that `ci.yml` run at that head, and CI's own `post-checks` job ran
- * in the same attempt. It does not prove, from the check record alone, that that shard ran that suite: GitHub gives an
+ * at or after the shard's attempt. It does not prove, from the check record alone, that that shard ran that suite: GitHub gives an
  * API-posted check no link back to the job that posted it. The suite-to-shard assignment is carried by `post-checks`, which
  * reads the trusted base-map plan and runs no PR code, and the practical forgery path — a PR adding a `checks: write` step to
  * its own run — needs a `ci.yml` edit, which the `.github/` guard below refuses. This is deliberately not called unforgeable:
@@ -93,8 +93,8 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * The command and directory come from `areas.json` at the run's own recorded base (`base_sha`), byte-identical to the head's:
  * CI reads the map from the base commit, so the two agree unless main's map moved or the PR edited it, and either way the base
  * can't name a command the graded head doesn't carry. That base is the only immutable one; the PR's `baseRef` is where its base
- * branch points now, which moves as main advances, so it is never a stand-in, and a run whose base GitHub no longer records
- * mints nothing. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
+ * branch points now, which moves as main advances, so it is never a stand-in. A merged run records no base, and there the merge
+ * commit's first parent (the tree the merge was made on) is used instead; a run with neither mints nothing. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
  * to the head's (a PR that rewrote the workflow ran its own CI), and the suite's directory is a directory at the graded head
  * (`post-checks` posts nothing for a `gone:` one, so a deleted directory is a green job with nothing run). Which suites a shard
  * ran is known only inside the run (CI writes the plan to the `checks` job's outputs, which GitHub does not expose on the job),
@@ -136,17 +136,27 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     if (j.state !== "completed" || j.conclusion !== "success") return undefined;
     const u: any = await read(`run/${run}`, () => deps.run(repo, run));
     if (!u || u.workflow_path !== CI_WORKFLOW || u.workflow_state !== "active" || u.event !== "pull_request" || u.head_sha !== head) return undefined;
-    // CI's own poster, in the shard's own attempt: a run with no completed `success` `post-checks` job mints nothing,
-    // whatever checks name it. The poster is what turns a green shard into a per-suite record.
-    const attempt = String(j.run_attempt ?? u.run_attempt ?? "");
-    const post = (u.post_checks ?? []).find((p: any) => String(p?.run_attempt ?? "") === attempt && p?.state === "completed" && p?.conclusion === "success");
+    // CI's own poster: a run with no completed `success` `post-checks` job mints nothing, whatever checks name it. The poster
+    // is what turns a green shard into a per-suite record. It must not predate the shard, but it may come later: a failed-job
+    // re-run keeps an earlier attempt's passing shard and posts its checks in the new attempt, so the shard's own attempt can
+    // be the lower one. Both numbers are that run's attempts, so "at or after the shard" is the whole rule.
+    const attempt = Number(j.run_attempt ?? u.run_attempt ?? NaN);
+    const post = (u.post_checks ?? []).find((p: any) => Number.isSafeInteger(attempt) && Number(p?.run_attempt) >= attempt
+      && p?.state === "completed" && p?.conclusion === "success");
     if (!post) return undefined;
     // The run's own recorded base is where CI read `areas.json` and the workflow (main as it was when the run started). It is
-    // the only immutable source: the PR's `baseRef` is the current tip of its base branch, which moves as main advances, so it
-    // cannot stand in. A run whose base GitHub no longer records (the `pull_requests` entry is dropped once the PR merges)
-    // mints nothing: without the run's own base, nothing establishes which workflow or command actually ran.
-    const base = String(u.base_sha ?? "");
-    if (!SHA40.test(base)) return undefined;
+    // the only immutable source of that tree: the PR's `baseRef` is the current tip of its base branch, which moves as main
+    // advances, so it cannot stand in. GitHub drops the run's `pull_requests` entry once the PR merges, which is exactly the
+    // head a merged task is graded on, so there the base is the merge commit's first parent: the tree the merge was made on.
+    // An unreadable commit, or one with no parent, is still no base, and mints nothing.
+    let base = String(u.base_sha ?? "");
+    if (!SHA40.test(base)) {
+      const merge = String(pr.mergeCommit?.oid ?? "");
+      if (!deps.commit || !SHA40.test(merge)) return undefined;
+      const m: any = await read(`commit/${merge}`, () => deps.commit(repo, merge));
+      base = String(m?.parents?.[0] ?? "");
+      if (!SHA40.test(base)) return undefined;
+    }
     return { name: String(c.name), base };
   }));
   const green = found.filter(Boolean) as { name: string; base: string }[];

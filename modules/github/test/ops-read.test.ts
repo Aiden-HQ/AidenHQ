@@ -61,6 +61,16 @@ test("a workflow run's identity is its workflow, event, head, attempt and its ow
   assert.deepEqual(noJobs.json.post_checks, []);
 });
 
+test("a commit read answers its parents in the API's order, first parent first; a 404 is no commit", async () => {
+  const c = ctx();
+  const parents = [{ sha: "b".repeat(40) }, { sha: "c".repeat(40) }];
+  const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, withRest(c, async () => ok({ sha, parents })));
+  assert.deepEqual(a.json, { sha, parents: ["b".repeat(40), "c".repeat(40)] }, "the merge commit's first parent is the base");
+  const none = await answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, ctx());
+  assert.equal(none.status, 404, "a commit GitHub has no answer for is a 404, never a guess");
+  await assert.rejects(() => answerOp("read", { module: "grading", repo: "acme/app", kind: "commit", ref: sha }, withRest(c, async () => ({ status: 502, body: {}, headers: new Headers() }))), /502/, "an unreadable answer throws");
+});
+
 test("a job GitHub has no answer for is null, never an error", async () => {
   const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "job", id: 42 }, ctx());
   assert.equal(a.status, 200);
