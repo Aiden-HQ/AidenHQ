@@ -42,6 +42,10 @@ for (const kind of kinds) for (const panel of [true, false]) for (const mode of 
     }
     const state = records.get(r.id)!.state;
     assert.notEqual(state, "review", `still in review after ${PASSES} passes (refusals: ${refusals.join(" | ")})`);
-    assert.ok(["approved", "claimed", "done", "failed", "rejected", "owner"].includes(state), state);
+    // The reviewer approves, so the record is approved (then claimed, done or failed by its executor), never the owner's or rejected.
+    assert.ok(["approved", "claimed", "done", "failed"].includes(state), state);
+    // A push or PR on a repo code review gates (and never a panel record) is code's approval, unasked; everything else is asked as a panel exactly when it is one.
+    const code = !panel && kind.startsWith("github.") && mode !== "all";
+    assert.deepEqual(asked, code ? [] : [panel], `reviewer calls (${state})`);
   });
 }

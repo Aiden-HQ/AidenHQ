@@ -130,7 +130,7 @@ function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatL
   };
 }
 const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title: `Work ${id}`, status: "todo", updatedAt: ago(1), ...o });
-const detect = (w, now = NOW) => checks({ kernel: w, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
+const detect = (w, now = NOW) => checks({ kernel: w, kv: kvOf(), apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
 test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved for 6h is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
@@ -532,30 +532,43 @@ test("a capacity queue over an hour fires only while computers sit idle; a revie
   assert.match(s[0].reason, /card c1 \(github-merge\) on task wor-1 has been with the AI reviewer for 90 min/);
 });
 
-test("a PR held for code review with no review run fires after 30 minutes; an answered owner or delegator wait that never resumed fires after an hour", async () => {
-  const row = (task, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(45), reason: "module_wait", ref: "code_review", holder: "a1", attention: [], idle_wakes: 0, ...o });
-  const mk = (rows, comments = {}) => {
-    const w = world({ tasks: {}, records: [] });
+test("a PR held for code review over 90 minutes with no job fires; an answered wait that never resumed fires an hour after the answer; the owner hears at two hours", async () => {
+  const row = (task, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(100), reason: "module_wait", ref: "code_review", holder: "a1", attention: [], idle_wakes: 0, ...o });
+  const mk = (rows, tasks = {}, comments = {}, notify) => {
+    const w = world({ tasks, records: [] });
     const call = w.call, read = w.read;
     w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: rows } : call(m, p));
     w.read = async (p) => { const m = /^\/api\/issues\/(\w+)\/comments/.exec(p); return m ? comments[m[1]] ?? [] : read(p); };
-    return detect(w);
+    return checks({ kernel: w, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW, kv: kvOf(), notify });
   };
-  const gated = await mk([row("a"), row("b", { stage: "Code review" }), row("c", { since: minsAgo(10) }), row("d", { ref: "checks" })]).gate();
-  assert.deepEqual(gated.map((i) => i.key), ["a"]);
-  assert.match(gated[0].reason, /WOR-A: its PR has waited 45 min on code review's verdict/);
+  const told = [];
+  const gated = await mk([row("a"), row("b", { reason: "job_running" }), row("c", { since: minsAgo(60) }), row("d", { ref: "checks" }), row("e", { since: minsAgo(300) })], {}, {}, async (text, key) => void told.push(key)).gate();
+  assert.deepEqual(gated.map((i) => i.key), ["a", "e"]);
+  assert.match(gated[0].reason, /WOR-A: its PR has waited 100 min on code review's verdict/);
+  assert.deepEqual(told, ["gate:e"], "only the one open over 90 min + 2 h reaches the owner");
 
-  const wait = (task, why, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(120), wait_since: minsAgo(120), reason: why, holder: "a1", attention: [{ who: "x", why, ref: `wait:${task}` }], idle_wakes: 0, ...o });
+  const wait = (task, why, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(240), wait_since: minsAgo(240), reason: why, holder: "ada", attention: [{ who: "x", why, ref: `wait:${task}` }], idle_wakes: 0, ...o });
   const owner = { authorType: "user", body: "Go ahead.", createdAt: minsAgo(90) };
   const agent = { authorType: "agent", authorAgentId: "boss", body: "Do it.", createdAt: minsAgo(90) };
-  const found = await mk([wait("a", "owner_wait"), wait("b", "delegator_wait"), wait("c", "owner_wait"), wait("d", "delegator_wait"), wait("e", "owner_wait", { wait_since: minsAgo(30), since: minsAgo(30) }), wait("f", "delegator_wait", { attention: [{ who: "agent", why: "delegator_wait", ref: "task:f" }] })], {
+  const tasks = Object.fromEntries("abcdefghi".split("").map((id) => [id, task(id, { assigneeAgentId: "uuid-a1" })]));
+  const rows = [wait("a", "owner_wait"), wait("b", "delegator_wait"), wait("c", "owner_wait"), wait("d", "delegator_wait"), wait("e", "owner_wait"), wait("f", "delegator_wait", { attention: [{ who: "agent", why: "delegator_wait", ref: "task:f" }] }), wait("g", "job_running", { attention: [{ who: "owner", why: "owner_wait", ref: "wait:g" }] }), wait("h", "owner_wait")];
+  const comments = {
     a: [owner], b: [agent],
-    c: [{ ...owner, createdAt: minsAgo(150) }], // before the wait
-    d: [{ authorType: "agent", authorAgentId: "a1", body: "Waiting.", createdAt: minsAgo(90) }, { authorType: "user", body: "note <!-- aidenhq-approval -->", createdAt: minsAgo(80) }], // the holder's own and the kernel's
-    e: [owner], f: [agent], // too recent; a release, which comments don't end
-  }).unresumed();
-  assert.deepEqual(found.map((i) => i.key), ["a", "b"]);
+    c: [{ ...owner, createdAt: minsAgo(300) }], // before the wait
+    d: [{ authorType: "agent", authorAgentId: "uuid-a1", body: "Waiting.", createdAt: minsAgo(90) }, { authorType: "user", body: "note <!-- aidenhq-approval -->", createdAt: minsAgo(80) }], // the holder's own (its agent id) and the kernel's
+    e: [{ ...owner, createdAt: minsAgo(20) }], // answered just now: an hour to resume first
+    f: [agent], g: [owner], // a release, which comments don't end; a task running again
+    h: [{ ...owner, createdAt: minsAgo(200) }],
+  };
+  const found = await mk(rows, tasks, comments).unresumed();
+  assert.deepEqual(found.map((i) => i.key), ["a", "b", "h"]);
   assert.match(found[0].reason, /WOR-A has not resumed 90 min after its owner's answer arrived/);
+
+  // A bounded pass reaches every eligible wait over successive runs.
+  const many = Array.from({ length: 25 }, (_, n) => wait(`t${n}`, "owner_wait"));
+  const c = mk(many, Object.fromEntries(many.map((r) => [r.task, task(r.task)])), { t24: [owner] });
+  assert.deepEqual(await c.unresumed(), []);
+  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t24"]);
 });
 
 test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {
