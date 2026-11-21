@@ -9,8 +9,8 @@
 // `stallMs`, the window without progress (a keepalive or the verdict) after which it is a failed review. The module's service
 // beats every minute while it works (reviewer.ts), so only a review that stopped making progress — a module recreated by an
 // apply with its work lost, a call that never returns — reaches the stall window; writes.ts then retries it by REVIEW_TRIES.
-// A dispatch's answer names the service instance: a different one than the module's last is a restart, and the reviews it was
-// holding are failed at once, never waited out.
+// A dispatch's answer names the service instance, and so does its /healthz: the loop asks that each sweep, and a review held by
+// an instance other than the one serving now went to a service that restarted, so it is failed at once, never waited out.
 import http from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Resolver } from "./net.ts";
@@ -18,7 +18,7 @@ import type { Resolver } from "./net.ts";
 /** The bound reviewer (compile: config/kernel/modules.json `reviewer`). */
 export type ReviewerSlot = { module: string; url: string; auth_secret: string };
 /** One review waiting: its token's hash, how it ends, when it last showed progress, its hard ceiling and the instance it went to. */
-type Pending = { token: Buffer; done: (v: { verdict?: unknown; error?: string }) => void; beat: number; deadline: number; instance?: string; timer?: NodeJS.Timeout };
+type Pending = { token: Buffer; done: (v: { verdict?: unknown; error?: string }) => void; beat: number; deadline: number; instance?: string; ackAt?: number; timer?: NodeJS.Timeout };
 const fail = (status: number, type: string, message: string) => Object.assign(new Error(message), { status, type });
 const hash = (s: string) => createHash("sha256").update(s).digest();
 const minutes = (ms: number) => Math.max(1, Math.round(ms / 60_000));
@@ -37,8 +37,6 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const pending = new Map<string, Pending>();
-  /** The service instance each reviewer module last accepted a review as (absent: it names none). */
-  const instances = new Map<string, string>();
   /** When the bound reviewer's /healthz was last asked. */
   let probed = 0;
 
@@ -111,12 +109,8 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
       arm(id);
       try {
         const ack = await dispatch(s, { id, token, model_token: modelToken(component), request });
-        // A service answering as an instance other than the module's last was recreated: the reviews it held are gone, so
-        // they are failed now, not after the stall window.
-        const last = instances.get(s.module);
-        if (ack.instance) instances.set(s.module, ack.instance);
-        if (ack.instance && last && ack.instance !== last) restarted(s.module, last);
-        if (pending.has(id)) { p.instance = ack.instance; p.beat = Date.now(); arm(id); }
+        // Which service instance holds this review: check() fails the ones a different instance (a restart) left behind.
+        if (pending.has(id)) { p.instance = ack.instance; p.ackAt = Date.now(); p.beat = Date.now(); arm(id); }
         const a = await answer;
         if (a.error !== undefined) throw fail(502, "review_failed", `${s.module}: ${a.error}`);
         const v = a.verdict as { decision?: unknown; reason?: unknown; model?: unknown };
@@ -129,18 +123,20 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
       }
     },
     /**
-     * The bound reviewer's service instance now (its /healthz), and the reviews failed because it isn't the one they went to: a
-     * service recreated by an apply lost them, so they are failed now, never waited out. Asks at most every `probeMs`.
+     * The bound reviewer's service instance now (its /healthz at the service root) and the reviews failed because it isn't the
+     * one they went to: a service recreated by an apply lost them, so they are failed now, never waited out. Asks at most every
+     * `probeMs`. Only reviews acknowledged before the probe was sent can be stale: one acknowledged while it was in flight went
+     * to a service that is serving now, whatever the older answer says.
      */
     async check(): Promise<number> {
       const s = slot();
-      const now = Date.now();
-      if (!s || now - probed < probeMs || ![...pending.values()].some((p) => p.instance)) return 0;
-      probed = now;
+      const sent = Date.now();
+      if (!s || sent - probed < probeMs || ![...pending.values()].some((p) => p.instance)) return 0;
+      probed = sent;
       let instance: string | undefined;
       try {
-        const to = await resolver.resolve(`${s.url.replace(/\/$/, "")}/healthz`);
-        const r = await fetch(`http://${to.host}:${to.port}${to.path}`, { signal: AbortSignal.timeout(4_000) });
+        const to = await resolver.resolve(s.url);
+        const r = await fetch(`http://${to.host}:${to.port}/healthz`, { signal: AbortSignal.timeout(4_000) });
         const j = (await r.json().catch(() => ({}))) as { instance?: unknown };
         if (r.ok && typeof j.instance === "string") instance = j.instance;
       } catch {
@@ -148,8 +144,7 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
         return 0;
       }
       if (!instance) return 0;
-      instances.set(s.module, instance);
-      const stale = new Set([...pending.values()].map((p) => p.instance).filter((i): i is string => Boolean(i) && i !== instance));
+      const stale = new Set([...pending.values()].filter((p) => p.instance && p.instance !== instance && (p.ackAt ?? 0) <= sent).map((p) => p.instance!));
       let n = 0;
       for (const old of stale) n += restarted(s.module, old);
       return n;
@@ -167,6 +162,8 @@ export function createReviews({ slot, secret, resolver, modelToken, timeoutMs = 
         arm(id);
         return true;
       }
+      // The verdict ends the review: its stall timer must never fire after it.
+      clearTimeout(p.timer);
       pending.delete(id);
       p.done(body.error !== undefined ? { error: String(body.error).slice(0, 300) } : { verdict: body });
       return true;

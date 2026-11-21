@@ -46,9 +46,13 @@ async function side(t, file, module, { comments = [], grade, escalate, delegator
 /** The reviewer module: each review it accepts is kept ({ id, token, request }); `instance` is what its /healthz says now. */
 async function reviewer(t) {
   const seen = [];
-  const mod = { instance: undefined };
+  const mod = { instance: undefined, healthDelay: 0, health: [] };
   const m = await serve(async (req, res) => {
-    if (req.method === "GET" && String(req.url).endsWith("/healthz")) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, ...(mod.instance ? { instance: mod.instance } : {}) }));
+    if (req.method === "GET" && String(req.url).endsWith("/healthz")) {
+      mod.health.push(req.url);
+      if (mod.healthDelay) await new Promise((ok) => setTimeout(ok, mod.healthDelay));
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, ...(mod.instance ? { instance: mod.instance } : {}) }));
+    }
     seen.push(JSON.parse(await readBody(req)));
     res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ accepted: true, ...(mod.instance ? { instance: mod.instance } : {}) }));
   });
@@ -203,6 +207,28 @@ test("a review that keeps reporting progress is not cut off by the progress wind
   k.reviews.verdict(id, token, OK);
   await sweep;
   await until(() => k.records.get(r.id).state === "done");
+});
+
+test("the restart probe asks the service's own /healthz, and a probe in flight never fails a review acknowledged after it was sent", async (t) => {
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  mod.mod.instance = "instance-1";
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  // The service restarts, and its /healthz is slow: a second review lands while the probe is in flight.
+  mod.mod.instance = "instance-2";
+  mod.mod.healthDelay = 300;
+  const probes = k.reviews.check();
+  await until(() => mod.mod.health.length > 0);
+  const second = k.reviews.request({ card: { action: "acme.post", rule: "r" }, diff: "note: second" });
+  await until(() => mod.seen.length === 2);
+  assert.equal(await probes, 1, "only the review acknowledged before the probe was sent is stale");
+  assert.equal(k.reviews.verdict(mod.seen[1].id, mod.seen[1].token, OK), true, "the live review is never failed by an older probe's answer");
+  await second;
+  assert.ok(k.writes.retryAt(r.id) > Date.now(), "the lost one is retried by its backoff");
+  await sweep;
+  assert.deepEqual([...new Set(mod.mod.health)], ["/healthz"], "the service root, not the provider's review route");
 });
 
 test("a reviewer service recreated mid-review fails its lost reviews at once, so the record is retried instead of waited out", async (t) => {
