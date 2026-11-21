@@ -87,7 +87,7 @@ test("A9: the code host's executor updated between approval and execution makes 
   assert.equal(fx.executes.filter((e) => e.id === r.id).length, 0);
 });
 
-test("the plan refuses what code refuses: the instance repo, and an agents-org merge with red checks", () => {
+test("the plan refuses what code refuses: the instance repo; an agents-org merge with red checks is filed (the queue ends it)", () => {
   assert.throws(() => plan({ kind: "github.push", args: {} }, { ...repos, branches: [{ repo: repos.instanceRepo, branch: "x", sha: sha("a"), files: [] }] }), /only through apply/);
-  assert.throws(() => plan({ kind: "github.merge", args: {} }, { ...repos, prs: [{ repo: "acme-agents/app", number: 1, files: ["a"], checks: [{ name: "ci", ok: false }], headMatches: true, ownHead: true }] }), /failed on the head/);
+  assert.doesNotThrow(() => plan({ kind: "github.merge", args: {} }, { ...repos, prs: [{ repo: "acme-agents/app", number: 1, files: ["a"], checks: [{ name: "ci", ok: false }], headMatches: true, ownHead: true }] }, { target: "", sentence: "", diff: "" }));
 });

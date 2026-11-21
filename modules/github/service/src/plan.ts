@@ -1,7 +1,7 @@
 // The code host's git rules: which tier a push, PR, merge, close or create_repo is on its merits, from verified state only
 // (the requester the runner looked up, the repos, branches, files, heads and checks git and GitHub report). Pure: no I/O.
 // Code refuses (`reject`) what nobody may do and the agent can fix (the instance repo, a default branch outside the agents
-// org, a head that moved, red checks); Tier 0 runs at once, Tier 1 goes to the AI reviewer, `panel` adds a second reviewer.
+// org, a head that moved); Tier 0 runs at once, Tier 1 goes to the AI reviewer, `panel` adds a second reviewer.
 // What a change to particular files needs (the gate's core, compose files, the owner-approval records) is never decided here:
 // `plan` returns the files each push, PR and merge changes (`paths`), and the kernel raises the tier by the path inventory
 // (paths.yaml, kernel/src/paths.ts) and runs the platform check (modules/platform/src/check.ts) on them (writes.ts).
@@ -144,16 +144,27 @@ function createRepoPart(s: State) {
 }
 
 /**
- * Friction is the agent's, never the owner's (owner, 2026-11-14): a head that moved, no named checks, or a red one is
- * refused by code with the reason, so the agent fixes it and asks again. Still running is not red: those merges wait.
+ * Friction is the agent's, never the owner's (owner, 2026-11-14): a head that moved is refused by code with the reason, so the
+ * agent asks again. On GitHub checks are the queue's: it waits for none yet or still running, and ends the PR on a red one. A
+ * change request on this server has no waiting queue (codehost-local decides at the merge): no named checks or a red one is refused here.
  */
 function mergeFriction(p: Pr, ref: string) {
   if (!p.headMatches) return REJECT("head-moved", `${ref} moved since it was asked for: ask again for its new head`);
+  if (!isLocal(p.repo)) return undefined;
   if (!(p.checks ?? []).length) return REJECT("no-checks", `${ref} has no named checks on its head: its repo needs CI (a copy of the product's CI template runs at once), or CI didn't start; fix that and ask again`);
   const red = p.checks.filter((c) => !c.ok && !c.pending);
   // A count, never the names: check names are repo-controlled text, and this reason reaches the agent as the runner's.
-  if (red.length) return REJECT("checks-not-green", `${ref}: ${red.length} named check(s) failed on the head (\`${isLocal(p.repo) ? "aidenhq status" : `gh pr checks ${p.number ?? ""}`}\` names them). Fix it and publish again`);
+  if (red.length) return REJECT("checks-not-green", `${ref}: ${red.length} named check(s) failed on the head (\`aidenhq status\` names them). Fix it and publish again`);
   return undefined;
+}
+
+/** What the plan says of a merge's checks on its head: "2 named checks, still running ..." (never names). */
+function checkStatus(checks: Check[]) {
+  const failed = checks.filter((c) => !c.ok && !c.pending).length;
+  const n = `${checks.length} named check${checks.length === 1 ? "" : "s"}`;
+  if (failed) return { green: false, text: `${n}, ${failed} failed on the exact head (the queue reports it not merged)` };
+  if (!checks.length || checks.some((c) => c.pending)) return { green: false, text: `${n}, ${checks.length ? "still running" : "none registered yet"} on the exact head (merged only once green)` };
+  return { green: true, text: `${n}, all green on the exact head` };
 }
 
 /** A merge's checks as counts the reviewer can match to any readout: "22 named checks, 21 passed, 1 skipped" (never names). */
@@ -185,19 +196,19 @@ function mergeParts(p: Pr, s: State): Part[] {
     ? T(1, "maintained-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo} (${LISTED})`)
     : T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`));
   // Merged at once when CI is green (owner, 2026-11-12): the PR merges on its own (an independent queue), strict and bound to
-  // this head, only once every named check passed on it; red leaves it unmerged. Still running is not red.
-  const n = `${p.checks.length} named check${p.checks.length === 1 ? "" : "s"}`;
+  // this head, only once every named check passed on it; red leaves it unmerged. None yet or still running waits.
+  const c = checkStatus(p.checks);
   // A change request on this server: no CI code-review job read it (that needs GitHub's OIDC), so the AI reviewer reads the
   // card's diff and the request chain (owner, 2026-11-17). Merged only once every named check is green on this head.
-  if (isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${n}, ${p.checks.some((c) => c.pending) ? "still running on the exact head (merged only once green)" : "all green on the exact head"}`));
-  else if (listed) parts.push(p.checks.some((c) => c.pending) ? T(0, "maintained-merge-checks-running", `${ref} (${LISTED}): ${n}, still running on the exact head (merged only once green)`) : T(0, "maintained-merge", `${ref} (${LISTED}): ${n}, all green on the exact head`));
-  else parts.push(p.checks.some((c) => c.pending) ? T(0, "agents-org-merge-checks-running", `${ref}: ${n}, still running on the exact head (merged only once green)`) : T(0, "agents-org-merge", `${ref}: ${n}, all green on the exact head`));
+  if (isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${c.text}`));
+  else if (listed) parts.push(c.green ? T(0, "maintained-merge", `${ref} (${LISTED}): ${c.text}`) : T(0, "maintained-merge-checks-running", `${ref} (${LISTED}): ${c.text}`));
+  else parts.push(c.green ? T(0, "agents-org-merge", `${ref}: ${c.text}`) : T(0, "agents-org-merge-checks-running", `${ref}: ${c.text}`));
   return parts;
 }
 
 /**
  * A product PR's merge (owner, 2026-11-13): the reviewer's when its head is one the runner pushed (no fork, no one else's
- * push), it is the card's head and its named checks aren't red. The Platform Engineer's line asks for any such PR; any other
+ * push), it is the card's head. The Platform Engineer's line asks for any such PR; any other
  * Engineer job only for a PR whose head its own task pushed (the task the code host recorded with that head, `pushedBy`)
  * and that changes nothing under `.github/`. Still running is not red: a reviewer-approved merge runs the strict queue, which
  * merges only once every named check is green on that exact head. Never Tier 0: the product reaches every instance through

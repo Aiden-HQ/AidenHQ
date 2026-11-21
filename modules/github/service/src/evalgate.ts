@@ -4,7 +4,7 @@
 // base's cases, every added case, no attack approved), and signs a receipt bound to the head, the
 // judging commit and the policy hash. This side decides only who judges what, and verifies the receipt at the merge (POST
 // /v1/receipts/verify): a check that is running waits, and so does a transient error (the kernel restarting, a GitHub or git
-// blip: the merge queue asks again, bounded by its own eval wait); a check that ran and failed, or a receipt that doesn't hold, stops.
+// blip) and a check that couldn't run (asked again with backoff): the merge queue keeps asking; a check that ran and failed, or a receipt that doesn't hold, stops.
 //
 // What is judged, always a product commit (the reviewer is the product's modules/ai-reviewer and REVIEWER_CODE), by an
 // earlier one:
@@ -52,8 +52,8 @@ type Pr = { number: number; headRefOid: string; baseRefName: string };
 const SHA = /^[0-9a-f]{40}$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
-/** How many times a check that couldn't run is asked for again before the merge stops. */
-const ASKS = 3;
+/** A check that couldn't run is asked for again with backoff, never given up on: 5 minutes, doubling, at most an hour. */
+const backoffMs = (asks: number) => Math.min(5 * 2 ** Math.max(asks - 1, 0), 60) * 60_000;
 
 export function createEvalGate(d: {
   productRepo?: string;
@@ -73,7 +73,7 @@ export function createEvalGate(d: {
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "evals.json");
   // reviewers: reviewer contents a passing receipt covers (any judge: the bump); covered: the same by reviewer and judging content (a PR).
-  const s: { reviewers: Record<string, { head: string; at: string }>; covered: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string }> } = (() => { try { return { reviewers: {}, covered: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, covered: {}, checks: {} }; } })();
+  const s: { reviewers: Record<string, { head: string; at: string }>; covered: Record<string, { head: string; at: string }>; checks: Record<string, { id: string; asks: number; judge: string; at?: string }> } = (() => { try { return { reviewers: {}, covered: {}, checks: {}, ...JSON.parse(readFileSync(file, "utf8")) }; } catch { return { reviewers: {}, covered: {}, checks: {} }; } })();
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(s)); renameSync(`${file}.tmp`, file); };
 
   const reviewerAt = async (dir: string, sha: string) => reviewerKey(await d.git(dir, ["-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--full-tree", sha]));
@@ -95,17 +95,14 @@ export function createEvalGate(d: {
     // A failed read throws (the merge waits); only a check the kernel no longer knows (404) is asked for again.
     let v = had ? await d.kernel("GET", `/v1/checks/${had.id}`).catch((e) => { if ((e as { status?: number })?.status === 404) return undefined; throw e; }) : undefined;
     if (!v || !["running", "done"].includes(v.state)) {
-      // Never asked, or it couldn't run (no box: counted, asked again a few times at most); one the kernel lost at a restart
-      // never ran to a verdict, so it is asked again without counting.
+      // Never asked, or it couldn't run (no box: counted, asked again after a growing wait); one the kernel lost at a restart
+      // never ran to a verdict, so it is asked again at once without counting.
       const lost = Boolean(had) && (!v || v.state === "lost");
-      if (!lost && (had?.asks ?? 0) >= ASKS) {
-        delete s.checks[key]; // a new merge request asks again
-        save();
-        return { stop: `${what} couldn't run ${ASKS} times (${v?.error ?? v?.state ?? "unknown"})` };
-      }
+      const due = had && !lost ? Date.parse(had.at ?? "") + backoffMs(had.asks) : 0;
+      if (due > Date.now()) return { wait: `${what} couldn't run (${v?.error ?? v?.state ?? "unknown"}): asking again at ${new Date(due).toISOString()}` };
       const spec = { repo, judge_commit: judge, subject_commit: head, cases_from: head, policy_hash: policy };
       v = await d.kernel("POST", "/v1/checks", { repo, head, run: "eval", spec });
-      s.checks[key] = { id: String(v.id), asks: (had?.asks ?? 0) + (lost ? 0 : 1), judge };
+      s.checks[key] = { id: String(v.id), asks: (had?.asks ?? 0) + (lost ? 0 : 1), judge, at: new Date().toISOString() };
       save();
       log("reviewer eval asked", { repo, head, judge });
     }
