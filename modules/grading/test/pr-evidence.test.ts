@@ -176,15 +176,11 @@ const withChecks = (n, head, merge, checks, files = ["kernel/src/x.ts"]) => ({
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: checks } } } }] },
 });
 /**
- * A check as GitHub gives CI's own: GitHub Actions' App, in the shard run's check suite, linking to a shard job of that run.
- * `external` is `<run>/<job id>/<shard>`; the job link follows it, as GitHub's does.
+ * A check as CI's own `post-checks` makes it: GitHub Actions' App, completed `success`, `external` `<run>/<job id>/<shard>`.
+ * It carries no job link and sits in an unrelated check suite, exactly as real posted checks do (see the docblock in
+ * evidence.ts); the job record and the `post-checks` job are what the fact binds to.
  */
-const PASS = (name, external) => {
-  const [run, job] = String(external).split("/");
-  return { __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external,
-    app: { slug: "github-actions" }, checkSuite: { workflowRun: { databaseId: Number(run) || 0 } },
-    detailsUrl: run && job ? `https://github.com/${REPO}/actions/runs/${run}/job/${job}` : null };
-};
+const PASS = (name, external) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external, app: { slug: "github-actions" } });
 /**
  * The command facts' reads: `file` answers `areas.json` at a base and `ci.yml` at the head; `job` answers the shard's Actions
  * job (null is the 404 a check with no job behind it gets); `run` answers the workflow run CI made. `bases` names the run's
@@ -197,7 +193,7 @@ const factDeps = (prs, { areas = AREAS, jobs = {}, runs = {}, base = SHA("d"), b
     file: async (_repo, path, ref) => path === ".github/ci/areas.json" && ref === head ? areas : path === ".github/ci/areas.json" && ref === base ? baseAreas ?? areas : null,
     job: async (_repo, id) => jobs[id] === null ? null : { id: Number(id), name: "packages (1)", state: "completed", conclusion: "success", run_id: 7, run_attempt: 1, ...(jobs[id] ?? {}) },
     run: async (_repo, id) => runs[id] === null ? null : { id: Number(id), event: "pull_request", head_sha: head, workflow_path: ".github/workflows/ci.yml",
-      workflow_state: "active", run_attempt: 1, base_sha: base, ...(runs[id] ?? {}) },
+      workflow_state: "active", run_attempt: 1, base_sha: base, post_checks: [{ run_attempt: 1, state: "completed", conclusion: "success" }], ...(runs[id] ?? {}) },
   };
 };
 const fact = (name, run, dir) => `${name} green on head ${SHA("a")}: ran "${run}" in ${dir}/ — passed`;
@@ -321,24 +317,27 @@ test("a job or run read that throws is no answer, not a failed grade", async () 
   assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
 });
 
-test("a check that only claims a job's id mints nothing: it must be GitHub's own for that job", async () => {
-  // A check posted through the API can repeat a green job's `external_id` verbatim. What it cannot have is GitHub Actions'
-  // App, a check suite whose `workflow_run` is that run, and that run's job link — so each of those alone is enough to
-  // refuse it, and the job read behind the id is then never even the question.
+test("a check that only claims a job's id mints nothing: a real job, run and poster must stand behind it", async () => {
+  // A check posted through the API can repeat a green job's `external_id` verbatim. What it cannot produce is the shard job
+  // record, the repository's own CI run on the head, and the `post-checks` job that ran in the shard's own attempt.
   const forged = (extra) => ({ ...PASS("kernel#1", "7/150/1"), ...extra });
-  const cases = [
-    ["another App", forged({ app: { slug: "aidenhq" } }), "posted by something other than GitHub Actions"],
-    ["no App at all", forged({ app: null }), "a check with no App"],
-    ["its own check suite", forged({ checkSuite: { workflowRun: { databaseId: 99 } } }), "a check suite whose run is another run"],
-    ["no check suite", forged({ checkSuite: null }), "a check in no check suite"],
-    ["a URL of its own", forged({ detailsUrl: "https://example.com/actions/runs/7/job/150" }), "a URL that is not this run's job"],
-    ["another job's URL", forged({ detailsUrl: `https://github.com/${REPO}/actions/runs/7/job/151` }), "a link to another job"],
-    ["another repo's URL", forged({ detailsUrl: `https://github.com/acme-agents/other/actions/runs/7/job/150` }), "a link into another repository"],
-    ["no URL", forged({ detailsUrl: null }), "no link at all"],
+  const cases: [string, any, any, string][] = [
+    ["another App", forged({ app: { slug: "aidenhq" } }), {}, "posted by something other than GitHub Actions"],
+    ["no App at all", forged({ app: null }), {}, "a check with no App"],
+    ["no job behind its id", PASS("kernel#1", "7/150/1"), { jobs: { 150: null } }, "a job GitHub has no record of"],
+    ["a job of another run", PASS("kernel#1", "7/151/1"), { jobs: { 151: { run_id: 8 } } }, "a job in a different run"],
+    ["a job whose shard disagrees", PASS("kernel#1", "7/152/1"), { jobs: { 152: { name: "packages (2)" } } }, "a job for another shard"],
+    ["a red job", PASS("kernel#1", "7/153/1"), { jobs: { 153: { conclusion: "failure" } } }, "a job that did not pass"],
+    ["another workflow", PASS("kernel#1", "7/154/1"), { runs: { 7: { workflow_path: ".github/workflows/community.yml" } } }, "a run of another workflow"],
+    ["another event", PASS("kernel#1", "7/155/1"), { runs: { 7: { event: "push" } } }, "a push run, which posts no suite checks"],
+    ["another head", PASS("kernel#1", "7/156/1"), { runs: { 7: { head_sha: SHA("f") } } }, "a run of a different head"],
+    ["no poster", PASS("kernel#1", "7/157/1"), { runs: { 7: { post_checks: [] } } }, "a run with no post-checks job"],
+    ["a red poster", PASS("kernel#1", "7/158/1"), { runs: { 7: { post_checks: [{ run_attempt: 1, state: "completed", conclusion: "failure" }] } } }, "a post-checks job that did not pass"],
+    ["a poster of another attempt", PASS("kernel#1", "7/159/1"), { runs: { 7: { post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }] } } }, "a poster that ran in a different attempt"],
   ];
-  for (const [what, check, why] of cases) {
+  for (const [what, check, opts, why] of cases) {
     const prs = [withChecks(313, "a", "b", [check])];
-    const ev = await prEvidence([{ repo: REPO, number: 313, url: url(313), heads: ["branch-a"] }], "", factDeps(prs));
+    const ev = await prEvidence([{ repo: REPO, number: 313, url: url(313), heads: ["branch-a"] }], "", factDeps(prs, opts));
     assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), `${what}: ${why}`);
   }
   // The same check with all of them right is the one that mints: the refusal is the binding, not a blanket distrust.

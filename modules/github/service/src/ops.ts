@@ -44,7 +44,7 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion externalId detailsUrl app { slug } checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion externalId app { slug } } ... on StatusContext { context state } } } } } } }
       baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
     }
   }
@@ -135,11 +135,23 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/runs/${b.id}: ${r.status}`);
     const u = r.body;
     const w = u?.workflow_id ? await ctx.access.rest("GET", `/repos/${s.slug}/actions/workflows/${u.workflow_id}`).then((a) => (a.status < 300 ? a.body : undefined), () => undefined) : undefined;
+    // The run's own jobs, so a command fact can require the `post-checks` job that posted the per-suite checks (the one part
+    // of that evidence a poster cannot invent). Across every attempt: a re-run keeps an earlier attempt's passing shard, and
+    // the poster must have run in that same attempt. An unreadable list is no jobs at all, never a guess.
+    const post: { run_attempt: number | null; state: string | null; conclusion: string | null }[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const jr = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}/jobs?filter=all&per_page=100&page=${page}`);
+      if (jr.status >= 300) break;
+      const jobs: any[] = Array.isArray(jr.body?.jobs) ? jr.body.jobs : [];
+      for (const j of jobs) if (j?.name === "post-checks") post.push({ run_attempt: j.run_attempt ?? null, state: j.status ?? null, conclusion: j.conclusion ?? null });
+      if (jobs.length < 100) break;
+    }
     // The run's own base: main as it was when this run started (a PR payload's base.sha goes stale as main moves), and one
     // value only — two PRs on one run are an ambiguity, never a pick.
     const bases = new Set((u?.pull_requests ?? []).filter((p: any) => p?.head?.sha === u?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
     return { status: 200, json: { id: u.id, run_attempt: u.run_attempt ?? null, event: u.event ?? null, head_sha: u.head_sha ?? null, status: u.status ?? null,
-      workflow_id: u.workflow_id ?? null, workflow_path: w?.path ?? null, workflow_state: w?.state ?? null, base_sha: bases.size === 1 ? String([...bases][0]) : null } };
+      workflow_id: u.workflow_id ?? null, workflow_path: w?.path ?? null, workflow_state: w?.state ?? null, base_sha: bases.size === 1 ? String([...bases][0]) : null,
+      post_checks: post } };
   }
   // prs: every open PR, newest page first up to 500.
   const prs: { number: number; sha: string; base: string; head_repo: string | null }[] = [];

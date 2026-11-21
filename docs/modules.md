@@ -56,22 +56,33 @@ codehost:
 
 `evidence` is narrower than `read` and lists its paths exactly: a `file` read (`{path, ref}`, a listed path at a commit
 sha) and nothing else, so a module reads only the files its grant names. `run`
-answers a workflow run's identity (`workflow_path`, `workflow_state`, `event`, `head_sha`, `run_attempt`, and the run's
-own `base_sha`), which a `job` read does not: a graded job names the workflow it belongs to, and its run says whether
-that workflow is the repository's CI on the head being graded.
+answers a workflow run's identity (`workflow_path`, `workflow_state`, `event`, `head_sha`, `run_attempt`, the run's
+own `base_sha`, and the `post_checks` instances of its `post-checks` job: `run_attempt`, `state`, `conclusion`), which
+a `job` read does not: a graded job names the workflow it belongs to, and its run says whether that workflow is the
+repository's CI on the head being graded and whether CI's own poster ran.
 
 A job's log is never evidence: a PR's test output can print any line, so nothing read from a log can carry a fact. A
 command fact comes from a completed `success` check named exactly a suite in `.github/ci/areas.json`, whose
-`external_id` is CI's `<run_id>/<job id>/<shard>`, and it must be the check GitHub created for that job: GitHub Actions'
-App (`app.slug` `github-actions`), a check suite whose `workflow_run` is that run, and a `detailsUrl` of that run's job.
-A check posted through the API carries the poster's App, URL and check suite whatever its `external_id` repeats, so it
-mints nothing. Behind it the `<job id>` must be a real Actions job of that run and shard (`packages (<shard>)`/
-`modules (<shard>)`, conclusion `success`). The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
+`external_id` is CI's `<run_id>/<job id>/<shard>`. Stationary evidence in the check alone proves nothing — the checks
+API answers any App token, and a same-repo PR that reaches a workflow token with `checks: write` could post one — so
+the fact also needs, from the code host, the `<job id>` as a real Actions job of that run and shard
+(`packages (<shard>)`/`modules (<shard>)`, conclusion `success`) whose `run_attempt` has a completed `success`
+`post-checks` job: the poster CI itself ran. The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
 whose `head_sha` is the graded head. The fact names the suite's `run` and directory from `areas.json` at the run's own
 base (`base_sha`; a merged PR's run no longer lists its PR, so the PR's own base oid stands in) and only when that map
 is byte-identical to the head's, never the branch tip. Because the workflows, the suite runner and the map are the
 inputs that decide what a shard ran, a PR that changes anything under `.github/workflows/` or `.github/ci/` mints no
 command fact at all.
+
+Two conditions that look stronger are deliberately absent, because GitHub cannot supply them for an API-posted check:
+such a check is filed in the head's older check suite for the posting App (on this repository `community.yml`'s
+`pull_request_target` suite, which exists from the moment a PR opens), so its `checkSuite` is never the posting run;
+and it has no job, so its `detailsUrl` is its own `/runs/<check id>` page rather than `…/actions/runs/<run>/job/<job>`.
+Requiring either refuses every real per-suite check (measured on PR #1243 at `d275911`, and at `5c9381c`). Which suites
+a shard ran is likewise not re-derived: CI writes the plan to the `checks` job's outputs, which GitHub does not expose
+on the job, and a recomputation would accept a suite the shard legitimately skipped. The residual class — a same-repo
+PR minting its own check — is the owner's accepted policy ([PR #1281](https://github.com/Aiden-HQ/AidenHQ/pull/1281)'s
+merge note, [PR #1291](https://github.com/Aiden-HQ/AidenHQ/pull/1291)), not a bug in this binding.
 
 ## `POST /v1/tasks` — file a task
 
