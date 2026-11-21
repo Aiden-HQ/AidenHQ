@@ -1,5 +1,5 @@
 name: code-review
-description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. Idle until a repo is added: nothing runs or spends by itself."
+description: "Code Review: reviews pull requests on the repos you list, or one PR on request, and reviews a whole repository at a commit on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. A repo review runs the ready-made options you pick (tools, upstream skills, deepsec) under one cap and publishes a report to Primer, private to you. Idle until a repo is added or a review is asked for: nothing runs or spends by itself."
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
 # internal read (as this module, never /mcp), decides which head gets which combos (triggers, `aiden review …` from someone with
@@ -29,7 +29,9 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
+    # target: pr, or tree (a whole repo at head: pr is empty and base is the head); setup_tip: a pending deepsec setup PR's tip
+    # (its .deepsec/ files, read there), else the base.
+    spec: { base: sha, incremental_from: sha, pr: text, target: text, setup_tip: sha, combo: json, focus: text, budget_usd: usd, previous: json }
     model: { max_usd: 25 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
@@ -135,6 +137,13 @@ writes:
     floor: 0
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  # A deepsec setup PR: deepsec's own set-up files (.deepsec/ only) as one commit on aidenhq/deepsec-setup and its PR, through
+  # github's internal setup op; Tier 1, so the AI reviewer reads every file first. Filed once per branch tip, never while its PR is open.
+  setup:
+    args: schemas/setup.json
+    floor: 1
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
 services:
   data: true
   run:
@@ -157,4 +166,4 @@ generated_secrets:
   - code_review_token
   - code_review_api_token
   - code_review_service_key
-data_version: 1 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+data_version: 2 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

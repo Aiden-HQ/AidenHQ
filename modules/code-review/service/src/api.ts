@@ -1,11 +1,15 @@
 // The code-review service's HTTP API (the board reads it with code_review_api_token; the Reviewer Manager's config tool and
 // Aiden's one-offs go through the same routes):
-//   GET  /reviews?repo=&status=&limit=   → { runs }
-//   GET  /reviews/:id                    → { run, review: Review | null }
+//   GET  /reviews?repo=&status=&limit=   → { runs, batches }   runs of PRs and of repo reviews (target pr | tree, batch,
+//                                        option), and the repo reviews themselves (commit, options, cap, spend, verdict, report)
 //   GET  /reviews?repo=… runs carry engine, model, effort, cost_usd (billed), tokens_in/cached/out, duration_ms and box_at (when its check job got its box; wall time excludes queueing)
 //   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
 //   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any open or merged PR the instance can read, one run per
 //                                        combo (default: the repo's on_open), each posted
+//   POST /reviews { target: { repo, commit? }, options?, combo?: { model, effort }, run_usd? } → { batch, sha, runs }   a repo
+//                                        review of the whole tree at a commit (default: the default branch's head, resolved now)
+//   GET  /reviews/:batch/report          → the repo review's report (text/markdown), once it ended
+//   GET  /catalog?repo=&commit=          → { sha, options, recommended }   the options the repo's tree fits, and the commit
 //   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
 //   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
@@ -58,14 +62,25 @@ export function handler(engine: Engine, token: () => string, isGithub: (authoriz
     try {
       if (route === "GET /reviews") {
         const q = url.searchParams;
-        return send(res, 200, { runs: engine.runs({ repo: q.get("repo") || undefined, status: q.get("status") || undefined, limit: Number(q.get("limit")) || undefined }) });
+        const limit = Number(q.get("limit")) || undefined;
+        return send(res, 200, { runs: engine.runs({ repo: q.get("repo") || undefined, status: q.get("status") || undefined, limit }), batches: engine.batches({ repo: q.get("repo") || undefined, limit }) });
       }
+      const report = /^GET \/reviews\/(b-[0-9a-f]{12})\/report$/.exec(route);
+      if (report) {
+        const md = engine.report(report[1]!);
+        if (md === undefined) return send(res, 404, { error: "not_found", detail: `no finished repo review ${report[1]}` });
+        return void res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" }).end(md);
+      }
+      if (route === "GET /catalog") return send(res, 200, await engine.catalogFor({ repo: url.searchParams.get("repo") ?? "", commit: url.searchParams.get("commit") || undefined }));
       const one = /^GET \/reviews\/(cr-[0-9a-f]{12})$/.exec(route);
       if (one) {
         const r = engine.run(one[1]!);
         return r ? send(res, 200, r) : send(res, 404, { error: "not_found", detail: `no review ${one[1]}` });
       }
-      if (route === "POST /reviews") return send(res, 200, { runs: await engine.oneoff(await body(req)) });
+      if (route === "POST /reviews") {
+        const b = await body(req);
+        return send(res, 200, b.target !== undefined ? await engine.repoReview(b) : { runs: await engine.oneoff(b) });
+      }
       if (route === "GET /repos") return send(res, 200, engine.repos());
       if (route === "POST /findings/dismiss") return send(res, 200, engine.dismiss(await body(req)));
       if (route === "GET /engines") return send(res, 200, { engines: engine.engines() });
