@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { coachReads, dueList, LIMITS, packEvidence, parseReviews } from "../service/src/coach.ts";
-import { checks, detectorState, qualityFindings, snoozeFollowup, staleFollowups, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, gateActivity, qualityFindings, snoozeFollowup, staleFollowups, stewardOn, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -584,6 +584,21 @@ test("a jammed gate's flag open over two hours tells the owner once, in one fixe
   assert.match(told[0], /A gate has been jammed for over two hours/);
   await at(1);
   assert.equal(told.length, 1, "once per flag");
+});
+
+test("a gate flag open over two hours pages the owner only when nothing acts on its task: a running job or an agent comment restarts the clock", async () => {
+  const told = [], kv = kvOf();
+  const groups = { gate: async () => ["idle", "running", "held", "spoke", "old"].map((key) => ({ key, reason: "x" })) };
+  const w = {
+    call: async (_m, p) => ({ tasks: [{ task: "t", since: minsAgo(30), reason: p.includes("ids=running") ? "job_running" : p.includes("ids=held") ? "job_held" : "module_wait", holder: "a1", attention: [], idle_wakes: 0 }] }),
+    read: async (p) => (p.includes("/spoke/") ? [{ authorType: "agent", body: "Re-tasked.", createdAt: minsAgo(20) }] : p.includes("/old/") ? [{ authorType: "agent", body: "Looking.", createdAt: minsAgo(150) }] : []),
+  };
+  const at = (h) => tick(kv, groups, async () => true, async (t) => void told.push(t), new Date(NOW + h * 3600_000), 0, true, gateActivity({ kernel: w, now: () => NOW + h * 3600_000 }));
+  await at(-3);
+  await at(0);
+  assert.equal(told.length, 1);
+  const open = detectorState(kv).open;
+  assert.deepEqual(["idle", "running", "held", "spoke", "old"].filter((k) => open[`gate:${k}`].jammed), ["idle", "held", "old"], "no job and no comment inside the window pages (a capacity hold is no work); a running job or a 20-minute-old comment does not");
 });
 
 test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {
