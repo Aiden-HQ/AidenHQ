@@ -15,7 +15,7 @@ const SETUP_TRIES = 200;
 const SETUP_RETRY_MS = 25;
 const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 /** Another opener holds the write lock: the code SQLite puts on the error (a "database is locked" message is the same thing). */
-const busyError = (e: unknown) => (e as { errcode?: number }).errcode === 5 || (e as { errstr?: string }).errstr === "SQLITE_BUSY" || /database is locked/i.test(String((e as Error).message));
+export const busyError = (e: unknown) => (e as { errcode?: number }).errcode === 5 || (e as { errstr?: string }).errstr === "SQLITE_BUSY" || /database is locked/i.test(String((e as Error).message));
 /** The columns a database built before the code and its source lacks: read inside the caller's own transaction. */
 export const refusalColumns = (db: DatabaseSync) => {
   const have = new Set((db.prepare("PRAGMA table_info(job_refusals)").all() as { name: string }[]).map((c) => c.name));

@@ -119,6 +119,32 @@ test("the kernel is the job ledger: a module's open jobs stay until it acknowled
   assert.deepEqual(jobs.list("acme-dispatch", { task: "task-1" }).map((x) => [x.id, x.state, x.acked]), [[j.id, "done", true]]);
 });
 
+test("a refusal table from before the rule code gains its column once, however many openers find it missing", () => {
+  const sb = sandbox();
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE job_refusals (job TEXT PRIMARY KEY, why TEXT NOT NULL)");
+  db.prepare("INSERT INTO job_refusals (job, why) VALUES (?, ?)").run("j-old", "publish: refused before the code existed");
+  const open = () => createJobs({ db, cfg: sb.cfg, boxWrap: 'exec "$@"', log: () => {}, mayDispatch: () => false, facts: openFacts(db), agentKey: () => "acme-crew", cp: { task: async (id) => ({ id, status: "todo" }) } });
+  open();
+  open();
+  assert.deepEqual({ ...db.prepare("SELECT why, code, kind, source FROM job_refusals WHERE job = ?").get("j-old") }, { why: "publish: refused before the code existed", code: null, kind: null, source: null }, "the old row survives, with no code, no kind and no source");
+});
+
+test("a job view shows a refusal's code, its kind and its module apart, so a dispatcher binds a terminal rule to the exact kind", async () => {
+  const sb = sandbox();
+  const db = new DatabaseSync(":memory:");
+  const jobs = createJobs({ db, cfg: sb.cfg, boxWrap: 'exec "$@"', log: () => {}, mayDispatch: () => false, facts: openFacts(db), agentKey: () => "acme-crew", cp: { task: async (id) => ({ id, status: "todo" }) } });
+  db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) VALUES ('j-twin', 'acme-dispatch', 'acme-crew', 'task-1', '', 0, '', '', 1, '[]', 0, 0, 'running')").run();
+  // The kernel's own routing: the kind and the module a caller asked through, never anything an executor's words could claim.
+  db.prepare("INSERT INTO job_refusals (job, why, code, kind, source) VALUES (?, ?, ?, ?, ?)").run("j-twin", "github.pr: only the platform line opens this", "platform-only", "github.pr", "github");
+  const view = await jobs.get("acme-dispatch", "j-twin");
+  assert.deepEqual([view.refusedCode, view.refusedKind, view.refusedSource], ["platform-only", "github.pr", "github"], "the view names all three apart");
+  // A refusal with no code shows its words only: nothing to match, so a caller treats it as the agent's to retry.
+  db.prepare("UPDATE job_refusals SET why = ?, code = NULL, kind = NULL, source = NULL WHERE job = ?").run("github.pr: head-moved", "j-twin");
+  const plain = await jobs.get("acme-dispatch", "j-twin");
+  assert.deepEqual([plain.refused, plain.refusedCode, plain.refusedKind, plain.refusedSource], ["github.pr: head-moved", undefined, undefined, undefined]);
+});
+
 test("a dispatcher may write into the workspace of an open task of an agent it dispatches, assigned to it", async () => {
   const { cfg } = sandbox();
   const code = async (jobs, module, task) => (await jobs.workspace(module, task).catch((e) => e)).code;
