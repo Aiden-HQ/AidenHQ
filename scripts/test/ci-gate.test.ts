@@ -28,6 +28,12 @@ test("high or critical findings block; the rest are listed as not blocking", () 
   assert.match(v.body, /\*\*Not blocking\*\*[\s\S]*Slow loop/);
 });
 
+test("a summary-only blocking finding decides even when the primary findings list is absent", () => {
+  const v = verdict(1, JSON.stringify({ findings: null, summaryOnlyFindings: [finding("high", "Null deref")], health: { status: "failed" } }), "abcdef123");
+  assert.equal(v.block, true);
+  assert.match(v.body, /1 blocking finding/);
+});
+
 test("no verdict passes with a note (fail open); past the review target the note suggests splitting; findings that came out still decide", () => {
   const failed = JSON.stringify({ findings: null, health: { status: "failed" } });
   const big = verdict(1, failed, "abcdef123", { failure: "transient", attempts: "2", lines: "5230", mode: "full" });

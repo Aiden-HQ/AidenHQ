@@ -85,14 +85,15 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
   // An older workflow (a PR on an older base) still reports the codex-config refusal as permanent: recognised by its cause.
   if (failure === "policy" || (failure === "permanent" && /changes codex config/i.test(String(cause ?? "")))) return { block: true, short: true, body: `${MARKER}\n**Code review: refused${at}**: ${clip(cause, 400)}` };
   // Findings a run published still decide, even when it then failed or exited non-zero; only a run with none is no verdict.
-  const published = Boolean(review) && Array.isArray(review!.findings) && review!.findings!.length + (review!.summaryOnlyFindings?.length ?? 0) > 0;
+  const listed = (l: Finding[] | null | undefined) => (Array.isArray(l) ? l : []);
+  const published = listed(review?.findings).length + listed(review?.summaryOnlyFindings).length > 0;
   const unfinished = exitCode !== 0 || !readable;
   if (unfinished && !published) {
     // The review's own cause is the specific one (a provider quota, our spend cap): the workflow's CODEGENIE_CAUSE is only a
     // fixed fallback for a run that never produced a review.
     return noVerdict(review?.cause || cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; "));
   }
-  const all = [...review!.findings!, ...(review!.summaryOnlyFindings ?? [])];
+  const all = [...listed(review!.findings), ...listed(review!.summaryOnlyFindings)];
   const blocking = all.filter((f) => BLOCKING.has(f.severity));
   const rest = all.filter((f) => !BLOCKING.has(f.severity));
   // "unresolved" is a finished review that left questions it couldn't settle: listed for a human, never blocking.
