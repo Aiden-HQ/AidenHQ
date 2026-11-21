@@ -40,7 +40,8 @@ namespace's (no host networking); disk, memory, CPU, pressure and OOM kills are 
 
 Images (pinned by digest in each folder's Dockerfile; Dependabot bumps them; release dates per `scripts/supply-chain/best-version.ts`):
 `prom/prometheus:v3.16.0` (2026-11-05), `prom/node-exporter:v1.12.1` (2026-07-14), `prom/alertmanager:v0.35.0` (2026-11-09),
-`grafana/grafana:13.3.1` (release date not recorded here), `ghcr.io/google/cadvisor:v0.60.6` (GitHub release 2026-09-18),
+`grafana/grafana:13.3.1` (release date not recorded here), `ghcr.io/google/cadvisor:v0.60.6` (GitHub release 2026-09-18;
+its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that base's packages),
 `grafana/mcp-grafana:2.3.0` (2026-11-10).
 
 ## Metrics
