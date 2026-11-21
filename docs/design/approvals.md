@@ -146,7 +146,7 @@ screenshot nit left the reviewer.
 **Which pushes and PRs it reviews** (`ai_review_code`, the ai-reviewer module's setting, owner-only): `all` (default);
 `none` (no code-host push or PR on any repo); or `unless_code_review_mandatory` (none on a repo code review gates: one with a
 `mandatory: true` combo, whose merges wait for code review's verdict; docs/design/code-review.md "Mandatory reviewers"). A skipped push or PR is code's approval (`code_review_owns`, model `kernel/code`), held like any verdict
-to the record's review-first. Merges, closes, create_repo, sends, settings, deploys and tool calls are always reviewed. The
+to the record's review-first. A panel record (authority-expanding: gate-core paths, a default or deploy branch head) is never skipped. Merges, closes, create_repo, sends, settings, deploys and tool calls are always reviewed. The
 one predicate is `codeReviewOwns` (`kernel/src/writes.ts`), on the record's kind and the repos its targets name.
 `kernel/src/review-loop.ts` builds the review from the record and sends it through `kernel/src/reviews.ts` with a single-use
 token. It returns `{decision: approve | reject | escalate | unsure, reason_code, reason, second_review}`.
