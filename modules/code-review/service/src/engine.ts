@@ -61,6 +61,8 @@ export type RunRow = {
   tokens_in: number | null; tokens_cached: number | null; tokens_out: number | null; duration_ms: number | null;
   /** What earlier attempts of this run were billed (the kernel's figure): the retry gets only what's left. */
   billed_prior: number;
+  /** Each earlier attempt's check job and what the kernel billed it (JSON): a retry may reuse the check (billed cumulatively) or start another. */
+  bills: string | null;
   /** The kernel write record of its post, while its outcome is pending. */
   write_id: string | null;
   /** The merge base of its base and head (what the review diffed against), set when it starts. */
@@ -125,10 +127,10 @@ export function createEngine(d: EngineDeps) {
   }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A start a restart cut off (running, no check job yet) is queued again.
-  db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
+  db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0, bills = NULL WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
   const one = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).get(...(a as never[])) as T | undefined;
   const all = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).all(...(a as never[])) as T[];
@@ -237,7 +239,7 @@ export function createEngine(d: EngineDeps) {
     const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
     // A failed attempt waiting for its retry (queued) has spent what it was billed.
     const retrying = one<{ s: number }>(`SELECT COALESCE(SUM(billed_prior), 0) s FROM runs WHERE status = 'queued'${where}`, ...(repo ? [repo] : []))!.s;
-    return ended + retrying + running.reduce((n, r) => n + Math.max(r.billed_prior, live.get(r.id) ?? 0), 0);
+    return ended + retrying + running.reduce((n, r) => n + charge(r, live.get(r.id)), 0);
   }
 
   /** Moves a due queued run to running. Spend is the install's limits' (the model gateway), never a day cap here. */
@@ -326,9 +328,15 @@ export function createEngine(d: EngineDeps) {
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
 
-  /** What a run is charged: the kernel's billing of its check job, which covers every attempt of the reused check, so never below
-   *  what earlier attempts were charged (an unknown or invalid figure leaves that). */
-  const charge = (r: RunRow, billed: unknown) => Math.max(r.billed_prior, typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? billed : 0);
+  /** Each check job's bill, this attempt's included: the kernel's figure for a check covers all its attempts, so a reused check
+   *  is counted once and distinct checks (a full retry of an incremental run) are summed. Unknown or invalid adds nothing. */
+  const bills = (r: RunRow, billed: unknown): Record<string, number> => {
+    const b = JSON.parse(r.bills ?? "{}") as Record<string, number>;
+    const v = typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? billed : 0;
+    return r.check_job ? { ...b, [r.check_job]: Math.max(b[r.check_job] ?? 0, v) } : b;
+  };
+  /** What a run is charged: every check job's bill. */
+  const charge = (r: RunRow, billed: unknown) => Object.values(bills(r, billed)).reduce((n, v) => n + v, 0);
 
   /** A run posts on a task of its own (closed once its post settles) unless its PR is open on a watched repo (the PR's task, closed with the PR). */
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
@@ -346,7 +354,7 @@ export function createEngine(d: EngineDeps) {
       // Again, unless it never started or the result was a wrong one; its why is kept for the verdict while it waits.
       if (r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS) && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying again", { run: r.id, attempt: r.attempts, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = ?, why = ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", charge(r, res.billed_usd), res.why.slice(0, 500), now() + RUN_RETRY * 4 ** (r.attempts - 1), r.id);
+        run("UPDATE runs SET billed_prior = ?, bills = ?, why = ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", charge(r, res.billed_usd), JSON.stringify(bills(r, res.billed_usd)), res.why.slice(0, 500), now() + RUN_RETRY * 4 ** (r.attempts - 1), r.id);
         return;
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
@@ -824,7 +832,8 @@ export function createEngine(d: EngineDeps) {
     const latest = m.filter((c) => c.mandatory).map((c) => runs.find((r) => r.mandatory && r.engine === c.engine && r.model === c.model && r.effort === c.effort));
     const busy = latest.filter((r) => r && (r.status === "queued" || r.status === "running"));
     if (!runs.some((r) => r.mandatory)) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
-    else if (busy.some((r) => SPEND_LIMIT.test(r!.why ?? ""))) reasons.push({ code: "spend_limit", text: `install spend limit reached: the mandatory review of ${head.slice(0, 7)} can't run (${String(busy.find((r) => SPEND_LIMIT.test(r!.why ?? ""))!.why).slice(0, 200)})`, unblock: "the owner raises spend_day_usd or spend_month_usd in Settings, or it runs again once the limit resets" });
+    // Refused by the install's spend limit (waiting to retry, or failed past its retries): a pause, never a pass.
+    else if (latest.some((r) => r && (r.status === "queued" || r.status === "running" || r.status === "failed") && SPEND_LIMIT.test(r.why ?? ""))) reasons.push({ code: "spend_limit", text: `install spend limit reached: the mandatory review of ${head.slice(0, 7)} can't run (${String(latest.find((r) => r && SPEND_LIMIT.test(r.why ?? ""))!.why).slice(0, 200)})`, unblock: "the owner raises spend_day_usd or spend_month_usd in Settings, or the limit resets; a failed review then runs again on `aiden review`" });
     else if (busy.length || latest.some((r) => !r)) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r!.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (latest.some((r) => r!.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r!.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n);

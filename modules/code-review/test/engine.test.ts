@@ -528,3 +528,23 @@ test("on a gated repo, `aiden review stop` (anyone posting as the owner can writ
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("4"), "codex/low"]]);
 });
+
+test("a mandatory review the install's spend limit refused past its retries still holds the merge, saying why", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  const refuse = (i) => w.results.set(`c-${i}`, { state: "failed", why: "the review produced no result: the install's spend limit was reached", billed_usd: 0 });
+  for (const [i, wait] of [[1, 60_000], [2, 240_000], [3, 960_000]]) { refuse(i); await w.tick({ github: false }); w.later(wait + 1); await w.tick({ github: false }); }
+  refuse(4); await w.tick({ github: false });
+  assert.equal(w.engine.runs({ repo: REPO }).find((r) => r.number === 2).status, "failed");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["spend_limit"]);
+});
+
+test("a run's cost sums distinct check jobs and counts a reused one once", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
+  await opened(w, 2, sha("2"));
+  w.results.set("c-1", { state: "failed", why: "the engine stopped", billed_usd: 0.4 });
+  await w.tick(); w.later(60_001); await w.tick();
+  w.finish(1, {}, 0.3); // the retry ran as another check job: both are charged
+  w.later(5000); await w.tick();
+  assert.equal(w.engine.runs({ repo: REPO }).find((r) => r.number === 2).cost_usd, 0.7);
+});
