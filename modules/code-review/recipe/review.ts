@@ -30,7 +30,7 @@
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
@@ -93,7 +93,26 @@ const fence = (t: unknown, marker: string) => `${marker}\n${String(t).replaceAll
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. */
 export function history(ws: string, out: string, spec: Spec) {
   const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
-  const g = (args: string[], extra: Record<string, string> = {}) => execFileSync("git", ["-c", "user.name=aidenhq-review", "-c", "user.email=review@aidenhq.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", ...args], { cwd: ws, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 1 << 30 }).trim();
+  const flags = ["-c", "user.name=aidenhq-review", "-c", "user.email=review@aidenhq.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
+  const g = (args: string[], extra: Record<string, string> = {}) => execFileSync("git", [...flags, ...args], { cwd: ws, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 1 << 30 }).trim();
+  /** Whether any line git prints for `args` passes `test`: its output goes to a file read in 1 MB chunks, since a whole tree's diff
+   * (binaries and left-out files included) can be larger than a string holds. */
+  const anyLine = (args: string[], test: (line: string) => boolean) => {
+    const file = join(out, `git-${randomBytes(6).toString("hex")}`);
+    const w = openSync(file, "w");
+    try { execFileSync("git", [...flags, ...args], { cwd: ws, env, stdio: ["ignore", w, "ignore"] }); } finally { closeSync(w); }
+    const r = openSync(file, "r"), buf = Buffer.alloc(1 << 20);
+    try {
+      let rest = "", n: number;
+      while ((n = readSync(r, buf, 0, buf.length, null)) > 0) {
+        const lines = (rest + buf.toString("utf8", 0, n)).split("\n");
+        rest = lines.pop()!;
+        if (lines.some(test)) return true;
+        if (rest.length > 1 << 20) { if (test(rest)) return true; rest = ""; } // one huge line: judged as far as it went
+      }
+      return test(rest);
+    } finally { closeSync(r); rmSync(file, { force: true }); }
+  };
   const commit = (tree: string | undefined, msg: string) => {
     if (tree) g(["add", "-A", "-f"], { GIT_WORK_TREE: tree });
     else g(["add", "-A", "-f"]);
@@ -114,7 +133,7 @@ export function history(ws: string, out: string, spec: Spec) {
   const head = commit(undefined, "head");
   const b = base ?? head; // the base is the head itself (an empty PR)
   const f = spec.incremental_from === spec.base ? b : spec.incremental_from === spec.head ? head : from ?? b;
-  return { base: b, from: f, head, git: (args: string[]) => g(args) };
+  return { base: b, from: f, head, git: (args: string[]) => g(args), anyLine };
 }
 
 /**
@@ -375,8 +394,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const list = baseTree && plain(baseTree, ".github/code-review-checklist.json") ? readSmall(join(baseTree, ".github/code-review-checklist.json"), 200_000) : undefined;
   try { if (list) checks = checklistText(matchChecklist(JSON.parse(list).items, diff)); } catch {}
   // Text addressed to a reviewer is looked for in the whole change, left-out files included (they can't hide it).
-  const whole = h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"]);
-  const addressed = atReviewer(whole);
+  const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer);
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
   const previous = tree ? [] : (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")
@@ -531,11 +549,15 @@ export function bound(result: Result, max = 200_000) {
   // The post takes at most 500 characters of it (schemas/post.json): a long list of gaps is cut, never the post refused.
   const gap = (t?: string) => { const g = [cov.incomplete, t].filter(Boolean).join("; "); cov.incomplete = g.length > 500 ? `${g.slice(0, 497)}…` : g || null; };
   // A tree has thousands of files: a list cut short is no gap there (the counts say how many), just a shorter list.
+  // Each list keeps at most 500 paths and 30 KB of them (long nested paths), so the lists alone never fill the result.
   for (const k of ["eligible", "reviewed", "excluded"] as const) {
     const list = cov[k];
-    if (!list || list.length <= 500) continue;
-    if (!result.target) cov.incomplete = [cov.incomplete, `${list.length - 500} more ${k} files not listed`].filter(Boolean).join("; ");
-    cov[k] = list.slice(0, 500);
+    if (!list) continue;
+    let n = 0, bytes = 0;
+    while (n < Math.min(500, list.length) && (bytes += Buffer.byteLength(JSON.stringify(list[n]!)) + 1) <= 30_000) n++;
+    if (n === list.length) continue;
+    if (!result.target) cov.incomplete = [cov.incomplete, `${list.length - n} more ${k} files not listed`].filter(Boolean).join("; ");
+    cov[k] = list.slice(0, n);
   }
   gap();
   // Sizes summed, not the whole result restringified per finding (a tools run can have thousands); 600 bytes of room for the
