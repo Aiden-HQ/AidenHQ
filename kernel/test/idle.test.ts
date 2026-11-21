@@ -327,6 +327,17 @@ test("a task whose agent no enabled dispatcher polls reads unpolled, and the swe
   assert.deepEqual(w.rows().filter((r) => r.startsWith("idle:")), [], "no idle row was opened");
 });
 
+test("a task idle in review is sent once to whoever delegated it, never woken for its holder", async (t) => {
+  const w = world(t);
+  w.issues.t1 = { ...w.issues.t1, status: "in_review" };
+  w.tick(20 * MIN);
+  assert.equal(w.row("t1").reason, "orphaned");
+  assert.deepEqual(await w.idle.sweep(), ["t1"]);
+  assert.deepEqual(w.asked.notices.map((n) => n.task), ["t0"], "the open delegator (its parent) hears it");
+  assert.deepEqual(w.rows().filter((r) => r.startsWith("idle:")), [], "the holder is not woken: its part is done");
+  assert.deepEqual(await w.idle.sweep(), [], "once per idle stretch");
+});
+
 // ---- A settled wait is not the sweep's work (WOR-9033, Aiden-HQ/AidenHQ#1004) ----
 /** The pinned sweep's candidate test: todo/in_progress/in_review, an agent assignee, no user assignee. */
 const sweepWouldScan = (i) => ["todo", "in_progress", "in_review"].includes(i.status) && Boolean(i.assigneeAgentId) && !i.assigneeUserId;

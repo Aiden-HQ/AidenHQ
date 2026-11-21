@@ -14,7 +14,9 @@
 //   gets one wake for its holder, cause `idle` (dispatch words it), once each time it becomes idle (the key is when: a wake
 //   the dispatcher drops leaves it orphaned again from the drop, so it is tried again 15 minutes later), at most 3 a day per
 //   task. Past that cap nothing more wakes it: the Fleet Steward reads the count (`idle_wakes`) and raises the task as a critical
-//   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: the state's
+//   incident. A task in `in_review` is its delegator's to decide, not its holder's (the holder's part is done): the sweep
+//   sends that idle stretch once to whoever delegated it (escalate.ts delegator: the open delegator, else the chief of staff)
+//   instead of waking the holder. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: the state's
 //   holder says no agent holds it.
 // - parked waits: the pinned sweep blocks any `todo`/`in_progress`/`in_review` issue whose assignee is not invokable, so a
 //   settled wait is parked in `backlog` (outside its candidate set, inert to comments and recovery) and reconciled back once
@@ -72,7 +74,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   /** The control plane as the owner: the issue read, its status PATCH, a stale recovery hold's resolution, and an agent's status. */
   owner: Api;
   /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
-  escalate?: Pick<Escalate, "ask" | "record">;
+  escalate?: Pick<Escalate, "ask" | "record" | "delegator">;
   /** Whether an agent id is a team record (its tasks go to a member; it never runs). */
   team?: (agent: string) => boolean;
   /** An agent id's key, for the notes a park writes (the grants table's key; the id when it has none). */
@@ -382,6 +384,16 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(i.task)}`);
           const task = r.json as { status?: string; assigneeAgentId?: string | null };
+          // In review with nothing running, filed or waiting on it (an escalated grade the finish gate never held, a merge that
+          // landed after the last job): the holder has nothing left to do, so the one who delegated it decides, once per stretch.
+          if (r.status === 200 && String(task.status) === "in_review" && task.assigneeAgentId && escalate) {
+            const to = await escalate.delegator(i.task, `idle-review:${i.task}:${i.since}`, (id) => ({
+              body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then comment on ${id} with what its agent does: finish what is missing, or cancel it if it is moot or its work has landed.`,
+              ownerText: `**${id} sits in review with nothing running, filed or waiting on it.** It is yours: comment on ${id} with what its agent does, or cancel it.`,
+            }));
+            if (to !== "seen" && to !== "gone") opened.push(i.task);
+            continue;
+          }
           // An agent no dispatcher runs would never take the wake (the steward's stuck-work rule has it; the state says `unpolled`).
           if (r.status !== 200 || !SWEPT.has(String(task.status)) || !task.assigneeAgentId || team(task.assigneeAgentId) || !wakes.polls(task.assigneeAgentId)) continue;
           // Keyed by when it became idle: a wake the dispatcher drops makes it orphaned again from then, so it is woken again
