@@ -55,25 +55,32 @@ export const PostArgsSchema = z.object({
   resolve: z.array(z.string().regex(/^[A-Za-z0-9_-]{6,64}$/)).max(200).default([]),
   /** The run: the idempotency key, and the id the summary carries. */
   run: RUN,
+  /** The repo is gated (a mandatory combo): the summary says whether this review blocks the merge. */
+  gated: z.boolean().default(false),
+  /** The comment ids the code-review service recorded as its own posts on this PR (its database, never a marker read back):
+   * only their threads are ever resolved. */
+  own: z.array(z.number().int().min(1)).max(1000).default([]),
 });
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
+/** The commands people on the PR may write (a comment whose first word is `aiden`); never with an `@`, which would ping a user. */
+export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden review always` / `stop` · `aiden review focus: <text>` · `aiden review status` / `help`";
 /** Why a review didn't run: a fixed vocabulary, so a notice carries no text a model or an author wrote. */
 export const SKIP_REASONS = {
   draft: "this is a draft pull request",
-  fork: "this pull request comes from a fork; a maintainer asks for a review with `@aiden review`",
+  fork: "this pull request comes from a fork; a maintainer asks for a review with `aiden review`",
   budget_repo: "this repository's daily review budget is used up",
   budget_instance: "the daily review budget for all repositories is used up",
   superseded: "a newer commit arrived",
-  stopped: "reviews are stopped on this pull request (`@aiden review always` starts them again)",
+  stopped: "reviews are stopped on this pull request (`aiden review always` starts them again)",
   unchanged: "nothing changed since the last review",
   ignored: "every changed file is ignored by this repository's review settings",
   no_access: "the pull request can't be read",
-  daily_limit: "the daily limit of automatic reviews is reached; ask with `@aiden review`",
+  daily_limit: "the daily limit of automatic reviews is reached; ask with `aiden review`",
 } as const;
-/** A command's answer, in fixed words (`@aiden review help|always|focus: …|status` with no review yet). */
+/** A command's answer, in fixed words (`aiden review help|always|focus: …|status` with no review yet). */
 export const ANSWERS = {
-  help: "commands: `@aiden review` (once, with the repo's review-on-open combos), `@aiden review full` (the whole PR), `@aiden review always` (every push), `@aiden review stop`, `@aiden review focus: <text>`, `@aiden review status`",
+  help: `commands (a comment that starts with one): ${COMMANDS}`,
   always: "every push to this pull request will be reviewed",
   focus: "the next reviews on this pull request look hardest at the focus given",
   focus_cleared: "the focus on this pull request is cleared",
@@ -92,44 +99,64 @@ export const NoticeArgsSchema = z.object({
   pre_existing: z.number().int().min(0).max(9999).optional(),
   cost_usd: z.number().min(0).max(100_000).optional(),
   run: RUN.optional(),
+  /** The acknowledgement comment the service recorded (edited in place; absent: a new one). */
+  ack: z.number().int().min(1).optional(),
+  /** The posted review a done notice links. */
+  review: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\/pull\/\d{1,9}#pullrequestreview-\d{1,15}$/).optional(),
 });
 export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
+
+/** The commit status code review mirrors its merge verdict to (code-review computes it, per PR head, from its /v1/verdict). */
+export const STATUS_CONTEXT = "aidenhq/review";
+/** The verdict's reason (code-review engine.ts's verdict codes; "pass" when there is none) and the commit state each one is. */
+const STATUS_STATE = { pass: "success", ungated: "success", queued: "pending", running: "pending", not_started: "pending", moved: "pending", findings: "failure", failed: "failure", incomplete: "failure", not_reviewed: "failure", config: "failure" } as const;
+export const StatusArgsSchema = z.object({
+  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
+  pr: z.number().int().min(1),
+  head: z.string().regex(SHA),
+  reason: z.enum(Object.keys(STATUS_STATE) as [keyof typeof STATUS_STATE, ...(keyof typeof STATUS_STATE)[]]),
+  /** Important findings open on the PR (the gating ones). */
+  important: z.number().int().min(0).max(9999),
+  /** The mandatory reviewers still queued or running at this head. */
+  running: z.array(z.object({ model: MODEL, effort: EFFORT })).max(8).default([]),
+  /** A mandatory review at this head covered only part of it: said, never waited on. */
+  partial: z.boolean().optional(),
+});
+export type StatusArgs = z.infer<typeof StatusArgsSchema>;
+/** The commit status's state and description (at most 140 characters), in fixed words: what runs, or how to unblock. */
+export function renderStatus(a: StatusArgs): { state: "pending" | "failure" | "success"; description: string } {
+  const open = a.important ? `${a.important} important finding${a.important === 1 ? "" : "s"} open` : "";
+  const who = a.running.map((r) => `${modelName(r.model)} (${r.effort})`).join(", ");
+  const text: Record<StatusArgs["reason"], string> = {
+    pass: "Reviewed: no important finding open",
+    ungated: "Code review no longer gates this repository",
+    queued: `Review queued${who ? `: ${who}` : ""}`,
+    running: `Reviewing${who ? ` with ${who}` : ""}`,
+    not_started: "Review starting",
+    moved: "A newer commit is being reviewed",
+    findings: `${open}: fix and push, or answer on its thread (fixed / disputed …)`,
+    failed: `Review failed: comment "aiden review" to run it again`,
+    incomplete: `Partial review: comment "aiden review full"`,
+    not_reviewed: `Not reviewed: comment "aiden review"`,
+    config: "The code review setting has errors",
+  };
+  const t = text[a.reason];
+  const d = [open && a.reason !== "findings" ? `${t} · ${open}` : t, ...(a.partial ? ["partial coverage"] : [])].join(" · ");
+  return { state: STATUS_STATE[a.reason], description: d.length > 140 ? `${d.slice(0, 139)}…` : d };
+}
 
 export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run: "aidenhq-review-run", ack: "aidenhq-review-ack" } as const;
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
-/** Marks a ruling's reply on a finding's thread, so the state service never takes Aiden's own answer for a dispute. */
-export const RULING_MARK = "<!-- aidenhq-ruling -->";
-
-/** A dispute's ruling, posted as a reply on the finding's thread: the judge's verdict and its reason (model text, made plain). */
-export const RulingArgsSchema = z.object({
-  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
-  pr: z.number().int().min(1),
-  head: z.string().regex(SHA),
-  /** The judge run: the idempotency key. */
-  run: RUN,
-  finding: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
-  /** The thread's first comment (Aiden's finding), which the reply answers. */
-  comment: z.number().int().min(1),
-  verdict: z.enum(["dismissed", "upheld"]),
-  reason: z.string().min(1).max(1500),
-});
-export type RulingArgs = z.infer<typeof RulingArgsSchema>;
-export function renderRuling(a: RulingArgs): string {
-  const head = a.verdict === "dismissed" ? "**Dismissed** after review of the dispute: this finding no longer holds the merge." : "**Upheld** after review of the dispute: this finding still holds the merge until it is fixed or the owner dismisses it.";
-  return `${RULING_MARK}\n${head}\n\n${plain(a.reason, 1500)}\n\n<sub>Judged at ${code(short(a.head))} (run ${code(a.run)}).</sub>`;
-}
-
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;
 // Sized so a whole review fits the card the AI reviewer reads (80,000 characters): 15 inline comments of at most ~3,200 plus a
 // summary of about 30,000.
 export const INLINE_MAX = 15;
+const LISTED_MAX = 4;
 const EVIDENCE_MAX = 500;
-const LISTED_DETAILS = 4;
-const LIST_MAX = 40;
 
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
 /** Credentials and secret-looking values replaced by a marker (scrub.ts's token patterns, assignments, bearer values, URL logins). */
@@ -146,7 +173,7 @@ const ZWSP = "​";
 /**
  * Text a model wrote, made inert in a GitHub comment: secrets redacted, control characters dropped, `<` escaped (no HTML
  * comment can forge a marker, no tag or image loads, `</details>` can't close ours), images and links shown as code, and every
- * `@name` broken so nobody is pinged and no `@aiden` command can fire from our own text.
+ * `@name` broken so nobody is pinged.
  */
 export function plain(text: string, max: number): string {
   const t = redact(text)
@@ -176,24 +203,26 @@ export const counts = (findings: readonly { severity: Finding["severity"] }[]) =
 type Counts = { important: number; nit: number; pre_existing: number };
 const countLine = (c: Counts) => `${ICON.important} ${c.important} important · ${ICON.nit} ${c.nit} ${c.nit === 1 ? "nit" : "nits"} · ${ICON.pre_existing} ${c.pre_existing} pre-existing`;
 
-export const COMMANDS = [
-  "`@aiden review`: review the new changes again (once, with the repo's review-on-open combos)",
-  "`@aiden review full`: review the whole pull request, not only what changed since the last review",
-  "`@aiden review always`: review every push; `@aiden review stop`: stop reviewing this pull request",
-  "`@aiden review focus: <text>`: look at one thing",
-  "`@aiden review status` and `@aiden review help`",
-];
-/** The fixed help block every review summary ends with: how people on the PR ask Aiden for more (never the review's own words). */
-export const commandsBlock = () => `<details><summary>Commands</summary>\n\n${COMMANDS.map((c) => `- ${c}`).join("\n")}\n\n</details>`;
+/** The one-line, collapsed command list every review summary ends with (fixed words, never the review's own). */
+export const commandsBlock = () => `<details><summary>Commands</summary>\n\n${COMMANDS}\n\n</details>`;
 
-/** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. */
-export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">): string {
+/** A model as people say it: `anthropic/claude-haiku-5.5` is `Haiku 5.5`, `~openai/gpt-6.2-sol` `GPT 6.2 Sol`. */
+export function modelName(model: string): string {
+  const words = (model.split("/").pop() ?? model).replace(/^~/, "").split(/[-_]/).filter((w) => w && !/^(claude|latest)$/i.test(w));
+  const name = words.map((w) => (/^gpt$/i.test(w) ? "GPT" : /^deepseek$/i.test(w) ? "DeepSeek" : w[0]!.toUpperCase() + w.slice(1))).join(" ");
+  return name || model;
+}
+
+/** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. `at`: where the
+ * comment sits when that isn't the finding's own line (the nearest diff line, or the file). */
+export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file"): string {
   const where = `${f.path}:${f.line}${f.end_line && f.end_line > f.line ? `-${f.end_line}` : ""}`;
   const evidence = redact(f.evidence).slice(0, EVIDENCE_MAX);
   const brief = [`Fix ${where} (${r.repo} PR #${r.pr} at ${short(r.head)})`, `Problem: ${plain(f.title, 200)}`, ...(evidence ? [`Evidence: ${evidence}`] : []), `Wanted: ${plain(f.fix_brief, 500)}`].join("\n");
   return [
     `<!-- ${MARK.finding}: ${f.id} -->`,
     `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, 200)}`,
+    ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : []),
     "",
     `<details><summary>Why flagged</summary>\n\n${plain(f.why, 800)}${evidence ? `\n\n${fence(evidence)}` : ""}\n\n</details>`,
     "",
@@ -201,40 +230,85 @@ export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head"
   ].join("\n");
 }
 
-export type Placed = { id: string; path: string; line: number; start_line?: number; body: string };
+/** Where a finding's thread goes: lines on the diff (`line`, a range's `start_line`), or the file itself. */
+export type Anchor = { line: number; start_line?: number } | "file";
+export type Placed = { id: string; path: string; line?: number; start_line?: number; file?: true; body: string };
 /**
- * The review, ready to post. `inline` names the findings that go on diff lines (ids; default: the first INLINE_MAX by
- * severity, as a preview shows); `earlier` names findings an earlier review already commented on (not posted again). Every other
- * finding is listed in the summary, so nothing the reviewer found is dropped.
+ * Where each finding's thread goes, given the reviewed diff's right-side lines per changed file (a file GitHub shows no patch
+ * for has an empty set): its own lines when all are on the diff, else the nearest diff line of its file, else the file. A
+ * finding in no changed file gets no anchor (it can take no thread).
  */
-export function renderReview(r: Review, run: string, opts: { inline?: ReadonlySet<string>; earlier?: ReadonlySet<string> } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
-  const { inline, earlier = new Set<string>() } = opts;
+export function anchors(findings: readonly Finding[], lines: ReadonlyMap<string, ReadonlySet<number>>): Map<string, Anchor> {
+  const out = new Map<string, Anchor>();
+  for (const f of findings) {
+    const l = lines.get(f.path);
+    if (!l) continue;
+    if (!l.size) { out.set(f.id, "file"); continue; }
+    const to = f.end_line && f.end_line > f.line ? f.end_line : f.line;
+    let whole = true;
+    for (let i = f.line; i <= to && whole; i++) whole = l.has(i);
+    if (whole) { out.set(f.id, to > f.line ? { line: to, start_line: f.line } : { line: f.line }); continue; }
+    let best = 0;
+    for (const n of l) if (!best || Math.abs(n - f.line) < Math.abs(best - f.line)) best = n;
+    out.set(f.id, { line: best });
+  }
+  return out;
+}
+
+const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
+const fileLine = (f: Finding) => code(`${f.path.split("/").pop()}:${f.line}`);
+
+/**
+ * The review, ready to post. `place`: where each finding's thread goes (default: each on its own lines, as a preview shows);
+ * `earlier`: findings an earlier review already opened a thread for (not posted again; the value is that thread's link);
+ * `links`: each posted finding's thread link (known once posted: the body is then updated with them); `gated`: the repo's
+ * merges wait on code review. Each finding appears once: a table row (its title linking to its thread) or, with no thread, a
+ * collapsed block with its reasoning.
+ */
+export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap<string, Anchor>; earlier?: ReadonlyMap<string, string>; links?: ReadonlyMap<string, string>; gated?: boolean; card?: boolean } = {}): { summary: string; comments: Placed[]; listed: Finding[] } {
+  const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
-  const chosen = ranked.filter((f) => !earlier.has(f.id) && (inline ? inline.has(f.id) : true)).slice(0, INLINE_MAX);
+  const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
+  const chosen = ranked.filter((f) => !earlier.has(f.id) && place.has(f.id)).slice(0, INLINE_MAX);
   const ids = new Set(chosen.map((f) => f.id));
-  const comments = chosen.map((f): Placed => ({ id: f.id, path: f.path, line: f.end_line && f.end_line > f.line ? f.end_line : f.line, ...(f.end_line && f.end_line > f.line ? { start_line: f.line } : {}), body: renderFinding(f, r) }));
-  const listed = ranked.filter((f) => !ids.has(f.id) && !earlier.has(f.id));
+  const comments = chosen.map((f): Placed => {
+    const a = place.get(f.id)!;
+    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file") } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line) };
+  });
+  const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
+  const listed = ranked.filter((f) => !threaded(f));
   const c = counts(r.findings);
   const incomplete = r.coverage.incomplete;
+  const withheld = r.withheld.important + r.withheld.nit + r.withheld.pre_existing;
+  // Fixed command words, named on the AI reviewer's card instead (they read like instructions to it); model text is never touched.
+  const cmd = (words: string) => (opts.card ? "[AidenHQ's fixed command for another review]" : `\`${words}\``);
+  const partial = !!incomplete || r.withheld.important > 0;
+  const blocks = !opts.gated ? "" : c.important ? " · **blocks the merge** until each important one is fixed or dismissed" : partial ? " · **blocks the merge**: the review isn't whole" : " · doesn't block the merge";
+  const row = (f: Finding) => { const url = links.get(f.id) || earlier.get(f.id); const t = cell(plain(f.title, 160)); return `| ${ICON[f.severity]} | ${url ? `[${t}](${url})` : t} | ${fileLine(f)} |`; };
+  const table = (fs: Finding[]) => ["| | Finding | Where |", "|---|---|---|", ...fs.map(row)].join("\n");
+  const important = ranked.filter((f) => f.severity === "important" && threaded(f));
+  const minor = ranked.filter((f) => f.severity !== "important" && threaded(f));
   const lines = [
     `<!-- ${MARK.review}: ${JSON.stringify(c)} -->`,
     RUN_MARK(run),
-    `### Aiden review · ${code(comboText(r))}`,
+    `### Aiden review · ${modelName(r.model)} (${r.effort})`,
     "",
-    `**${countLine(c)}**`,
-    "",
-    `Reviewed ${r.coverage.reviewed.length} file${r.coverage.reviewed.length === 1 ? "" : "s"} at ${code(short(r.head))} (${r.full || !r.incremental_from ? "the whole pull request" : `new changes since ${code(short(r.incremental_from))}`})${r.coverage.excluded.length ? `, ${r.coverage.excluded.length} excluded` : ""}. Reviewer ${code(comboText(r))}, $${r.cost_usd.toFixed(2)}.`,
-    ...(incomplete ? ["", `> **Incomplete:** ${plain(incomplete, 300)}. This is not a clean review.`] : []),
-    ...(r.withheld.important + r.withheld.nit + r.withheld.pre_existing ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. \`@aiden review full\` shows more.`] : []),
+    r.findings.length ? `${countLine(c)}${blocks}` : `${incomplete ? "No findings in what it read" : "✅ No findings"}${blocks}`,
+    ...(incomplete ? ["", `> **Partial review:** ${plain(incomplete, 300)}. ${cmd("aiden review full")} reviews the whole pull request again.`] : []),
+    ...(withheld ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. ${cmd("aiden review full")} shows more.`] : []),
   ];
-  if (r.findings.length) {
-    lines.push("", "**Findings**");
-    for (const f of ranked.slice(0, LIST_MAX)) lines.push(`- ${ICON[f.severity]} ${code(`${f.path}:${f.line}`)} ${plain(f.title, 160)}${earlier.has(f.id) ? " (commented earlier)" : ids.has(f.id) ? "" : " (no inline comment)"}`);
-    if (ranked.length > LIST_MAX) lines.push(`- \u2026and ${ranked.length - LIST_MAX} more`);
-  } else if (!incomplete) lines.push("", "No findings.");
-  for (const f of listed.slice(0, LISTED_DETAILS)) lines.push("", `<details><summary>${ICON[f.severity]} ${code(`${f.path}:${f.line}`)} ${plain(f.title, 160)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  if (important.length) lines.push("", table(important));
+  if (minor.length) {
+    const nits = minor.filter((f) => f.severity === "nit").length, pre = minor.length - nits;
+    const what = [nits ? `${nits} ${nits === 1 ? "nit" : "nits"}` : "", pre ? `${pre} pre-existing` : ""].filter(Boolean).join(" · ");
+    lines.push("", `<details><summary>${what}</summary>\n\n${table(minor)}\n\n</details>`);
+  }
+  // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
+  // and the card's size.
+  for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);
+  if (listed.length > LISTED_MAX) lines.push("", `<details><summary>${listed.length - LISTED_MAX} more without a thread</summary>\n\n${listed.slice(LISTED_MAX, LISTED_MAX + 40).map((f) => `- ${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}`).join("\n")}${listed.length > LISTED_MAX + 40 ? "\n- \u2026" : ""}\n\n</details>`);
   if (r.stale_guidance.length) lines.push("", `<details><summary>Guidance this change may make stale</summary>\n\n${r.stale_guidance.map((s) => `- ${plain(s, 300)}`).join("\n")}\n\n</details>`);
-  lines.push("", commandsBlock());
+  lines.push("", opts.card ? "[AidenHQ's fixed Commands help: the comments people on the pull request may write to ask for another review]" : commandsBlock(), "", `<sub>${code(short(r.head))} · ${r.full || !r.incremental_from ? "whole PR" : `changes since ${code(short(r.incremental_from))}`} · ${r.engine} · $${r.cost_usd.toFixed(2)}</sub>`);
   return { summary: lines.join("\n"), comments, listed };
 }
 
@@ -245,14 +319,14 @@ export function renderNotice(n: NoticeArgs): string {
   const sha = code(short(n.head));
   const c: Counts = { important: n.important ?? 0, nit: n.nit ?? 0, pre_existing: n.pre_existing ?? 0 };
   const head = `${ACK_MARK}\n**Aiden review**`;
-  const help = "`@aiden review help` lists the commands.";
+  const help = "`aiden review help` lists the commands.";
   switch (n.phase) {
     case "queued": return `${head}: queued${who} for ${sha}. ${help}`;
     case "running": return `${head}: reviewing ${sha}${who}…`;
     case "done": return `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`;
     case "skipped": return `${head}: skipped ${sha}: ${SKIP_REASONS[n.reason ?? "unchanged"]}. ${help}`;
     case "answered": return `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}`;
-    case "failed": return `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`;
+    case "failed": return `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`aiden review\` to try again. ${help}`;
   }
 }
 

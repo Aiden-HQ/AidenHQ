@@ -31,20 +31,31 @@ const engine = createEngine({
   config: () => config,
   source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token),
   runner: kernelRunner(kernel),
-  agents: async () => Object.values(((await kernel.call("GET", "/v1/agents")) as { agents?: Record<string, { name?: string; model?: string }> }).agents ?? {}),
   poster: kernelPoster(kernel, log),
   emit: (f) => facts.emit(f),
   log,
 });
 
-let busy = false;
-const tick = async () => {
+// Two cadences, one at a time: GitHub is read every CODE_REVIEW_POLL_SECONDS; finished checks, filed posts, due runs and the
+// status mirror move every FAST_SECONDS (the kernel's answers only), so a review posts seconds after its check ends.
+const FAST_SECONDS = 10;
+// A GitHub read asked for while a tick runs runs right after it, never skipped.
+let busy = false, wantGithub = false;
+const tick = async (github: boolean) => {
+  wantGithub ||= github;
   if (busy || !token()) return;
   busy = true;
-  try { await engine.tick(); } catch (e) { log("WARNING: tick failed", { err: String((e as Error).message).slice(0, 300) }); } finally { busy = false; }
+  try {
+    do {
+      const g = wantGithub;
+      wantGithub = false;
+      try { await engine.tick({ github: g }); } catch (e) { log("WARNING: tick failed", { err: String((e as Error).message).slice(0, 300) }); }
+    } while (wantGithub);
+  } finally { busy = false; }
 };
-setInterval(tick, Math.max(15, Number(env.CODE_REVIEW_POLL_SECONDS) || 60) * 1000);
-setTimeout(tick, 5_000);
+setInterval(() => void tick(true), Math.max(15, Number(env.CODE_REVIEW_POLL_SECONDS) || 60) * 1000);
+setInterval(() => void tick(false), FAST_SECONDS * 1000);
+setTimeout(() => void tick(true), 5_000);
 
 // executor@1 for code-review.post and .notice: the kernel calls it with this module's service key, read fresh per request.
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";

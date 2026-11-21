@@ -85,7 +85,7 @@ export const label = (c: Pick<Combo, "engine" | "model" | "effort">) => `${c.eng
 function repo(raw: unknown): Repo | { error: string } {
   const r = (raw ?? {}) as Record<string, unknown>;
   if (typeof r.repo !== "string" || !SLUG.test(r.repo)) return { error: "repo is owner/name" };
-  if ("on_risk" in r) return { error: "on_risk is gone: a deeper review is asked for with Review again or `@aiden review`" };
+  if ("on_risk" in r) return { error: "on_risk is gone: a deeper review is asked for with Review again or `aiden review`" };
   if ("mandatory" in r) return { error: "a repo's mandatory is gone: mark the combos whose review gates merges `mandatory: true`" };
   const out = { ...REPO_DEFAULTS, ...r, repo: r.repo.toLowerCase() } as Repo;
   for (const k of MOMENTS) {

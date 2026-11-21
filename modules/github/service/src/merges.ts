@@ -147,7 +147,10 @@ export function createMerges(d: {
       if (gate && "stop" in gate) return fail(gate.stop);
       if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
       const review = await d.reviewGate(p.repo, p.number, p.head);
-      if (review) {
+      if (review && "bypass" in review) {
+        log("merging without code review's verdict", { pr: p.url, why: review.bypass.slice(0, 300) });
+        d.flow?.reviewBypassed(p.repo, p.number, p.head, review.bypass);
+      } else if (review) {
         if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
         p.note = review.wait;
         return wait("review", review.wait, Infinity);

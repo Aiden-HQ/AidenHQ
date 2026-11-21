@@ -31,10 +31,17 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
     focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3 };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "judge", "pr", "previous"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "pr", "previous"]);
   assert.equal(spec.base, "m".repeat(40));
   assert.equal(spec.incremental_from, spec.base);
   assert.equal(spec.budget_usd, "1.5000");
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });
   assert.deepEqual(JSON.parse(spec.previous), { findings: s.previous });
+});
+
+test("a check that failed before it got a box spent nothing, so its run retries; one that ran with no figure counts whole", async () => {
+  const { kernelRunner } = await import("../service/src/adapters.ts");
+  const runner = (v) => kernelRunner({ call: async () => v });
+  assert.deepEqual(await runner({ state: "failed", error: "github is unreachable", receipt: null, box_at: null, billed_usd: null }).result("c"), { state: "failed", why: "github is unreachable", billed_usd: 0 });
+  assert.equal((await runner({ state: "failed", error: "x", receipt: null, box_at: "2026-11-21T09:00:00Z", billed_usd: null }).result("c")).billed_usd, undefined);
 });

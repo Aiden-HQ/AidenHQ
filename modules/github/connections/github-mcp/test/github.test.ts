@@ -79,11 +79,13 @@ describe("guard", () => {
       ["POST", "/repos/a/b/actions/runs/123/rerun"], // re-run every job, passing ones too
       ["POST", "/repos/a/b/actions/runs/123/cancel"],
       ["POST", "/repos/a/b/pulls/3/reviews/9/dismissals"],
-      ["PUT", "/repos/a/b/pulls/3/reviews/9"],
       ["GET", "/graphql"],
       ["POST", "/repos/a/b/labels"],
     ] as const)
       expect(() => guard(m, p), `${m} ${p}`).toThrow(GitHubRefused);
+    // A review's text may be updated (code review links its threads), nothing else of it.
+    expect(() => guard("PUT", "/repos/a/b/pulls/3/reviews/9", { body: "x" })).not.toThrow();
+    expect(() => guard("PUT", "/repos/a/b/pulls/3/reviews/9", { body: "x", event: "APPROVE" })).toThrow(GitHubRefused);
   });
 
   it("refuses paths that URL resolution would move", async () => {
