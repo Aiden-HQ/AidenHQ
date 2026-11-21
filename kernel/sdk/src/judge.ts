@@ -1,5 +1,6 @@
 // The judges' shared pieces (design §4.4 "Judge"): the AI reviewer and the grader keep their own contracts, prompts and
-// credentials, and share the models they may use, the cross-family choice and the one schema-bound, tool-less model call.
+// credentials, and share the models they may use, the cross-family choice and the one schema-bound model call (with the
+// caller's read-only tools, when it gives any).
 //
 // Canonical copy: kernel/sdk/src/judge.ts. The reviewer and grading services hold byte-identical copies at
 // src/aidenhq-sdk/judge.ts: edit this one, then run `node scripts/sync-shared.ts`.
@@ -13,8 +14,13 @@ export const GLM = "~z-ai/glm-flash-latest";
 export const EFFORT: Record<string, string> = { [LUNA]: "medium", [DEEPSEEK]: "high", [GLM]: "high" };
 /** Output cap, reasoning included: room for high-effort reasoning; Luna allows 128,000. */
 export const MAX_TOKENS = 100_000;
-/** The largest diff a judge reads; the reviewer sends a larger one to the owner as too large. */
+/** The most diff a judge is shown inline; the reviewer's tools read the rest. */
 export const MAX_DIFF = 150_000;
+/** The most rounds of tool calls one judge call takes; past it the call fails (`max_turns`) and the caller escalates. */
+export const MAX_TURNS = 30;
+
+/** A read-only tool a judge may call: its description and JSON schema for the model, and the code that answers it. */
+export type JudgeTool = { description: string; parameters: Record<string, unknown>; run: (args: Record<string, unknown>) => string };
 
 /**
  * The models to ask, in order: GPT Luna, then DeepSeek Flash, minus the author's own model family (a DeepSeek author, most of
@@ -59,29 +65,48 @@ async function fetchRetrying(fetchFn: typeof fetch, delays: number[], url: strin
 }
 
 /**
- * OpenRouter chat completions with a strict JSON schema, ZDR providers only, no tools. Resolves { content, refusal, usage }.
- * The services pass the model gateway's url and the token the kernel minted for the call; an eval passes OpenRouter's key.
+ * OpenRouter chat completions with a strict JSON schema, ZDR providers only. Resolves { content, refusal, usage, turns }. With
+ * `tools` (the caller's, read-only), the model may call them first: each round's calls are answered by code (the caller fences
+ * what they return) until it answers, at most MAX_TURNS rounds. The services pass the model gateway's url and the token the
+ * kernel minted for the call; an eval passes OpenRouter's key.
  */
 export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetch, schema, url = "https://openrouter.ai/api/v1/chat/completions", retryDelaysMs = [] as number[] }: {
   timeoutMs?: number; fetchFn?: typeof fetch; schema: unknown; url?: string; retryDelaysMs?: number[];
 }) {
-  return async (model: string, { system, user }: { system: string; user: string }) => {
-    const res = await fetchRetrying(fetchFn, retryDelaysMs, url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: system }, { role: "user", content: user }],
-        response_format: { type: "json_schema", json_schema: { name: "verdict", strict: true, schema } },
-        provider: { zdr: true },
-        reasoning: { effort: EFFORT[model] ?? "high" },
-        max_tokens: MAX_TOKENS,
-        temperature: 0,
-      }),
-    }, timeoutMs);
-    if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
-    const json: any = await res.json();
-    const msg = json?.choices?.[0]?.message ?? {};
-    return { content: msg.content ?? "", refusal: msg.refusal ?? null, usage: json?.usage };
+  return async (model: string, { system, user, tools = {} }: { system: string; user: string; tools?: Record<string, JudgeTool> }) => {
+    const messages: Record<string, unknown>[] = [{ role: "system", content: system }, { role: "user", content: user }];
+    const defs = Object.entries(tools).map(([name, t]) => ({ type: "function", function: { name, description: t.description, parameters: t.parameters } }));
+    const usage = { prompt_tokens: 0, completion_tokens: 0, cost: 0 };
+    for (let turn = 0; ; turn++) {
+      const res = await fetchRetrying(fetchFn, retryDelaysMs, url, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages,
+          response_format: { type: "json_schema", json_schema: { name: "verdict", strict: true, schema } },
+          ...(defs.length ? { tools: defs } : {}),
+          provider: { zdr: true },
+          reasoning: { effort: EFFORT[model] ?? "high" },
+          max_tokens: MAX_TOKENS,
+          temperature: 0,
+        }),
+      }, timeoutMs);
+      if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+      const json: any = await res.json();
+      for (const k of ["prompt_tokens", "completion_tokens", "cost"] as const) usage[k] += Number(json?.usage?.[k]) || 0;
+      const msg = json?.choices?.[0]?.message ?? {};
+      const calls: any[] = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      if (!calls.length || !defs.length) return { content: msg.content ?? "", refusal: msg.refusal ?? null, usage, turns: turn };
+      if (turn >= MAX_TURNS) throw new Error(`max_turns: the judge asked for more than ${MAX_TURNS} rounds of tool calls`);
+      // The model's own turn goes back as it came (its reasoning too, which a reasoning model needs to continue).
+      messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: calls, ...(msg.reasoning_details ? { reasoning_details: msg.reasoning_details } : {}) });
+      for (const c of calls) {
+        const tool = Object.hasOwn(tools, c?.function?.name) ? tools[c.function.name] : undefined;
+        let out: string;
+        try { out = tool ? tool.run(JSON.parse(c.function.arguments || "{}")) : `no tool named ${String(c?.function?.name).slice(0, 60)}`; } catch (e) { out = `error: ${String((e as Error).message).slice(0, 300)}`; }
+        messages.push({ role: "tool", tool_call_id: c.id, content: out });
+      }
+    }
   };
 }

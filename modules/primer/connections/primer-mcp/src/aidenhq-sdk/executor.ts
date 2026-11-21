@@ -20,7 +20,7 @@ export interface PlanResult {
 }
 export type ReviewContext = {
   /** The card's details whole: the kernel sets it at filing, over anything a plan sends. */
-  diff?: string; files?: { text: string; leftOut: string[]; oversized: string[]; changed?: { path: string; add?: number; del?: number }[] }; evidence?: string; sources?: { where: string; records: Record<string, unknown>[] };
+  diff?: string; files?: { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }; evidence?: string; sources?: { where: string; records: Record<string, unknown>[] };
   /** The task's other PRs merged into the change's base: `files` its own, `changed` those the base changed again since (undefined: not read). */
   siblings?: { repo: string; number: number; base: string; mergeCommit: string; files?: string[]; changed?: string[] }[] };
 export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }

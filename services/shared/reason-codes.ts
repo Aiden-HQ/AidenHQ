@@ -29,7 +29,6 @@ export const REVIEW_CODES = [
   "reviewer_refused",
   "no_independent_model",
   "no_diff",
-  "too_large",
   "files_not_shown",
   // the review reached a spend cap before it finished: the owner decides
   "review_cap",

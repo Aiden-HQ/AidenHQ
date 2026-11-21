@@ -71,8 +71,8 @@ a change too large to read) goes back to the agent, never to the owner.
   | escalate (either) | the owner, as one reviewer's escalate |
 
   "Verified whole": the code host records git's own numstat of the change at filing (`files.changed`); the reviewer checks
-  the diff against it before any model reads it (a mismatch goes back as `files_not_shown`), nothing was folded, every
-  changed file's text fits the budget, and the request chain is not empty. The approval attests it (`whole: true`); the
+  the diff against it before any model reads it (a mismatch goes back as `files_not_shown`), and the request chain is not
+  empty. Every changed file and every line of the diff is inline or a tool call away, whatever the size. The approval attests it (`whole: true`); the
   kernel refuses a `second_unsure` approval without it and drops `second_unsure` from a verdict that ends as anything but an
   approval. A model's own claim about its input never decides it. Reviewers are told the diff is whole only when it is.
   The kernel refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was
@@ -129,19 +129,29 @@ migration or schema file, refused when too large to review; restarts, rollbacks 
 ## The reviewer
 
 The `modules/ai-reviewer` module (`service/src/review.ts`, reviewer@1) makes one schema-bound call per Tier 1 card (two for
-the panel), in its own container with no tools and no harness (the diff is attacker-written). The kernel drives it: each sweep
+the panel), in its own container with no harness, shell or network (the diff is attacker-written). Its only tools are
+read-only and served by the service from the request itself (`changeTools`): `diff` (one changed file's diff, or code's
+index of all of them), `read_file` (a changed file's full text at the head) and `grep` (over both), every answer paged and
+fenced as data. The kernel drives it: each sweep
 `kernel/src/review-loop.ts` builds the review from the record and sends it through `kernel/src/reviews.ts` with a single-use
 token. It returns `{decision: approve | reject | escalate | unsure, reason_code, reason, second_review}`.
 
 - **Models** (`service/src/aidenhq-sdk/judge.ts`). GPT Luna (medium) then DeepSeek Flash (high) as fallback, on OpenRouter with
   zero data retention; the requester's own model family is excluded and the requester can never choose the reviewer. The
   panel's second reviewer is GLM Flash (high), else DeepSeek, else Luna: never the requester's family nor the first reviewer's.
+- **Any size (owner, 2026-11-21: "reviewers should be able to handle infinitely large PRs").** Nothing is refused or cut
+  for size. What fits one call is inline: the diff up to `MAX_DIFF` (150,000 characters) whole, else each file's diff in
+  order while it fits, and the changed files' text up to `MAX_FILES` (200,000). The rest is named in `DIFF_FILES`
+  (`[not inline]`) and read with the tools. Code counts an approval that did not read a not-inline file's diff to the end as
+  unsure. Each review is bounded by spend (`REVIEW_USD`) and by tool rounds (`MAX_TURNS`, 30, `judge.ts`); reaching either
+  goes to the owner (`review_cap`), never approved. Considered and not taken: chunking the change into parts judged
+  separately (a change split across parts can hide what only the parts together do) and an agentic reviewer in a check-job
+  box with the whole repo (no eval could run it, cards without a repo need another path, minutes per vote). The tools read
+  the change's own files, not the rest of the repo: the reviewer judges scope and safety, which the change shows.
 - **Files it can't see.** Images, fonts, audio, video and PDFs are named with type and size. A file it cannot read at all (an
-  executable or opaque binary) sends the card back to the agent in code (`files_not_shown`)
-  without a model call. A text file past the changed-files budget (`MAX_FILES`, 200,000 characters, `review-files.ts`) is
-  named with its size and the card is judged from the diff; the verdict says so.
+  executable or opaque binary) sends the card back to the agent in code (`files_not_shown`) without a model call.
 - **Input.** The policy (`service/security/policy/`, from the product repo only, so instances cannot loosen it); the card; the
-  full diff at the exact head; the changed files' text within the budget; the request chain; the task's merged sibling PRs;
+  full diff at the exact head and the changed files' text (inline, or through the tools); the request chain; the task's merged sibling PRs;
   the grader's latest verdict; earlier decisions on the task; the instance's decisions digest. Everything an agent or stranger
   wrote is fenced as data. The reviewer never sees the author's own account of the change.
 - **Binding.** The kernel accepts a verdict only for a pending record whose digest matches the card, with the reviewer's own
