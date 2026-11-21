@@ -240,6 +240,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
 
   return {
     launch,
+    /** admission.ts recover: an abandoned launch's box goes (a launcher that can't answer throws). */
+    release,
     /** jobs.ts onEnd: the job is over, its box goes. */
     ended: (id: string) => void release(id).catch((e: Error) => log("couldn't release a job's computer", { job: id, err: e.message })),
     tend,

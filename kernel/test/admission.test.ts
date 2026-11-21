@@ -31,7 +31,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   };
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
   const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5" };
-  const launched = [];
+  const launched = [], released = [];
   // Kernel provenance over the same db; a task's origin (`origins`: what the plugin gave it) and traced routine cap, per task.
   const provenance = createProvenance({ db, cap: async () => undefined });
   const origins = {}, caps = {};
@@ -44,9 +44,10 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     wakes: wakeInbox(db),
     // A launch that returns started the job: its first start writes the queue facts (jobs.ts start).
     launch: async (job) => { launched.push(job); await launch(job); queueFacts(db, (f) => facts.record(f), job.id, grants[job.agent]?.key ?? job.agent); },
+    release: async (id) => void released.push(id),
     log: () => {},
   });
-  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, origins, provenance, caps };
+  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, released, origins, provenance, caps };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -212,7 +213,7 @@ test("a job deferred for want of a computer leaves no job.queued: task state rea
 
 test("recover() never takes a launch still in flight in this process, and gives back what the previous kernel left admitted", async () => {
   let go;
-  const { adm, wake, db, wakes } = setup({ launch: () => new Promise((r) => (go = r)) });
+  const { adm, wake, db, wakes, released } = setup({ launch: () => new Promise((r) => (go = r)) });
   // The previous kernel's admission that never started.
   db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, wake, authority) VALUES ('j-old', 'acme-dispatch', 'agent-1', 'task-2', '', 0, '', '', 1, '[]', 0, 0, 'admitted', 'w-old', '{}')").run();
   wake("w-old", "task-2", "agent-1");
@@ -220,7 +221,8 @@ test("recover() never takes a launch still in flight in this process, and gives 
   const p = adm.admit("acme-dispatch", req(wake("w1", "task-3", "agent-2")));
   await new Promise((r) => setImmediate(r));
   assert.equal(adm.inflight(), 1);
-  adm.recover();
+  await adm.recover();
+  assert.deepEqual(released, ["j-old"]); // its box goes back before its row
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id = 'j-old'").get().n, 0);
   assert.equal(wakes.get("w-old").job, null);
   go();

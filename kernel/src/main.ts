@@ -592,7 +592,7 @@ boxes = createBoxes({
 const pool = createPool({ capacity: () => Number(computers().max) || 0, agentLive: () => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get() as { n: number }).n });
 const admission = createAdmission({
   pool, db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
-  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), log,
+  spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools, launch: (job) => boxes!.launch(job), release: (id) => boxes!.release(id), log,
   provenance, routineCap: (task) => taskRoutineCap(cpTrace, task, routinesTable()),
   // A task gone is none (a refusal dispatch drops); a read that fails otherwise is a 503, so the wake comes back.
   cp: { task: async (id) => {
@@ -602,7 +602,7 @@ const admission = createAdmission({
     return (await r.json()) as never;
   } },
 });
-afterPrevious(() => admission.recover());
+afterPrevious(() => void admission.recover().catch((e: Error) => log("WARNING: couldn't recover the previous kernel's admitted jobs", { err: e.message })));
 const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver,

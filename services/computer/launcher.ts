@@ -132,12 +132,13 @@ const fail = (status: number, msg: string) => Object.assign(new Error(msg), { st
 // A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping.
 async function destroy(name: string, why: string) {
   const r = await docker(["rm", "-f", name]);
-  if (r.exitCode !== 0 && (await jobState(name)) !== "missing") return log("couldn't destroy", name, why, r.stderr.trim());
+  if (r.exitCode !== 0 && (await jobState(name)) !== "missing") { log("couldn't destroy", name, why, r.stderr.trim()); return false; }
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
   rmSync(path.join(jobEnvDir, name), { recursive: true, force: true });
   log("destroyed", name, why);
+  return true;
 }
 
 /** A kernel job's image, by the name its admission froze: one compile tagged (computers.json). */
@@ -152,7 +153,10 @@ async function makeRoom() {
     const max = maxBoxes();
     const evict = admit(boxes, max, held);
     if (evict === null) return;
-    if (evict !== "wait") return destroy(evict, "evicted (computers full)");
+    if (evict !== "wait") {
+      if (await destroy(evict, "evicted (computers full)")) return;
+      throw fail(503, `couldn't free a computer (${evict} wasn't removed); try again shortly`);
+    }
     if (waited >= 45_000) throw fail(503, `all ${max} computers are busy; try again shortly`);
     await new Promise((r) => setTimeout(r, 1000));
   }
