@@ -175,7 +175,8 @@ request open over an hour without merging) or something recovered.
     resume is a product bug (slug `answered-wait`) with the task, the wait's start and the answering comment's time.
   - For `queue`, a stall still open a day after the report is told to the owner once, as "When to tell the owner" says. The
     detector itself tells the owner, in one fixed line, about a `gate`, `unresumed` or `review-stall` flag still open two hours
-    after it was raised (the gate is closed for everyone meanwhile): your work is the fix before then.
+    after it was raised, with no job running or queued on its task and no holder or Steward comment since (a gate being worked on restarts the two
+    hours): your work is the fix before then.
 - **Hard cases** (two causes equally likely, or a fix touching more than one agent): don't guess. Log it with `deep-look`
   and what you checked; the evening digest takes a second look. If it is on the alert list, alert the owner now anyway.
 
