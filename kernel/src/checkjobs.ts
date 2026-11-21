@@ -461,7 +461,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
       const msg = String((e as Error).message ?? e);
       const why = msg.split("\n")[0]!.slice(0, 300);
-      if (await ended("error", { error: why })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
+      // What its model token spent before it broke counts, as a lost run's does (a caller charges unknown spend at its whole cap).
+      const key = (db.prepare("SELECT run_key FROM checks WHERE id = ? AND at = ?").get(id, r.at) as { run_key: string | null } | undefined)?.run_key;
+      const cost = key ? Math.round((Number(r.cost_usd ?? 0) + spent(key)) * 10_000) / 10_000 : undefined;
+      if (await ended("error", { error: why, ...(cost !== undefined ? { cost } : {}) })) log("WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
       mine.delete(id);
       rmSync(dir, { recursive: true, force: true });

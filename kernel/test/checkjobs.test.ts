@@ -256,6 +256,11 @@ test("checks: a model recipe's run lost to a restart doesn't use up a try, but i
   // A third run still starts, on what the budget has left after both.
   await lose();
   assert.equal(caps[2], 0.8);
+  // A run that breaks (its box gone mid-run) ends in error with what its token spent, never unknown.
+  const broke = await kernel(() => (runs++, Promise.reject(new Error("fetch failed")))).start("github", { ...ask, head: B });
+  let v; for (let i = 0; i < 100 && (v = kernel(() => {}).find("github", { ...ask, head: B }))?.state === "running"; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual([v.state, v.billed_usd], ["error", 0.1]);
+  runs--;
   // Lost three times: it runs no more.
   assert.equal(kernel(() => { throw new Error("not run"); }).start("github", ask).state, "lost");
   assert.equal(runs, 3);
