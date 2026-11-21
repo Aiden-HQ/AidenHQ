@@ -20,9 +20,14 @@ export async function isModule(kernelUrl: string, authorization: string, module:
  * A GitHub need only the owner can fix, met outside a tool call (code review's post reaches this process directly), told to the
  * kernel as the connection's need (POST /v1/connections/need) so it is routed like any tool call's. Never throws.
  */
-export async function reportNeed(kernelUrl: string, key: string, err: unknown, fetcher: typeof fetch = fetch): Promise<void> {
+export async function reportNeed(kernelUrl: string, key: string, err: unknown, log: { warn: (o: object, m: string) => void } = { warn: () => {} }, fetcher: typeof fetch = fetch): Promise<void> {
   if (!(err instanceof GitHubNeed) || !err.ownerFixable) return;
   const n = err.need;
   const need = { cause: n.cause, detail: err.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) };
-  await fetcher(new URL("/v1/connections/need", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection: "github", need }), signal: AbortSignal.timeout(5_000) }).catch(() => {});
+  try {
+    const r = await fetcher(new URL("/v1/connections/need", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection: "github", need }), signal: AbortSignal.timeout(5_000) });
+    if (!r.ok) log.warn({ status: r.status, cause: n.cause }, "the kernel refused a connection need report");
+  } catch (e) {
+    log.warn({ err: (e as Error).message, cause: n.cause }, "a connection need report failed");
+  }
 }

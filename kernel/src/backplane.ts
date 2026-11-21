@@ -122,7 +122,7 @@ import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
 import type { ConnectionState } from "./connection-state.ts";
-import { readNeed } from "../sdk/src/vendor/needs.ts";
+import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
@@ -552,7 +552,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!connectionState) throw fail(503, "unavailable", "connection state is off");
           const b = await json(req);
           const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: b?.need } });
-          if (typeof b?.connection !== "string" || !need) throw fail(400, "bad_request", "send {connection, need: {cause, detail, …}}");
+          if (typeof b?.connection !== "string" || !need || !OWNER_CAUSES.includes(b.need?.cause)) throw fail(400, "bad_request", "send {connection, need: {cause, detail, …}}");
           await connectionState.report(w.module!, b.connection, need).catch((e: Error) => { throw fail(400, "bad_request", e.message); });
           return send(res, 200, { ok: true });
         }

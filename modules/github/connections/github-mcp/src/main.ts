@@ -625,11 +625,11 @@ const http = createServer(async (req, res) => {
         res.writeHead(200, { "content-type": "application/json" });
         const beat = setInterval(() => res.write(" "), 30_000);
         res.once("close", () => clearInterval(beat)); // the caller went away: the queued write still runs, only the blanks stop
-        try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { return void res.end(JSON.stringify(failure(err))); } finally { clearInterval(beat); }
+        try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { await reportNeed(kernelUrl, codehostKey(), err, log); return void res.end(JSON.stringify(failure(err))); } finally { clearInterval(beat); }
       }
       return send(404, { error: "no such operation" });
     } catch (err) {
-      await reportNeed(kernelUrl, codehostKey(), err);
+      if (err instanceof GitHubNeed) await reportNeed(kernelUrl, codehostKey(), err, log);
       const f = failure(err);
       return send(f.error === "refused" ? 400 : 502, f);
     }
@@ -638,7 +638,7 @@ const http = createServer(async (req, res) => {
   if (url.pathname.startsWith("/internal/code-review/")) {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
-    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, (err) => reportNeed(kernelUrl, codehostKey(), err));
+    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, (err) => reportNeed(kernelUrl, codehostKey(), err, log));
     return void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
