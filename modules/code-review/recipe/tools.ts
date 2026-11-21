@@ -5,8 +5,8 @@
 // The box holds the commit's tree (the workspace), the PR base's tree at /aidenhq-out/base (a PR target only) and the spec at
 // $AIDENHQ_SPEC: { repo, head, base (the PR's base, or the head itself for a whole-tree review), options (JSON: { <option id>:
 // { lens, cmd, output, severity?, exits?, runs_code? } }, the tool entries of the catalog the service picked: catalog.ts toolSpec) }.
-// The checkout is copied to $TMPDIR/work (regular files and folders only: no link a tool could read out of the tree through) and
-// each tool runs there, one after the other (the ones that can run the repo's code, runs_code, last, so they can't touch the
+// Each tool gets its own copy of the checkout under $TMPDIR (regular files and folders only: no link a tool could read out of the
+// tree through) and runs there, one after the other (the ones that can run the repo's code, runs_code, last, so they can't touch the
 // others' runs), through `sh -c` with an environment built from an allowlist (no key, no token, nothing of the kernel's), under a
 // time limit of its own (TOOL_MINUTES) and the run's (TOTAL_MINUTES, below the check's 180: a tool past it doesn't start and
 // counts as failed, so the run always ends with a result). Its stdout is its output (sarif.ts reads it as its option says).
@@ -20,7 +20,7 @@
 // (spec.base is the commit itself): telling a PR's new findings from old ones needs a scan of the base too, which continuous
 // options bring (the plan's lane F).
 import { spawn } from "node:child_process";
-import { closeSync, cpSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, lstatSync, rmSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LENSES, OUTPUTS } from "./catalog.ts";
@@ -92,9 +92,6 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
   }
   mkdirSync(join(out, "home"), { recursive: true });
   const tmp = mkdtempSync(join(out, "home", "tools-"));
-  const work = join(tmp, "work");
-  // Tools may write beside the code (caches, reports): they get a copy, regular files and folders only.
-  cpSync(ws, work, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory(); } });
   const toolEnvVars = toolEnv(env, tmp);
   if (spec.base !== spec.head) throw new Error("the tools check reviews a whole tree: spec.base is the commit itself");
 
@@ -105,7 +102,11 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
     const fail = (why: string, stderr = "") => { const tail = redact(stderr.trim()).slice(-TAIL); failed.push({ id, why: `${why}${tail ? `: ${tail}` : ""}`.slice(0, 700) }); };
     const left = Math.min(minutes * 60_000, deadline - Date.now());
     if (left < 1000) { fail(`not run: the run's ${totalMinutes} minutes were used up`); continue; }
-    const r = await exec(o.cmd, work, toolEnvVars, tmp, left);
+    // Each tool gets its own copy of the checkout (regular files and folders only), so one that writes beside the code, or runs the
+    // repo's code, never changes what the next one scans; findings are placed against the checkout itself.
+    const work = join(tmp, `work-${Object.keys(counts).length + failed.length}`);
+    cpSync(ws, work, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory(); } });
+    const r = await exec(o.cmd, work, toolEnvVars, tmp, left).finally(() => rmSync(work, { recursive: true, force: true }));
     if (r.timedOut) { fail(`timed out after ${Math.round(left / 60_000)} minutes`, r.stderr); continue; }
     if (r.error) { fail(r.error, r.stderr); continue; }
     if (!(o.exits ?? [0]).includes(r.exit!)) { fail(`exit ${r.exit}${r.stdout.trim() ? "" : " with no output"}`, r.stderr); continue; }
@@ -114,12 +115,13 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = TOO
     if (r.exit !== 0 && !raw.length) { fail(`exit ${r.exit} with no finding`, r.stderr); continue; }
     // Each at a real place; one per id. What can't be placed (no file, a line past its end) is dropped and counted.
     const cleaned = clean(raw.map((f) => ({ ...f, evidence: redact(f.evidence), why: redact(f.why) })), work);
-    const placed = place(cleaned, work, new Set(cleaned.map((f) => f.path)));
+    const placed = place(cleaned, ws, new Set(cleaned.map((f) => f.path)));
     const byId = [...new Map(placed.map((f) => [f.id, f])).values()];
     // Every important finding is kept; nits are capped, and what is cut or unplaceable counts as a gap.
-    const imp = byId.filter((f) => f.severity === "important"), nits = byId.filter((f) => f.severity === "nit").slice(0, MAX_PER_OPTION), kept = [...imp, ...nits];
+    const imp = byId.filter((f) => f.severity === "important"), all = byId.filter((f) => f.severity === "nit"), nits = all.slice(0, MAX_PER_OPTION), kept = [...imp, ...nits];
     counts[id] = kept.length;
-    const lost = raw.length - imp.length - nits.length;
+    // What couldn't be read or placed, and the nits past the cap; a duplicate (the same id twice) is not a loss.
+    const lost = raw.length - placed.length + all.length - nits.length;
     if (lost > 0) dropped[id] = lost;
     findings.push(...kept.map((f) => ({ ...f, option: id, lens: o.lens })));
   }

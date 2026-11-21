@@ -147,3 +147,16 @@ test("the tools check reviews a whole tree only; runs_code tools run last", asyn
   assert.deepEqual(r.findings.map((f) => [f.option, f.path, f.severity]), [["x.lint", "new.txt", "important"], ["x.code", "new.txt", "important"]]);
   assert.equal(r.coverage.incomplete, null);
 });
+
+test("each tool scans its own copy: one that rewrites the tree never changes the next one's; a duplicate is no gap", async () => {
+  const { ws, out } = checkout({ "a.txt": "one\n" });
+  const r = await runTools({
+    ws, out,
+    spec: spec({
+      "x.first": { lens: "correctness", cmd: "printf 'a.txt:1:1: dup [Error/x]\\na.txt:1:1: dup [Error/x]\\n'; printf 'x\\ny\\nz\\n' > a.txt", output: "gcc" },
+      "x.second": { lens: "correctness", cmd: "test \"$(cat a.txt)\" = one && echo 'a.txt:1:1: clean copy [Error/x]'", output: "gcc" },
+    }),
+  });
+  assert.deepEqual(r.findings.map((f) => [f.option, f.title]), [["x.first", "dup [Error/x]"], ["x.second", "clean copy [Error/x]"]]);
+  assert.equal(r.coverage.incomplete, null);
+});
