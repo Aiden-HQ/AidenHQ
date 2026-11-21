@@ -17,9 +17,8 @@ env_file="${AIDENHQ_ENV_FILE:-.env}"
 [ -f "$env_file" ] && { set -a; . "$env_file"; set +a; }
 IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f # as scripts/backup.sh
 
-# A failing `docker compose ps` stops the restore: it must not read as "nothing running".
-compose_env=(); [ ! -f "$env_file" ] || compose_env=(--env-file "$env_file")
-running="$(docker compose "${compose_env[@]}" ps --status running --services)"
+# By project label, since compose files may not exist yet on a fresh host. A failing docker stops the restore: it must not read as "nothing running".
+running="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" --format '{{.Names}}')"
 if [ -n "$running" ]; then
   echo "error: refusing to restore while containers are running: $(echo $running)" >&2
   echo "       stop them first: docker compose down" >&2

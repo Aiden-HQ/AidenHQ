@@ -99,8 +99,8 @@ main() {
   # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
   local recovered=0
   recoverLogged || true
-  if [ "$recover" = 1 ]; then # the boot unit fails (and is retried) unless the dead apply's recovery ended on a good generation
-    [ "$recovered" = 0 ] || [ "$(genGet "$(( $(genJs next) - 1 ))" health)" = good ] || { echo "apply alert: recovering the dead apply did not end on a good generation" >&2; exit 1; }
+  if [ "$recover" = 1 ]; then # the boot unit fails, and keeps failing on each retry, while the newest generation is not good
+    [ -z "$(genLkg)" ] || [ "$(genGet "$(( $(genJs next) - 1 ))" health)" = good ] || { echo "apply alert: the newest generation is not good: a recovery or its revert failed; see its log in $GEN_DIR" >&2; exit 1; }
     return 0
   fi
   [ "$recovered" = 0 ] || unset AIDENHQ_APPLY_BEFORE AIDENHQ_APPLY_INST_BEFORE
