@@ -11,8 +11,9 @@
 // init runs on deepsec's `local` route because every other route links a Vercel project first; `local` configures no credential
 // and pi reads its provider from that models.json. Spend: `init` gets --max-cost-usd = budget_usd; `process` has no such flag, so
 // the run's token cap is the hard stop there (a run that hits it reports the budget ran out, and what was analysed so far).
-// Install scripts never run (npm_config_ignore_scripts): a repo's `.deepsec/package.json` is the PR's.
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+// Install scripts never run (npm_config_ignore_scripts), and a committed `.deepsec/package.json` is never installed: a scan uses the image's deepsec.
+import { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync, cpSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { run, stopped } from "./proc.ts";
 
@@ -100,14 +101,13 @@ export async function deepsec({ root, target, base, model, effort, budget_usd, s
     // Set up already: scan. INFO.md (and a project config.json) come in from the commit; data lives in scratch.
     mkdirSync(join(data, pid), { recursive: true });
     for (const f of ["INFO.md", "config.json"]) if (existsSync(join(dataIn, pid, f))) cpSync(join(dataIn, pid, f), join(data, pid, f));
-    let bin = join(ws, "node_modules", ".bin", "deepsec");
-    if (!existsSync(bin) && existsSync(join(ws, "package.json"))) {
-      const install = existsSync(join(ws, "pnpm-lock.yaml")) ? ["pnpm", ["install", "--frozen-lockfile", "--ignore-scripts"]] as const
-        : existsSync(join(ws, "package-lock.json")) ? ["npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]] as const : ["npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund"]] as const;
-      const i = await step(install[0], [...install[1]], ws);
-      if (i.cause) throw new Error(i.cause);
-    }
-    if (!existsSync(bin)) bin = "deepsec"; // the image's pinned install
+    // No install from the repo's `.deepsec/package.json` (the PR's, and the spec carries no lockfile): the image's pinned deepsec
+    // runs, and its package is linked where the committed config's `import "deepsec/config"` resolves.
+    const bin = "deepsec";
+    try {
+      const pkg = dirname(dirname(realpathSync(execFileSync("which", ["deepsec"], { env: { PATH: env.PATH }, encoding: "utf8" }).trim())));
+      if (existsSync(join(pkg, "config.mjs")) && !existsSync(join(ws, "node_modules", "deepsec"))) { mkdirSync(join(ws, "node_modules"), { recursive: true }); symlinkSync(pkg, join(ws, "node_modules", "deepsec")); }
+    } catch {}
     const s = await step(bin, ["scan", "--project-id", pid, "--root", root], ws);
     if (s.cause) throw new Error(s.cause);
     await analyse(bin);

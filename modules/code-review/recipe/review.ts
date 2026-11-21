@@ -25,7 +25,7 @@
 // eligible for review (coverage.eligible: all but excluded ones) are listed apart from what the engine actually covered
 // (coverage.reviewed: the files it reports it analysed, else the eligible ones whose diff some finder read); a run that stopped
 // short, an unreadable file or a truncated list is `coverage.incomplete`, never a clean pass. Engines with their own scope
-// (deepsec: setup files and scan, spec.setupFiles) return `setup`, the files to commit. Every finding carries the spec's option
+// (deepsec: setup files and scan, spec.setup_files) return `setup`, the files to commit. Every finding carries the spec's option
 // and lens.
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
 import { createHash, randomBytes } from "node:crypto";
@@ -50,7 +50,7 @@ export interface Spec {
   /** The catalog option this run is, and its lens: stamped on each finding. */
   option?: string; lens?: string;
   /** deepsec's spend cap (the run's remaining budget), and, when a setup branch is pending, its files as JSON text (path to text). */
-  budget_usd?: number | string; setupFiles?: string;
+  budget_usd?: number | string; setup_files?: string;
 }
 interface Changed { path: string; added: number; removed: number; binary: boolean }
 interface Excluded { path: string; why: string; gap: boolean }
@@ -424,7 +424,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const engineSpec = {
     target: spec.target ?? "pr", harness: combo.harness, skill: combo.skill,
     ...(Number(spec.budget_usd) > 0 ? { budget_usd: Number(spec.budget_usd) } : {}),
-    ...(spec.setupFiles ? { setupFiles: setupFilesOf(spec.setupFiles) } : {}),
+    ...(spec.setup_files ? { setupFiles: setupFilesOf(spec.setup_files) } : {}),
   };
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
