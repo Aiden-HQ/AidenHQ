@@ -430,8 +430,8 @@ test("a hold that cannot be released yet keeps its row, and the first pass that 
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
   assert.equal(w.resolved.length, 0, "resolving would drop it straight back into the sweep");
   assert.equal(w.issues.t1.status, "blocked");
-  // The reconciliation has not happened, so the row stays and the next pass retries it. (Dropping it here was the
-  // reviewer's `progress-after-success` finding: nothing would owe this task a restore once the hold is released.)
+  // The reconciliation has not happened, so the row stays (the reviewer's `progress-after-success` finding: nothing would
+  // otherwise owe this task a restore once the hold is released).
   assert.deepEqual(w.parks().map((r) => r.task), ["t1"], "the row is kept: the retry is the next pass's");
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
   assert.equal(w.resolved.length, 0, "no call while releasing it is still unsafe");
@@ -443,13 +443,36 @@ test("a hold that cannot be released yet keeps its row, and the first pass that 
   assert.equal(w.issues.t1.status, "in_progress", "released and moved on in the same pass: never left in todo");
   assert.deepEqual(w.parks(), [], "the reconciliation happened, so the row goes");
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "exactly once");
-  // A hold of another cause is never the loop's: left alone even with the holder invokable, and the row it no longer
-  // guards goes with it.
+  // A hold of another cause is never the loop's, and the row it no longer guards goes with it.
   w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-3", cause: "provider_quota", status: "active", ownerType: "board" } };
   w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'todo', ?)").run(AGENT, w.now());
   assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] });
   assert.equal(w.resolved.length, 1);
   assert.deepEqual(w.parks(), [], "not ours to reconcile: nothing to keep a park row for");
+});
+
+test("a release that lands while the wait ends and the holder is paused keeps the task parked, and restores it once it is invokable", async (t) => {
+  const w = world(t);
+  // The reviewer's sequence: the wait is armed when the pass reads the task (so the hold is released), ends while the release
+  // is in flight, and the holder is paused by the time a restore would be due. Restoring then is the loop this fixes.
+  w.issues.t1 = { ...w.issues.t1, status: "blocked", activeRecoveryAction: { id: "ra-6", cause: "stranded_assigned_issue", status: "active", ownerType: "board" } };
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  w.db.prepare("INSERT OR REPLACE INTO wakes (key, task, agent, cause, at, state) VALUES (?, 't1', ?, 'wait: x', ?, 'open')").run(`wait:t1:${Date.parse(until)}`, AGENT, Date.parse(until));
+  w.db.prepare("INSERT OR REPLACE INTO wait_parks (task, agent, from_status, at) VALUES ('t1', ?, 'in_review', ?)").run(AGENT, w.now());
+  w.dropWaitOnResolve(true);
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "paused", lifecycleHolds: ["manual"] };
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: ["t1"] });
+  assert.deepEqual(w.resolved.map((r) => [r.task, r.body.actionId]), [["t1", "ra-6"]]);
+  assert.equal(w.issues.t1.status, "backlog", "the release left it in todo: parked again, never restored to a paused holder");
+  // The row keeps where the task came from, so a review task is not restarted as progress.
+  assert.deepEqual(w.parks().map((r) => [r.task, r.from_status]), [["t1", "in_review"]]);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "still paused: nothing restored");
+  // The holder is invokable again: the row is what restores it, once, to where it came from.
+  w.agents[AGENT] = { ...w.agents[AGENT], status: "idle", lifecycleHolds: [] };
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: ["t1"], resolved: [] });
+  assert.equal(w.issues.t1.status, "in_review", "back to review, not in_progress: the work is not restarted");
+  assert.deepEqual(w.parks(), []);
+  assert.deepEqual(await w.idle.settle(), { parked: [], resumed: [], resolved: [] }, "exactly once");
 });
 
 test("a release that lands but answers with an error is finished in the same pass; one that did not keeps its row", async (t) => {

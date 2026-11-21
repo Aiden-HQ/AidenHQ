@@ -16,24 +16,15 @@
 //   task. Past that cap nothing more wakes it: the Fleet Steward reads the count (`idle_wakes`) and raises the task as a critical
 //   incident. An owner-held task is never swept (the steward's stale follow-up check has it), and isn't read: the state's
 //   holder says no agent holds it.
-// - parked waits: Paperclip's recovery sweep (the pinned image's reconcileStrandedAssignedIssues) blocks every `todo`,
-//   `in_progress` or `in_review` issue whose assignee agent is not invokable (paused, terminated, pending approval, or an
-//   invalid org chain), and escalates a board decision for each. A kernel-armed wait leaves the issue in exactly that status,
-//   so a task that waits for a paused holder is re-blocked within a minute or two, and re-blocked again after every restore.
-//   `backlog` is not in that sweep's candidate set (verified against the pinned build), and Paperclip ignores comments, agent
-//   comments and recovery resolution there: a task whose wait is armed is parked in `backlog` instead, and reconciled back to
-//   the status it had (`in_progress`; `in_review` for a review task) exactly once when the wait ends (its wake bound to a job,
-//   dropped, superseded or cancelled). `in_review` is parked only in the one shape that sweep escalates (a pending agent
-//   execution-review participant); the finish gate's own `in_review` is left to the gate. A supported comment or a manual
-//   restore that puts it back in a scanned status while the wait is armed is parked again at once, from the task's own Paperclip
-//   event (wakes.ts event → settleOne below), with the settle tick only as the backstop: the sweep's tick and the poll are both
-//   60–90 s, so a poll-only pass would leave a window in which the sweep acts first. The kernel's own state still reads the task
-//   as waiting (`agent_wait`), never backlog.
-//   A stale `stranded_assigned_issue` hold left by the loop is resolved once, and only when the holder is invokable again, so
-//   the restore does not drop the issue straight back into the sweep.
-//   What a park does touch is Paperclip's blocked-inbox liveness read (issue-graph-liveness.ts): a task *blocked by* a parked
-//   task reads `blocked_by_assigned_backlog_issue`. In this build that only annotates attention: no issue is filed, no comment
-//   is posted, and a park lasts only as long as our own armed wait.
+// - parked waits: Paperclip's pinned recovery sweep blocks every `todo`, `in_progress` or `in_review` issue whose assignee
+//   agent is not invokable, and escalates a board decision for each, so a settled wait on a paused holder is re-blocked within
+//   a minute or two. An armed wait is parked in `backlog` instead — outside that sweep's candidate set, and inert to
+//   comments and recovery resolution there — and reconciled back once when the wait ends: `in_progress`, or `in_review` for
+//   a review task (parked only in the one `in_review` shape the sweep escalates; the finish gate's own is left to it). A
+//   comment or manual restore into a scanned status is re-parked at once from the task's own event (wakes.ts event →
+//   settleOne), the settle tick only as a backstop: both ticks are 60–90 s, so a poll-only pass could race the sweep. A hold
+//   the loop left behind is released once, and only when that is safe. Paperclip's liveness read only annotates a task
+//   *blocked by* a parked one; no issue is filed and no comment posted.
 import type { Api } from "./channels.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { inTx, iso, strictFact, type Log } from "./factlog.ts";
@@ -69,10 +60,9 @@ type AgentRow = { id: string; companyId?: string; status?: string; lifecycleHold
 /** An issue as the park logic needs it (Paperclip's single-issue read). */
 type ParkedIssue = { id: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; companyId?: string; activeRecoveryAction?: { id: string; cause?: string; status?: string; ownerType?: string } | null; executionState?: { status?: string; currentParticipant?: { type?: string; agentId?: string } | null } | null; monitorNextCheckAt?: string | null };
 /**
- * Whether an `in_review` issue is one the pinned sweep re-blocks: its review branch escalates only when the issue carries a
- * pending execution-review participant held by an agent (service.ts: participantAgentId && pendingExecutionState; with either
- * absent it skips). Only that shape is parked: a plain `in_review` — the kernel's finish gate holding a task under its check's
- * label (checks.ts holds(), which reads the status) — must stay in review, and so must one carrying the gate's own monitor.
+ * Whether an `in_review` issue is one the pinned sweep re-blocks: its review branch acts only on a pending agent
+ * execution-review participant (service.ts). Only that shape is parked: the finish gate's own `in_review` (checks.ts
+ * holds() reads the status) must stay in review, and so must one carrying the gate's monitor.
  */
 const reviewParkable = (i: ParkedIssue) => String(i.status) === "in_review" && i.executionState?.status === "pending" && i.executionState?.currentParticipant?.type === "agent" && Boolean(i.executionState?.currentParticipant?.agentId) && !i.monitorNextCheckAt;
 
@@ -158,21 +148,15 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   };
   /**
    * One task's wait and its issue, reconciled:
-   * - a wait armed → `todo`/`in_progress` becomes `backlog`, unconditionally: the sweep re-blocks on the holder's invokability
-   *   *at its own tick*, which can change under a wait already armed (a pause mid-wait is today's repro), so the status — not a
-   *   snapshot of the holder — is what keeps it out. An `in_review` task is parked too when it is the one shape that sweep acts
-   *   on (a pending execution-review participant, reviewParkable); the row marks the task as the kernel's to restore, once.
-   * - no wait → back to where it came from once (`in_progress`; `in_review` for a review task, from the row), and the row goes —
-   *   but only when the holder is invokable now: restoring work for an agent the sweep would block straight away is the loop this
-   *   fixes, so it stays parked and the pass restores it once it can.
-   * - a `blocked` task with a stale `stranded_assigned_issue` hold → resolved (resolveStale), re-parked if it still waits; a
-   *   hold that cannot be released yet keeps its row, so the next pass retries it (never a row dropped over a reconciliation
-   *   that did not happen).
-   * A park writes its row before its issue and keeps it unless a read confirms the park did not land, so neither a crash nor an
-   * unknown answer leaves a parked task with no row; an armed `backlog` task without one (a row lost some other way) is adopted,
-   * and a `blocked` task whose own wait is armed is released and re-parked, so every interruption is recovered by the next pass.
-   * Returns what this pass wrote. Idempotent: each pass re-reads the issue, writes only the transition it named, and drops the
-   * row only after the write, so a re-run after a successful write writes nothing.
+   * - a wait armed → `todo`/`in_progress` becomes `backlog` unconditionally: the sweep re-blocks on the holder's invokability
+   *   at its own tick, so the status, not a snapshot of the holder, is what keeps it out. `in_review` is parked only in the
+   *   shape the sweep acts on (reviewParkable); the row marks the task as the kernel's to restore, once.
+   * - no wait → back to where it came from once (from the row), the row going with it — but only when the holder is invokable
+   *   now: restoring for an agent the sweep would block straight away is the loop this fixes, so it stays parked until then.
+   * - a `blocked` task with a stale `stranded_assigned_issue` hold → resolved, re-parked if it still waits; a hold that cannot
+   *   be released yet keeps its row, so the next pass retries it.
+   * Every interruption (crash, unknown answer, lost row) is recovered by the next pass. Returns what this pass wrote; each
+   * pass re-reads the issue, writes only the transition it named, and drops the row only after the write.
    */
   async function reconcileOne(i: ParkedIssue, p: Park | undefined): Promise<"parked" | "resumed" | "resolved" | undefined> {
     const task = i.id, status = String(i.status ?? "");
@@ -205,6 +189,15 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         if (!after || after.status === "blocked") return undefined;
       }
       if (armed(task)) { await park(task, agent, keyOf(agent), false); return "resolved"; }
+      // The wait can end while the release is in flight (it was armed when this pass read it, and the resolve is a round
+      // trip). Restoring is only safe then if the holder is invokable *now*: a pause that landed meanwhile would put the
+      // task back in `in_progress` for the sweep to block at its next tick — the loop this change exists to prevent. The
+      // release left the issue in `todo`, a status the sweep scans, so it is parked instead, with its row, until the first
+      // pass that finds the holder invokable restores it once (`from` keeps a review task's origin across the re-park).
+      if (!(await invokable(agent, company))) {
+        if (!(await park(task, agent, keyOf(agent), false, from))) remember(task, agent, from);
+        return "resolved";
+      }
       // The resolve lands the issue in `todo`, the one scanned status the route accepts, and a task sitting there files a
       // status wake — a second dispatch beside the one the wait's wake already started — so it is moved on in this pass.
       const back = from === "in_review" ? "in_review" : RESUMED;
@@ -246,19 +239,18 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     return "resumed";
   }
   /**
-   * `todo`/`in_progress` → `backlog` while a wait is armed. The row goes in first, so the intent is discoverable from the
-   * moment anything can change: a crash or a failed write can no longer leave a parked issue nothing knows about. A park that
-   * did not land is then rolled back, but only on proof: the row is dropped when a read shows the issue is not parked, and kept
-   * when the outcome is unknown — a write can land and still answer with an error, and a kept row is harmless (an armed wait
-   * parks the task again; the next pass drops a row for a task that is not parked).
+   * `todo`/`in_progress` → `backlog` while a wait is armed, row first so no crash leaves a parked issue nothing knows about.
+   * A park that did not land is rolled back only on proof: the row is dropped when a read shows the issue is not parked,
+   * kept when the outcome is unknown (a write can land and still answer with an error), which is always safe.
    */
-  async function park(task: string, agent: string, key: string, announce: boolean) {
+  async function park(task: string, agent: string, key: string, announce: boolean, origin?: string) {
     const i = await issue(task);
     const from = String(i?.status ?? "");
     if (!i || !(PARKABLE.has(from) || reviewParkable(i))) return false;
     // The note is tagged (PARK_TAG): wakes.ts records no task.change fact of it and dispatch never reads it as words.
     const noted = !parkOf(task) && announce;
-    remember(task, agent, from);
+    // `origin`: where a re-park goes back to when that is not where the issue stands (a release that left `todo`).
+    remember(task, agent, origin ?? from);
     try {
       await patch(task, { status: "backlog", ...(noted ? { comment: `Parked while ${key} waits: Paperclip's recovery sweep must not read an armed wait as stranded work.\n\n${PARK_TAG}` } : {}) });
     } catch (e) {
