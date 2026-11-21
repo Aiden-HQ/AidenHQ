@@ -28,6 +28,8 @@ type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: 
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
+/** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
+const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect it";
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
 export const MERGED_LINE = "merged-prs: ";
@@ -54,6 +56,8 @@ export function createMerges(d: {
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
+  /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
+  waiting?(id: string, reason: string | null): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   now?: () => Date;
   everyMs?: number;
@@ -114,8 +118,8 @@ export function createMerges(d: {
   const mergeToken = () => `queue-${randomUUID()}`;
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
-  async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
-    await poll(q, p, merged);
+  async function pollAndTime(id: string, q: Queue, p: Pr, merged: Set<string>) {
+    await poll(id, q, p, merged);
     timeWait(p, p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined);
   }
   function timeWait(p: Pr, reason: string | undefined) {
@@ -132,7 +136,7 @@ export function createMerges(d: {
     log("merged without code review's verdict", { pr: p.url, why: p.bypass.slice(0, 300) });
     d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
   };
-  async function poll(q: Queue, p: Pr, merged: Set<string>) {
+  async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
     const t = now().getTime();
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -205,8 +209,12 @@ export function createMerges(d: {
       if (review && "bypass" in review) p.bypass = review.bypass;
       else delete p.bypass;
       if (review && "wait" in review) {
-        if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
-        p.note = review.wait;
+        // The kernel hears the review wait once per distinct reason (not once per poll): a claimed record's task reads its wait.
+        if (p.note !== review.wait) {
+          log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
+          p.note = review.wait;
+          await d.waiting?.(id, review.wait).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
+        }
         return wait("review");
       }
       const method = mergeMethod(data.repository);
@@ -340,12 +348,25 @@ export function createMerges(d: {
     try {
       // Signed out: every pending PR waits for the reconnect (reason github; its other wait starts over), and GitHub isn't called.
       if (d.connected && !d.connected()) {
-        for (const q of Object.values(s.queues)) if (q.state === "running" && !q.outcome) for (const p of q.prs) if (p.status === "pending") { delete p.wait; timeWait(p, "github"); }
+        for (const [id, q] of Object.entries(s.queues)) if (q.state === "running" && !q.outcome) for (const p of q.prs) if (p.status === "pending") {
+          // The record's card shows why it cannot move: the reconnect, once, and only while GitHub stays signed out.
+          if (p.note !== CONNECTED_WAIT) {
+            p.note = CONNECTED_WAIT;
+            await d.waiting?.(id, CONNECTED_WAIT).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
+          }
+          delete p.wait;
+          timeWait(p, "github");
+        }
         return;
       }
       const merged = new Set<string>();
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
+        // Signed in again: the signed-out reason ends with the first poll that reads GitHub, so it is cleared before anything else.
+        if (q.prs.some((p) => p.note === CONNECTED_WAIT)) {
+          for (const p of q.prs) if (p.note === CONNECTED_WAIT) delete p.note;
+          await d.waiting?.(id, null).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
+        }
         // A queue written before this process kept the task's identifier has only the record's task id, and a running queue is
         // never handed `execute` again: read the identifier from the record so an already-merged PR is still found to be this
         // task's. A read that failed (kernel briefly unavailable) is not a record without an identifier: only keep `recovered`
@@ -361,7 +382,7 @@ export function createMerges(d: {
         // The identifier an already-merged PR must be proven against is still unknown and its read failed: the PRs may be read,
         // but the queue is not finished, so a poll that comes back after the kernel does can still credit the evidence.
         const unrecovered = Boolean(q.task && !q.taskIdentifier && !q.recovered && d.identifierOf);
-        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(q, p, merged);
+        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(id, q, p, merged);
         if (!q.prs.some((p) => p.status === "pending") && !unrecovered) finish(id, q);
       }
     } finally {

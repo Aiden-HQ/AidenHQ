@@ -2,12 +2,13 @@
 // what changed (tasks updated since the last look, which a new comment counts as, and the live runs) and announces it.
 // One small read per tick for every open board together, instead of each browser polling every chat.
 // Paperclip's own event socket only admits agent keys, not the board's user key, so the board looks itself.
+import { createHash } from "node:crypto";
 import type { Logger } from "pino";
 import type { SessionActivity } from "./codex-activity.js";
 import type { Events } from "./events.js";
 import type { Issue, Paperclip } from "./paperclip.js";
 import type { LiveRun } from "./runs.js";
-import type { Records } from "./records.js";
+import { isLive, type Records } from "./records.js";
 import { statesOf, type TaskStates } from "./task-state.js";
 
 const TICK_MS = 2_000;
@@ -36,6 +37,9 @@ interface Watched {
   open: Set<string>;
   ticks: number;
 }
+
+/** A wait's fingerprint: the whole reason identifies a change, however long it is, and the key stays small. */
+const hashOf = (s: string): string => (s.length <= 200 ? s : `${s.length}:${createHash("sha256").update(s).digest("hex").slice(0, 32)}`);
 
 /** What a view shows of a state: when this changes, the task is announced. */
 const stateKey = (r: { kind: string; reason: string; ref?: string; attention: { who: string; why: string; ref: string }[] }) =>
@@ -150,7 +154,15 @@ export function startWatch(o: {
         }
       }
       if (o.records) {
-        const now = (await o.records.list("recent", { limit: 100 })).map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}`).join();
+        // The cards Approvals can show: the newest reads, and every live record in its own uncapped, any-tier read (a Tier 0 record
+        // in flight is `running` too, and a blocked merge must not fall out of the newest 100). A live record's wait reason changes
+        // nothing else about it, so it is in the key too: an open view refetches when the reason does (a merge entering or leaving
+        // code review's wait), not a minute later. The record's own reason is compared whole (`records.list`, before the wire's
+        // display cap), so a change past the cap still refreshes.
+        const [recent, live] = await Promise.all([o.records.list("recent", { limit: 100 }), o.records.list("approved", { limit: 1000, tier0: true })]);
+        const seen = new Set(recent.map((a) => a.id));
+        const held = live.filter((a) => isLive(a.state) && !seen.has(a.id) && (seen.add(a.id), true));
+        const now = [...recent, ...held].map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}|${hashOf(a.wait ?? "")}`).join();
         if (cards !== undefined && now !== cards) o.events.emit("approvals");
         cards = now;
       }

@@ -595,6 +595,7 @@ kbd {
 .approval-folded.tone-bad :is(.folded-mark, .folded-outcome) { color: var(--bad-text); }
 @container (max-width: 640px) { .folded-meta { display: none; } }
 .approval-outcome.bad { color: var(--danger); }
+.approval-outcome .pre { margin: 0; white-space: pre-wrap; font-family: inherit; }
 .not-right input { flex: 1; min-width: 0; font: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; background: var(--surface-2); color: var(--text); }
 
 /* Phone overflow: a grid track never grows past the screen because of one nowrap line. */

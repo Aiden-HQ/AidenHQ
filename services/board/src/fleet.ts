@@ -6,7 +6,7 @@ import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
-import type { Records } from "./records.js";
+import { isLive, type Records } from "./records.js";
 import { lastRunsOf, liveRunsOf, type KernelActivity } from "./runs.js";
 import type { Store } from "./store.js";
 
@@ -168,7 +168,8 @@ export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">,
   const newest = (xs: (string | null | undefined)[]) => xs.filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
   const minutesSince = (t: string) => Math.round((Date.now() - Date.parse(t)) / 60_000);
   // Pending cards, and approved ones not yet applied (an applier that hasn't claimed or finished them).
-  const cards = (await records.list("recent", { limit: 100 })).filter((a) => a.state === "pending" || (["approved", "used"].includes(a.state) && !a.outcome));
+  // Open cards, and a record in flight: approved but not yet claimed (`approved`), or claimed and still running (`running`).
+  const cards = (await records.list("recent", { limit: 100 })).filter((a) => a.state === "pending" || isLive(a.state));
   return {
     runs: liveRunsOf(act).map((r) => ({ agent: who.get(r.agentId) ?? r.agentId, status: r.status, startedAt: r.startedAt, ageMinutes: r.startedAt ? minutesSince(r.startedAt) : null })),
     approvals: cards.map((a) => ({ id: a.id, task: a.identifier, action: a.action, target: a.target, tier: a.tier, state: a.state, requestedBy: a.requestedBy, ageMinutes: minutesSince(a.createdAt) })),

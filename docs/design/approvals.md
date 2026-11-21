@@ -21,7 +21,9 @@ an autonomy he set below full.
   stamps server-side from the credential used (`owner:board`, `owner:telegram`, `owner:reply`, `account:<id>`,
   `reviewer:<model>`, `reviewer:kernel/code`, `auto:<rule>`), never from a caller-supplied field. Lifecycle: `review` or
   `owner` then `approved`, `claimed` (once), `done` / `failed` / `unknown`; also `rejected`, `stale`, `cancelled`. Open
-  records expire after 7 days.
+  expire after 7 days. `claimed` is live: its executor may report why it is still running (`POST /v1/writes/:id/wait`), the board
+  shows that state as `running` with the reason, and the record's task hears the reason once when the wait starts and again only
+  when it changes.
 - **Earlier decisions bind, narrowly** (`tier.ts` `priorDecisions`). The owner's rejection of an action on a task is his veto:
   every later request of it there is his card until he approves one. Content the reviewer rejected as malicious (`MALICE`:
   `malicious`, `secret_exfiltration`, `prompt_injection`) stays rejected: the same commits, PR heads or digest are refused by

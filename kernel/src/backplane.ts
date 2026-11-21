@@ -10,6 +10,7 @@
 //   POST /v1/writes            (run, module, or job token naming the kind) request a write (writes.ts); GET /v1/writes/:id its
 //                              record (own only; the board: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
+//   POST /v1/writes/:id/wait (the kind's executor module) {reason}: why its claimed record is still running
 //   POST /v1/merges            (a code host module, for its own kind) {task, repo, number, head, branch}: a green PR's merge, filed
 //                              as the agent whose approved PR record on the task pushed that head (writes.fileOwnMerge), or {skip}
 //   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too)
@@ -149,6 +150,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
   { method: "GET", path: "/v1/writes/:id/chain", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
+  { method: "POST", path: "/v1/writes/:id/wait", auth: "module" },
   { method: "POST", path: "/v1/merges", auth: "module" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
@@ -946,6 +948,19 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const b = await json(req);
             if (!writes.outcome(id, b.ok === true, String(b.text ?? "").slice(0, 200_000), b.objects)) throw fail(409, "conflict", `this record is ${record(id).state}`);
             return send(res, 200, { ok: true });
+          }
+          case "POST /v1/writes/:id/wait": {
+            const r = record(id);
+            if (await whoami(bearer(req)).then((w) => w.kind !== "module" || r.kind === CONN_TOOL || w.module !== r.executor.module || (w.connection !== undefined && (!r.executor.url || new URL(r.executor.url).hostname !== w.connection)), () => true)) throw fail(403, "forbidden", "only the kind's executor reports its wait");
+            const b = await json(req);
+            // The whole reason identifies the wait, so a change past the display cap still reaches the task: only the card and the
+            // notice truncate what they show (the same 200_000 bound the outcome route puts on its text).
+            const reason = String(b.reason ?? "").split("\u0000").join("").trim().slice(0, 200_000);
+            if (!reason) throw fail(400, "bad_request", "send {reason}: why the record is still running");
+            // Idempotent for an unchanged reason (200, `new: false`), and a record that has left `claimed` is a conflict.
+            const fresh = writes.waiting(id, reason);
+            if (!fresh && record(id).state !== "claimed") throw fail(409, "conflict", `this record is ${record(id).state}`);
+            return send(res, 200, { ok: true, new: fresh });
           }
         }
       }

@@ -4,8 +4,8 @@ import type { ReviewCode } from "./reason-codes.js";
 import type { Probe } from "./settings.js";
 import { explain, type Explanation, type RecordWhole } from "./explain.js";
 
-/** auto: a Tier 0 run, made at once with no decision (an audit row only). */
-export type State = "pending" | "approved" | "rejected" | "stale" | "expired" | "used" | "auto";
+/** auto: a Tier 0 run, made at once with no decision (an audit row only); running: claimed, in flight, its wait reason on `wait` until it ends. */
+export type State = "pending" | "approved" | "rejected" | "stale" | "expired" | "running" | "used" | "auto";
 export type Tier = 0 | 1 | 2;
 /** The owner's sign-in a settings change was made in, forwarded for the kernel to check: his board session token, or his MCP client's bearer with the resource it was minted for. */
 export type SettingsCredential = { board: string } | { mcp: { token: string; resource: string } };
@@ -39,6 +39,8 @@ export interface Approval {
   usedAt: string | null;
   outcome: "applied" | "failed" | null;
   outcomeText: string | null;
+  /** Why the claimed record is still running (its executor's, from the kernel): null once it leaves `claimed`. */
+  wait: string | null;
   createdAt: string;
   replaced: boolean;
   panel: boolean;
@@ -49,12 +51,26 @@ export interface Approval {
 type KernelRecord = {
   id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; identifier?: string | null; state: string; review: string | null;
   review_code?: string | null; review_first?: "final" | "owner" | null; rule?: string | null; decided_by: string | null; decided_at?: string | null; replaced?: boolean;
-  outcome: { ok: boolean; text: string } | null; created_at: string; updated_at: string;
+  outcome: { ok: boolean; text: string } | null; wait?: string | null; created_at: string; updated_at: string;
   card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string };
 };
 const KIND: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
-const STATE: Record<string, State> = { review: "pending", owner: "pending", approved: "approved", claimed: "used", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
-const RAN = ["claimed", "done", "failed", "unknown"];
+// `claimed` has a state of its own: it is live, and `used` is only ever an end (done/failed/unknown).
+const STATE: Record<string, State> = { review: "pending", owner: "pending", approved: "approved", claimed: "running", done: "used", failed: "used", unknown: "used", rejected: "rejected", stale: "stale", cancelled: "expired" };
+/** A record that has run: `used` is only ever an end, so only these carry `usedAt` (a claimed one is in flight, not used). */
+const RAN = ["done", "failed", "unknown"];
+/** A record an executor has taken (claimed): its state is `running` and it is live. */
+const CLAIMED = "claimed";
+/** A card's wait on the wire: bounded whatever the kernel keeps (its own cap is 200_000), while the record keeps it whole. */
+const WAIT_SHOWN = 3000;
+export const shownWait = (wait: string | null | undefined): string | null => {
+  if (wait == null) return null;
+  const t = String(wait);
+  return t.length > WAIT_SHOWN ? `${t.slice(0, WAIT_SHOWN - 1).trimEnd()}…` : t;
+};
+/** A record in flight: claimed by its executor, non-terminal (the fleet's open cards and a settings apply's "applying"). */
+export const LIVE = ["approved", "running"];
+export const isLive = (state: State) => LIVE.includes(state);
 
 /** What a record acts on when its card doesn't say: a tool call's connection.tool, else the args' name, else its kind. */
 function targetOf(r: KernelRecord): string {
@@ -67,9 +83,11 @@ export function recordApproval(r: KernelRecord): Approval {
     id: r.id, issueId: r.task, identifier: r.identifier || r.task, action: KIND[r.kind] ?? r.kind.replace(/^(runner|kernel)\./, ""), target: r.card.target ?? targetOf(r),
     digest: r.digest, args: r.args, sentence: r.card.sentence, reads: r.card.reads, changes: r.card.changes, cost: r.card.cost, details: r.card.details, requestedBy: r.requester.name || r.requester.key,
     requesterId: r.requester.agent || null, tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, reason: r.card.reason ?? "", reasonCode: r.rule ?? null, review: r.review,
-    reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.tier === 0 && ["approved", ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
+    // A claimed record is `running` whatever its tier: Tier 0 is only the audit word for one that has ended (or is approved
+    // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
+    reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null,
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null,
   };
 }
 
@@ -79,7 +97,7 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean }): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
