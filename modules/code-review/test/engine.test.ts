@@ -159,10 +159,11 @@ test("commands: a comment whose first word is aiden (an @ or not), from a writer
   w.pr(7, sha("8")); w.later(DEBOUNCE + 1); await w.tick(); await w.tick();
   assert.equal(w.started.length, 1, "a stopped PR gets no automatic review");
   assert.deepEqual(parseCommand("aiden review focus: the retry path"), { cmd: "focus", text: "the retry path" });
-  assert.deepEqual(parseCommand("aiden review deep"), { cmd: "unknown", word: "deep" });
+  assert.equal(parseCommand("aiden review deep"), undefined);
+  assert.equal(parseCommand("aiden review is flaky today, ignore it"), undefined); // prose, not a command
   assert.equal(parseCommand("```\naiden review\n```"), undefined);
   assert.equal(parseCommand("    aiden review"), undefined); // an indented code block: an example
-  assert.deepEqual(parseCommand("aiden review full full"), { cmd: "unknown", word: "full" });
+  assert.equal(parseCommand("aiden review full full"), undefined);
 });
 
 test("the day budget counts real spend only: a running run at its spend so far; a queued run starts while spent is under the cap; drafts and forks skip with a reason", async () => {
@@ -402,6 +403,7 @@ test("two mandatory combos: each must finish; a failing one retries with backoff
   w.results.set("c-5", { state: "failed", why: "github is unreachable", billed_usd: 0 });
   await w.tick({ github: false });
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "failed past its retries: infrastructure never stalls the merge");
+  assert.equal(w.statuses.at(-1).reason, "failed", "GitHub's status says the review failed, not that it passed review");
   // The opening review finished (codex), so the next head is a push, reviewed whole (nothing was covered).
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started.slice(5).map((s) => [s.head, label(s), s.incremental_from]), [[sha("3"), "codex/low", null]]);
@@ -463,6 +465,7 @@ test("an answer on a gating finding's thread closes it: fixed, disputed, by desi
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   w.finish(2, { findings: [], unsafe: ["f1"] }); await w.tick();
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["findings"], "the recheck found the answer unsafe: open again");
+  assert.deepEqual(w.posted.at(-1).review.findings.map((f) => [f.id, f.title]), [["f1", "Reopened, its answer found unsafe: t"]], "its post shows why it came back");
 });
 test("a PR open before its repo was gated gets its mandatory review; a fork's author can't answer a finding closed", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [CODEX] }] });
@@ -539,4 +542,33 @@ test("on a gated repo, `aiden review stop` (anyone posting as the owner can writ
   assert.deepEqual(w.started.slice(2).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"]], "the queued mandatory run stays; the advice is dropped");
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("4"), "codex/low"]]);
+});
+
+test("an `aiden review` at a head never drops the push reviewers still running there; an opening review that completed makes the next head a push, even when its post was refused", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 rejected" }); await w.tick({ github: false });
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started.slice(1).map(label), ["codex/low"], "a push, not the opening batch again");
+  w.later(1000); w.say(2, "alice", "aiden review"); await w.tick();
+  w.finish(2, NONE); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"], "the push reviewer still runs");
+  w.finish(1, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+});
+
+test("a repo no longer gated retires its status once: a pending write is settled by its id, never filed again", async () => {
+  const g = gatedWorld();
+  await opened(g, 2, sha("2"));
+  await g.tick(); // its status settled: the PR has one
+  const w = world({ db: g.db, repos: [{ repo: REPO }] });
+  w.pr(2, sha("2"));
+  w.outcomes.set("s-1", { state: "pending" });
+  await w.tick(); await w.tick();
+  assert.deepEqual(w.statuses.map((s) => s.reason), ["ungated"], "pending: not filed again");
+  w.outcomes.delete("s-1");
+  await w.tick(); await w.tick();
+  assert.equal(w.statuses.length, 1);
+  assert.equal(g.db.prepare("SELECT status_key FROM prs WHERE number = 2").get().status_key, "retired");
 });

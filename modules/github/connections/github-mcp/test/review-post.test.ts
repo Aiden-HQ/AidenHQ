@@ -77,6 +77,7 @@ describe("rendering model text", () => {
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "running", important: 2, running: [{ model: "anthropic/claude-haiku-5.5", effort: "medium" }] })).toEqual({ state: "pending", description: "Reviewing with Haiku 5.5 (medium) · 2 important findings open" });
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "findings", important: 1, running: [] }).state).toBe("failure");
     expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "pass", important: 0, running: [] }).state).toBe("success");
+    expect(renderStatus({ repo: "a/b", pr: 1, head: HEAD, reason: "failed", important: 0, running: [] })).toMatchObject({ state: "success", description: expect.stringMatching(/^Not reviewed: the review failed/) });
   });
 
   it("redacts a long multi-line secret whole at every text scale, in the card and the post: never a cut that slips past", async () => {
@@ -121,7 +122,10 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     if (method === "GET" && /\/compare\/[0-9a-f]{40}\.\.\.[0-9a-f]{40}$/.test(url.pathname)) return ok({ files: [{ filename: "src/pay.ts", patch: PATCH }, { filename: "logo.png" }] });
     if (method === "GET" && url.pathname.endsWith("/pulls/12/files")) return ok([{ filename: "src/pay.ts", patch: PATCH }, { filename: "logo.png" }]);
     if (method === "GET" && url.pathname.endsWith("/pulls/12/reviews")) return ok(state.reviews);
-    if (method === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(url.pathname)) return ok((state.reviews[0]?.comments ?? []).map((c: { body: string }, i: number) => ({ id: 501 + i, html_url: `https://github.com/acme/payments/pull/12#discussion_r${501 + i}`, body: c.body })));
+    if (method === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(url.pathname)) {
+      const per = Number(url.searchParams.get("per_page") ?? 30), from = (Number(url.searchParams.get("page") ?? 1) - 1) * per;
+      return ok((state.reviews[0]?.comments ?? []).map((c: { body: string }, i: number) => ({ id: 501 + i, html_url: `https://github.com/acme/payments/pull/12#discussion_r${501 + i}`, body: c.body })).slice(from, from + per));
+    }
     if (method === "PUT" && /\/pulls\/12\/reviews\/\d+$/.test(url.pathname)) { state.reviews[0]!.body = body.body; return ok(state.reviews[0]); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/comments")) return ok({ id: 601, html_url: "https://github.com/acme/payments/pull/12#discussion_r601" }, 201);
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status$/.test(url.pathname)) return ok({ statuses: state.status ? [state.status] : [] });
@@ -198,6 +202,20 @@ describe("posting", () => {
     const w = world({ threads: [thread("T1", "f_on_line1", "owner1", 41)] });
     const out = JSON.parse((await poster(w).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)]), { own: [41] }))).text);
     expect(out).toMatchObject({ inline: 0, earlier: 1 });
+  });
+
+  it("reads back every inline comment of a review past GitHub's page of 100", async () => {
+    const w = world();
+    const out = JSON.parse((await poster(w).execute("post", postArgs(review(Array.from({ length: 120 }, (_, i) => finding(`f_many_${100 + i}`, "src/pay.ts", 2)))))).text);
+    expect(out.comments).toHaveLength(120);
+  });
+
+  it("threads only findings the card showed: one an earlier review threaded doesn't free a slot for another", () => {
+    const nits = review(Array.from({ length: 16 }, (_, i) => finding(`f_nit_${100 + i}`, "src/pay.ts", 2, { severity: "nit" })));
+    const card = new Set(renderReview(nits, "r").comments.map((c) => c.id));
+    const post = renderReview(nits, "r", { earlier: new Map([["f_nit_100", "https://github.com/t/1"]]) }).comments.map((c) => c.id);
+    expect(post).toHaveLength(14);
+    expect(post.every((id) => card.has(id))).toBe(true);
   });
 
   it("resolves only the threads code review recorded as its own posts (its database), for findings no longer reported", async () => {

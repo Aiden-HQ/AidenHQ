@@ -91,7 +91,7 @@ The service reads the watched repos every `code_review_poll_seconds` (default 60
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
 rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR's opening
-moment (`on_open`, or `aiden review`) finished, whole or partial; a PR pushed to before that gets its first review (`on_open`)
+moment (`on_open`, or `aiden review`) completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
 retries by itself (a mandatory one up to three times, 1, 4 and 16 minutes later; any other once, a minute later), each retry on
 what is left of its `run_usd`; a check that failed before it got a computer spent nothing. A run starts only while the day's real spend is under the
@@ -100,8 +100,8 @@ superseded and never posts (one that merged while it ran still posts; one closed
 silent: draft, fork, budget, closed, stopped, superseded.
 
 Commands in a PR comment (`service/src/commands.ts`): a comment whose first word is `aiden` (an `@` before it is accepted, never
-written by us: it would ping a GitHub user). Only the first line counts, never a later line, a quote, a code block or our own
-post; the commenter needs write access now:
+written by us: it would ping a GitHub user). Only the first line counts, and only as a whole command from the table (prose
+that starts "aiden review is ..." is no command), never a later line, a quote, a code block or our own post; the commenter needs write access now:
 
 | Comment | Effect |
 |---|---|
@@ -194,9 +194,12 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
   the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
-  and a finding answered and reported again stays answered. There is no judge.
+  and a finding answered and reported again stays answered. A reopened finding goes in that run's post, titled as reopened,
+  its row linking its earlier thread. Answers are rechecked at every new head, one that changes only lockfiles or ignored
+  files included. There is no judge.
 - **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's
-  `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer of the head's moment has a run at the head that is done
+  `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer of every moment the head has mandatory runs for (a push's and an `aiden review`'s
+  alike) has a run at the head that is done
   (whole or partial) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks
   (not started, the PR moved, queued or running, skipped, findings open). There is no fail.
 - **Merge gate.** `modules/github/service/src/review-gate.ts`: before the merge call at the bound head, a gated repo's PR asks

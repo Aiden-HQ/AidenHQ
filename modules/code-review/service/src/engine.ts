@@ -20,8 +20,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
+import type { Ack, Finding, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
+
+/** How a finding reopened by an unsafe answer says so in the post (fixed words). */
+const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The recheck found the answer to this finding unsafe: its fix or reason hides the problem or adds one.\n\n" };
 
 export const DEBOUNCE = 60_000;
 /** A post refused by something other than a decision (stale after a restart, a failed GitHub call) is filed once more after this. */
@@ -391,6 +394,14 @@ export function createEngine(d: EngineDeps) {
     const gh = pr ? await d.source.get(r.repo, r.number).catch(() => undefined) : undefined;
     if (pr && !gh) return void log("finished review not applied yet: its PR can't be read now; the next tick asks again", { run: r.id });
     const stale = !!gh && gh.open && gh.head !== r.head;
+    // A claim the mandatory recheck found unsafe opens again (below) and goes in this run's post, saying so, so GitHub shows why
+    // it came back (its row links its earlier thread).
+    const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
+    for (const id of unsafe) {
+      const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, why, evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, id);
+      if (f && !review.findings.some((x) => x.id === id)) review.findings.push({ ...f, title: `${REOPENED.title}${f.title.replace(REOPENED.title, "")}`.slice(0, 200),
+        why: `${REOPENED.why}${f.why.replace(REOPENED.why, "")}`.slice(0, 3000), fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." });
+    }
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
       run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ? WHERE id = ?",
@@ -405,7 +416,6 @@ export function createEngine(d: EngineDeps) {
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed ? iso() : null, claimed?.claim ?? null);
       }
       // A claim the mandatory recheck found unsafe or malicious (it hides the problem, or the fix adds one): open again.
-      const unsafe = r.mandatory ? (review.unsafe ?? []).filter((x) => typeof x === "string") : [];
       for (const id of unsafe) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL", r.repo, r.number, id).changes)
         dispose([id], r, "open", "the recheck found the answer's fix or reason unsafe", `run:${r.id}`);
       // What the recheck confirmed gone at this head: fixed, wherever it was found (and not found again by this run). A gating
@@ -625,9 +635,9 @@ export function createEngine(d: EngineDeps) {
   }
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
   /** A new head is a push (on_push, from the baseline) once any review of the PR's opening moment (on_open, or `aiden review`)
-   * finished; until then (a push before it finished) the newest head gets the first review. A skipped or superseded run never
-   * counts, and nothing waits on coverage: a partial review is still a review. */
-  const pushed = (_cfg: Repo, p: PullRequest, _was?: unknown) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND moment = 'open' AND kind != 'oneoff' AND status = 'done'", p.repo, p.number);
+   * completed, whatever became of its post; until then (a push before it finished) the newest head gets the first review. A
+   * skipped or superseded run never counts, and nothing waits on coverage: a partial review is still a review. */
+  const pushed = (_cfg: Repo, p: PullRequest, _was?: unknown) => !!one("SELECT 1 FROM runs JOIN reviews ON reviews.run = runs.id WHERE repo = ? AND number = ? AND moment = 'open' AND kind != 'oneoff' AND complete IS NOT NULL", p.repo, p.number);
   /** The mandatory reviewers a gated head lacks (any run of that combo at the head counts, whatever its end), for the moment its
    * latest mandatory run was; none at all: its trigger. Each missing one is queued beside what is there. */
   function missing(cfg: Repo, p: PullRequest) {
@@ -720,7 +730,12 @@ export function createEngine(d: EngineDeps) {
   function mirrored(repo: string, n: number, head: string): Mirror {
     const v = verdict(repo, n, head);
     const busy = all<{ model: string; effort: string; status: string }>("SELECT model, effort, status FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND status IN ('queued', 'running') ORDER BY created", repo, n, head);
-    const code = v.reasons[0]?.code ?? "pass";
+    // A pass with a mandatory reviewer whose latest run at the head failed past its retries (no review stored) says so: it
+    // passes without that review, never looks reviewed.
+    const failed = !v.reasons.length && !!one(`SELECT 1 FROM runs r WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' AND status = 'failed'
+      AND NOT EXISTS (SELECT 1 FROM reviews v WHERE v.run = r.id)
+      AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.repo = r.repo AND x.number = r.number AND x.head = r.head AND x.mandatory = 1 AND x.kind != 'oneoff' AND x.engine = r.engine AND x.model = r.model AND x.effort = r.effort AND x.created > r.created)`, repo, n, head);
+    const code = v.reasons[0]?.code ?? (failed ? "failed" : "pass");
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
     const partial = !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
@@ -741,7 +756,12 @@ export function createEngine(d: EngineDeps) {
     const gatedRepos = new Set(d.config().repos.filter(gated).map((c) => c.repo));
     for (const p of all<{ repo: string; number: number; head: string }>("SELECT repo, number, head FROM prs WHERE open = 1 AND status_key IS NOT NULL AND status_key != 'retired'")) {
       if (gatedRepos.has(p.repo)) continue;
-      const o = await d.poster.status({ repo: p.repo, number: p.number, head: p.head, reason: "ungated", important: 0, running: [] }).catch(() => ({ state: "refused" as const }));
+      // Filed and pending: settled on later ticks (its write id kept), never filed again meanwhile.
+      const id = `${p.repo}@${p.head}`, filed = statusFiled.get(id);
+      const o: Posted = filed ? await d.poster.outcome(filed.write).catch(() => ({ state: "pending" as const }))
+        : await d.poster.status({ repo: p.repo, number: p.number, head: p.head, reason: "ungated", important: 0, running: [] }).catch(() => ({ state: "refused" as const }));
+      if (o.state === "pending" && (o.write ?? filed?.write)) { statusFiled.set(id, { key: "retired", write: (o.write ?? filed?.write)! }); continue; }
+      statusFiled.delete(id);
       if (o.state === "posted") run("UPDATE prs SET status_key = 'retired' WHERE repo = ? AND number = ?", p.repo, p.number);
     }
     for (const cfg of d.config().repos) {
@@ -846,12 +866,15 @@ export function createEngine(d: EngineDeps) {
     if (!p) return wait({ code: "not_started", text: "the review hasn't started: code review hasn't seen this pull request yet", unblock: "it starts by itself within a minute or two" });
     if (p.head !== head) return wait({ code: "moved", text: `code review sees the pull request at ${p.head.slice(0, 12)}, not ${head.slice(0, 12)}: the newer head is being reviewed`, unblock: "it resumes by itself once the head is reviewed" });
     const reasons: Reason[] = [];
-    // Each mandatory reviewer of the head's moment (its latest mandatory run's; none yet: on_open) has a run at the head that is
-    // done (whole or partial: a partial review is still a review) or failed past its retries; queued or running ones wait. A
-    // missing one is queued by the next poll.
+    // Each mandatory reviewer of every moment the head has mandatory runs for (a push's and an `aiden review`'s alike; skipped
+    // ones count only when nothing else is there; none yet: on_open) has a run at the head that is done (whole or partial: a
+    // partial review is still a review) or failed past its retries; queued or running ones wait. A missing one is queued by the
+    // next poll.
     const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND kind != 'oneoff' ORDER BY created DESC", repo, n, head);
-    const m = runs.find((r) => r.mandatory)?.moment === "push" ? cfg.on_push : cfg.on_open;
-    const latest = m.filter((c) => c.mandatory).map((c) => runs.find((r) => r.mandatory && r.engine === c.engine && r.model === c.model && r.effort === c.effort));
+    const mand = runs.filter((r) => r.mandatory), live = mand.filter((r) => r.status !== "skipped");
+    const moments = new Set((live.length ? live : mand.slice(0, 1)).map((r) => (r.moment === "push" ? "push" : "open")));
+    const combos = (moments.size ? [...moments] : ["open"]).flatMap((m) => (m === "push" ? cfg.on_push : cfg.on_open).filter((c) => c.mandatory));
+    const latest = combos.map((c) => runs.find((r) => r.mandatory && r.engine === c.engine && r.model === c.model && r.effort === c.effort));
     const busy = latest.filter((r) => r && (r.status === "queued" || r.status === "running"));
     if (!runs.some((r) => r.mandatory)) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (busy.length || latest.some((r) => !r)) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r!.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });

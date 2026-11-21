@@ -85,7 +85,8 @@ export type Call = { tool: string; path?: string; from?: number; stat?: boolean;
  */
 export function shellDiff(command: unknown, base: string): Call[] {
   const c = String(command ?? "").replace(/^\s*cd\s+\S+\s*&&\s*/, ""); // `cd <repo> && git diff …`
-  if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]|--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw)\b/.test(c)) return [];
+  // Not a read of the diff: a listing, no patch (--no-patch, -s, --quiet, --exit-code, --check) or output written to a file.
+  if (!/^\s*git\b[^|;&<>]*\bdiff\b/.test(c) || /[|;&<>]|--(stat|numstat|shortstat|name-only|name-status|summary|dirstat|raw|no-patch|quiet|check|exit-code|output)\b|\s-[A-Za-z]*s\b/.test(c)) return [];
   // The range ends the command, or ends what comes before ` -- <paths>`: `git diff <base> HEAD src/x` names paths without `--`,
   // which isn't a read of the whole diff (nor one counted per path).
   const range = c.split(/\s--\s/)[0]!;
@@ -227,7 +228,10 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
 
 /** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
  * result (never a word inside the diff itself). */
-const CUT = /^"?(<persisted-output>|Output too large|\[?\d+ (characters|lines) truncated)/i;
+const CUT = /^\s*(<persisted-output>|Output too large|\[?\d+ (characters|lines) truncated)/i;
+/** A tool result (a plain string, or an array of text blocks) that didn't come back whole. */
+export const cutShort = (content: unknown) =>
+  CUT.test((typeof content === "string" ? content : Array.isArray(content) ? content.map((b) => (typeof b?.text === "string" ? b.text : "")).join("\n") : "").slice(0, 400));
 
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
@@ -274,7 +278,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     }
     for (const e of events) for (const c of e.type === "user" ? e.message?.content ?? [] : []) {
       const reads = c.type === "tool_result" && c.tool_use_id ? shell.get(c.tool_use_id) : undefined;
-      if (reads && !c.is_error && !CUT.test(JSON.stringify(c.content ?? "").slice(0, 400))) calls.push(...reads);
+      if (reads && !c.is_error && !cutShort(c.content)) calls.push(...reads);
     }
     const end = events.findLast((e) => e.type === "result");
     return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error };
