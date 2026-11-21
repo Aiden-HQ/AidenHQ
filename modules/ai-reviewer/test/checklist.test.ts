@@ -62,9 +62,15 @@ test("the checklist comes from the service, so a change editing it doesn't chang
   assert.doesNotMatch(prompt.user.split("<<<DIFF")[0], /planted-by-pr/);
   assert.equal(v.decision, "approve");
   assert.match(v.reason, /Checklist: reviewer-cases-kept holds, exposure-pins holds\./);
-  // Fail closed: a triggered item the model leaves out is a failed item, not a pass.
+  // A triggered item the model leaves out is asked for once more; reported then, the approval stands (owner, 2026-11-21:
+  // only an explicit false rejects).
+  let calls = 0;
+  const reasked = await review({ card, diff: own + mount, policy: "p", ask: async (_m, p) => ((prompt = p), calls++ ? answer(true, ["exposure-pins", "reviewer-cases-kept"]) : answer(true)) });
+  assert.deepEqual([reasked.decision, calls], ["approve", 2]);
+  assert.match(prompt.user, /did not report these SECURITY_CHECKLIST items: reviewer-cases-kept\./);
+  // Left out again: code's unsure, so another reviewer decides; never a reject for the omission alone.
   const unreported = await review({ card, diff: own + mount, policy: "p", ask: async () => answer(true) });
-  assert.deepEqual([unreported.decision, unreported.code], ["reject", "policy_other"]);
+  assert.deepEqual([unreported.decision, unreported.code], ["reject", "reviewer_unsure"], "not verified whole: back to the agent, never a policy reject");
   assert.match(unreported.reason, /reviewer-cases-kept/);
   // A failed item is a blocking finding, whatever the decision said.
   const failed = await review({ card, diff: mount, policy: "p", ask: async () => answer(false) });

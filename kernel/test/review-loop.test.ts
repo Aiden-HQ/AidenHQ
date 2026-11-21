@@ -101,11 +101,11 @@ test("the rejection that parks a task wakes its delegator once, with the reviewe
     assert.equal(told.length, n === MAX_REJECTS - 1 ? 1 : 0, `told only at the rejection that parks it (after ${n + 1})`);
   }
   assert.equal(told[0].task, "TASK-0", "the delegator: the task's parent, blocked on it");
-  assert.match(told[0].body, new RegExp(`^\\*\\*WOR-1 is stuck:\\*\\* the AI reviewer rejected acme\\.post on this task ${MAX_REJECTS} times[^]*comment on WOR-1 with your decision[^]*close it[^]*ask the owner[^]*\\x60{3}\\nkeep the shim out \\(${notes.at(-1)}\\)\\n\\x60{3}[^]*<!-- aidenhq-wake -->$`), "a wake notice: never read as the owner's words");
-  // Filed again: refused as parked by code (no model), and the delegator isn't told twice.
+  assert.match(told[0].body, new RegExp(`^\\*\\*WOR-1 is parked:\\*\\* the AI reviewer rejected acme\\.post on this task ${MAX_REJECTS} times, so it waits 30 minutes and then a panel reviews it again[^]*comment on WOR-1 with your decision[^]*close it[^]*\\x60{3}\\nkeep the shim out \\(${notes.at(-1)}\\)\\n\\x60{3}[^]*<!-- aidenhq-wake -->$`), "a wake notice: never read as the owner's words");
+  // Filed again within the cooldown: refused as parked by code (no model), and the delegator isn't told twice.
   const again = fileRecord(k.records, { args: { note: "z" } });
   await k.loop.tick();
-  assert.match(k.records.get(again.id).review ?? "", /^parked:/);
+  assert.match(k.records.get(again.id).review ?? "", /^parked until \S+Z: /);
   assert.deepEqual([told.length, owner.length, mod.seen.length], [1, 0, MAX_REJECTS]);
 });
 
@@ -318,7 +318,7 @@ test("the reviewer reads the task's comments under code's labels; a park lifts o
   for (let i = 0; i < MAX_REJECTS - 1; i++) assert.equal(await file(), true);
   assert.equal(await file(), false, "parked again after MAX_REJECTS more");
   await say("ag-aiden", "Decided: go on.");
-  assert.equal(await file(), false, "agents lift a target's park once (AGENT_LIFTS)");
+  assert.equal(await file(), false, "an agent's lift within the cooldown of the last one doesn't count (rate-limited)");
   // The owner's own words lift it whatever the count.
   await say("owner", "Yes, publish it.");
   assert.equal(await file(), true, "the owner's reply lifts it");

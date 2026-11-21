@@ -1,45 +1,41 @@
-// The panel's approve + reject (owner, 2026-11-20): back to the agent with both notes up to three times on a branch, the fourth
-// to the owner; splits never park it. An approve + unsure the reviewer approved still reaches the owner on a card that is theirs
-// on its merits.
+// Fail open, never stall (owner, 2026-11-21): a panel split is an ordinary rejection; a target parked at MAX_REJECTS waits out
+// the cooldown, then a panel reviews it again, and only after PANEL_TRIES panel rejections does the next request reach the
+// owner. No independent reviewer model left approves a Tier 1 write. An approve + unsure the reviewer approved still reaches
+// the owner on a card that is theirs on its merits.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { afterReview, meritOwner, priorDecisions, priorPart, requestKey, requestTargets, splitToOwner } from "../src/tier.ts";
+import { MAX_REJECTS, PANEL_TRIES, REVIEW_COOLDOWN_MS, afterReview, failOpen, meritOwner, priorDecisions, priorPart, requestKey, requestTargets } from "../src/tier.ts";
 
 const REPO = "acme/aidenhq";
-const split = (sha, at) => ({ id: `k-${sha[0]}`, action: "pr", args: { only: [{ repo: REPO, branch: "b1", sha }] }, state: "rejected", decidedBy: "reviewer:~acme/model-b", decidedAt: at, reviewCode: "panel_split", review: "the two reviewers split", digest: `d-${sha[0]}` });
-const verdict = { decision: "reject", code: "panel_split", reason: "The two reviewers split: fix it.", model: "~acme/model-b" };
+const rejected = (sha, at, extra = {}) => ({ id: `k-${sha.slice(0, 2)}-${at}`, action: "pr", args: { only: [{ repo: REPO, branch: "b1", sha }] }, state: "rejected", decidedBy: "reviewer:~acme/model-b", decidedAt: at, reviewCode: "panel_split", review: "the two reviewers split", digest: `d-${sha}-${at}`, ...extra });
 
-test("panel splits go back to the agent three times on a branch, the fourth to the owner, and never park it", () => {
+test("a parked branch waits out the cooldown, gets a panel on another family, and reaches the owner only after the panel rejects twice", () => {
   const next = { only: [{ repo: REPO, branch: "b1", sha: "f".repeat(40) }] };
-  const priorOf = (records) => priorDecisions(records, "pr", [], requestKey("pr", next), undefined, "chain", requestTargets("pr", next));
-  const splits = ["a", "b", "c"].map((c, i) => split(c.repeat(40), `2026-11-20T0${i + 1}:00:00.000Z`));
-  for (const n of [1, 2]) {
-    const p = priorOf(splits.slice(0, n));
-    assert.deepEqual([p.splits, p.rejects], [n, 0]);
-    assert.equal(splitToOwner({ tier: 1, splits: p.splits }, verdict).decision, "reject", `split ${n + 1} goes back`);
-  }
-  // Three send-backs: not parked (splits aren't the park bound's), and the fourth split goes to the owner.
-  const three = priorOf(splits);
-  assert.deepEqual([three.splits, three.rejects, priorPart(three)], [3, 0, undefined]);
-  const fourth = splitToOwner({ tier: 1, splits: three.splits }, verdict);
-  assert.deepEqual([fourth.decision, fourth.code], ["escalate", "panel_split"]);
-  assert.match(fourth.reason, /split again after 3 send-backs on this target, so the owner decides/);
-  // Any other reject is left as it is.
-  assert.equal(splitToOwner({ tier: 1, splits: 5 }, { ...verdict, code: "gate_change" }).decision, "reject");
+  const t0 = Date.parse("2026-11-20T00:00:00.000Z");
+  const at = (min) => new Date(t0 + min * 60_000).toISOString();
+  const priorOf = (records, now) => priorDecisions(records, "pr", [], requestKey("pr", next), undefined, "chain", requestTargets("pr", next), now);
+  // Splits count as rejections: five on one branch park it.
+  const five = Array.from({ length: MAX_REJECTS }, (_, i) => rejected(String(i).repeat(40), at(i)));
+  const parked = priorOf(five, t0 + 10 * 60_000);
+  assert.equal(parked.rejects, MAX_REJECTS);
+  assert.match(priorPart(parked, t0 + 10 * 60_000)?.reason ?? "", /^parked until 2026-11-20T00:34Z: /);
+  // Past the cooldown: reviewed again, as a panel, the last rejector's family asked last.
+  const later = t0 + (4 + REVIEW_COOLDOWN_MS / 60_000) * 60_000;
+  const panel = priorPart(priorOf(five, later), later);
+  assert.deepEqual([panel?.tier, panel?.panel, panel?.reject, priorOf(five, later).avoid], [1, true, undefined, "~acme/model-b"]);
+  // The panel rejects twice (each after its cooldown): the next request is the owner's card, reviewed first.
+  const more = [...five, ...Array.from({ length: PANEL_TRIES }, (_, i) => rejected(String(i + 5).repeat(40), at(40 + i * 40), { reviewCode: "gate_change" }))];
+  const owner = priorPart(priorOf(more, t0 + 600 * 60_000));
+  assert.deepEqual([owner?.tier, owner?.rule, owner?.reject], [2, "retries-owner", undefined]);
+  assert.equal(meritOwner(owner).byMerit, true);
 });
 
-test("after a panel split, the same commits come back for review once the request chain changed; the same chain stays refused", () => {
-  const HEAD = "a".repeat(40);
-  const same = { only: [{ repo: REPO, branch: "b1", sha: HEAD }] };
-  const priorOf = (records, chain) => priorDecisions(records, "pr", [], requestKey("pr", same), undefined, chain, requestTargets("pr", same));
-  const first = { ...split(HEAD, "2026-11-20T01:00:00.000Z"), requestChain: "chain-1" };
-  assert.equal(priorPart(priorOf([first], "chain-1"))?.rule, "rejected-content", "same commits, same chain: refused");
-  const lifted = priorOf([first], "chain-2");
-  assert.deepEqual([priorPart(lifted), lifted.splits], [undefined, 1], "a clarified brief: reviewed again, as the next split if it splits");
-  // It split again on chain-2: chain-2 is refused, a further clarification comes back.
-  const second = { ...split(HEAD, "2026-11-20T02:00:00.000Z"), id: "k-2", requestChain: "chain-2" };
-  assert.equal(priorPart(priorOf([first, second], "chain-2"))?.rule, "rejected-content");
-  assert.deepEqual([priorPart(priorOf([first, second], "chain-3")), priorOf([first, second], "chain-3").splits], [undefined, 2]);
+test("no reviewer model independent of the requester's approves a Tier 1 write; the owner's own cards still go to the owner", () => {
+  const v = { decision: "escalate", code: "no_independent_model", reason: "no second reviewer.", model: "~acme/model-a" };
+  assert.deepEqual([failOpen({ tier: 1 }, v).decision, failOpen({ tier: 1 }, v).model], ["approve", "kernel/code"]);
+  const theirs = meritOwner({ tier: 2, rule: "owner-veto", reason: "the owner rejected this action" });
+  assert.equal(afterReview(theirs, failOpen(theirs, v)).decision, "escalate");
+  assert.equal(failOpen({ tier: 1 }, { ...v, code: "reviewer_refused" }).decision, "escalate", "only no_independent_model fails open");
 });
 
 test("a reviewer approval on a card that is the owner's on its merits still goes to the owner", () => {
@@ -89,19 +85,17 @@ test("an approve + unsure on a record that is the owner's on its merits reaches 
   assert.equal(k.records.get(bare.id).state, "review");
 });
 
-test("a post's rejections and panel splits count per run: other runs of the task never park it, and splits of one run still reach the owner", () => {
+test("a post's rejections count per run: other runs of the task never park it, and one run retried five times is", () => {
   const post = (run, at, extra = {}) => ({ service: true, id: `k-${run}-${at}`, action: "code-review.post", args: { repo: REPO, pr: 7, head: "a".repeat(40), run }, state: "rejected", decidedBy: "reviewer:~acme/model-b", decidedAt: `2026-11-20T${at}:00:00.000Z`, reviewCode: "out_of_scope", review: "no", digest: `d-${run}-${at}`, ...extra });
-  const priorOf = (records, run) => priorDecisions(records, "code-review.post", [], undefined, undefined, "chain", requestTargets("code-review.post", { run }, true));
+  const now = Date.parse("2026-11-20T05:10:00.000Z");
+  const priorOf = (records, run) => priorDecisions(records, "code-review.post", [], undefined, undefined, "chain", requestTargets("code-review.post", { run }, true), now);
   const others = ["01", "02", "03", "04", "05", "06"].map((at) => post(`run-${at}`, at));
   const sibling = priorOf(others, "run-new");
-  assert.deepEqual([sibling.rejects, priorPart(sibling)], [0, undefined], "six rejected posts of other runs park nothing");
+  assert.deepEqual([sibling.rejects, priorPart(sibling, now)], [0, undefined], "six rejected posts of other runs park nothing");
   assert.equal(priorOf(others, "run-01").rejects, 1, "a run counts its own rejections");
   const same = ["01", "02", "03", "04", "05"].map((at) => post("run-x", at, { digest: `d-x-${at}` }));
-  assert.equal(priorPart(priorOf(same, "run-x"))?.rule, "retries-exhausted", "one run retried five times is parked");
-  const splits = ["01", "02", "03"].map((at) => post("run-s", at, { reviewCode: "panel_split" }));
-  const p = priorOf(splits, "run-s");
-  assert.equal(splitToOwner({ tier: 1, splits: p.splits }, verdict).decision, "escalate", "the fourth split of a run goes to the owner");
-  assert.equal(priorOf(splits, "run-other").splits, 0);
+  assert.equal(priorPart(priorOf(same, "run-x"), now)?.rule, "retries-exhausted", "one run retried five times is parked");
+  assert.equal(priorOf(same, "run-other").rejects, 0);
 });
 
 test("an agent's request is never aimed at a run it names: minting run ids doesn't dodge the park", () => {

@@ -170,8 +170,8 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
 /**
  * A task's approval record as tiering reads it. `answered`: who decided on the task after this rejection (review-loop.ts
  * answered): "owner", their own typed reply; "agent", a comment by the task's delegator or the chief of staff (never the
- * requester). An answered rejection no longer refuses the same content nor counts toward MAX_REJECTS; agents' answers lift
- * a target's park once (AGENT_LIFTS), the owner's every time.
+ * requester; at most one agent lift per REVIEW_COOLDOWN_MS). An answered rejection no longer refuses the same content nor
+ * counts toward MAX_REJECTS.
  */
 export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
@@ -266,114 +266,111 @@ export function requestTargets(action: string, s: any, service = false): { targe
 /** The targets a record was raised against (its card's args), for a rejection to be counted on. */
 const recordTargets = (r: Prior): Target[] => requestTargets(r.action, r.args, r.service)?.targets ?? [];
 
-/** Reviewer rejections one target's retries are bounded by: past this many (since the owner's last yes), it is parked. */
+/** Reviewer rejections one target's retries are bounded by: at this many (since the owner's last yes), it is parked. */
 export const MAX_REJECTS = 5;
 /**
- * The parks agents' answers lift on one target (the delegator's or the chief of staff's decision on the task): once
- * MAX_REJECTS * (AGENT_LIFTS + 1) rejections stand there, only the owner's own reply or yes moves it, so two agents never
- * retry a reviewer without end.
+ * How long a rejection holds before the same content gets one fresh review, a parked target its panel re-review, and how
+ * often an agent's answer lifts rejections on a task (owner, 2026-11-21: fail open rather than stall).
  */
-export const AGENT_LIFTS = 1;
-/** The key of what the reviewer read as the request: the chain and the agents' task comments (an unsure or a split lifts once it changes). */
+export const REVIEW_COOLDOWN_MS = 30 * 60_000;
+/** The panel re-reviews a parked target gets: when they all reject too, the next request is the owner's card. */
+export const PANEL_TRIES = 2;
+/**
+ * The key of what the reviewer read: the request chain, the agents' task comments and the reviewer's own inputs (the
+ * decisions digest, the product pin that carries the policy and the models). A rejection of the same content lifts once it changes.
+ */
 export const requestHash = (chain: string | undefined, comments?: string) => (chain ? createHash("sha256").update(comments ? `${chain}\n\n${comments}` : chain).digest("hex").slice(0, 32) : "");
-/** Panel splits (approve + reject) sent back to the agent on one target before the next goes to the owner (owner, 2026-11-20). */
-export const MAX_SPLITS = 3;
 /** Rejections code made without judging the change (it moved, couldn't be read, too large): they are never findings. */
 export const CODE_REJECTS = ["refused_by_code", "stale_head", "check_failed", "files_not_shown", "no_diff", "reviewer_failed"];
 const byOwner = (r: Prior) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/.test(r.decidedBy!);
 // An approved card a newer request replaced is `expired`, still decided (a yes).
 const decided = (r: Prior) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy);
 
+/** The model a reviewer rejection names (`reviewer:<model>`), for a fresh review on another family. */
+const rejector = (r: Prior | undefined) => (r?.decidedBy ?? "").replace(/^reviewer:/, "").split(/[+;]/)[0] || undefined;
+
 /**
  * Earlier decisions on a task for a request (owner, 2026-11-14), from its approval records of the action (or of one the
  * request also carries; only decided records, never a Tier 0 one):
  * - ownerVeto: the owner's latest decision on it was a no (their later yes withdraws that), or the owner rejected exactly
  *   this content and hasn't approved that same content since (an approval of other content doesn't lift it).
- * - rejects: the AI reviewer's unanswered rejections (Prior.answered) since the owner's last yes of the busiest of the branches or PRs `targets` names
- *   (tier.ts requestTargets), counted per target: a rejection belongs to a target by its name, or by the change's content key
- *   (a rebased or renamed resubmission on another branch), and never to a target it wasn't raised against, so three spread
- *   across three branches park none of them. At MAX_REJECTS a target is parked; without `targets` (an action that names
- *   neither branch nor PR) the task is the target, as before.
- * - same: one of those rejected exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed
- *   resubmission of the same change; a conn.tool call's or module kind's digest): it stays rejected (its note), refused by
- *   code before any review (owner, 2026-11-18: refile only after a fix). Two reviewers' unsure lifts once, after the request
- *   chain changed (`chain`: the current chain's hash); a panel split lifts each time the chain changed since every split of
- *   that content. A conn.tool call whose arguments can't change (a close, a label) is
- *   refused unchanged on this task once rejected: the agent reports back instead.
- * - splits: the most panel splits (approve + reject, panel_split) on one target, counted apart from `rejects` (they never
- *   park it): after MAX_SPLITS of them the next goes to the owner (splitToOwner).
- * - findings: every one of those notes, attached to the next review.
+ * - rejects: the AI reviewer's unanswered rejections (Prior.answered; a panel split is one too) since the owner's last yes of
+ *   the busiest of the branches or PRs `targets` names (tier.ts requestTargets), counted per target: a rejection belongs to a
+ *   target by its name, or by the change's content key (a rebased or renamed resubmission on another branch), and never to a
+ *   target it wasn't raised against, so three spread across three branches park none of them. Without `targets` (an action
+ *   that names neither branch nor PR) the task is the target. `parkedUntil`: at MAX_REJECTS, the busiest target's last
+ *   rejection plus the cooldown (priorPart).
+ * - same: exactly this content (requestKey, or the same patch keys: an amended, rebased or renamed resubmission; a conn.tool
+ *   call's or module kind's digest) was rejected twice, or once and neither the reviewer's inputs (`chain`: the request chain,
+ *   the agents' comments, the decisions digest and the product pin, hashed) changed since nor the cooldown passed. Its note;
+ *   refused by code before any review. One rejection gets one fresh review (owner, 2026-11-21: only a second is final).
+ * - avoid: the model whose rejection a fresh review or a parked target's panel re-review follows: the reviewer asks another
+ *   family first where it can.
+ * - findings: every unanswered rejection's note, attached to the next review.
  */
-export function priorDecisions(records: Prior[], action: string, also: string[] = [], key?: string, patches?: string | null, chain?: string, targets?: { targets: Target[]; label: string }) {
+export function priorDecisions(records: Prior[], action: string, also: string[] = [], key?: string, patches?: string | null, chain?: string, targets?: { targets: Target[]; label: string }, now = Date.now(), cooldown = REVIEW_COOLDOWN_MS) {
   const want = [action, ...(also ?? [])];
   const mine = (records ?? []).filter((r) => decided(r) && carried(r).some((x) => want.includes(x))).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
   const lastOwner = mine.filter(byOwner).at(-1);
   const ownerYes = mine.filter((r) => byOwner(r) && r.state !== "rejected").at(-1);
   const approvedLater = (r: Prior) => mine.some((y) => y.state !== "rejected" && String(y.decidedAt) > String(r.decidedAt) && recordKey(y) !== undefined && recordKey(y) === recordKey(r));
   const judged = mine.filter((r) => r.state === "rejected" && r.decidedBy!.startsWith("reviewer:") && !CODE_REJECTS.includes(r.reviewCode ?? "") && (!ownerYes || String(r.decidedAt) > String(ownerYes.decidedAt)) && !approvedLater(r));
+  const open = judged.filter((r) => !r.answered);
   // The retry bound is per target: each rejection is counted on the branch or PR it was raised against (by name), or on this
-  // request's target whose content key it carries. `rejects` is the busiest target's count: three rejections spread one each
-  // across three branches park none of them, and a multi-branch request is parked when any one of its branches is.
+  // request's target whose content key it carries. A multi-branch request is parked when any one of its branches is.
   const asked = new Map((targets?.targets ?? []).filter((t) => typeof t.patch === "string").map((t) => [t.key, t.patch!]));
-  // `count`: the unanswered rejections; `held`: those plus the ones only an agent answered, which hold the park again once
-  // agents have lifted it AGENT_LIFTS times (the owner's answer lifts it whatever the count).
-  const count = new Map<string, number>();
-  const held = new Map<string, number>();
-  const splitCount = new Map<string, number>();
-  for (const r of targets?.targets.length ? judged : []) {
-    // Each rejection counts once per target: the branch it names, and this request's target carrying its patch key. A record
-    // matching both is still one rejection on that branch (the Set).
-    const named = new Set(recordTargets(r).map((t) => t.key).filter((k) => targets!.targets.some((x) => x.key === k)));
-    const byPatch = new Set<string>((r.args?.only ?? r.args?.prs ?? []).flatMap((x: any) => (typeof x?.patch === "string" ? [...asked].filter(([, p]) => p === x.patch).map(([k]) => k) : [])));
+  const onTarget = new Map<string, Prior[]>();
+  for (const r of targets?.targets.length ? open : []) {
+    // Each rejection counts once per target: the branch it names, and this request's target carrying its patch key.
+    const named = recordTargets(r).map((t) => t.key).filter((k) => targets!.targets.some((x) => x.key === k));
+    const byPatch = (r.args?.only ?? r.args?.prs ?? []).flatMap((x: any) => (typeof x?.patch === "string" ? [...asked].filter(([, p]) => p === x.patch).map(([k]) => k) : []));
     // The same content as this whole request (its commits, or its patch keys) counts on every target it names, so renaming
     // the branch never resets the bound, even when a patch key couldn't be computed.
     const byContent = (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches) ? targets!.targets.map((t) => t.key) : [];
-    // A panel split (approve + reject) has its own bound (MAX_SPLITS), never the park bound's.
-    const bounds = r.reviewCode === "panel_split" ? [splitCount] : [...(r.answered ? [] : [count]), ...(r.answered === "owner" ? [] : [held])];
-    for (const k of new Set([...named, ...byPatch, ...byContent])) for (const bound of bounds) bound.set(k, (bound.get(k) ?? 0) + 1);
+    for (const k of new Set<string>([...named, ...byPatch, ...byContent])) onTarget.set(k, [...(onTarget.get(k) ?? []), r]);
   }
-  const parks = (n: number[]) => Math.max(0, ...n);
-  const unanswered = judged.filter((r) => r.reviewCode !== "panel_split");
-  const [open, agentHeld] = targets?.targets.length ? [parks([...count.values()]), parks([...held.values()])] : [unanswered.filter((r) => !r.answered).length, unanswered.filter((r) => r.answered !== "owner").length];
-  const rejects = agentHeld >= MAX_REJECTS * (AGENT_LIFTS + 1) ? agentHeld : open;
-  const splits = targets?.targets.length ? Math.max(0, ...splitCount.values()) : judged.filter((r) => r.reviewCode === "panel_split").length;
-  // Two reviewers unsure (reviewer_unsure) is about the request: the fix is often the brief or an authorisation, so the
-  // same commits may come back once, after the request chain changed (`chain`, its hash now; `requestChain`, its hash
-  // when they were unsure). The chain is agent-editable, so that lift happens at most once per content: unsure again there
-  // is a second rejection of the same content, which stays rejected. Unchanged or unknown chain, or any other rejection of
-  // the content, and it stays rejected. It still counts toward MAX_REJECTS (on the branch
-  // it was raised against). Content is judged task-wide: this is about what was written, not where it was aimed.
-  const rejectedSame = key || typeof patches === "string" ? judged.filter((r) => !r.answered).filter((r) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches)) : [];
+  // The busiest target (the latest rejected on a tie); its rejections are in decision order.
+  const busiest = targets?.targets.length ? [...onTarget.values()].reduce<Prior[]>((a, b) => (b.length > a.length || (b.length === a.length && String(b.at(-1)?.decidedAt) > String(a.at(-1)?.decidedAt)) ? b : a), []) : open;
+  const rejects = busiest.length;
+  const lastAt = Date.parse(String(busiest.at(-1)?.decidedAt ?? ""));
+  const parkedUntil = rejects >= MAX_REJECTS && Number.isFinite(lastAt) ? lastAt + cooldown : undefined;
+  // Content is judged task-wide: this is about what was written, not where it was aimed. One rejection of it gets one fresh
+  // review once the reviewer's inputs changed (`chain` now, `requestChain` then; the requester may edit the chain and the
+  // comments, so this lifts once per content: a second rejection of it is final) or after the cooldown.
+  const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
+  const rejectedSame = key !== undefined || typeof patches === "string" ? open.filter(sameContent) : [];
   const [only] = rejectedSame;
-  // A panel split (approve + reject) is often the brief's fault too (WOR-8812: the code was right, the brief contradicted
-  // itself): the same commits come back each time the chain changed since every split of them (each re-review that splits
-  // again is the next split, MAX_SPLITS). The same chain stays refused.
-  const unsureLift = rejectedSame.length === 1 && only!.reviewCode === "reviewer_unsure" && Boolean(only!.requestChain) && Boolean(chain) && only!.requestChain !== chain;
-  const splitLift = rejectedSame.length > 0 && Boolean(chain) && rejectedSame.every((r) => r.reviewCode === "panel_split" && Boolean(r.requestChain) && r.requestChain !== chain);
-  const lifted = unsureLift || splitLift;
-  const sameOne = lifted ? undefined : rejectedSame[0];
+  const fresh = rejectedSame.length === 1 && ((Boolean(chain) && only!.requestChain !== chain) || now - Date.parse(String(only!.decidedAt ?? "")) >= cooldown);
+  const sameOne = fresh ? undefined : rejectedSame.at(-1);
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
-  const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, splits, findings: judged.filter((r) => !r.answered).map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  const avoid = fresh ? rejector(only) : rejects >= MAX_REJECTS ? rejector(busiest.at(-1)) : undefined;
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, ...(parkedUntil !== undefined ? { parkedUntil } : {}), ...(avoid ? { avoid } : {}), findings: open.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
-/** What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a retry past the bound. */
-export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
+/**
+ * What earlier decisions do to a request: the owner's veto (their card), a rejected change resent, a parked target. A target
+ * the AI reviewer rejected MAX_REJECTS times is parked for the cooldown, then reviewed again by the panel (another family
+ * first); PANEL_TRIES panel rejections more and the next request is the owner's card, reviewed first (owner, 2026-11-21:
+ * a cooldown and a panel, never a permanent park).
+ */
+export function priorPart(p: ReturnType<typeof priorDecisions> | undefined, now = Date.now()): Part | undefined {
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)}). Change what it found and file the changed request, or report back to whoever asked why it can't change`);
-  if (p.rejects >= MAX_REJECTS) return REJECT("retries-exhausted", `parked: the AI reviewer rejected this action ${p.rejects} times on ${(p as { scope?: string }).scope ?? "this task"}, so it isn't reviewed again here until a decision on the task lifts it (whoever delegated the task, or the chief of staff, once; after that, only the owner). A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer rejected exactly this request on this task and it isn't reviewed again unchanged now (its note: ${String(p.same).slice(0, 400)}). One rejection gets one fresh review once the request, the task's comments or the reviewer's inputs change, or ${REVIEW_COOLDOWN_MS / 60_000} minutes after it; a second is final. Change what it found and file the changed request, or report back to whoever asked why it can't change`);
+  const scope = p.scope ?? "this task";
+  if (p.rejects >= MAX_REJECTS + PANEL_TRIES) return T(2, "retries-owner", `the AI reviewer rejected this action ${p.rejects} times on ${scope}, the last ${PANEL_TRIES} as a panel after a cooldown, so the owner decides`);
+  if (p.rejects >= MAX_REJECTS && (p.parkedUntil ?? 0) > now) return REJECT("retries-exhausted", `parked until ${new Date(p.parkedUntil!).toISOString().slice(0, 16)}Z: the AI reviewer rejected this action ${p.rejects} times on ${scope}. After that a panel of two reviewers reviews it again, and a decision on the task by whoever delegated it or the chief of staff lifts it now. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
+  if (p.rejects >= MAX_REJECTS) return { tier: 1, rule: "retries-panel", reason: `the AI reviewer rejected this action ${p.rejects} times on ${scope}: a panel reviews it again`, panel: true };
   return undefined;
 }
 
 // ------------------------------------------------------------------ the reviewer's verdict on a record
 
 /** The requester's tier input for a review (its classify() now, or code's refusal), with the record's review-first kept. */
-/** `splits`: the panel splits (approve + reject) already on the record's busiest target (priorDecisions). */
-export type ReviewInput = Part & { error?: string; lasting?: boolean; stale?: boolean; splits?: number };
+export type ReviewInput = Part & { error?: string; lasting?: boolean; stale?: boolean };
 /** A record filed review-first stays so, whatever the tier input says now (raise only). */
 export function heldInput(input: ReviewInput, reviewFirst: ReviewFirst | null | undefined): ReviewInput {
   if (reviewFirst && !input.error && !input.reject && (input.tier < 2 || input.reviewFirst)) return { ...input, reviewFirst: true, ...(reviewFirst === "owner" ? { byMerit: true } : {}) };
@@ -392,13 +389,14 @@ export const REVIEW_TRIES = 6;
 export const failedVerdict = (input: ReviewInput, v: Verdict, n: number): Verdict =>
   input.byMerit ? { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` } : { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
 /**
- * The panel's approve + reject (reject, panel_split) goes back to the agent with both notes, up to MAX_SPLITS times on its
- * target; the next one goes to the owner (owner, 2026-11-20: "go back for fix up to 3 times and only then escalate"). Splits
- * never count toward the park bound (MAX_REJECTS).
+ * No reviewer model independent of the requester's and the reviewers' (the reviewer's no_independent_model): a Tier 1 write
+ * fails open, approved by code with the reviewers' notes; a card that is the owner's on its merits keeps going to the owner
+ * (owner, 2026-11-21: "the AI I'm using is not the threat vector"). A review-first card's approve still goes on to the owner
+ * (afterReview).
  */
-export const splitToOwner = (input: ReviewInput, v: Verdict): Verdict =>
-  v.decision === "reject" && v.code === "panel_split" && (input.splits ?? 0) >= MAX_SPLITS
-    ? { ...v, decision: "escalate", reason: `The two AI reviewers split again after ${MAX_SPLITS} send-backs on this target, so the owner decides. ${v.reason}`.slice(0, 1990) }
+export const failOpen = (input: ReviewInput, v: Verdict): Verdict =>
+  v.decision === "escalate" && v.code === "no_independent_model" && !input.byMerit
+    ? { decision: "approve", code: "no_independent_model", model: "kernel/code", reason: `Approved by code: no reviewer independent of the requester and the reviewers was left, and a Tier 1 write fails open. ${v.reason}`.slice(0, 1990) }
     : v;
 /** autonomy tier0: the reviewer only comments, so its approve or reject goes to the owner as a note; off keeps a reject final. */
 export const shadowed = (v: Verdict, mode: Autonomy): Verdict =>

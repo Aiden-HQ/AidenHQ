@@ -110,8 +110,8 @@ request open over an hour without merging) or something recovered.
     agent; Aiden resumes the routine once it is fixed. Never pause or resume one yourself.
   - `missed:<id>:<schedule>`: a routine's next fire is over 15 minutes overdue and no run started, so Paperclip's scheduler is
     not firing. When several are open at once, say so in one line in the digest and ask the owner to check Paperclip.
-- **A parked branch nobody moved** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch three times, the
-  kernel parked it and woke the task's delegator (or the chief of staff when nobody delegated it), and six hours later nobody
+- **A parked branch nobody moved** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch five times, the
+  kernel parked it (a cooldown, then a panel) and woke the task's delegator (or the chief of staff when nobody delegated it), and six hours later nobody
   has moved it: no re-brief or answer on the task from its delegator or the owner, and no approved request on that branch. Read the task's cards and the reviewer's notes (`task_approvals`, `task_comments`) and the
   delegator's task. Ask for the call (shared section "Asking the owner": the chief of staff settles it) with a recommended default: re-brief it with what the reviewer needs, narrow the
   diff to the files the reviewer names, or close and re-scope. The reviewer's decision stands, and a waiver is the owner's
