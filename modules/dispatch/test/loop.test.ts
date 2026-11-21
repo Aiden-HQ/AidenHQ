@@ -813,8 +813,8 @@ test("a refusal a recompile clears is retried on the wake's next lease, then sai
 test("every refusal nothing clears is dropped at once, and each leaves a notice naming it and what became of the wake", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start;
-  // A closed task, a task another run answers, and a row the lease took back: no refusal is dropped in silence.
-  const refusals = [["task-closed", "task t1 is done", /Nothing is running on it/], ["job-running", "task t1 already has a job", /Another run already answers this task/], ["wake-not-claimed", "wake x isn't one this module claimed", /no longer held by the dispatcher/]] as const;
+  // A task another run answers, and a row the lease took back: no refusal is dropped in silence.
+  const refusals = [["job-running", "task t1 already has a job", /Another run already answers this task/], ["wake-not-claimed", "wake x isn't one this module claimed", /no longer held by the dispatcher/]] as const;
   for (const [i, [type, message, what]] of refusals.entries()) {
     k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type, message }); };
     k.inbox.push(wake(`issue:t1:${i + 1}`, "assigned"));
@@ -823,15 +823,32 @@ test("every refusal nothing clears is dropped at once, and each leaves a notice 
     assert.match(k.notes.at(-1)!.body, new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${type}: in the kernel's own words`);
     assert.match(k.notes.at(-1)!.body, what, `${type}: and what became of the wake`);
   }
-  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2", "issue:t1:3"], "each refused wake is dropped once, after its notice");
-  assert.equal(k.notes.length, 3, "one notice per dropped wake");
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2"], "each refused wake is dropped once, after its notice");
+  assert.equal(k.notes.length, 2, "one notice per dropped wake");
   k.kernel.start = start;
+});
+
+test("a wake made stale (reassigned, closed, missing) is dropped without telling the task or the owner", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  const refusals = [[403, "task-not-assigned"], [409, "task-closed"], [404, undefined]] as const;
+  for (const [i, [status, type]] of refusals.entries()) {
+    k.kernel.start = async () => { throw new KernelError(status, `kernel POST /v1/jobs → ${status}`, type ? { type, message: "stale" } : undefined); };
+    // task-not-assigned is retried on its lease first; the final try drops it.
+    for (let t = 0; t < (type === "task-not-assigned" ? 3 : 1); t++) { k.inbox.push(wake(`issue:t1:${i + 1}`, "assigned")); await k.dispatch.tick(); }
+  }
+  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1", "issue:t1:2", "issue:t1:3"]);
+  assert.deepEqual([k.notes.length, k.notified.length], [0, 0], "no task comment, no owner notice");
+  // A genuine refusal still says its piece.
+  k.kernel.start = async () => { throw new KernelError(403, "kernel POST /v1/jobs → 403", { type: "held", message: "held by policy" }); };
+  k.inbox.push(wake("issue:t1:9", "assigned"));
+  await k.dispatch.tick();
+  assert.equal(k.notes.length, 1);
 });
 
 test("a refused wake is not dropped until its refusal landed: the owner is told when the task won't take it, and kept when neither does", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start, note = k.kernel.note, notify = k.kernel.notify;
-  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "task-closed", message: "task t1 is done" }); };
+  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "held", message: "task t1 is held" }); };
   // The task won't take the notice (the same 409 a closed task gives): the owner hears the refusal, and only then is the row dropped.
   k.kernel.note = async () => { throw new KernelError(409, "kernel POST /v1/wakes/x/note → 409", { type: "task-closed", message: "no comment on a closed task" }); };
   k.inbox.push(wake("issue:t1:1", "assigned"));
@@ -841,8 +858,8 @@ test("a refused wake is not dropped until its refusal landed: the owner is told 
   assert.equal(k.notified[0].task, "WOR-1", "by identifier: the kernel's notify takes no Paperclip id");
   assert.equal(k.notified[0].dedupe_key, "refused-wake:issue:t1:1", "once per wake");
   assert.match(k.notified[0].text, /WOR-1 was not started/);
-  assert.match(k.notified[0].text, /task-closed/);
-  assert.match(k.notified[0].text, /task t1 is done/);
+  assert.match(k.notified[0].text, /held/);
+  assert.match(k.notified[0].text, /task t1 is held/);
   // Neither the task nor the owner takes it: the row stays claimed, so its lease brings it back rather than dropping it silently.
   k.kernel.notify = async () => { throw new KernelError(502, "the notify action answered 502"); };
   k.inbox.push(wake("issue:t1:2", "assigned"));
@@ -862,7 +879,7 @@ test("a refused wake is not dropped until its refusal landed: the owner is told 
 test("a wake whose drop failed comes back and finishes: one notice, no restarted retries, the drop then lands", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
   const start = k.kernel.start, drop = k.kernel.drop;
-  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "task-closed", message: "task t1 is done" }); };
+  k.kernel.start = async () => { throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "held", message: "task t1 is held" }); };
   // The notice lands, but the drop doesn't: the row stays (the kernel's answer was lost), and its lease brings it back.
   let failDrop = 1;
   k.kernel.drop = async (key, why) => { if (failDrop-- > 0) throw new KernelError(502, "the drop action answered 502"); return drop(key, why); };
