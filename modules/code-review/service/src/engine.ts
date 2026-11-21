@@ -673,7 +673,11 @@ export function createEngine(d: EngineDeps) {
       for (const p of all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo)) {
         const id = `${cfg.repo}#${p.number}`;
         const saved = (key: string, o: Posted) => {
-          if (o.state === "pending") return void statusFiled.set(id, { key, write: o.write! });
+          if (o.state === "pending") {
+            // A pending outcome read back carries no write id: keep the one filed. None known: nothing to settle, filed again later.
+            const write = o.write ?? statusFiled.get(id)?.write;
+            return void (write ? statusFiled.set(id, { key, write }) : statusFiled.delete(id));
+          }
           statusFiled.delete(id);
           if (o.state === "refused") return void (statusFailed.set(id, { key, at: now() }), log("review status not set", { repo: cfg.repo, pr: p.number, why: String(o.why ?? "").slice(0, 200) }));
           statusFailed.delete(id);

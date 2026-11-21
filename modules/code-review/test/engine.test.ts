@@ -500,8 +500,11 @@ test("the commit status mirrors the verdict per head, written only when it chang
   const last = () => { const s = w.statuses.at(-1); return [s.head, s.reason, s.important, s.running.length]; };
   assert.deepEqual(last(), [sha("2"), "running", 0, 1]);
   const n = w.statuses.length;
+  w.outcomes.set(`s-${n}`, { state: "pending" }); // still running: its outcome read back names no write
   await w.tick({ github: false });
-  assert.equal(w.statuses.length, n, "nothing changed, nothing written");
+  w.outcomes.delete(`s-${n}`);
+  await w.tick({ github: false });
+  assert.equal(w.statuses.length, n, "nothing changed, nothing written: the pending write settled by its own id");
   w.finish(0); await w.tick({ github: false });
   assert.deepEqual(last(), [sha("2"), "findings", 1, 0]);
   w.pr(2, sha("3")); await w.tick();
