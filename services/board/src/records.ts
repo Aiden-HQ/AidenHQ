@@ -73,7 +73,9 @@ export function recordApproval(r: KernelRecord): Approval {
     id: r.id, issueId: r.task, identifier: r.identifier || r.task, action: KIND[r.kind] ?? r.kind.replace(/^(runner|kernel)\./, ""), target: r.card.target ?? targetOf(r),
     digest: r.digest, args: r.args, sentence: r.card.sentence, reads: r.card.reads, changes: r.card.changes, cost: r.card.cost, details: r.card.details, requestedBy: r.requester.name || r.requester.key,
     requesterId: r.requester.agent || null, tier: r.state === "review" ? 1 : r.state === "owner" ? 2 : r.tier, reason: r.card.reason ?? "", reasonCode: r.rule ?? null, review: r.review,
-    reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.tier === 0 && ["approved", ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
+    // A claimed record is `running` whatever its tier: Tier 0 is only the audit word for one that has ended (or is approved
+    // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
+    reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === "claimed" ? "running" : r.tier === 0 && ["approved", ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
     wait: r.state === "claimed" ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null,
   };

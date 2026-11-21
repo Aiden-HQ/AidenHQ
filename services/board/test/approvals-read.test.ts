@@ -20,9 +20,12 @@ const record = {
 const live = { ...record, id: "k-00000000000000b1", kind: "github.merge", tier: 1, state: "claimed", wait: "code review: 1 important finding open", card: { ...record.card, sentence: "Merge acme/widget#1" } };
 // A Tier 0 run (a connection's write tool, made at once): only a tier0=1 list has it.
 const ran = { ...record, id: "k-00000000000000aa", kind: "conn.tool", args: { connection: "slack", tool: "post_message", arguments: {} }, tier: 0, state: "done", review: null, outcome: { ok: true, text: "posted" }, card: { ...record.card, sentence: "Post in #general" } };
+// A Tier 0 record still in flight: made at once, and now waiting on its executor. It is `running` with its reason, never the
+// `auto` audit word a finished Tier 0 run carries.
+const tier0Live = { ...record, id: "k-00000000000000b2", kind: "conn.tool", args: { connection: "slack", tool: "post_message", arguments: {} }, tier: 0, state: "claimed", wait: "waiting on slack's rate limit", review: null, card: { ...record.card, sentence: "Post in #general" } };
 const kernel = createServer((req, res) => {
   seen.push(`${req.headers.authorization} ${req.url}`);
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: req.url!.includes("tier0=1") ? [ran, record, live] : [record, live] }));
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: req.url!.includes("tier0=1") ? [ran, tier0Live, record, live] : [record, live] }));
 });
 let app: ReturnType<typeof createApp>;
 beforeAll(async () => {
@@ -47,6 +50,8 @@ it("shows the kernel's records read from /v1/writes, and Tier 0 runs after the f
     // A claimed record is live, never a consumed `used` card, and carries its wait reason.
     expect.objectContaining({ id: live.id, action: "github.merge", state: "running", outcome: null, wait: "code review: 1 important finding open", sentence: "Merge acme/widget#1" }),
     expect.objectContaining({ id: ran.id, action: "conn.tool", target: "slack.post_message", state: "auto", tier: 0, outcome: "applied", sentence: "Post in #general" }),
+    // A Tier 0 record in flight is running with its reason too, never `auto` (and only the wider list has it).
+    expect.objectContaining({ id: tier0Live.id, action: "conn.tool", target: "slack.post_message", state: "running", tier: 0, outcome: null, wait: "waiting on slack's rate limit" }),
   ]);
 });
 
@@ -59,4 +64,9 @@ it("a claimed record renders as running with its reason; a done one still render
   expect(done).toMatchObject({ state: "used", outcome: "applied", outcomeText: "merged", wait: null });
   // A failed run is still `used` + failed, as before.
   expect(recordApproval({ ...live, state: "failed", wait: null, outcome: { ok: false, text: "nope" } } as never)).toMatchObject({ state: "used", outcome: "failed" });
+  // A Tier 0 record in flight is running with its reason; once it ends it is the `auto` audit row again.
+  const tier0 = recordApproval(tier0Live as never);
+  expect(tier0).toMatchObject({ state: "running", outcome: null, wait: "waiting on slack's rate limit" });
+  expect(tier0.state).not.toBe("auto");
+  expect(recordApproval({ ...tier0Live, state: "done", wait: null, outcome: { ok: true, text: "posted" } } as never)).toMatchObject({ state: "auto", outcome: "applied" });
 });
