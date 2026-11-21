@@ -70,7 +70,8 @@
     "unchanged",
     "ignored",
     "no_access",
-    "daily_limit"
+    "daily_limit",
+    "post_refused"
    ]
   },
   "important": {

@@ -73,13 +73,16 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
   };
 }
 
-/** A skip's reason as the notice's fixed words name it (seams' `why` starts with its key). */
-export function reasonOf(why: string | undefined): string | undefined {
+/** A reason as the notice's fixed words name it (seams' `why` starts with its key): a skip's, or a refused post's. */
+export function reasonOf(why: string | undefined): "post_refused" | "budget_instance" | "budget_repo" | "draft" | "fork" | "superseded" | "stopped" | undefined {
   const w = String(why ?? "");
+  // A post the kernel refused after its review ran (refused, stale, rejected): the run row keeps the reason, the PR's notice
+  // says in fixed words that this head's review was not posted. Checked first: its words are never read as a skip's.
+  if (/^not posted:/.test(w)) return "post_refused";
   if (w.startsWith("budget: the instance")) return "budget_instance";
   if (w.startsWith("budget")) return "budget_repo";
   const key = w.split(":")[0]!;
-  return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
+  return ["draft", "fork", "superseded", "stopped"].includes(key) ? (key as "draft" | "fork" | "superseded" | "stopped") : undefined;
 }
 
 /**
@@ -138,7 +141,10 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     },
     async ack(a: Ack) {
       // The notice speaks only in its fixed words: a phase (with a reason), or a command's answer (help, always, focus).
-      const reason = reasonOf(a.why);
+      const why = reasonOf(a.why);
+      // A reason goes only where its phase can carry it: a skip's on a skip, the refusal's on a failed post. A run that failed on
+      // budget keeps the generic failed notice rather than being turned into a skip reason its phase refuses (and so lost).
+      const reason = a.state === "skipped" ? (why && why !== "post_refused" ? why : undefined) : a.state === "failed" ? (why === "post_refused" ? why : undefined) : undefined;
       if (a.state === "skipped" && !reason) return;
       await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.counts ?? {}) } });
     },

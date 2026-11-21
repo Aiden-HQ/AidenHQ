@@ -184,7 +184,9 @@ export class ReviewPoster {
         changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (as many as land on changed lines; the rest are listed in its summary) and the pull request's acknowledgement comment, as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
         details,
       },
-      targets: { [`${r.repo}#${r.pr}`]: { repo: r.repo, ref: `pull/${r.pr}`, commit: r.head, base_sha: r.base } },
+      // The head alone: a review is of one commit, so its base moving (another merge landed) never makes it stale. Other
+      // kinds keep binding the base, where what they act on is what they push or merge.
+      targets: { [`${r.repo}#${r.pr}`]: { repo: r.repo, ref: `pull/${r.pr}`, commit: r.head } },
     };
   }
 
@@ -237,14 +239,33 @@ export class ReviewPoster {
     review ??= await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {
       body: { event: "COMMENT", commit_id: r.head, body: withFooter(summary, AGENT), ...(comments.length ? { comments: comments.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
     });
+    // The review is on the pull request from here on: a later step failing (its comment ids, its threads, its acknowledgement)
+    // must not report the review as not posted. What each step made is kept as it goes, so a run that got this far still
+    // records its own comment ids and acknowledgement for a later run to resolve and edit, and what didn't finish is named.
     // Its inline comments, by id, for AidenHQ's records: a later run resolves only threads it finds there.
-    const inlineIds = (await this.gh.request<{ id: number }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } })).map((c) => `${objectRef(ref)}/comment/${c.id}`);
-    // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only Aiden's own
-    // open threads for findings the review no longer reports are resolved.
-    const present = new Set(r.findings.map((f) => f.id));
-    const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
-    const c = counts(r.findings);
-    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`);
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url }), objects: [...inlineIds, ack.object] };
+    const objects: string[] = [];
+    const kept: { review: string; identity: "owner"; login: string; inline: number; listed: number; earlier: number; resolved?: number; skipped?: unknown; ack?: string; partial?: string } = {
+      review: review.html_url, identity: "owner", login: who.login, inline: comments.length,
+      listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size,
+    };
+    try {
+      const inlineIds = (await this.gh.request<{ id: number }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } })).map((c) => `${objectRef(ref)}/comment/${c.id}`);
+      objects.push(...inlineIds);
+      // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only Aiden's own
+      // open threads for findings the review no longer reports are resolved.
+      const present = new Set(r.findings.map((f) => f.id));
+      const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
+      kept.resolved = done.resolved.length;
+      kept.skipped = done.skipped;
+      const c = counts(r.findings);
+      const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`);
+      kept.ack = ack.url;
+      objects.push(ack.object);
+      return { ok: true, text: JSON.stringify(kept), objects };
+    } catch (e) {
+      // Posted, though not completely: ok with the partial reason. What it did make rides in objects, so the next run still
+      // finds its comments and acknowledgement instead of posting a second review or a second acknowledgement.
+      return { ok: true, text: JSON.stringify({ ...kept, partial: String((e as Error).message).slice(0, 200) }), objects };
+    }
   }
 }

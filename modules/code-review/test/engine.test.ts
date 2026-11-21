@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readConfig } from "../service/src/config.ts";
 import { createEngine, DEBOUNCE } from "../service/src/engine.ts";
 import { parseCommand } from "../service/src/commands.ts";
+import { reasonOf } from "../service/src/adapters.ts";
 
 const sha = (c) => c.repeat(40);
 const REPO = "acme/payments";
@@ -43,7 +44,7 @@ function world(settings = {}) {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
       result: async (c) => results.get(c) ?? { state: "running" },
     },
-    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); },
+    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => { if (w.acksDown) { w.acksDown--; throw new Error("kernel 502"); } acks.push(a); }, outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); },
       ruling: async (r) => (rulings.push(r), { state: "pending", write: `r-${rulings.length}` }) },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
     emit: (f) => facts.push(f),
@@ -54,7 +55,9 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { db, engine, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
+  const w = { db, engine, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, acksDown: 0, later: (ms) => (t += ms), tick: () => engine.tick() };
+  // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
+  return w;
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
@@ -224,6 +227,61 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   for (const p of w.posted) assert.deepEqual(p.target, { repo: REPO, number: 1, head: sha("1"), once: false });
   assert.equal(w.posted.find((p) => p.review.engine === "codex").review.cost_usd, 0.7);
   await assert.rejects(w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/1`, combos: [{ ...CLAUDE, effort: "minimal" }] }), /effort for claude-code/);
+});
+
+test("a refused post is not silent: the run keeps the reason and the pull request is told, in fixed words, that its head's review was not posted", async () => {
+  const w = world();
+  await w.tick();
+  w.later(1000);
+  w.pr(2, sha("2"));
+  await w.tick();
+  w.finish(0); // the review ran and the post was filed
+  w.later(5000);
+  await w.tick();
+  assert.equal(w.posted.length, 1);
+  // The kernel refuses the post: stale (its approval changed under it), rejected by the reviewer, or failed in the executor.
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale: what it acts on changed since it was approved" });
+  await w.tick();
+  const [run] = w.engine.runs({ repo: REPO });
+  assert.deepEqual([run.status, run.why], ["failed", "not posted: write k-1 stale: what it acts on changed since it was approved"]);
+  // The notice is on the pull request, as the failed phase with the refused-post reason (the PR's task is quiet, not loud).
+  const refused = w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:"));
+  assert.equal(refused.length, 1);
+  assert.deepEqual([refused[0].number, refused[0].head, refused[0].run], [2, sha("2"), run.id]);
+  // Whichever way the kernel refused it, the notice is the run's own failed phase; the poster files that as the fixed
+  // refused-post reason (adapters.ts reasonOf). A rejection's words stay on the run row, never on the pull request.
+  assert.equal(reasonOf(refused[0].why), "post_refused");
+  assert.equal(reasonOf("not posted: write k-1 rejected: the review widens what it posts"), "post_refused");
+  // Filed once: a later tick settles nothing new (posted is set, so the pending scan leaves it).
+  await w.tick();
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
+});
+
+test("a refused post's notice the kernel can't take now is retried on later ticks, so the pull request is never left silent", async () => {
+  const w = world();
+  await w.tick();
+  w.later(1000);
+  w.pr(3, sha("3"));
+  await w.tick();
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // the post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale: what it acts on changed since it was approved" });
+  // The kernel answers the notice write with a 502: a transient failure, never a reason to leave the PR silent.
+  w.acksDown = 1;
+  await w.tick();
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.deepEqual([run.status, run.posted], ["failed", "refused"]);
+  assert.equal(w.acks.length, 0);
+  // The next tick tries it again, and the notice lands.
+  w.later(1000);
+  await w.tick();
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
+  assert.equal(w.acks[0].run, run.id);
+  // Sent is sent: a third tick files nothing new.
+  w.later(1000);
+  await w.tick();
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
 });
 
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {
