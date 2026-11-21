@@ -2,8 +2,9 @@
 // through, with the owner's sign-in. One rate limiter: a call issued interactively (from a tool) fails at once as a typed
 // `rate_limited` need when a limit blocks it, because a tool call can't sleep past its timeout; a background call (a job) waits
 // while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time, at least a second apart, and wait out
-// GitHub's secondary limit, as its guidance asks, but only inside the write's budget (fixed when the call starts): a write
-// that cannot start in budget fails at once, `rate_limited` (with its `until`) or `write_busy` for a queue that is too deep.
+// GitHub's secondary limit, as its guidance asks, but only inside the write's budget: every content-creating call fixes a
+// 240 s budget when it starts (below the kernel's 300 s allowance), and a write that cannot start in it fails at once,
+// `rate_limited` (with its `until`) or `write_busy` for a queue that is too deep.
 // Typed needs name the cause and the one fix: a refusal the owner can fix (connect, reconnect, a scope, an org's SSO or app
 // restriction) is needs_owner (vendor/needs.ts), which the kernel routes to the owner or the digest. The token never leaves this
 // process: token() is for git children here only, and no answer carries it.
@@ -109,14 +110,11 @@ const WRITE_GAP_MS = 1000;
 const SECONDARY_BASE_MS = 60_000;
 /** One attempt's own fetch limit; a write starts no attempt with less than this left in its budget. */
 const ATTEMPT_TIMEOUT_MS = 30_000;
-/** An interactive (tool-call) write's whole budget, fixed when the call starts: the kernel gives a tool 300 s by default and
- * then allows 30 s more (kernel/src/proxy.ts:156,239), and the caller's own tool timeout is 300 s (services/computer/lib.ts:28),
- * so a write waits and retries only inside this, comfortably before either cuts the call off. The module can't read its own
+/** A content-creating call's whole budget, fixed when the call starts: the kernel gives a tool 300 s by default and then
+ * allows 30 s more (kernel/src/proxy.ts:156,239), and the caller's own tool timeout is 300 s (services/computer/lib.ts:28), so
+ * a write waits and retries only inside this, comfortably before either cuts the call off. The module can't read its own
  * allowance, so this is the conservative constant, fixed against that 300 s default. */
 const WRITE_BUDGET_MS = 240_000;
-/** A background write has no tool caller with a timeout; it keeps waiting out rate limits this long, then fails as a transient
- * `rate_limited` need. */
-const WRITE_PATIENCE_MS = 15 * 60_000;
 const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
 /** Whether a request creates content: any non-read method, except a GraphQL query. */
 const createsContent = (method: string, path: string, body: unknown) =>
@@ -171,17 +169,16 @@ export function createAccess(o: {
   }
 
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
-   * An interactive call never sleeps. A background call still sleeps on the reserve; only a real refusal is a limit it must
-   * not sleep past, and a refusal it cannot wait out (a write's budget) makes it the same typed need as an interactive one. */
+   * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
+   * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. */
   async function admit(resource: string, background: boolean, deadline?: number): Promise<void> {
     for (;;) {
       const t = now();
       const r = rates.get(resource);
       const low = r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
-      const refused = blockedUntil > t ? blockedUntil : 0;
-      const until = Math.max(refused, background ? low : 0);
+      const until = Math.max(blockedUntil > t ? blockedUntil : 0, background ? low : 0);
       if (!until) return;
-      if (!background || (refused && deadline !== undefined && !fits(deadline, until))) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
+      if (!background || (deadline !== undefined && !fits(deadline, until))) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
       await sleep(until - t);
     }
   }
@@ -242,7 +239,7 @@ export function createAccess(o: {
   function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
     if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
     // The budget is fixed here, before the queue: a write that waited behind others has already spent that wait.
-    const deadline = now() + (background ? WRITE_PATIENCE_MS : WRITE_BUDGET_MS);
+    const deadline = now() + WRITE_BUDGET_MS;
     return queued(deadline, () => paced(deadline, () => attempt(method, path, body, resource, background, accept, deadline)));
   }
 
