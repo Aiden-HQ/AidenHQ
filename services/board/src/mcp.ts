@@ -21,6 +21,8 @@ export interface McpDeps {
   decide: KernelAuth["mcpDecide"];
   update: KernelAuth["mcpUpdate"];
   flows: () => SetupFlowPoint[];
+  /** The flows the setup page still counts as not done (setup-flows.ts): what `status` lists to set up. */
+  setupOpen: () => Promise<{ module: string; title: string }[]>;
 }
 
 /** The tools that change something: the HTTP layer asks the kernel afresh about the bearer before running one. */
@@ -177,21 +179,20 @@ export function createMcp(d: McpDeps) {
       "read",
       async () => {
         const unavailable: string[] = [];
-        const [needs, approvals, apps, conns, settings] = await Promise.all([
+        const [needs, approvals, apps, conns, settings, setup] = await Promise.all([
           safe("needs-you", unavailable, () => call("GET", "/api/needs-you")),
           safe("approvals", unavailable, () => call("GET", "/api/approvals")),
           safe("apps", unavailable, () => call("GET", "/api/apps")),
           safe("connections", unavailable, () => call("GET", "/api/settings/connections")),
           safe("settings", unavailable, () => call("GET", "/api/settings")),
+          safe("setup", unavailable, () => d.setupOpen()),
         ]);
         const pending = ((approvals?.approvals ?? []) as any[]).filter((a) => a.state === "pending");
         const failing = ((apps?.apps ?? []) as any[]).filter((a) => !a.healthy && ["unhealthy", "failed"].includes(a.state));
         const rowsOf = (conns?.connections ?? []) as any[];
         const down = rowsOf.filter((r) => r.probe && !r.probe.ok).map((r) => ({ connection: r.name, module: r.module, problem: r.probe.detail ?? r.probe.state ?? "not answering" }));
-        const todo = [
-          ...down,
-          ...d.flows().filter((f) => rowsOf.some((r) => r.module === f.module && (r.signIn?.state === "missing" || r.setup))).map((f) => ({ module: f.module, problem: f.title, link: `${ctx.origin}/#/setup/${f.module}` })),
-        ];
+        // The setup page's own verdict (not done, not dismissed), so a connected module is never listed.
+        const todo = [...down, ...(setup ?? []).map((f) => ({ module: f.module, problem: f.title, link: `${ctx.origin}/#/setup/${f.module}` }))];
         const text = `${needs?.counts?.needs_you ?? 0} waiting on you, ${pending.length} pending cards, ${failing.length} apps failing, ${todo.length} to set up or fix.`;
         return out(text, { needs_you: needs ?? {}, approvals_pending: pending.length, approvals: (pending.slice(0, 10).map(cardRow)) as object[], apps_failing: failing, setup_todo: todo, instance: settings ? { ...settings.instance, spend: settings.spend } : null, unavailable });
       },

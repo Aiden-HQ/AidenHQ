@@ -104,7 +104,7 @@ export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatch
 
 const DISMISSED = "setup_dismissed";
 
-export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
+export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; open: () => Promise<{ module: string; title: string }[]> } {
   const doFetch = d.fetchImpl ?? fetch;
   const dismissed = (): string[] => {
     try {
@@ -150,6 +150,18 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
   };
   const pairedOf = async (f: SetupFlowPoint & { token?: string }) => (f.pair_url ?? f.advanced?.pair_url ? Boolean((await pairCall(f, "GET").catch(() => ({ paired: false }))).paired) : true);
 
+  /** Whether a flow's connection is live (and paired, when it pairs): the verdict the setup page shows, for flows with a sign-in, connect path or pairing. */
+  const connectedDone = async (f: SetupFlowPoint & { token?: string }) => {
+    const signedIn = f.signin ? await d.signedIn(f.signin) : f.connect_url ? (await d.connected(f.connect_url)) === true : true;
+    return signedIn && (f.pair_url ? await pairedOf(f) : true);
+  };
+  /** The flows still to set up, as the setup page counts them (not done, not dismissed): the owner MCP's `status` lists exactly these. Every shipped flow has a sign-in, connect path or pairing; one with none is never listed. */
+  const open = async () => {
+    const gone = new Set(dismissed());
+    const all = await Promise.all(d.flows.map(async (f) => ({ f, done: !(f.signin || f.connect_url || f.pair_url) || (await connectedDone(f)) })));
+    return all.filter((x) => !x.done && !gone.has(x.f.module)).map((x) => ({ module: x.f.module, title: x.f.title }));
+  };
+
   const routes: SetupRoute[] = [
     {
       method: "GET",
@@ -165,11 +177,10 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
             const signedIn = f.signin ? await d.signedIn(f.signin) : connect_url ? connected === true : true;
             const paired = await pairedOf(full);
             // Basic is done once it is connected (and paired, when the basic flow pairs); advanced once its secrets exist (and paired).
-            const basicPaired = f.pair_url ? paired : true;
             const scopes = f.signin ? await d.scopeChoice(f.signin) : false;
             // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
             // only a flow with no sign-in, connect path or pairing is done by its secrets.
-            const done = f.signin || connect_url || f.pair_url ? signedIn && basicPaired : (f.secrets ?? []).every((s) => present[s]);
+            const done = f.signin || connect_url || f.pair_url ? await connectedDone(full) : (f.secrets ?? []).every((s) => present[s]);
             const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? paired : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
@@ -251,5 +262,5 @@ export function setupFlowRoutes(d: SetupFlowDeps): SetupRoute[] {
       },
     },
   ];
-  return routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) }));
+  return { routes: routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) })), open };
 }

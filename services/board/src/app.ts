@@ -1966,6 +1966,23 @@ export function createApp(opts: AppOptions): Server {
 
   /** Account administration on the board: any admin, and never the owner's account. The kernel acts as that admin's session. */
   const RoleSchema = z.enum(["admin", "user"]);
+  const setupFlows = opts.setupFlows?.flows.length && opts.accounts ? setupFlowRoutes({
+    ...opts.setupFlows,
+    accounts: opts.accounts,
+    store,
+    settings: () => readSources(settingsFiles()).compiled?.settings,
+    file: fileSettingsChange,
+    // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
+    signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
+    scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
+    signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
+    connected: connectionSignedIn,
+    boardUrl: signInOrigin,
+    redirectUrl: (signin, host) => {
+      const s = (opts.signIns ?? []).find((x) => x.id === signin);
+      return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
+    },
+  }) : undefined;
   const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
     { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
@@ -2011,25 +2028,7 @@ export function createApp(opts: AppOptions): Server {
     ...(opts.accounts && opts.organisations?.length ? organisationRoutes({ orgs: opts.organisations, accounts: opts.accounts, store, onApplied: () => store.events.emit("connections") }) : []),
     ...((opts.signIns ?? []).some((s) => s.mode === "device") ? deviceRoutes({ signIns: opts.signIns!, onSignedIn: connected }) : []),
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
-    ...(opts.setupFlows?.flows.length && opts.accounts
-      ? setupFlowRoutes({
-          ...opts.setupFlows,
-          accounts: opts.accounts,
-          store,
-          settings: () => readSources(settingsFiles()).compiled?.settings,
-          file: fileSettingsChange,
-          // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
-          signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
-          scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
-          signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
-          connected: connectionSignedIn,
-          boardUrl: signInOrigin,
-          redirectUrl: (signin, host) => {
-            const s = (opts.signIns ?? []).find((x) => x.id === signin);
-            return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
-          },
-        })
-      : []),
+    ...(setupFlows?.routes ?? []),
     { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
     {
       method: "POST",
@@ -2277,7 +2276,7 @@ export function createApp(opts: AppOptions): Server {
   const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
   /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */
   const sessions = new WeakMap<IncomingMessage, { session: BoardSession; credential: SettingsCredential }>();
-  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [] });
+  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupOpen: async () => (await setupFlows?.open()) ?? [] });
 
   /** /mcp and its discovery document: bearer only (never a cookie), before the board's own request checks. */
   async function handleMcp(req: IncomingMessage, res: ServerResponse, url: URL) {
