@@ -1,5 +1,6 @@
-// ops/ci-runner.sh: a refused registration token backs off (1s doubling to 5 minutes) before the unit restarts it, while a
-// token that mints runs the job's container at once and forgets the delay: RestartSec=1 stays the job-to-job path.
+// ops/ci-runner.sh + ops/ci-runner-backoff.sh: a refused registration token writes a per-unit delay (1s doubling to a
+// minute) and the unit's ExecStartPre waits it out, while a token that mints clears the delay and runs the job's container
+// at once: RestartSec=1 stays the job-to-job path.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
@@ -8,14 +9,15 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/ci-runner.sh");
+const here = dirname(fileURLToPath(import.meta.url));
+const scripts = ["ci-runner.sh", "ci-runner-backoff.sh"].map((name) => join(here, "../../ops", name));
 
 /** A checkout whose node, docker and sleep are fakes recording each call; `token` fails while the fixture file says so. */
 function checkout() {
   const dir = mkdtempSync(join(tmpdir(), "ci-runner-"));
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "ops"));
-  writeFileSync(join(dir, "ops/ci-runner.sh"), readFileSync(script, "utf8"));
+  for (const script of scripts) writeFileSync(join(dir, "ops", script.slice(script.lastIndexOf("/") + 1)), readFileSync(script, "utf8"));
   const fake = (name, body) => {
     writeFileSync(join(dir, "bin", name), `#!/usr/bin/env bash\nprintf '%s\\n' "${name} $*" >> "$LOG"\n${body}\n`);
     chmodSync(join(dir, "bin", name), 0o755);
@@ -26,11 +28,15 @@ function checkout() {
   return dir;
 }
 
+/** One unit start: ExecStartPre (the backoff wait), then ExecStart, as aidenhq-ci-runner@.service runs them. */
 function run(dir, arg = "1") {
   const log = join(dir, "log");
   writeFileSync(log, "");
+  const unit = [join(dir, "ops/ci-runner-backoff.sh"), join(dir, "ops/ci-runner.sh")]
+    .map((script) => `bash ${JSON.stringify(script)} ${JSON.stringify(arg)}; status=$?; [ "$status" -eq 0 ] || exit "$status"`)
+    .join("\n");
   return new Promise<{ status: number; out: string; calls: string[] }>((resolve) => {
-    execFile("bash", [join(dir, "ops/ci-runner.sh"), arg], {
+    execFile("bash", ["-c", unit], {
       cwd: dir,
       env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, LOG: log, FAIL_TOKEN: join(dir, "fail"), AIDENHQ_DATA_DIR: join(dir, "data") },
     }, (error, stdout, stderr) => {
@@ -43,27 +49,36 @@ function run(dir, arg = "1") {
 const retries = (calls: string[]) => calls.filter((c) => c.startsWith("sleep ")).map((c) => Number(c.slice(6)));
 const marker = (dir, id = "1") => join(dir, "data/ci-runner", `${id}.backoff`);
 
-test("a refused token backs off 1s, 2s, 4s; a token that mints clears it and runs the job at once", async () => {
+test("a refused token waits 1s, 2s, 4s before the next attempt; a token that mints clears the delay", async () => {
   const dir = checkout();
   writeFileSync(join(dir, "fail"), "");
-  for (const [n, delay] of [[1, 1], [2, 2], [3, 4]] as const) {
+  // The first refusal has no delay behind it (ExecStartPre writes nothing), and it leaves a second's wait.
+  const first = await run(dir);
+  assert.equal(first.status, 1, first.out);
+  assert.deepEqual(retries(first.calls), [], "the first attempt does not wait");
+  assert.match(first.out, /the next attempt waits 1s/);
+  assert.equal(readFileSync(marker(dir), "utf8").trim(), "1");
+  for (const [delay, next] of [[1, 2], [2, 4], [4, 8]] as const) {
     const r = await run(dir);
     assert.equal(r.status, 1, r.out);
-    assert.match(r.out, new RegExp(`retrying in ${delay}s`));
-    assert.equal(retries(r.calls).at(-1), delay, `run ${n}`);
-    assert.equal(readFileSync(marker(dir), "utf8").trim(), String(delay * 2), "the next refusal doubles the delay");
+    assert.deepEqual(retries(r.calls), [delay], "the wait comes from the last refusal");
+    assert.equal(readFileSync(marker(dir), "utf8").trim(), String(next), "the next refusal doubles the delay");
   }
-  writeFileSync(marker(dir), "300\n");
+  writeFileSync(marker(dir), "60\n");
   const capped = await run(dir);
-  assert.equal(retries(capped.calls).at(-1), 300, "the delay is capped at 5 minutes");
-  assert.equal(readFileSync(marker(dir), "utf8").trim(), "300", "and stays there");
-  // A minted token: the marker is gone and the job's container starts now (no sleep).
+  assert.deepEqual(retries(capped.calls), [60], "the wait owed is served before the next attempt");
+  assert.equal(readFileSync(marker(dir), "utf8").trim(), "60", "and the delay stays at its cap");
+  // A minted token: the wait owed is served, the job's container runs, and the delay is gone.
   rmSync(join(dir, "fail"));
-  const r = await run(dir);
-  assert.equal(r.status, 0, r.out);
-  assert.deepEqual(retries(r.calls), [], "a clean start does not sleep");
-  assert.ok(r.calls.some((c) => c.startsWith("docker compose run")), r.calls.join("\n"));
+  const minted = await run(dir);
+  assert.equal(minted.status, 0, minted.out);
+  assert.deepEqual(retries(minted.calls), [60], "the wait the last refusal wrote still runs first");
+  assert.ok(minted.calls.some((c) => c.startsWith("docker compose run")), minted.calls.join("\n"));
   assert.equal(existsSync(marker(dir)), false, "the next refusal starts again at 1s");
+  // A clean job exit leaves no delay, so the next runner starts at once.
+  const clean = await run(dir);
+  assert.equal(clean.status, 0, clean.out);
+  assert.deepEqual(retries(clean.calls), [], "a clean start does not sleep");
 });
 
 test("each unit has its own delay", async () => {
@@ -72,7 +87,7 @@ test("each unit has its own delay", async () => {
   await run(dir, "1");
   await run(dir, "1");
   const other = await run(dir, "acme-2");
-  assert.equal(retries(other.calls).at(-1), 1, "unit acme-2 has its own marker");
-  assert.equal(readFileSync(marker(dir, "acme-2"), "utf8").trim(), "2");
-  assert.equal(readFileSync(marker(dir, "1"), "utf8").trim(), "4");
+  assert.deepEqual(retries(other.calls), [], "unit acme-2 has its own marker");
+  assert.equal(readFileSync(marker(dir, "acme-2"), "utf8").trim(), "1");
+  assert.equal(readFileSync(marker(dir, "1"), "utf8").trim(), "2");
 });

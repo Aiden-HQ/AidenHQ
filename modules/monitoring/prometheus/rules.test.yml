@@ -131,6 +131,22 @@ tests:
             exp_annotations:
               summary: "CI runner unit aidenhq-ci-runner@3.service keeps restarting and isn't staying up: its registration token is probably refused"
 
+  # A busy runner restarts between jobs, so it changes state often; it is active the rest of the time, and the average
+  # gate keeps that churn out of the alert (jobs here are short: six of them in the window).
+  - name: a runner going job to job is not a restart loop
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@5.service"}'
+        values: '1 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 0 1 1 1 1 1 0'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x36'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x36'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerRestartLooping
+        exp_alerts: []
+
   # A runner holding steady (waiting for a job, or on one) is not a loop, however long it is watched: no alert.
   - name: a CI runner unit holding steady is not a restart loop
     interval: 1m

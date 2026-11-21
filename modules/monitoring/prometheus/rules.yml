@@ -98,13 +98,14 @@ groups:
         annotations:
           summary: "no CI runner unit is active"
       # Restart=always with RestartSec=1 reaches neither CiRunnersDown (the unit is active again a second later) nor
-      # UnitFailed (it never fails): a runner whose registration token is refused loops silently. The unit flips out of
-      # `active` and stays out for most of the window; a runner going job to job is active but for the second it restarts,
-      # so its own churn stays quiet (the average gate). Gated like its neighbours: no planned drain, and a fresh units.prom.
+      # UnitFailed (it never fails): a runner whose registration token is refused loops silently. A looping unit changes
+      # active state again and again and spends real time out of it; a runner going job to job changes twice per job and is
+      # otherwise active, so its churn stays quiet (the average gate) unless almost all its jobs are under a couple of
+      # minutes. Gated like its neighbours: no planned drain, and a fresh units.prom.
       - alert: CiRunnerRestartLooping
         expr: |
           changes(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) > 4
-          and on (unit) avg_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) < 0.5
+          and on (unit) avg_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) < 0.8
           and on() aidenhq_fleet_draining == 0
           and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
         for: 5m

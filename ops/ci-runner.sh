@@ -9,17 +9,21 @@ id="${1:-1}"
 org=""
 [[ "$id" == *-* ]] && org="${id%-*}" # an org name may hold dashes; the runner number is after the last one
 # A refused registration token (the owner's sign-in missing admin:org, GitHub unreachable) must not spin at the unit's
-# RestartSec=1: back off here, where a refused mint is told apart from a finished job, and keep RestartSec=1 for the
-# job-to-job exit, which has to start the next runner at once. The delay doubles per refusal up to 5 minutes, and the next
-# token that mints forgets it.
-backoff="${AIDENHQ_DATA_DIR:-$PWD/data}/ci-runner/$(printf '%s' "$id" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100).backoff"
+# RestartSec=1: note a delay here, where a refused mint is told apart from a finished job, and keep RestartSec=1 for the
+# job-to-job exit, which has to start the next runner at once. The delay doubles per refusal up to a minute, and the next
+# token that mints forgets it. The wait itself is ops/ci-runner-backoff.sh in ExecStartPre, so the unit is activating (not
+# active) while it waits and the loop stays visible to CiRunnerRestartLooping.
+backoff="${AIDENHQ_DATA_DIR:-data}/ci-runner/$(printf '%s' "$id" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100).backoff"
 if ! RUNNER_TOKEN="$(node ops/ci-runner-token.ts ${org:+"$org"})"; then
   delay="$(cat "$backoff" 2>/dev/null || true)"
-  [[ "$delay" =~ ^[0-9]+$ ]] && [ "$delay" -ge 1 ] || delay=1
+  if [[ "$delay" =~ ^[0-9]+$ ]] && [ "$delay" -ge 1 ]; then
+    delay=$(( delay * 2 > 60 ? 60 : delay * 2 )) # the wait just served doubles; a minute is the cap
+  else
+    delay=1 # no delay yet: the first refused token waits a second
+  fi
   mkdir -p "$(dirname "$backoff")"
-  echo "$(( delay * 2 > 300 ? 300 : delay * 2 ))" > "$backoff"
-  echo "ci runner $id: no registration token; retrying in ${delay}s" >&2
-  sleep "$delay"
+  echo "$delay" > "$backoff"
+  echo "ci runner $id: no registration token; the next attempt waits ${delay}s" >&2
   exit 1
 fi
 rm -f "$backoff"

@@ -9,12 +9,14 @@ EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # The vault holds ci_token, the ci module's key for the kernel's runner_token op; the CI network is a system unit (aidenhq-ci-net).
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/docker network inspect aidenhq-ci
+# Waits out a refused registration token (1s doubling to a minute, cleared by the next token that mints): in ExecStartPre,
+# where the unit is activating rather than active, so a refusal reads as the restart loop it is. A clean job exit writes
+# nothing and starts the next runner at once.
+ExecStartPre=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner-backoff.sh %i
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # A finished job ends the container (and this run); the next one starts a new container at once (a 10s delay left
 # runners idle ~20s between jobs while the queue grew).
-# A refused registration token is not a finished job: ops/ci-runner.sh backs off (1s doubling to 5 minutes) before it exits,
-# so RestartSec stays 1 for the job-to-job exit and a persistent refusal retries slowly instead of hot-looping.
 Restart=always
 RestartSec=1
 

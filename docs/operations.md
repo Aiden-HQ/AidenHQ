@@ -408,9 +408,11 @@ change under 20 added plus deleted lines with no sensitive path; `package-lock.j
 `admin:org`, and answers only that token), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
 the unit then starts the next, at once (`Restart=always`, `RestartSec=1`). A refused token (the sign-in missing
-`admin:org`, GitHub unreachable) backs off in `ops/ci-runner.sh` instead: the wait doubles per refusal from 1 second to 5
-minutes, and the next token that mints clears it, so a persistent refusal retries slowly rather than hot-looping while a
-clean job exit still starts the next runner immediately. The missing permission also reaches the owner: a codehost op's
+`admin:org`, GitHub unreachable) backs off instead: `ops/ci-runner.sh` writes that unit's delay (1 second, doubling to a
+minute) and exits, and the unit's `ExecStartPre` (`ops/ci-runner-backoff.sh`) waits it out before the next attempt. The
+next token that mints clears the delay, so a persistent refusal retries slowly rather than hot-looping while a clean job
+exit still starts the next runner immediately. Because the wait runs before `ExecStart`, a unit backing off is
+`activating` rather than `active`. The missing permission also reaches the owner: a codehost op's
 `needs_owner` answer is recorded as connection state, so it lands in the owner's digest (the GitHub card's own row comes
 from the sign-in's granted scopes), and `CiRunnerRestartLooping` (`modules/monitoring/prometheus/rules.yml`) alerts on a
 unit that keeps restarting.
