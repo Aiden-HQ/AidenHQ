@@ -265,7 +265,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // The owner hears once per job that its reply was dropped (a fixed text, the task named).
           // The owner's notice names its task by identifier (WOR-123): the kernel refuses a Paperclip id there.
           const id = (await kernel.task(v.task).catch(() => undefined))?.identifier as string | undefined;
-          await kernel.notify({ kind: "decision", ...(id ? { task: id } : {}), dedupe_key: `outcome-dropped:${v.id}`, text: `🔧 **The reply for ${id ?? v.task} was dropped:** the kernel refused to post it, so the task has no word from the agent's last run. Open the task to see where it stands, or re-run it.` }).catch((err: Error) => log("dropped-reply notice failed", { job: v.id, err: err.message }));
+          await kernel.notify({ kind: "decision", ...(id ? { task: id } : {}), dedupe_key: `outcome-dropped:${v.id}`, text: `🔧 **The reply for ${id ?? "a task"} was dropped:** the kernel refused to post it, so the task has no word from the agent's last run. Open the task to see where it stands, or re-run it.` }).catch((err: Error) => log("dropped-reply notice failed", { job: v.id, err: err.message }));
           await kernel.ack(v.id).then(() => q("DELETE FROM stopped WHERE job = ?").run(v.id), () => {});
           continue;
         }

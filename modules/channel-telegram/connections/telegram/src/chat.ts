@@ -187,9 +187,10 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
       }
     } catch (err) {
       // An update the kernel refuses for good (a deleted chat task, a removed agent) is skipped, or it blocks every later message.
-      if (handling !== undefined && err instanceof KernelError && [400, 404, 409, 422].includes(err.status)) {
+      if (handling !== undefined && err instanceof KernelError && [400, 404, 422].includes(err.status)) {
         store.setKv("tg_offset", String(handling + 1));
-        log.warn({ err: String(err), update: handling }, "telegram update refused by the kernel; skipped");
+        log.warn({ err: String(err).replace(cfg.telegramToken, "***"), update: handling }, "telegram update refused by the kernel; skipped");
+        await extras?.reply({ text: "⚠ That message couldn't be delivered: the kernel refused it (its chat or agent may be gone). Send it again as a new message." }).catch(() => {});
         continue;
       }
       log.warn({ err: String(err).replace(cfg.telegramToken, "***") }, "telegram poll failed; retrying");

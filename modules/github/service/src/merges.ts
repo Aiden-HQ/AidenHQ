@@ -57,8 +57,7 @@ export function createMerges(d: {
   const file = join(d.dir, "merges.json");
   const s: { queues: Record<string, Queue> } = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { queues: {} };
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify({ queues: s.queues })); renameSync(`${file}.tmp`, file); };
-  const waiters = new Map<string, (o: Outcome) => void>();
-  const waiting = new Map<string, Promise<Outcome>>();
+  const waiters = new Map<string, { promise: Promise<Outcome>; resolve: (o: Outcome) => void }>();
   const delivering = new Set<string>();
 
   async function readPr(repo: string, number: number) {
@@ -193,8 +192,7 @@ export function createMerges(d: {
     const w = waiters.get(id);
     if (w) {
       waiters.delete(id);
-      waiting.delete(id);
-      w(q.outcome!);
+      w.resolve(q.outcome!);
     }
     delivering.add(id);
     void d.report(id, q.outcome!).then(() => { q.reported = true; save(); }, (e) => log("merge outcome not delivered", { record: id, err: says(e) })).finally(() => delivering.delete(id));
@@ -239,8 +237,13 @@ export function createMerges(d: {
         log("merges queued", { record: id, prs: prs.length });
       }
       // A repeat enqueue on a running queue shares the first caller's promise.
-      if (!waiting.has(id)) waiting.set(id, new Promise((ok) => waiters.set(id, ok)));
-      return waiting.get(id)!;
+      let w = waiters.get(id);
+      if (!w) {
+        let resolve!: (o: Outcome) => void;
+        w = { promise: new Promise<Outcome>((ok) => (resolve = ok)), resolve };
+        waiters.set(id, w);
+      }
+      return w.promise;
     },
     /** The record's state for the kernel (executor@1 status), or undefined when it isn't a queue here. */
     status(id: string): { state: string; text?: string; objects?: string[] } | undefined {

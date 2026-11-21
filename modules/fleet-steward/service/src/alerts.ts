@@ -43,29 +43,28 @@ const OWNER_SENTENCE: Record<string, string> = {
 };
 
 /** Alertmanager's webhook body: firing alerts are kept (or updated), resolved ones dropped. */
-export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
-  // One at a time: a call reads the map, awaits the owner notice, then writes the map back, so overlapping calls would drop each other's alerts.
-  const run = serial.then(() => applyAlerts(kv, alerts, notify, now));
-  serial = run.catch(() => {});
-  return run;
-}
-let serial: Promise<unknown> = Promise.resolve();
-
-async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now: Date): Promise<{ firing: number }> {
+export async function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
+  const nameOf = (a: Alert) => (/^[A-Za-z][A-Za-z0-9_]{0,59}$/.test(a.labels.alertname ?? "") ? a.labels.alertname!.toLowerCase() : "unnamed"); // our rules' names are identifiers; anything else is not a name we wrote
+  const severityOf = (a: Alert) => slug(a.labels.severity, 20) || "warning";
+  // The owner hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
+  // notice went out: a kernel that was down is tried again on the next webhook or tick. The notices go out first, so the map is
+  // read and written back with no await between (overlapping calls can't drop each other's alerts).
+  const known = firing(kv);
+  const told = new Set<string>();
+  await Promise.all(alerts.filter((a) => a.status !== "resolved" && !known[a.fingerprint]?.told && severityOf(a) === "critical").filter((a, i, all) => all.findIndex((x) => x.fingerprint === a.fingerprint) === i).map((a) => {
+    const name = nameOf(a);
+    return notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`).then(() => void told.add(a.fingerprint), () => {});
+  }));
   const f = firing(kv);
   for (const a of alerts) {
     if (a.status === "resolved") { delete f[a.fingerprint]; continue; }
-    // Our rules' names are identifiers; anything else is not a name we wrote.
-    const name = /^[A-Za-z][A-Za-z0-9_]{0,59}$/.test(a.labels.alertname ?? "") ? a.labels.alertname!.toLowerCase() : "unnamed";
-    const severity = slug(a.labels.severity, 20) || "warning";
+    const name = nameOf(a);
+    const severity = severityOf(a);
     // Free text (the rule's summary with label values in it): bounded here, fenced as data in the incident's reason.
     const summary = String(a.annotations.summary ?? a.annotations.description ?? "").slice(0, 300);
-    // The owner hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
-    // notice went out: a kernel that was down is tried again on the next webhook or tick.
-    let told = f[a.fingerprint]?.told;
-    if (!told && severity === "critical") told = await notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`).then(() => true, () => false);
+    const isTold = f[a.fingerprint]?.told || told.has(a.fingerprint);
     const since = f[a.fingerprint]?.since ?? (a.startsAt && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(a.startsAt) && !a.startsAt.startsWith("0001") ? a.startsAt : now.toISOString());
-    f[a.fingerprint] = { name, severity, summary, since, ...(told ? { told } : {}) };
+    f[a.fingerprint] = { name, severity, summary, since, ...(isTold ? { told: true } : {}) };
   }
   kv.set(KEY, JSON.stringify(f));
   return { firing: Object.keys(f).length };

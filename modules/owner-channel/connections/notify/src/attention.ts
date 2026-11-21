@@ -74,10 +74,13 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  if (q.length && !(await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.text}`).join("\n")}`))) return false;
-  // Notices queued while the send was in flight stay for the next digest.
-  const left = (JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).slice(q.length);
-  store.setKv("digest:queue", JSON.stringify(left));
+  // Taken out before the send, so a notice queued during it stays for the next digest; a failed send puts the taken ones back first.
+  store.setKv("digest:queue", "[]");
+  const restore = () => store.setKv("digest:queue", JSON.stringify([...q, ...(JSON.parse(store.getKv("digest:queue") || "[]") as Item[])].slice(-100)));
+  if (q.length) {
+    const sent = await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.text}`).join("\n")}`).catch((e) => (restore(), Promise.reject(e)));
+    if (!sent) { restore(); return false; }
+  }
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }

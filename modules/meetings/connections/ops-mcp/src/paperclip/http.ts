@@ -63,7 +63,7 @@ export class HttpPaperclipApi implements PaperclipApi {
   async listComments(issueId: string): Promise<IssueComment[]> {
     const raw = await this.request<unknown>("GET", `/api/issues/${encodeURIComponent(issueId)}/comments?order=desc&limit=200`);
     // The newest 200, oldest first.
-    const list = ((Array.isArray(raw) ? raw : []) as Record<string, unknown>[]).reverse();
+    const list = ((Array.isArray(raw) ? raw : []) as Record<string, unknown>[]).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
     return list
       .filter((c) => !c.deletedAt)
       .map((c) => ({
