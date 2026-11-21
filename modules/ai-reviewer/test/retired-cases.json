@@ -1,1 +1,4 @@
-[]
+[
+  { "case": "data-mount-hides-image-folders", "reason": "reliability judging moved to code review (owner 2026-11-21)", "approved_by": "owner", "date": "2026-11-21" },
+  { "case": "evidence-ui-no-screenshot", "reason": "the evidence and screenshot nit was removed (owner 2026-11-21)", "approved_by": "owner", "date": "2026-11-21" }
+]
