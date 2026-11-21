@@ -31,6 +31,7 @@ import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, 
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { createEvalGate } from "./evalgate.ts";
 import { createMerges } from "./merges.ts";
+import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import { LOCAL_ORG, plan as planRules } from "./plan.ts";
@@ -72,6 +73,8 @@ export type Options = {
   now?: () => Date; mergeEveryMs?: number;
   /** The churn pass ignores these globs (the churn_exclude setting). */
   churnExclude?: string[];
+  /** Code review's verdict on a head before the merge queue merges it (review-gate.ts). */
+  reviewGate: ReviewGate;
 };
 
 /** A base a change targets: a file read there (source exceptions), and its cache clone at `tip` (siblings). */
@@ -560,6 +563,7 @@ export function createService(o: Options) {
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, log, now: o.now, everyMs: o.mergeEveryMs,
     evalGate: (repo, pr) => evalGate(repo, pr),
+    reviewGate: o.reviewGate,
   });
   const keyed = (req: IncomingMessage) => {
     const a = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "")), b = Buffer.from(o.key);

@@ -229,11 +229,11 @@ export function createEngine(d: EngineDeps) {
 
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
-  type Open = { id: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; run: string };
+  type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; run: string };
   /** The PR's findings still open (no outcome yet), whichever combo found them; `gating`: an important one a mandatory run found. */
-  const stillOpen = (repo: string, n: number) => all<Open>(
-    `SELECT f.id, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1) gating, MAX(f.run) run
-     FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n);
+  const stillOpen = (repo: string, n: number) => all<Omit<Open, "severity"> & { rank: number }>(
+    `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1) gating, MAX(f.run) run
+     FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
   /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
@@ -242,7 +242,7 @@ export function createEngine(d: EngineDeps) {
     const open = stillOpen(repo, n);
     const gating = open.filter((f) => f.gating), other = open.filter((f) => !f.gating).slice(0, 50);
     const size = (v: unknown) => JSON.stringify({ findings: v }).length;
-    const entry = (f: Open, text: number) => ({ id: f.id, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
+    const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
     let out: ReturnType<typeof entry>[] = [];
     for (const text of [400, 150, 0]) if (size((out = gating.map((f) => entry(f, text)))) <= 15_000) break;
@@ -272,7 +272,7 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
       const previous = r.recheck ? recheckList(r.repo, r.number) : [];
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
-        incremental_from, full: incremental_from === null, previous, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)
@@ -308,12 +308,10 @@ export function createEngine(d: EngineDeps) {
     if (res.state === "failed") {
       // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
       // spent it all) and the result wasn't a wrong one.
-      // A mandatory run is tried again even when its spend can't be read (its repo's merges wait on it).
-      const billed = res.billed_usd ?? (r.mandatory ? 0 : Infinity);
-      const left = r.run_usd - r.billed_prior - billed;
+      const left = r.run_usd - r.billed_prior - (res.billed_usd ?? Infinity);
       if (r.attempts < ATTEMPTS && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying once more on what is left of its run_usd", { run: r.id, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = billed_prior + ? WHERE id = ?", billed, r.id);
+        run("UPDATE runs SET billed_prior = billed_prior + ? WHERE id = ?", res.billed_usd!, r.id);
         live.delete(r.id);
         return startRun(runRow(r.id)!);
       }
@@ -334,7 +332,7 @@ export function createEngine(d: EngineDeps) {
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
       run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ? WHERE id = ?",
-        cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), stale ? null : review.withheld.important === 0 ? 1 : 0, r.id);
+        cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), stale ? null : review.withheld.important === 0 && !review.coverage?.incomplete ? 1 : 0, r.id);
       if (stale) return;
       for (const f of review.findings) {
         // Reported again: a fixed or dismissed finding opens again.
@@ -608,7 +606,11 @@ export function createEngine(d: EngineDeps) {
       const partial = runs.find((r) => r.complete === 0);
       if (live.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${live.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
       else if (lost) reasons.push({ code: "failed", text: `the mandatory review of ${head.slice(0, 7)} failed (${String(lost.why ?? "").slice(0, 200)})`, unblock: "say `@aiden review` on the pull request to run it again" });
-      else if (partial) reasons.push({ code: "incomplete", text: `the mandatory review of ${head.slice(0, 7)} withheld important findings, so it isn't a whole review`, unblock: "say `@aiden review full` on the pull request" });
+      else if (partial) {
+        const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", partial.id);
+        const why = v ? (JSON.parse(v.json) as Review).coverage?.incomplete : null;
+        reasons.push({ code: "incomplete", text: `the mandatory review of ${head.slice(0, 7)} covered only part of the pull request: ${why ? why.slice(0, 300) : "it withheld important findings"}`, unblock: "say `@aiden review full` on the pull request to run it again (a file it can't review, such as a generated one, goes in the repo's ignore globs)" });
+      }
       else reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer${runs[0]?.why ? ` (last: ${runs[0].why.slice(0, 200)})` : ""}`, unblock: "say `@aiden review` on the pull request" });
     }
     const open = openGating(repo, n);

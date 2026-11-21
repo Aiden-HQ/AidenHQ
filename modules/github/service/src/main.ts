@@ -10,6 +10,8 @@
 //                           the PR watch's Dependabot duty
 //   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
 //   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
+//   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict
+//   CODE_REVIEW_GATE_KEY_FILE this process's key for code review's verdict (code_review_gate_key)
 // Its loops start here: the merge queue, the held writes, the release train, the PR watch, the design reviews' sweep and the
 // reviewed refs' tidying.
 import { existsSync, readFileSync } from "node:fs";
@@ -19,6 +21,7 @@ import { inOrg } from "./git-auth.ts";
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService } from "./service.ts";
+import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
 import { startAppMigration } from "./migrate.ts";
 import { startPrWatch } from "./pr-watch.ts";
@@ -44,6 +47,7 @@ const handle = createService({
   access, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
+  reviewGate: createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => read(env.CODE_REVIEW_GATE_KEY_FILE) }),
   log,
 });
 log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });

@@ -56,10 +56,9 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "DELETE", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
-  // Code review's posting (review-post.ts): the
-  // acknowledgement comment edited in place, and the advisory commit status (`guard` allows only its one context).
+  // Code review's posting (review-post.ts): the acknowledgement comment edited in place, and a ruling's reply on a finding's thread.
   { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
-  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}/replies$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },
 ];
 
@@ -70,10 +69,8 @@ const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
   { method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id", "comments"] },
   { method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },
-  { method: "POST", path: /\/statuses\/[0-9a-f]{40}$/, fields: ["state", "context", "description", "target_url"] },
+  { method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },
 ];
-/** The one commit status context code review writes (review-post.ts); the design-review check goes through projects.commitStatus. */
-export const REVIEW_CONTEXT = "aidenhq/review";
 const COMMENT_FIELDS = ["path", "line", "side", "start_line", "start_side", "body"];
 
 /** The only GraphQL the token may send: read an organization project, add an issue to it, set its status. */
@@ -102,7 +99,6 @@ export function guard(method: string, path: string, body?: unknown): void {
   if (method === "POST" && /\/reviews$/.test(path) && comments !== undefined) {
     if (!Array.isArray(comments) || (body as { event?: unknown }).event !== "COMMENT" || comments.some((c) => !c || Object.keys(c).some((k) => !COMMENT_FIELDS.includes(k)))) throw new GitHubRefused("refused review comments that aren't line comments on a COMMENT review");
   }
-  if (method === "POST" && /\/statuses\//.test(path) && (body as { context?: unknown } | undefined)?.context !== REVIEW_CONTEXT) throw new GitHubRefused(`refused a commit status that isn't ${REVIEW_CONTEXT}`);
 }
 
 export interface Ref {

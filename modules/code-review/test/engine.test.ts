@@ -361,7 +361,7 @@ test("an important finding gates until a mandatory recheck confirms it fixed; a 
   // A force-push: the review is full, and still gets f1 to recheck (with its evidence).
   w.rewritten.add(sha("2"));
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  assert.deepEqual([w.started[1].combo.effort, w.started[1].full, w.started[1].previous], ["low", true, [{ id: "f1", path: "a.ts", line: 3, title: "t", gating: true, why: "w", evidence: "e" }]]);
+  assert.deepEqual([w.started[1].combo.effort, w.started[1].full, w.started[1].previous], ["low", true, [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", gating: true, why: "w", evidence: "e" }]]);
   // Unsure (not in fixed, not found again): still open.
   w.finish(1, NONE); await w.tick();
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"]);
@@ -383,7 +383,7 @@ test("two mandatory combos: coverage needs both; one failing (after its retry) w
   const w = world({ repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
   w.finish(0, NONE);
-  w.results.set("c-2", { state: "failed", why: "engine crashed" }); // spend unknown: a mandatory run still retries
+  w.results.set("c-2", { state: "failed", why: "engine crashed", billed_usd: 0.1 });
   await w.tick();
   assert.equal(w.started.length, 3, "retried once");
   w.results.set("c-3", { state: "failed", why: "engine crashed again" });
@@ -394,6 +394,17 @@ test("two mandatory combos: coverage needs both; one failing (after its retry) w
   // A push now: nothing is covered, so it is a first review (on_open), full.
   w.pr(2, sha("3")); await w.tick();
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, s.combo.engine, s.incremental_from]), [[sha("3"), "codex", null], [sha("3"), "claude-code", null]]);
+});
+
+test("a mandatory review that covered only part of the PR doesn't cover its head, and says why", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0, { findings: [], coverage: { reviewed: ["a.ts"], excluded: [], incomplete: "1 of 2 finders didn't finish (timeout)" } });
+  await w.tick();
+  const v = w.engine.verdict(REPO, 2, sha("2"));
+  assert.deepEqual(codes(v), ["incomplete"]);
+  assert.match(v.reasons[0].text, /covered only part of the pull request: 1 of 2 finders didn't finish/);
+  assert.match(v.reasons[0].unblock, /@aiden review full/);
 });
 
 test("a mandatory run is never skipped for budget; the owner dismisses an open finding and the merge may go", async () => {

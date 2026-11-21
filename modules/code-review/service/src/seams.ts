@@ -63,7 +63,9 @@ export type ReviewSpec = {
   focus: string | null; incremental_from: string | null; full: boolean;
   /** The PR's still-open findings, rechecked at this head and given to the finders as already reported (the batch's first
    * mandatory run, else its first). `gating`: an important one a mandatory run found, rechecked whatever the change touched. */
-  previous: { id: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean }[];
+  previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean }[];
+  /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
+  mandatory: boolean;
   /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };

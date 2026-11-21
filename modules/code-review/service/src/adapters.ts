@@ -44,7 +44,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
-    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits }), focus: s.focus ?? "",
+    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
   };
 }

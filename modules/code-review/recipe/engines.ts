@@ -41,7 +41,7 @@ export const ENGINES: Record<string, { efforts: string[]; asks: boolean }> = {
 const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 
 /** One review run's engine, model and effort (JSON from the spec, with the repo's ignore globs and max_nits). */
-export interface Combo { engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number }
+export interface Combo { engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean }
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
   /** The finder step: an engine with a review of its own runs it, then answers `prompt` from it. */

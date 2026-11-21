@@ -187,11 +187,11 @@ test("a review: earlier findings are fixed only where the change touched them, a
   assert.deepEqual((await review({ spec: spec({ incremental_from: C, previous, combo: one }), ...box({ head: steer, base, from }), run })).fixed, []);
 });
 
-test("a review: a gating finding is rechecked in a full review too, wherever it is; a finding that restates an open one isn't reported again", async () => {
+test("a review: a gating finding is rechecked in a full review too, wherever it is; a finding that restates an open one isn't reported again, unless that one is milder or advice to a mandatory review", async () => {
   const base = { "a.js": "1\n" };
   const head = { "a.js": "1\nlock()\nwork()\n" };
   const ids = ["5", "6"].map((c) => c.repeat(16));
-  const previous = JSON.stringify({ findings: [{ id: ids[0], path: "a.js", line: 3, title: "unlocked work", why: "w", evidence: "work()", gating: true }, { id: ids[1], path: "a.js", line: 2, title: "advice" }] });
+  const previous = JSON.stringify({ findings: [{ id: ids[0], severity: "important", path: "a.js", line: 3, title: "unlocked work", why: "w", evidence: "work()", gating: true }, { id: ids[1], severity: "important", path: "a.js", line: 2, title: "advice" }] });
   let asked = "", told = "";
   const run = async (engine, o) => {
     if (o.prompt.startsWith("These findings")) return (asked = o.prompt), { read: true, calls: [{ tool: "read_file", path: `${o.root}/a.js` }], message: JSON.stringify({ fixed: [ids[0]], still: [] }) };
@@ -203,6 +203,11 @@ test("a review: a gating finding is rechecked in a full review too, wherever it 
   assert.deepEqual(r.findings, [], "restated, so not reported again");
   assert.deepEqual(r.fixed, [ids[0]], "the gating one is rechecked in a full review; the advice one isn't");
   assert.ok(asked.includes("work()") && !asked.includes(ids[1]));
+  // A mandatory review's important finding isn't absorbed by advice (a non-gating one), nor by a nit.
+  const kept = await review({ spec: spec({ previous, combo: combo({ effort: "low", mandatory: true }) }), ...box({ head, base }), run });
+  assert.deepEqual(kept.findings.map((f) => f.title), ["Lock is never released"]);
+  const nit = JSON.stringify({ findings: [{ id: ids[1], severity: "nit", path: "a.js", line: 2, title: "advice" }] });
+  assert.equal((await review({ spec: spec({ previous: nit, combo: combo({ effort: "low" }) }), ...box({ head, base }), run })).findings.length, 1);
 });
 
 test("a review: the PR's .gitattributes can't hide code, and generated paths it changes since its base are gaps", async () => {

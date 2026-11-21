@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
 import { createMerges } from "../service/src/merges.ts";
 import { decide } from "../service/src/merge-gate.ts";
+import { createReviewGate } from "../service/src/review-gate.ts";
 
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const HEAD = "a".repeat(40);
@@ -75,7 +76,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", now: () => new Date(clock.t),
+    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined,
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -283,7 +284,7 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   let refuse = 1;
   const merges = createMerges({
     dir: mkdtempSync(join(tmpdir(), "merges-")), gh, fleetOrg: "acme-agents",
-    evalGate: async () => undefined, report: async (id, o) => { reports.push({ id, ...o }); if (refuse-- > 0) throw new Error("the kernel answered 503"); },
+    evalGate: async () => undefined, reviewGate: async () => undefined, report: async (id, o) => { reports.push({ id, ...o }); if (refuse-- > 0) throw new Error("the kernel answered 503"); },
   });
   void merges.enqueue("k-00000000000000e1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
   await merges.step(); // the PUT times out, though GitHub merged
@@ -322,7 +323,7 @@ test("a maintained repo merges as the owner; once it leaves maintainer_repos its
   const reports = [];
   const queue = (maintained) => createMerges({
     dir, gh: github.gh, fleetOrg: "acme-agents", productRepo: "acme/aidenhq", maintained,
-    evalGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+    evalGate: async () => undefined, reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
   });
   const tick = () => new Promise((r) => setTimeout(r, 20));
   const listed = queue(["Globex/Payments"]);
@@ -360,4 +361,36 @@ test("merge queue waits while disconnected", async (t) => {
   await handle.flushFacts();
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
+});
+
+test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/other": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const asked = [];
+  let answer = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  const fetchFn = async (url, init) => {
+    asked.push([String(url), init.headers.authorization]);
+    if (answer === "down") throw new Error("connect ECONNREFUSED");
+    return new Response(JSON.stringify(answer.body), { status: answer.status });
+  };
+  const clock = { t: Date.now() };
+  const logs = [];
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
+    evalGate: async () => undefined, report: async () => {}, log: (msg, f) => logs.push([msg, f]),
+    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "gate-key", fetchFn }),
+  });
+  void merges.enqueue("k-00000000000000g1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  void merges.enqueue("k-00000000000000g2", { prs: [{ repo: "acme-agents/other", number: 2, head: HEAD }] });
+  await merges.step();
+  assert.deepEqual(asked, [[`http://code-review:8098/v1/verdict?repo=acme-agents%2Fwidget&pr=1&head=${HEAD}`, "Bearer gate-key"]], "only the gated repo asks");
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"]);
+  assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /1 important finding open: t \(a\.ts:3\) \(fix and push\)/);
+  clock.t += 7 * 24 * 3600_000; // a week of waiting, and the service down: still waiting
+  answer = "down";
+  await merges.step();
+  assert.equal(merges.status("k-00000000000000g1").state, "running");
+  answer = { status: 200, body: { verdict: "pass", reasons: [] } };
+  await merges.step();
+  assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge", HEAD], ["/repos/acme-agents/widget/pulls/1/merge", HEAD]]);
 });

@@ -99,7 +99,6 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
-export const STATUS_CONTEXT = "aidenhq/review";
 
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
@@ -219,27 +218,21 @@ export function renderReview(r: Review, run: string, opts: { inline?: ReadonlySe
 }
 
 const usd = (n: number | undefined) => (n === undefined ? "" : ` ($${n.toFixed(2)})`);
-/** The acknowledgement comment's text and the commit status a notice sets (no status for `queued`), from fixed words only. */
-export function renderNotice(n: NoticeArgs): { text: string; status?: { state: "pending" | "success" | "error"; description: string } } {
+/** The acknowledgement comment's text, from fixed words only. */
+export function renderNotice(n: NoticeArgs): string {
   const who = n.engine && n.model && n.effort ? ` with ${code(comboText({ engine: n.engine, model: n.model, effort: n.effort }))}` : "";
   const sha = code(short(n.head));
   const c: Counts = { important: n.important ?? 0, nit: n.nit ?? 0, pre_existing: n.pre_existing ?? 0 };
   const head = `${ACK_MARK}\n**Aiden review**`;
   const help = "`@aiden review help` lists the commands.";
   switch (n.phase) {
-    case "queued": return { text: `${head}: queued${who} for ${sha}. ${help}` };
-    case "running": return { text: `${head}: reviewing ${sha}${who}…`, status: { state: "pending", description: "Reviewing" } };
-    case "done": return { text: `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`, status: { state: "success", description: `${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing` } };
-    case "skipped": { const why = SKIP_REASONS[n.reason ?? "unchanged"]; return { text: `${head}: skipped ${sha}: ${why}. ${help}`, status: { state: "success", description: `Skipped: ${why}`.replace(/`/g, "").slice(0, 140) } }; }
-    case "answered": return { text: `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}` };
-    case "failed": return { text: `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`, status: { state: "error", description: "Review failed" } };
+    case "queued": return `${head}: queued${who} for ${sha}. ${help}`;
+    case "running": return `${head}: reviewing ${sha}${who}…`;
+    case "done": return `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`;
+    case "skipped": return `${head}: skipped ${sha}: ${SKIP_REASONS[n.reason ?? "unchanged"]}. ${help}`;
+    case "answered": return `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}`;
+    case "failed": return `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`;
   }
-}
-
-/** The status a posted review sets: always success (advisory, never a block), with what it found and whether it was complete. */
-export function reviewStatus(r: Review): { state: "success"; description: string } {
-  const c = counts(r.findings);
-  return { state: "success", description: `${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing${r.coverage.incomplete ? " (incomplete)" : ""}`.slice(0, 140) };
 }
 
 /** The right-side line numbers of a unified diff patch: where GitHub accepts an inline comment. */

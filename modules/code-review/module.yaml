@@ -133,6 +133,8 @@ services:
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
         CODE_REVIEW_API_TOKEN_FILE: ${secrets.code_review_api_token}
         CODE_REVIEW_SERVICE_KEY_FILE: ${secrets.code_review_service_key}
+        # The github module's key for GET /v1/verdict (its merge queue on a gated repo); that module generates it.
+        CODE_REVIEW_GATE_KEY_FILE: ${secrets.code_review_gate_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - code_review_token

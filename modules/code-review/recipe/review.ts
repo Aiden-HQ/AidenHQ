@@ -368,8 +368,14 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
   const previous = (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")
-    .map((f) => ({ id: f.id as string, path: f.path as string, line: Number(f.line) || 1, title: cap(f.title, 120), why: cap(f.why, 1000), evidence: cap(f.evidence, 1000), gating: f.gating === true }));
-  const reported = new Set(previous.map((f) => f.id));
+    .map((f) => ({ id: f.id as string, severity: (SEVERITIES.includes(f.severity) ? f.severity : "pre_existing") as Severity, path: f.path as string, line: Number(f.line) || 1, title: cap(f.title, 120), why: cap(f.why, 1000), evidence: cap(f.evidence, 1000), gating: f.gating === true }));
+  const reported = new Map(previous.map((f) => [f.id, f]));
+  // A new finding restates an open one only on the same file at no higher severity; a new important one of a mandatory review
+  // only a gating one (an important finding is never absorbed by a nit or by advice).
+  const restates = (f: { severity: Severity; path: string }, id: string | undefined) => {
+    const p = id ? reported.get(id) : undefined;
+    return !!p && p.path === f.path && RANK[p.severity] <= RANK[f.severity] && (f.severity !== "important" || !combo.mandatory || p.gating);
+  };
 
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
@@ -387,10 +393,10 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const reviewedSet = new Set(reviewed);
   // A finding that restates one already reported (the finder says so, or it has the same id) isn't reported again: it is still there.
   const cleaned = good.filter(Boolean).flatMap((j) => clean(j.findings, root));
-  const restated = new Set(cleaned.flatMap((f) => (f.same_as && reported.has(f.same_as) ? [f.same_as] : [])));
-  let candidates = dedupe(place(cleaned.filter((f) => !(f.same_as && reported.has(f.same_as))).map(({ same_as: _s, ...f }) => f), ws, reviewedSet));
-  for (const f of candidates) if (reported.has(f.id)) restated.add(f.id);
-  candidates = candidates.filter((f) => !reported.has(f.id));
+  const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
+  let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet));
+  for (const f of candidates) if (restates(f, f.id)) restated.add(f.id);
+  candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
 
   // The verifier keeps a finding only where it confirmed it at file:line; it may lower a severity, never raise one.
