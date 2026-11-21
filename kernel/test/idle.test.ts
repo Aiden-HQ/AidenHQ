@@ -25,7 +25,7 @@ function world(t, { polls = true } = {}) {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const facts = openFacts(db, () => new Date(clock));
-  const issues = { t0: { id: "t0", identifier: "T0", status: "blocked" }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0", companyId: "co" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
+  const issues = { t0: { id: "t0", identifier: "T0", status: "blocked", assigneeAgentId: AGENT }, t1: { id: "t1", identifier: "T1", status: "todo", assigneeAgentId: AGENT, parentId: "t0", companyId: "co" }, t2: { id: "t2", status: "todo", assigneeAgentId: null, assigneeUserId: "owner" } };
   // Paperclip's agents (status + org chain: the sweep's invokability check), by id.
   const agents = { [AGENT]: { id: AGENT, companyId: "co", status: "idle", lifecycleHolds: [], reportsTo: null }, boss: { id: "boss", companyId: "co", status: "idle", lifecycleHolds: [], reportsTo: null } };
   const reads = [];
@@ -325,6 +325,31 @@ test("a task whose agent no enabled dispatcher polls reads unpolled, and the swe
   assert.equal(w.row("t1").reason, "unpolled", "the state names why nothing runs it, never orphaned");
   assert.deepEqual(await w.idle.sweep(), [], "the sweep leaves it alone: its wake would never be taken");
   assert.deepEqual(w.rows().filter((r) => r.startsWith("idle:")), [], "no idle row was opened");
+});
+
+test("a task idle in review is sent once to whoever delegated it, never woken for its holder", async (t) => {
+  const w = world(t);
+  w.issues.t1 = { ...w.issues.t1, status: "in_review" };
+  w.tick(20 * MIN);
+  assert.equal(w.row("t1").reason, "orphaned");
+  assert.deepEqual(await w.idle.sweep(), [], "not before the fact log shows the review");
+  w.add("task.status_changed", "task:t1", "t1", { from: "todo", to: "in_review" });
+  w.tick(20 * MIN);
+  assert.deepEqual(await w.idle.sweep(), ["t1"]);
+  assert.deepEqual(w.asked.notices.map((n) => n.task), ["t0"], "the open delegator (its parent) hears it");
+  assert.deepEqual(w.rows().filter((r) => r.startsWith("idle:")), [], "the holder is not woken: its part is done");
+  assert.deepEqual(await w.idle.sweep(), [], "once per idle stretch");
+});
+
+test("a task idle in review whose parent holds no agent goes to the chief of staff", async (t) => {
+  const w = world(t);
+  w.issues.t0 = { ...w.issues.t0, assigneeAgentId: null };
+  w.issues.t1 = { ...w.issues.t1, status: "in_review" };
+  w.add("task.status_changed", "task:t1", "t1", { from: "todo", to: "in_review" });
+  w.tick(20 * MIN);
+  assert.deepEqual(await w.idle.sweep(), ["t1"]);
+  assert.deepEqual(w.asked.notices, []);
+  assert.equal(w.asked.chief.length, 1);
 });
 
 // ---- A settled wait is not the sweep's work (WOR-9033, Aiden-HQ/AidenHQ#1004) ----
