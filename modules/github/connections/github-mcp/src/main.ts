@@ -537,7 +537,7 @@ const http = createServer(async (req, res) => {
   // { "owner/name": iso }), with their trust verdict, and with `triage_cursors` its new unlabelled issues. Read-only, no
   // model call.
   if (url.pathname === "/internal/maintainer/issues") {
-    if (!(await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"))) return void res.writeHead(401).end();
+    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
     try {
       let cursors: Record<string, string> = {};
@@ -579,7 +579,7 @@ const http = createServer(async (req, res) => {
   // The Maintainer's watcher: each repo with contributor_prs on, its open PRs (author kind, the author's latest activity and what
   // waits on them). Read-only, no model call.
   if (url.pathname === "/internal/maintainer/prs") {
-    if (!(await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"))) return void res.writeHead(401).end();
+    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
     try {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await maintainer.prRepos()));
@@ -594,7 +594,7 @@ const http = createServer(async (req, res) => {
   // module token the kernel vouches for: preview is the card's text and bound targets, execute the post of an approved record, threads
   // the review threads (replies read next run). The kernel's record, not this route, is what the AI reviewer approved.
   if (url.pathname.startsWith("/internal/review/")) {
-    if (!(await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"))) return void res.writeHead(401).end();
+    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "POST") return void res.writeHead(405).end();
     const send = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
     try {
@@ -620,7 +620,7 @@ const http = createServer(async (req, res) => {
   }
   // Code review's watcher (the code-review module's service) reads open PRs, a PR, new PR comments and a login's permission here.
   if (url.pathname.startsWith("/internal/code-review/")) {
-    if (!(await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"))) return void res.writeHead(401).end();
+    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
     const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams);
     return void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
