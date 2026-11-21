@@ -302,6 +302,20 @@ it("a close whose note cites a PR only as a bare PR #N is refused before anythin
   );
   await expect(m.state(PRODUCT, 1, "closed", "not_planned", "duplicate of the PR #9 fix")).rejects.toThrow(/bare 'PR #N'/);
   await expect(m.state(PRODUCT, 1, "closed", "completed", "Fixed by PR#12, merge 0ba0db1.")).rejects.toThrow(/bare 'PR #N'/);
+  // A bare form is still bare when something is prefixed to it: nothing before "PR" makes "PR #12" a citation the
+  // parser reads (`abc/PR #12` reads as no PR at all), so the prefix must not buy it a pass.
+  for (const note of [
+    "Fixed by abc/PR #12, merge 0ba0db1.",
+    "see acme/product/PR #12",
+    "(PR #12)",
+    "x-PR #12",
+    "PR  #12",
+    "closed the pr#12 one",
+    "Acme/PR #12 (spaced, so not owner/name#N)",
+    "merged in https://github.com/acme/product/pull/811; supersedes PR #700",
+  ]) {
+    await expect(m.state(PRODUCT, 1, "closed", "completed", note)).rejects.toThrow(/bare 'PR #N'/);
+  }
   expect(f.posted).toHaveLength(0);
   expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
 });
@@ -313,10 +327,15 @@ it("a close's note citing a PR as owner/name#number or its /pull/ URL is accepte
     "Fixed by acme/product#722, merge 0ba0db1.",
     "Fixed by https://github.com/acme/product/pull/722, merge 0ba0db1.",
     "Fixed by https://github.com/acme/product/pull/722 and acme/product#733.",
+    // A repository actually named PR: owner/PR#N is the owner/name#N form the parser reads, so it is not the bare form.
+    "Fixed by acme/PR#12, merge 0ba0db1.",
+    "acme/product#1 and abc/PR#2.",
+    // No PR cited at all (a not_planned close names the line or path that disproves it): nothing to refuse.
+    "Not a bug: the PRs are only read, never written, so `PRs #1` is not a citation and none is needed here.",
   ]) {
     expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
   }
-  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(3);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(6);
 });
 
 it("a quiet PR (no fix label) closes as not_planned with the close note, through the issues endpoint", async () => {
