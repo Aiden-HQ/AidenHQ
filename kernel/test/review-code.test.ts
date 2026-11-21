@@ -45,29 +45,26 @@ test("a skipped push is approved by code with code_review_owns, and the AI revie
   assert.equal(records.get(r.id).review_code, "code_review_owns");
 });
 
-test("a panel PR card passes on code's code_review_owns approval; a panel record approved by one model alone still refuses", async () => {
+test("a panel push or PR is never skipped: it goes to the model reviewer; a non-panel one is still code's", async () => {
+  const mode = "unless_code_review_mandatory", mandatory = ["acme/app", "acme/lib"];
+  for (const kind of ["github.push", "github.pr"]) {
+    assert.equal(codeReviewOwns({ ...push, kind, panel: false }, { mode, mandatory }), true, kind);
+    assert.equal(codeReviewOwns({ ...push, kind, panel: true }, { mode, mandatory }), false, `${kind} panel`);
+    assert.equal(codeReviewOwns({ ...push, kind, panel: true }, { mode: "none" }), false, `${kind} panel, none`);
+  }
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "review-code-")), "kernel.db"));
+  const asked: unknown[] = [];
   const writes = createWrites({
     records, secret: () => "", resolver: createResolver(), connections: () => ({}), replay: async () => ({ ok: false, text: "" }),
-    registry: () => ({ "github.pr": { module: "github", floor: 0, tools: [] } }), reviewCode: () => ({ mode: "none" }),
+    registry: () => ({ "github.pr": { module: "github", floor: 0, tools: [] } }), reviewCode: () => ({ mode, mandatory }),
+    reviews: { request: async (q: unknown) => { asked.push(q); return { decision: "approve", code: "ok", reason: "fine", model: "openai/gpt-x" }; } } as never,
     onTask: { open: async () => true, notify: async () => {} },
   });
-  const file = (kind: string) => records.file({
-    kind, module: "github", args: {}, targets: push.targets, executor: { module: "github" }, policy: "p", card: { sentence: "PR.", changes: "c", reads: "r", cost: "none", details: "+x" },
+  const pr = records.file({
+    kind: "github.pr", module: "github", args: {}, targets: push.targets, executor: { module: "github" }, policy: "p", card: { sentence: "PR.", changes: "c", reads: "r", cost: "none", details: "+x" },
     requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job" }, task: "TASK-1", tier: 1, merit: 1, panel: true, review_first: null, rule: null, state: "review",
   });
-  const pr = file("github.pr");
-  const { posted, refused } = await writes.review(pr.id, { input: { tier: 1, rule: "gate-core", reason: "touches gate-core paths" }, request: {} });
-  assert.equal(refused, undefined);
-  assert.deepEqual([posted.decision, posted.code], ["approve", "code_review_owns"]);
-  assert.equal(records.get(pr.id).state, "approved");
-  const other = file("github.merge");
-  assert.match(String(records.review(other.id, other.digest, { decision: "approve", by: "reviewer:openai/gpt-x", note: "ok" })), /second reviewer/);
-  // A panel push lands on a branch directly: code's approval leaves it with the panel.
-  const pushRec = file("github.push");
-  const held = await writes.review(pushRec.id, { input: { tier: 1, rule: "gate-core", reason: "x" }, request: {} });
-  assert.match(held.refused ?? "", /second reviewer/);
-  // A verdict naming code_review_owns on a record code review doesn't own (a merge) gets no exemption.
-  const merge = file("github.merge");
-  assert.match(String(records.review(merge.id, merge.digest, { decision: "approve", by: "reviewer:kernel/code", note: "x", code: "code_review_owns" })), /second reviewer/);
+  const out = await writes.review(pr.id, { input: { tier: 1, rule: "gate-core", reason: "x" }, request: {} });
+  assert.equal(asked.length, 1, "the model reviewer was asked");
+  assert.match(out.refused ?? "", /second reviewer/, "one model alone doesn't pass a panel record");
 });
