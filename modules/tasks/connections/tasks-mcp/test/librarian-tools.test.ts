@@ -10,7 +10,7 @@ const AGENTS = [
   { id: "cos", name: "Chief of Staff", metadata: { setupKey: "aidenhq:chief-of-staff" } },
 ];
 
-async function call(roles, tool, args) {
+async function call(roles, tool, args, repos) {
   const created = [];
   const handler = (req, res) => {
     let body = "";
@@ -29,7 +29,7 @@ async function call(roles, tool, args) {
     });
   };
   const agents = { me: { key: "librarian", roles }, arch: { key: "fleet-engineer", roles: ["platform-engineer"] } };
-  const r = await bridge({ handler, agents, task: "cur" }).call(tool, args);
+  const r = await bridge({ handler, agents, task: "cur", repos }).call(tool, args);
   const text = r.result.content[0].text;
   return { error: r.result.isError ? text : undefined, text, created };
 }
@@ -45,4 +45,16 @@ test("without the librarian role both are refused", async () => {
   const p = await call([], "task_propose_rule", { title: "t", description: "d" });
   assert.match(p.error, /librarian role/);
   assert.deepEqual(p.created, []);
+});
+test("a memory proposal must name the instance repository so the job clones it", async () => {
+  const repos = { instance: "acme-agents/aidenhq-instance" };
+  const named = await call(["librarian"], "task_propose_rule", { title: "Memory update: Alpha", marker: "memory:alpha:2026-11-21", description: "agent: alpha\nrepository: acme-agents/aidenhq-instance\n- A fact (T-1, 2026-11-21)" }, repos);
+  assert.equal(named.created[0].assigneeAgentId, "arch");
+  for (const description of ["agent: alpha\n- A fact (T-1, 2026-11-21)", "agent: alpha\nrepository: someone/other-instance\n- A fact (T-1, 2026-11-21)"]) {
+    const refused = await call(["librarian"], "task_propose_rule", { title: "Memory update: Alpha", marker: "memory:alpha:2026-11-21", description }, repos);
+    assert.equal(refused.error, "A memory proposal must name acme-agents/aidenhq-instance so the job clones it; otherwise the file is never written.");
+    assert.deepEqual(refused.created, []);
+  }
+  // A rule proposal with the same shape but no memory marker is not held to it.
+  assert.ok((await call(["librarian"], "task_propose_rule", { title: "Fix rule", marker: "rule:alpha:x", description: "d" }, repos)).created.length);
 });

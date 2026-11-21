@@ -44,8 +44,11 @@ Without the notes tools (no meetings module on), skip step 1.
      secret, at most a sentence of quote). Drop memory lines now stale or contradicted. `fanout_map` checks many at once.
    - The new memory is one fact per line, each ending `(source, date)`, at most 4 KB (4096 bytes). Propose it with one
      `task_propose_rule` per agent (marker `memory:<agent key>:<date>`, title "Memory update: <agent>"), the description
-     holding the agent key and the exact full new text of `agents/<key>/memory.md`, fact lines only (compile adds the
-     heading). Nothing changed, no proposal.
+     holding the agent key, the instance repository's slug (`<agents org>/aidenhq-instance`: the file lives only there,
+     and a job clones only the repositories its task names), and the exact full new text of `agents/<key>/memory.md`,
+     fact lines only (compile adds the heading). Nothing changed, no proposal. The tool refuses a memory proposal that
+     omits the repository, and its refusal names this instance's slug. If a proposal closes with the file unchanged, keep
+     its kept facts in the inbox's `Curated through` comment and carry them into the next proposal.
    - Close the batch on the inbox with one `task_comment`: `Curated through <ISO time>`, then per note kept, merged, or
      rejected with a reason. Never edit or delete what an agent wrote.
 4. One `task_comment` on your run task with the findings list, then `task_finish` with a count summary, e.g. "12 notes
