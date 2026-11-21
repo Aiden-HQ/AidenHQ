@@ -15,7 +15,7 @@ import { writeFileSync } from "node:fs";
 import { posix } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Answer } from "./codehost.ts";
-import { BOX_WORKSPACE, createChecks, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
+import { BOX_WORKSPACE, createChecks, type BoxOut, type BoxRun, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { Pool } from "./pool.ts";
 import { alive, exitStatus, logTail, runAlive, spawnDetached } from "./jobs.ts";
