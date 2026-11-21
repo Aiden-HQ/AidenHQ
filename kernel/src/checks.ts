@@ -281,11 +281,13 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or blocked as the owner. Only
    * the check's own module, and ok/reopen/block only on a task it holds.
    */
-  // One resolution at a time (they are rare), so two checks' oks never each see the other's hold and both leave the task in review.
-  let resolving: Promise<unknown> = Promise.resolve();
-  function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
-    const run = resolving.then(() => resolveOne(module, ref, b));
-    resolving = run.catch(() => undefined);
+  // One resolution at a time per task, so two checks' oks never each see the other's hold and both leave the task in review.
+  const resolving = new Map<string, Promise<unknown>>();
+  async function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
+    const task = (await issue(ref)).id;
+    const run = (resolving.get(task) ?? Promise.resolve()).then(() => resolveOne(module, ref, b));
+    const tail = run.catch(() => undefined).then(() => { if (resolving.get(task) === tail) resolving.delete(task); });
+    resolving.set(task, tail);
     return run;
   }
   async function resolveOne(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
