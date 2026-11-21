@@ -24,7 +24,7 @@ interface Deps {
 // event_id is a no-op. Events during a disconnect are lost (accepted; the scout scan covers it).
 export async function startSocket({ appToken, store, onKept, chat, pair, bind, tee, log }: Deps): Promise<void> {
   const client = new SocketModeClient({ appToken });
-  const isDuplicateText = makeDedupe();
+  const dedupe = makeDedupe();
   client.on("slack_event", async (msg: { type: string; body: unknown; ack: () => Promise<void> }) => {
     if (msg.type === "slash_commands" && bind) {
       // Acked at once (Slack allows 3 s); the answer is private to the sender, through the command's response_url.
@@ -58,7 +58,7 @@ export async function startSocket({ appToken, store, onKept, chat, pair, bind, t
         return;
       }
       const e = msg.type === "events_api" ? toEvent(msg.body) : null;
-      if (e && !isDuplicateText(e) && store.insertEvent(e)) onKept();
+      if (e) dedupe(e, () => { if (store.insertEvent(e)) onKept(); });
     } catch (err) {
       log.error({ err: String(err) }, "event insert failed; not acking so Slack redelivers");
       return;
