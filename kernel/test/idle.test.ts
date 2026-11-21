@@ -212,6 +212,11 @@ test("the owner hears a question directly only on a task they are talking to its
   assert.deepEqual([r.to, w.asked.chief.length], ["owner", 0]);
   assert.deepEqual([w.asked.owner[0].kind, w.asked.owner[0].task, w.asked.owner[0].head, w.asked.owner[0].asker], ["decision", "T1", { agent: "Kai", issue: "t1" }, { id: AGENT, key: "kai", roles: [] }]);
   assert.match(w.asked.owner[0].text, /T1 waits on your answer[^]*Keep v1\?/);
+  // A replacement question must not reuse the owner channel's dedupe key, or it is dropped as the old one.
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Keep v2?" });
+  assert.equal(w.asked.owner.length, 2);
+  assert.notEqual(w.asked.owner[0].dedupe_key, w.asked.owner[1].dedupe_key);
+  assert.match(w.asked.owner[1].text, /Keep v2\?/);
   w.tick(MIN);
   assert.equal(w.row("t1").reason, "owner_wait");
   // The chief of staff's own question reaches the owner wherever it asks.
@@ -220,7 +225,7 @@ test("the owner hears a question directly only on a task they are talking to its
   w.who.conversing = false;
   w.who.roles = ["fleet-admin"];
   assert.equal((await w.idle.wait({ agent: AGENT, key: "aiden", task: "t1" }, { reason: "x", for: "owner", question: "Raise the spend cap?" })).to, "owner");
-  assert.deepEqual([w.asked.owner.length, w.asked.chief.length], [2, 0]);
+  assert.deepEqual([w.asked.owner.length, w.asked.chief.length], [3, 0]);
 });
 
 test("a delegator question goes to the open delegator, else the chief of staff (the chief's own: the owner)", async (t) => {
@@ -309,6 +314,21 @@ test("an answered delegator question does not keep the next question from reachi
   assert.match(w.asked.notices[1].body, /Or this one\?/);
 });
 
+test("an ask from before the task was reopened is not open", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  w.issues.t1.status = "done";
+  w.add("task.status_changed", "task:t1", "t1", { from: "in_progress", to: "done" }, "kernel");
+  w.tick(MIN);
+  w.issues.t1.status = "todo";
+  w.add("task.status_changed", "task:t1", "t1", { from: "done", to: "todo" }, "kernel");
+  w.tick(MIN);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 2);
+});
+
 test("a genuinely unanswered ask is replaced when the same recipient is asked again", async (t) => {
   const w = world(t);
   const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
@@ -322,15 +342,19 @@ test("a genuinely unanswered ask is replaced when the same recipient is asked ag
   assert.match(w.asked.notices[1].body, /Which path is current now\?/);
 });
 
-test("a second question routed to a different recipient is refused, not replaced", async (t) => {
+test("a question whose delegator closed moves to the chief of staff; any other recipient change is refused", async (t) => {
   const w = world(t);
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
   w.tick(MIN);
   w.issues.t0.status = "done";
-  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" }), { status: 409 });
-  assert.equal(w.asked.chief.length, 0, "nothing was sent to the new recipient");
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" })).to, "chief_of_staff", "the closed delegator is no recipient; the chief settles it");
+  assert.equal(w.asked.chief.length, 1);
+  // An owner question while the chief still owes the answer must wait for it.
+  w.tick(MIN);
+  w.who.conversing = true;
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "owner", question: "Owner instead?" }), { status: 409 });
   const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
-  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
+  assert.equal(JSON.parse(fact.data).question, "Or this one?", "the chief's wait stands");
 });
 
 test("a chat awaiting the owner's next message is never swept", async (t) => {
