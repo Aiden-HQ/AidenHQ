@@ -151,4 +151,10 @@ test("a job cited under a misspelled owner resolves to the graded PR's real owne
 
   const limited = citeDeps({ citedJob: async () => { throw Object.assign(new Error("API rate limit exceeded"), { status: 403 }); } });
   assert.match((await citedEvidence([job!], limited, [])).awaiting, /could not be read yet/, "a rate-limit 403 is retried");
+  const secondary = citeDeps({ citedJob: async () => { throw Object.assign(new Error("forbidden"), { status: 403, headers: { "retry-after": "60" } }); } });
+  assert.match((await citedEvidence([job!], secondary, [])).awaiting, /could not be read yet/, "a retry-after 403 is retried");
+  const integration = citeDeps({ citedJob: async () => { throw Object.assign(new Error("Resource not accessible by integration"), { status: 403 }); } });
+  const refused = await citedEvidence([job!], integration, []);
+  assert.equal(refused.awaiting, undefined, "any other 403 is final");
+  assert.match(refused.facts.join("\n"), /could not be read \(Resource not accessible by integration\)/);
 });

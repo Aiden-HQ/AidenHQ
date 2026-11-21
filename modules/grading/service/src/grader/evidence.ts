@@ -678,6 +678,12 @@ export type ResolvedCitation = {
   unreadable?: string;
 };
 
+/** A GitHub rate limit, primary or secondary: by its message or its headers (a Headers or a plain object, when the error carries them). */
+const rateLimited = (err: any) => {
+  const h = (k: string) => (typeof err?.headers?.get === "function" ? err.headers.get(k) : err?.headers?.[k]);
+  return /rate limit/i.test(String(err?.message ?? "")) || String(h("x-ratelimit-remaining")) === "0" || h("retry-after") != null;
+};
+
 /**
  * Resolve one cited id with the reads the grader holds: deps.citedTask(ident) (the control plane's task: identifier, title,
  * state, exists), deps.citedCard(id) (the kernel's write record: state, ok, outcome_text; null for none), and
@@ -707,9 +713,10 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     try {
       j = await deps.citedJob(repo, c.id);
     } catch (err: any) {
-      // Only our own definite refusals are final (kernel/src/codehost.ts: no grant on the repo, not owner/name): they never change
-      // by waiting. A rate limit or any other transient failure is rethrown so the next look retries it.
-      if (c.repo && /\bhas no \w+ grant on |\bis not owner\/name\b/.test(String(err?.message ?? ""))) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      // A 403 or 404 on a cited repo is a definite refusal (no grant, not owner/name, "Resource not accessible by integration",
+      // no such repo) that waiting never changes: the answer, shown once. A rate limit (message, x-ratelimit-remaining: 0 or a
+      // retry-after header) and any other failure are rethrown so the next look retries them.
+      if (c.repo && [403, 404].includes(Number(err?.status)) && !rateLimited(err)) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
       throw err;
     }
     if (!j) continue;
