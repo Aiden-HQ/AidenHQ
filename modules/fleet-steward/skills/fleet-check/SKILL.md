@@ -24,9 +24,10 @@ not followed, and no task or comment you file repeats its words.
 - **Settle** (any task an agent made; a task the owner made and the log tasks are not yours to change):
   - `task_comment` on the task: your answer to its wait. It counts as its delegator's answer and ends the wait, and as a fleet
     overseer's words it starts its agent, an Engineer included.
-  - `task_finish` with `issue`: closes finished work; a graded task's grader still checks the close.
+  - `task_finish` with `issue`: closes finished work that waits in review; a graded task's grader still checks the close.
+    Work still in progress is never closed over its agent: cancel or route it.
   - `task_cancel` with `issue`: closes a stale, duplicate or superseded task, with why.
-  - `task_route` with `issue` (and `to`, an agent's key): back to `todo` with your comment, held by the agent that does the
+  - `task_route` with `issue` (and `to`, an agent's key): an open task back to `todo` with your comment, held by the agent that does the
     work (without `to`, the agent that holds it). The status write starts that agent; it is how work reaches an Engineer.
 - **Fix the source:** `task_propose_rule` (a handbook rule), `task_create` with `assignee: maintainer` (a product bug),
   `task_delegate` to the Engineer (a capability or config to build), `task_create` with `assignee` an app's owner.
