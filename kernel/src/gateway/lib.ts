@@ -25,11 +25,13 @@
 // Credentials: a kernel job's token `ahqj_` (token.ts, kind job: capped as its agent on its task while the job lives), a
 // system token of the same format (reviewer/grader/source/check), a fast chat lane's turn token (same format, signed with
 // gateway_lane_secret, agent kind only), or the source writers' key (gateway_source_key). The run key is the credential's sha256.
-// Spend (spec §5.12): before forwarding, one transaction reserves (estimated input x in + max_output x out) x peak at the
-// model's declared prices (config/gateway.json `models`; an unpriced model is refused) as a `reserved` ledger row, so every
-// cap sum counts calls in flight; max_output is cut to what the tightest cap has left, and a call that can't buy MIN_OUTPUT
-// tokens is refused. Settlement replaces the row's cost with max(reported, tokens x price); no usage (a stream cut, an
-// upstream failure) leaves the reservation. A reservation whose kernel died (its `owner`, boot and pid) is closed as
+// Spend (spec §5.12): caps count real cost. A call goes ahead while what its caps have spent is below each cap (so one call
+// can take a cap past it, never two in a row); its output is bounded to what the tightest cap's room buys at the model's
+// price on OpenRouter's own models list (prices.ts: the dearest tier it lists; an id it doesn't list is refused), never under
+// MIN_OUTPUT, never over the model's ceiling. One transaction checks the caps and writes a `reserved` ledger row holding the
+// call's estimated input cost, so calls in flight count too. Settlement replaces the row's cost with what OpenRouter billed
+// (the answer's usage.cost, which it always sends; tokens x list price only if a usage block lacks it); no usage (a stream
+// cut, an upstream failure) leaves the estimate. A reservation whose kernel died (its `owner`, boot and pid) is closed as
 // `unsettled` at that amount (fail closed); one whose answer had begun (OpenRouter's generation id, `gen`) is then settled
 // from OpenRouter's record of that generation as `interrupted`, at what it billed. A restart lets calls in flight finish in
 // the old kernel (main.ts drain), so the next kernel never closes a live peer's reservation.
@@ -47,6 +49,7 @@ import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
+import { createPrices, type Price } from "./prices.ts";
 import { verifyToken } from "./token.ts";
 
 type Brand<T, B extends string> = T & { readonly __brand: B };
@@ -76,8 +79,6 @@ type CallRow = {
 type CiTokenRow = { hash: string; repo: string; pr: number; head: string | null; gh_run: string; attempt: string; exp: string; at: string };
 type Sum = { s: number };
 type Over = { scope: string; subject: string; cap: number; spent: number; install?: boolean };
-/** A model's declared prices (config/gateway.json `models`): USD per million tokens, the reservation's multiple, the output limit. */
-type Price = { in: number; cached_in: number; out: number; peak: number; max_output: number };
 /** What OpenRouter billed for one call. */
 type Usage = { key: string; model: string; input: number; cached: number; output: number; costUsd: number | null };
 type UsageBlock = {
@@ -100,7 +101,7 @@ const MESSAGE_FIELDS = new Set(["model", "messages", "system", "tools", "tool_ch
 /** The anthropic-beta values passed upstream (Claude Code's; none changes the price); any other is dropped. */
 const ANTHROPIC_BETAS = new Set(["interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "mid-conversation-tool-changes-2026-07-01", "thinking-token-count-2026-05-13", "effort-2025-11-24", "thinking-display-updates-2026-08-18"]);
 const DAY_MS = 864e5;
-// The fewest output tokens a call may be cut to; below that it is refused at the cap instead.
+// The fewest output tokens a call is cut to near a cap (below the cap a call always goes ahead).
 const MIN_OUTPUT = 1024;
 // CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day. Calls in flight need no limit of their
 // own: each holds its reservation against CI's caps until it settles.
@@ -255,12 +256,14 @@ const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, priceRetryMs, paperclipUrl, fileRaiseCap, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
+  /** OpenRouter's public models list (prices.ts), and the waits between its fetches on a cold start. */
+  modelsUrl?: string; priceRetryMs?: number[];
   githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
@@ -287,7 +290,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   };
   sweep(true);
   const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
-  const prices = watched(settingsFile, (j) => (j.models && typeof j.models === "object" ? (j.models as Record<string, Price>) : {}), {});
+  const prices = createPrices({ url: modelsUrl, now, log, ...(priceRetryMs ? { retryMs: priceRetryMs } : {}) });
   // CI code review (compile writes it from the ci module's settings): { orgs, models, repo_day_usd, day_usd } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   // The install-wide daily cap (settings.spend_day_usd); 0: none.
@@ -488,32 +491,36 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     return [...scopes.map(([scope, subj, spent]) => ({ scope, subject: subj, cap: capOf(who, scope, subj), spent })), ...installScope(today)];
   }
 
-  /** The prices a call is reserved and settled at: its model's, the dearest of any fallback `models`; a 403 when one has none. */
-  function priceOf(body: Record<string, unknown>): Price {
+  /**
+   * The prices a call is reserved at: its model's on OpenRouter's list, the dearest of any fallback `models`. A 403 for an id
+   * OpenRouter doesn't list; a 503 (the caller retries) when no list could be read at all.
+   */
+  async function priceOf(body: Record<string, unknown>): Promise<Price> {
     const ids = [body.model, ...(Array.isArray(body.models) ? body.models : [])].map(String);
-    const table = prices();
-    const missing = ids.filter((id) => !Object.hasOwn(table, id));
-    if (missing.length) throw fail(403, "not_priced", `no declared price for model ${missing.join(", ").slice(0, 200)}; the owner can add one (a module's models:)`);
-    const most = (k: keyof Price, pick = Math.max) => pick(...ids.map((id) => Number(table[id]![k]) || 0));
-    return { in: most("in"), cached_in: most("cached_in"), out: most("out"), peak: Math.max(1, most("peak")), max_output: most("max_output", Math.min) };
+    const r = await prices.lookup(ids);
+    if ("unavailable" in r) throw fail(503, "prices_unavailable", "OpenRouter's models list couldn't be read to price this call; try again");
+    if ("missing" in r) throw fail(403, "not_priced", `OpenRouter lists no model ${r.missing.join(", ").slice(0, 200)}`);
+    const most = (k: keyof Price, pick = Math.max) => pick(...r.prices.map((p) => p[k]));
+    return { in: most("in"), cached_in: most("cached_in"), out: most("out"), max_output: most("max_output", Math.min) };
   }
 
   /**
-   * One transaction: the room the tightest cap leaves, the output tokens that buys (at most `want`), and a `reserved` ledger
-   * row holding the call's whole worst case. Synchronous, so calls in flight can never reserve past a cap together.
+   * One transaction: refused when a cap's spend has reached it; else the output tokens the tightest cap's room buys (at least
+   * MIN_OUTPUT, at most `want`) and a `reserved` ledger row holding the estimated input cost. Synchronous, so a call is
+   * always checked against every call settled or in flight before it.
    */
   function reserve(who: Caller, t: number, key: string, model: string, inUsd: number, perOut: number, want: number): { usd: number; maxOutput: number } | { over: Over } {
     db.exec("BEGIN IMMEDIATE");
     try {
       const scopes = capScopes(who, t);
-      const room = Math.min(Infinity, ...scopes.map((s) => s.cap - s.spent));
-      const fits = room < inUsd ? -1 : perOut > 0 ? Math.floor((room - inUsd) / perOut) : Infinity;
-      const maxOutput = Math.min(want, fits);
-      if (maxOutput < Math.min(want, MIN_OUTPUT)) {
+      const tightest = scopes.reduce<Over | undefined>((a, b) => (!a || b.cap - b.spent < a.cap - a.spent ? b : a), undefined);
+      if (tightest && tightest.spent >= tightest.cap) {
         db.exec("ROLLBACK");
-        return { over: scopes.reduce((a, b) => (b.cap - b.spent < a.cap - a.spent ? b : a)) };
+        return { over: tightest };
       }
-      const usd = inUsd + maxOutput * perOut;
+      const room = tightest ? tightest.cap - tightest.spent - inUsd : Infinity;
+      const maxOutput = Math.min(want, perOut > 0 ? Math.max(MIN_OUTPUT, Math.floor(room / perOut)) : want);
+      const usd = inUsd;
       record(who, { key, model, costUsd: usd, status: "reserved", t, ms: null });
       db.exec("COMMIT");
       return { usd, maxOutput };
@@ -617,15 +624,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // A tool with a type is Anthropic's (a server tool is billed per use, outside any reservation): custom tools only.
       if (Array.isArray(body.tools) && body.tools.some((t) => !t || typeof t !== "object" || ((t as { type?: unknown }).type ?? "custom") !== "custom")) throw fail(403, "not_allowed", "only custom tools may be sent: a server tool is billed outside the call's reservation");
     }
-    const price = priceOf(body);
+    const price = await priceOf(body);
     const upKey = secret("openrouter_key");
     if (!upKey) throw fail(503, "no_upstream_key", "the gateway has no OpenRouter key");
-    // Bounded output: the request's own limit, the model's, and what the tightest cap has left (reserve).
+    // Bounded output: the request's own limit, the model's ceiling, and what the tightest cap's room buys (reserve).
     const field = path === "responses" ? "max_output_tokens" : "max_tokens";
     const asked = [body[field], body.max_completion_tokens].filter((n): n is number => Number.isInteger(n) && (n as number) > 0);
-    const per = price.peak / 1e6;
     const id = `gw:${randomUUID()}`;
-    const r = reserve(who, t0, id, body.model, Math.ceil(Buffer.byteLength(raw) / 3) * price.in * per, price.out * per, Math.min(price.max_output, ...asked));
+    const r = reserve(who, t0, id, body.model, (Math.ceil(Buffer.byteLength(raw) / 3) * price.in) / 1e6, price.out / 1e6, Math.min(price.max_output, ...asked));
     if ("over" in r) {
       const over = r.over;
       if (over.install) {
@@ -649,13 +655,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     body[field] = r.maxOutput;
     if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
-    // Settled once, however the call ends: the billed usage at max(reported, tokens x price); nothing when the upstream refused
-    // before any output (`free`: OpenRouter bills none); else the reservation (a stream cut, no usage, a restart).
+    // Settled once, however the call ends: at what OpenRouter billed (usage.cost; tokens x list price if a usage block lacks it,
+    // never 0); nothing when the upstream refused before any output (`free`: OpenRouter bills none); else the reservation (a
+    // stream cut, no usage, a restart).
     live++;
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
-      const floor = u ? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6 : 0;
-      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, u ? Math.max(u.costUsd ?? 0, floor) : free ? 0 : r.usd, now() - t0, status, id];
+      const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : r.usd;
+      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
@@ -811,5 +818,5 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const spentBy = (cred: string) => spentByKey(sha256(cred));
   /** A run key's tokens (settled calls' input, cached input and output). */
   const tokensByKey = (runKey: string) => ({ ...(q.tokensRun.get(runKey) as { input: number; cached: number; output: number }) });
-  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); db.close(); } };
+  return { handle, db, metricsText, setCap, exhausted, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
 }

@@ -27,7 +27,7 @@ agents:
     reasoning_effort: high
     model: openrouter/~deepseek/deepseek-flash-latest
     # Offered in the board's model picker and known to the dispatcher ("use DeepSeek"). Any other
-    # OpenRouter model id works when typed in full once it has a price (modules/models-openrouter).
+    # model id OpenRouter lists works when typed in full (the gateway prices it from OpenRouter's list).
     models:
       - openrouter/~deepseek/deepseek-flash-latest
       - openrouter/moonshotai/kimi-k3.1-pro

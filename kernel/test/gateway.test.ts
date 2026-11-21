@@ -10,12 +10,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGateway } from "../src/gateway/lib.ts";
 import { mintToken } from "../src/gateway/token.ts";
+import { modelsList } from "./models-list.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const json = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-// Declared prices (USD per million tokens): a call reserves about $0.004, well under what the fake upstream bills ($0.03).
-const price = { in: 1, cached_in: 0.1, out: 1, peak: 1, max_output: 4096 };
-const MODELS = { models: { "~deepseek/deepseek-flash-latest": price, breaks: price, m: price } };
+// OpenRouter's models list as these tests stub it (USD per million tokens): a call reserves about $0.004, well under what the
+// fake upstream bills ($0.03).
+const price = { in: 1, cached_in: 0.1, out: 1, max_output: 4096 };
+const LIST = await modelsList({ "~deepseek/deepseek-flash-latest": price, breaks: price, m: price, "anthropic/claude-haiku-5.5": price });
+const modelsUrl = LIST.url;
 // A token signed by hand (`ahqj_<payload>.<hmac>`): a fast lane's turn token as the chat lane signs it, or a forged kind.
 const signed = (secret, p, now) => { const body = Buffer.from(JSON.stringify({ i: null, c: null, x: now + 3600_000, ...p })).toString("base64url"); return `ahqj_${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`; };
 
@@ -25,7 +28,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden", rev: "abc123", caps: { run_usd: 0.05, task_usd: 0.08, day_usd: 30 } }, ag2: { key: "eng" } } }));
   const settingsFile = join(dir, "gateway.json");
-  writeFileSync(settingsFile, JSON.stringify(MODELS));
+  writeFileSync(settingsFile, "{}");
   let cost = 0.03;
   const seen = [];
   const asked = [];
@@ -62,7 +65,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
     if (!minted.has(k)) minted.set(k, mintToken("job-secret", { kind: "job", job, agentId: agent, issueId: runs[job] ?? null, ttlMs: exp ? exp * 1000 - T0 : 365 * 864e5 }, T0));
     return minted.get(k);
   };
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, modelsUrl, paperclipUrl: paperclip.url, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { for (const x of [upstream, paperclip, front]) x.s.close(); gw.close(); });
 
@@ -137,12 +140,12 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   now += 120_000;
   assert.equal((await call(jobToken("ag1", "run3", exp))).status, 401);
 
-  // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted), charged its whole reservation.
+  // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted), charged its reservation (the input's estimate).
   await call(jobToken("ag1", "run4"));
   await call(jobToken("ag1", "run4"), { model: "breaks" }).catch(() => {});
   const aborted = (await usage()).filter((r) => r.status === "upstream_aborted");
   assert.deepEqual(aborted.map((r) => r.runId), ["run4"]);
-  assert.ok(aborted[0].costUsd > 0.004 && aborted[0].costUsd < 0.0045, String(aborted[0].costUsd)); // 4096 output tokens + the input
+  assert.ok(aborted[0].costUsd > 0 && aborted[0].costUsd < 0.0001, String(aborted[0].costUsd));
 
   // A chat task's cap counts the UTC day: refused at $0.09 today, open again tomorrow.
   for (const r of ["c1", "c2", "c3"]) await call(jobToken("ag1", r));
@@ -173,7 +176,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
   assert.equal((await call(reviewer)).status, 200);
   assert.equal((await call(reviewer)).status, 200);
   assert.equal((await call("src-key")).status, 200);
-  writeFileSync(settingsFile, JSON.stringify({ ...MODELS, enforce_caps: false }));
+  writeFileSync(settingsFile, JSON.stringify({ enforce_caps: false }));
   assert.equal((await call(jobToken("ag1", "run1"))).status, 402);
   rows = await usage();
   assert.deepEqual(rows.filter((r) => r.kind === "reviewer").map((r) => r.component), ["AI reviewer", "AI reviewer"]);
@@ -188,7 +191,7 @@ test("gateway: attribution, billed cost, caps, raise_cap once, daily reset, no o
 test("gateway: a Paperclip run JWT, a launcher run token and the old harness key are no credentials", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: {} }));
-  writeFileSync(join(dir, "gateway.json"), JSON.stringify(MODELS));
+  writeFileSync(join(dir, "gateway.json"), "{}");
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => (n === "gateway_harness_key" ? "harness-key" : "") });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { front.s.close(); gw.close(); });
@@ -204,11 +207,11 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden" } } }));
   const settingsFile = join(dir, "gateway.json");
-  writeFileSync(settingsFile, JSON.stringify({ models: { m: price }, install_day_usd: 0.05 }));
+  writeFileSync(settingsFile, JSON.stringify({ install_day_usd: 0.05 }));
   const upstream = await serve((req, res) => { req.resume(); req.on("end", () => json(res, 200, { id: `gen-${Math.random()}`, model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.03 } })); });
   const filed = [];
   const now = Date.parse("2026-11-18T10:00:00Z");
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, modelsUrl, fileRaiseCap: async (b) => void filed.push(b), jobLive: () => true, now: () => now });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
   const call = async (cred) => {
@@ -240,7 +243,7 @@ test("gateway: the install cap counts every call of the day, no-agent ones too, 
   assert.equal((await call(reviewer)).status, 200);
   assert.equal((await spend()).install.cap, 0.1);
   // Unset, no install cap at all.
-  writeFileSync(settingsFile, JSON.stringify({ models: { m: price } }));
+  writeFileSync(settingsFile, "{}");
   assert.equal((await spend()).install.cap, null);
 });
 
@@ -250,14 +253,14 @@ test("gateway: a control plane blip never settles a chat run as capped for life,
   const grantsFile = join(dir, "grants.json");
   writeFileSync(grantsFile, JSON.stringify({ agents: { ag1: { key: "aiden" } } }));
   const settingsFile = join(dir, "gateway.json");
-  writeFileSync(settingsFile, JSON.stringify(MODELS));
+  writeFileSync(settingsFile, "{}");
   const upstream = await serve((req, res) => { req.resume(); req.on("end", () => {
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write(`data: {"id":"gen-stall"}\n\n`); // then nothing: a stream that stalls
   }); });
   let down = true;
   const paperclip = await serve((req, res) => (down ? json(res, 502, {}) : json(res, 200, { labels: [{ name: "chat" }] })));
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, paperclipUrl: paperclip.url, jobLive: () => true, streamIdleMs: 50, taskRetryMs: [0] });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile, settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, modelsUrl, paperclipUrl: paperclip.url, jobLive: () => true, streamIdleMs: 50, taskRetryMs: [0] });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { for (const x of [upstream, paperclip, front]) x.s.closeAllConnections?.(), x.s.close(); gw.close(); });
   const token = mintToken("job-secret", { kind: "job", job: "c1", agentId: "ag1", issueId: "chat1" });
@@ -279,7 +282,7 @@ test("gateway: a control plane blip never settles a chat run as capped for life,
 test("gateway: Anthropic format: a check token's call settles at the streamed usage; only allowed betas and fields go up; a server tool is refused", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   writeFileSync(join(dir, "grants.json"), "{}");
-  writeFileSync(join(dir, "gateway.json"), JSON.stringify({ models: { "anthropic/claude-haiku-5.5": price } }));
+  writeFileSync(join(dir, "gateway.json"), "{}");
   const seen = [];
   // OpenRouter's /messages stream as captured 2026-11-20: id and input in message_start, final usage and cost in message_delta.
   const upstream = await serve((req, res) => {
@@ -290,7 +293,7 @@ test("gateway: Anthropic format: a check token's call settles at the streamed us
       res.end(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 12, output_tokens: 14, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, cost: 0.0021 } })}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`);
     });
   });
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
   const token = mintToken("job-secret", { kind: "check", component: "code-review:c1", capUsd: 1 });

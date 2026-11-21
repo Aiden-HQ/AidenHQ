@@ -2,8 +2,9 @@
 
 ## What it does
 
-The list of OpenRouter models the gateway may call, with their prices and output limits. A model an agent asks for by an
-id not listed here is refused. It also asks for your OpenRouter key.
+OpenRouter as the model provider: it asks for your OpenRouter key. Any model OpenRouter lists works by its id: the gateway
+prices each call from OpenRouter's own models list and records what OpenRouter billed for it. An id OpenRouter doesn't list
+is refused.
 
 ## Connect
 
@@ -13,7 +14,7 @@ kernel's model gateway reads it. Agents can't run without it. Set a spend limit 
 ## What agents get
 
 No tools. Agents name a model by id (for example `~deepseek/deepseek-flash-latest`, `~openai/gpt-luna-latest`,
-`~openai/gpt-sol-latest`), and the gateway checks it against this list and the spend caps.
+`~openai/gpt-sol-latest`), and the gateway checks it against OpenRouter's list and the spend caps.
 
 ## New installs
 
