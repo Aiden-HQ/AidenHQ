@@ -26,10 +26,14 @@ checks:
     auth: grading_check_key
     label: grading
 # PR and issue evidence: typed reads of the instance's known repositories (agents org, product, github_orgs, maintainer_repos)
-# through the kernel's code host (POST /v1/codehost/read, service/src/github.ts): a PR, its checks and its diff, an issue, a job.
+# through the kernel's code host: a PR, its checks and its diff, a job, and (under `evidence`) a file at a commit or a job's log.
 codehost:
   read:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
+  # A graded head's CI evidence, for the command facts alone. Narrower than read: no PR, issue or arbitrary file.
+  evidence:
+    repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
+    paths: [ ".github/ci/areas.json", ".github/ci/run-suites.sh", ".github/ci/select.ts", ".github/workflows/ci.yml" ]
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.

@@ -43,6 +43,22 @@ A successful answer a connection's sign-in served is marked `signedIn(result, ac
 clears a full need (`not_connected`, `expired`), and with `account` it clears that account alone. Mark only the account
 that actually served the call: an answer from one account proves nothing about another whose sign-in failed.
 
+## `POST /v1/codehost/<op>` — a module's typed code host operations
+
+Grant: the module's `module.yaml` `codehost:` block, per op. The kernel checks the grant and every field's shape, then
+calls the code host module, which holds the GitHub sign-in: no op returns a token.
+
+```yaml
+codehost:
+  read:     { repos: [ "@product" ] }                                 # a PR, issue, diff, job, open PRs
+  evidence:                                                           # a graded head's own CI evidence, only
+    repos: [ "@product" ]
+    paths: [ ".github/ci/areas.json", ".github/ci/run-suites.sh", ".github/ci/select.ts", ".github/workflows/ci.yml" ]
+```
+
+`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a full commit sha) and `log` (`{id, bytes}`,
+a job's own log, GitHub's ZIP unpacked and bounded). `read` alone reaches neither.
+
 ## `POST /v1/tasks` — file a task
 
 Grant: `kernel.tasks`.

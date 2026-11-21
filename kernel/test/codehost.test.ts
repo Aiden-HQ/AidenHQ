@@ -19,7 +19,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
   const url = `http://127.0.0.1:${host.address().port}`;
   const op = createCodehost({
     grants: () => [
-      { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
+      { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, evidence: { repos: ["*/*"], paths: [".github/ci/areas.json"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
       { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
       { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
       { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
@@ -79,6 +79,22 @@ test("fetch refs are refs/heads/*, a branch or a pull request's head; head and r
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "secrets" })).status, 400);
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "job", id: "abc" })).status, 400);
   assert.equal(seen.length, 4);
+});
+
+test("a graded head's file and a job's log are read kinds, behind evidence alone", async (t) => {
+  const { call, seen } = await setup(t);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) });
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: "../secrets", ref: "a".repeat(40) })).status, 400);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "main" })).status, 400);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "log", id: 12 })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", kind: "log", id: 12, bytes: 512_000 }, "a log's size is bounded");
+  // A log is read whole up to the cap; a bigger one is cut, and a cut log is no evidence.
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "log", id: 12, bytes: 30_000_000 })).status, 200);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "log", id: 12, bytes: 30_000_001 })).status, 400);
+  // The evidence grant is narrower: a file reaches only a path it lists.
+  assert.equal((await call("apps-platform", "read", { repo: "acme-agents/x", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) })).status, 403);
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: "apps.yaml", ref: "a".repeat(40) })).status, 403);
 });
 
 test("fetch needs the fetch grant: @agents/* covers the fleet org's repos only", async (t) => {
@@ -175,7 +191,7 @@ test("without the github module there is no GitHub code host: 404", async (t) =>
 test("no grant names a token: the schema lists the typed ops only", async () => {
   const { readFileSync } = await import("node:fs");
   const schema = JSON.parse(readFileSync(new URL("../schemas/codehost.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(schema.properties).sort(), ["clone", "comment", "commit", "fetch", "read", "runner", "snapshot"]);
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["clone", "comment", "commit", "evidence", "fetch", "read", "runner", "snapshot"]);
 });
 
 test("with both code hosts, each repo goes to its own: local/… to this server's, the agents org's to GitHub", async (t) => {

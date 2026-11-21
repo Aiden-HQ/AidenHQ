@@ -2,7 +2,10 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { findPrs, staleHead } from "./text.ts";
+// CI's own selection and sharding (a byte-identical copy of `.github/ci/select.ts`).
+import { suitesFor, shard } from "../ci-select.ts";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
@@ -33,6 +36,140 @@ const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
 }, undefined);
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+
+const COMMAND_JOBS = 6;
+const COMMAND_LOG_BYTES = 30_000_000;
+/** A log read takes up to 30 s + 30 s: leave headroom. */
+const COMMAND_TIMEOUT_MS = 90_000;
+const COMMAND_FACTS = 24;
+const LOG_CUT = "[cut: ";
+/** The workflow a fact's pass comes from. */
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+/** The base's selector must equal ours. */
+const CI_SELECT = ".github/ci/select.ts";
+const CI_RUNNER = ".github/ci/run-suites.sh";
+const SELECT_TEXT = readFileSync(new URL("../ci-select.ts", import.meta.url), "utf8");
+
+type CiMap = { everything: string[]; markdown: string[]; suites: any[] };
+
+/** The CI map at a commit, or none. */
+function ciMap(text: string | null): CiMap | undefined {
+  let json: any;
+  try {
+    json = JSON.parse(text ?? "");
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(json?.suites) || !Array.isArray(json?.everything) || !Array.isArray(json?.markdown)) return;
+  return {
+    everything: json.everything.map(String),
+    markdown: json.markdown.map(String),
+    suites: json.suites.filter((s: any) => typeof s?.name === "string" && typeof s?.run === "string" && s.run)
+      .map((s: any) => ({ ...s, dir: s.name.split("#")[0]!, run: s.run })),
+  };
+}
+
+/** A log's `Shard N:` lists (all must agree) and `gone:`; a conflict is no fact. The pass is GitHub's `Test` step. */
+function logSays(log: string): { suites: Map<number, Set<string>>; conflicting: Set<number>; gone: Set<string>; stray: boolean } {
+  const seen = new Map<number, Set<string>[]>();
+  for (const m of log.matchAll(/(?:^|\s)Shard (\d+): +(.*)$/gm)) {
+    const n = Number(m[1]);
+    seen.set(n, [...(seen.get(n) ?? []), new Set(String(m[2]).trim().split(/\s+/).filter(Boolean))]);
+  }
+  const suites = new Map<number, Set<string>>(), conflicting = new Set<number>();
+  for (const [n, lists] of seen) {
+    const first = [...lists[0]!].sort().join(" ");
+    if (lists.every((l) => [...l].sort().join(" ") === first)) suites.set(n, lists[0]!);
+    else conflicting.add(n);
+  }
+  // A stray end-group: a suite closed the runner's group, so the log is not the runner's.
+  let depth = 0, stray = false;
+  for (const line of log.split("\n")) {
+    if (/##\[group\]/.test(line)) depth++;
+    else if (/##\[endgroup\]/.test(line)) { if (depth === 0) stray = true; else depth--; }
+  }
+  const gone = new Set([...log.matchAll(/(?:^|\s)gone: +(.+)$/gm)].map((m) => String(m[1]).trim()));
+  return { suites, conflicting, gone, stray };
+}
+
+const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
+  Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
+
+/** A check's job id. */
+function jobIdOn(pr: any, name: string): string | undefined {
+  const run = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).find((n: any) => n.__typename === "CheckRun" && n.name === name);
+  return run?.databaseId ? String(run.databaseId) : undefined;
+}
+
+/** The suites CI assigns each shard. */
+function planShards(baseMap: any, headMap: CiMap, files: string[]): Map<string, string[]> {
+  const picked = new Set(suitesFor(baseMap, files).names);
+  const tests = baseMap.suites
+    .filter((s: any) => picked.has(s.name) && !s.main)
+    // As CI does: suites and `secs` from the base, run and job from the head.
+    .map((s: any) => {
+      const own = headMap.suites.find((h) => h.name === s.name) ?? s;
+      return { name: s.name, dir: s.name.split("#")[0]!, run: own.run ?? s.run, secs: s.secs ?? 5, job: own.job };
+    });
+  const out = new Map<string, string[]>();
+  for (const s of shard(tests.filter((t: any) => t.job == null), 1)) out.set(`packages#${s.shard}`, s.entries.map((e: any) => e.name));
+  for (const s of shard(tests.filter((t: any) => t.job === "modules"), 2)) out.set(`modules#${s.shard}`, s.entries.map((e: any) => e.name));
+  return out;
+}
+
+/** Facts for the commands a green job ran. */
+async function commandFacts(pr: any, repo: string, checks: any[], deps: any): Promise<string[]> {
+  if (!deps.file || !deps.jobLog || !deps.job) return [];
+  const head = String(pr.headRefOid ?? ""), base = String(pr.baseRef?.target?.oid ?? "");
+  if (!/^[0-9a-f]{40}$/.test(head) || !/^[0-9a-f]{40}$/.test(base)) return [];
+  const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
+  if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
+  // A head that changes any workflow is no CI to trust: its check could come from the workflow it wrote.
+  if (files.some((f: string) => f.startsWith(".github/workflows/"))) return [];
+  const green = checks
+    .filter((c: any) => /^(?:packages|modules) \(\d+\)$/.test(c.name) && !c.skipped && c.status === "SUCCESS" && jobIdOn(pr, c.name))
+    .slice(0, COMMAND_JOBS);
+  if (!green.length) return [];
+  const read = (path: string, ref: string) => deps.file(repo, path, ref).catch(() => null);
+  const [headText, baseText, headCi, baseCi, baseSel, headRun, baseRun] = await withTimeout(Promise.all([
+    read(".github/ci/areas.json", head), read(".github/ci/areas.json", base),
+    read(CI_WORKFLOW, head), read(CI_WORKFLOW, base), read(CI_SELECT, base),
+    read(CI_RUNNER, head), read(CI_RUNNER, base),
+  ]), COMMAND_TIMEOUT_MS) ?? [];
+  const headMap = ciMap(headText ?? null), baseMap = ciMap(baseText ?? null);
+  // The selector, workflow and runner must be ours.
+  if (!headMap || !baseMap || !headCi || headCi !== baseCi || !headRun || headRun !== baseRun || String(baseSel ?? "") !== SELECT_TEXT) return [];
+  const plan = planShards(baseMap, headMap, files);
+  if (!plan.size) return [];
+  const records = await Promise.all(green.map(async (c: any) => {
+    const id = jobIdOn(pr, c.name)!;
+    const j = await withTimeout(deps.job(repo, id).catch(() => null), COMMAND_TIMEOUT_MS);
+    // Another run's base, another workflow's check, a run that is not this PR's head, is no fact.
+    if (!j || j.conclusion !== "success" || j.run_base !== base || j.workflow_path !== CI_WORKFLOW) return undefined;
+    if (j.workflow_state !== "active" || j.event !== "pull_request" || j.head_sha !== head) return undefined;
+    if (!Array.isArray(j.steps) || !j.steps.some((s: any) => s.name === "Test" && s.conclusion === "success")) return undefined;
+    const log = await withTimeout(deps.jobLog(repo, id, COMMAND_LOG_BYTES).catch(() => null), COMMAND_TIMEOUT_MS);
+    return log && !log.includes(LOG_CUT) ? logSays(log) : undefined;
+  }));
+  const facts: string[] = [], seen = new Set<string>();
+  for (const [i, c] of green.entries()) {
+    const shardNo = Number(/\((\d+)\)$/.exec(c.name)![1]);
+    const assigned = plan.get(`${c.name.replace(/ \(\d+\)$/, "")}#${shardNo}`);
+    const ran = records[i];
+    if (!assigned || !ran || ran.stray || ran.conflicting.has(shardNo)) continue;
+    // The job must have run exactly the suites assigned this shard.
+    const logged = ran.suites.get(shardNo);
+    if (!logged || [...logged].sort().join(" ") !== [...assigned].sort().join(" ")) continue;
+    for (const name of assigned) {
+      if (facts.length >= COMMAND_FACTS) return facts;
+      const suite = headMap.suites.find((s) => s.name === name), selected = baseMap.suites.find((s) => s.name === name);
+      if (!suite || !selected || selected.run !== suite.run || selected.dir !== suite.dir || ran.gone.has(suite.dir) || seen.has(`${name}\n${suite.dir}`)) continue;
+      seen.add(`${name}\n${suite.dir}`);
+      facts.push(`${c.name} green on head ${head}: ran "${suite.run}" (${name}) in ${suite.dir}/ — passed`);
+    }
+  }
+  return facts;
+}
 
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
 
@@ -300,7 +437,7 @@ const PR_TEXT_TOTAL = 20_000;
 /**
  * The task's PRs as evidence: { awaiting } or { version, facts, data }. `prs` are the runner's own PRs for the task, narrowed
  * by the ref (a PR named only in the ref is never read), each with the branch or branches its records name (`heads`).
- * deps: pr(repo, n) (merges.PR_QUERY's data), diff(repo, n), ownRepo(slug).
+ * deps: pr, diff, ownRepo, and optionally file, job and jobLog (CI's maps and the job's own record and log).
  * Each PR's title and description are the author's own text, so they go to the grader fenced (PR_DESCRIPTION), never as facts:
  * a rubric may ask what the PR records, which only that text can show.
  */
@@ -369,6 +506,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    facts.push(...(await commandFacts(pr, p.repo, checks, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
