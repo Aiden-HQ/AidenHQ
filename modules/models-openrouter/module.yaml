@@ -14,6 +14,8 @@ models:
   - { id: "deepseek/deepseek-v4-pro", in: 0.9, cached_in: 0.25, out: 1.5, peak: 4, max_output: 131072 }
   - { id: "~openai/gpt-luna-latest", in: 0.1, cached_in: 0.01, out: 0.5, peak: 2, max_output: 128000 }
   - { id: "~openai/gpt-sol-latest", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 65536 }
+  - { id: "~openai/gpt-terra-latest", in: 1, cached_in: 0.05, out: 5, peak: 2, max_output: 65536 }
+  - { id: "~openai/gpt-astra-latest", in: 8, cached_in: 0.4, out: 40, peak: 2, max_output: 65536 }
   - { id: "~z-ai/glm-flash-latest", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
   - { id: "z-ai/glm-5.3-flash", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
   - { id: "z-ai/glm-5.3", in: 0.0699, cached_in: 0.0689, out: 1.4, peak: 12, max_output: 128000 }
