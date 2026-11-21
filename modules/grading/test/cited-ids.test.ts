@@ -183,3 +183,17 @@ test("a cited repo resolves exactly first, then by dashes and case only when one
   assert.equal(r.repo, "acme/app");
 });
 
+test("a repo listed twice is not ambiguous; a bare citation refused everywhere is shown once as unreadable", async () => {
+  const seen: string[] = [];
+  const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return { name: "ci", state: "completed", conclusion: "success" }; } });
+  const [dashed] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/7"], "WOR-9");
+  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "Aiden-HQ/AidenHQ"]);
+  assert.equal(seen.pop(), "Aiden-HQ/AidenHQ");
+
+  const [bare] = citedIds(["ci: job 424242"], "WOR-9");
+  const denied = citeDeps({ citedJob: async (repo: string) => { throw Object.assign(new Error(`no grant on ${repo}`), { status: 403 }); } });
+  const out = await citedEvidence([bare!], denied, ["acme/a", "acme/b"]);
+  assert.equal(out.awaiting, undefined);
+  assert.match(out.facts.join("\n"), /could not be read \(no grant on acme\/a\)/);
+});
+

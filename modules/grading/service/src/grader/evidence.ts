@@ -708,9 +708,10 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
   const lower = (r: string) => r.toLowerCase();
   const nodash = (r: string) => lower(r).replace(/-/g, "");
   const exact = repos.find((r) => c.repo && lower(r) === lower(c.repo));
-  const variants = repos.filter((r) => c.repo && nodash(r) === nodash(c.repo));
-  const known = exact ?? (variants.length === 1 ? variants[0] : undefined);
+  const variants = [...new Set(repos.filter((r) => c.repo && nodash(r) === nodash(c.repo)).map(lower))];
+  const known = exact ?? (variants.length === 1 ? repos.find((r) => lower(r) === variants[0]) : undefined);
   const candidates = c.repo ? [known ?? c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  let refused: { repo: string; message: string } | undefined;
   for (const repo of candidates) {
     let j: any;
     try {
@@ -721,7 +722,10 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
       // retry-after header) and any other failure are rethrown so the next look retries them.
       if ([403, 404].includes(Number(err?.status)) && !rateLimited(err)) {
         // A bare citation tries each known repo: one the grader cannot read is skipped, not a reason to wait.
-        if (!c.repo) continue;
+        if (!c.repo) {
+          refused ??= { repo, message: String(err.message ?? err) };
+          continue;
+        }
         return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
       }
       throw err;
@@ -729,6 +733,8 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     if (!j) continue;
     return { citation: c, id: c.id, exists: true, state: String(j.state ?? j.status ?? "unknown"), conclusion: String(j.conclusion ?? ""), name: String(j.name ?? ""), repo };
   }
+  // Every candidate came back empty or refused: a refusal means the job may be in a repo the grader cannot read, so it is unverified, not "no such job".
+  if (refused) return { citation: c, id: c.id, exists: false, unreadable: refused.message, repo: refused.repo };
   return { citation: c, id: c.id, exists: false };
 }
 
