@@ -870,6 +870,7 @@ export function createService(o: Options) {
       const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|setup|runner_token)$/.exec(String(req.url ?? ""));
       if (m?.[1] === "setup" && req.method === "POST") {
         if (!keyed(req)) throw fail(401, "the kernel only");
+        // Above the kernel's own cap on a setup body (backplane.ts: 4 MB), so whatever the kernel forwards fits.
         const r = await setupOp(await body(req, 6_000_000));
         return send(res, r.status, r.json);
       }

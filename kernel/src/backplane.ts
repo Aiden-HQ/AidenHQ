@@ -797,7 +797,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
       if (hit?.path === "/v1/codehost/:op") {
         const w = await moduleOf(req);
         if (!codehost) throw fail(404, "not_found", "no GitHub code host here");
-        return await codehost(w.module!, m[0]!, await json(req), res);
+        // A setup carries its files whole (codehost.ts shape: at most 3,000,000 characters in all); every other op is small.
+        return await codehost(w.module!, m[0]!, await json(req, m[0] === "setup" ? 4_000_000 : 1_000_000), res);
       }
       if (hit && hit.path.startsWith("/v1/jobs")) {
         const w = await moduleOf(req);
