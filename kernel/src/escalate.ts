@@ -92,7 +92,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
    * began with it. The state applies the answer rule, so an answered question or a questionless release is no open ask. A
    * marker from before a reopen or a questionless wait never arms the gate. `undefined`: no open ask; `"unknown"`: unreadable.
    */
-  function openAsk(task: string): { to: AskTo } | "unknown" | undefined {
+  async function openAsk(t: Issue): Promise<{ to: AskTo } | "unknown" | undefined> {
+    const task = t.id;
     const row = state(task);
     if (!row) return "unknown";
     if (!row.question || !row.wait_since) return undefined;
@@ -104,9 +105,10 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     const reopen = db.prepare("SELECT MAX(at) AS at FROM facts WHERE type = 'task.status_changed' AND subject = ? AND at > ? AND json_extract(data, '$.from') IN ('done', 'cancelled')").get(`task:${task}`, new Date(marker.at).toISOString()) as { at: string | null } | undefined;
     if (reopen?.at) return undefined;
     if (!(Number.isFinite(Date.parse(row.wait_since)) && Date.parse(row.wait_since) >= marker.at)) return undefined;
-    // Older markers stored the requested category; owner questions routed to the chief of staff are a delegator wait.
+    // Older markers stored the resolved recipient by the old two-value scheme; a "delegator" one may now have no delegator.
     const to: AskTo | undefined = marker.kind === "owner" && answeredBy === "delegator" ? "chief_of_staff"
-      : marker.kind === "owner" || marker.kind === "delegator" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
+      : marker.kind === "delegator" ? (await delegatorOf(t)) ? "delegator" : (await agentOf(t))?.roles.includes(CHIEF) ? "owner" : "chief_of_staff"
+      : marker.kind === "owner" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
     if (!to) return undefined;
     return { to };
   }
@@ -183,10 +185,11 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       if (!q || !t || CLOSED.includes(String(t.status))) return { sent: "gone" };
       const fromChief = Boolean((await agentOf(t))?.roles.includes(CHIEF));
       const to: AskTo = who === "owner" ? (fromChief || (await conversing(t.id)) ? "owner" : "chief_of_staff") : (await delegatorOf(t)) ? "delegator" : fromChief ? "owner" : "chief_of_staff";
-      const open = openAsk(t.id);
+      const open = await openAsk(t);
       if (open === "unknown") return { sent: "open" };
-      // One open ask at a time: only the same routed recipient may be replaced; any other change waits for its answer.
-      if (open && open.to !== to) return { sent: "open", to: open.to };
+      // One open ask at a time. The same routed recipient may be replaced; a recipient change waits, except that an ask whose
+      // delegator has since closed may move on to whoever now settles it (the chief of staff, or the owner for the chief's task).
+      if (open && open.to !== to && !(open.to === "delegator" && !(await delegatorOf(t)))) return { sent: "open", to: open.to };
       if (asked && to === "owner") return { sent: "recorded", to };
       // A looping agent can't fill the chief of staff's list: at most CHIEF_ASKS a day per agent, whatever requested the ask.
       const asker = to === "chief_of_staff" ? (await agentOf(t))?.key : undefined;
