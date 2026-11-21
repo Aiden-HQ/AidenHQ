@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fileOwners, type Owner, type Owners } from "./owners.js";
 
-export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; by?: Owner };
+export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; private?: true; by?: Owner };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
@@ -23,6 +23,8 @@ export function normalise(a: any, fromRunner = false): Publish {
   // The version the agent read: Primer merges people's edits since then (three-way) and refuses a stale one.
   if (args.documentId && Number.isInteger(a?.baseVersionNumber) && a.baseVersionNumber > 0) args.baseVersionNumber = a.baseVersionNumber;
   if (fromRunner && args.documentId && a?.own === true) args.own = true;
+  // Only ever narrows who can read a new document, so any requester may ask for it.
+  if (!args.documentId && a?.private === true) args.private = true;
   if (!args.content) throw new Error("the document is empty: nothing to publish");
   if (!args.documentId && !args.title) throw new Error("a new document needs a title");
   return args;
@@ -58,14 +60,18 @@ export function versionResult(documentId: string, text: string): string {
 /** The requester's identity as the kernel names it: the agent and its task (a module or an empty one has none). */
 const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agent && task ? { agent: r.agent, task } : undefined);
 
-export function publisher(call: Call, owners: Owners = fileOwners()): Executor {
+/** This module's own filing (the report route, report.ts): its module token is the only way to be this requester. */
+const isOwnFiling = (r: { kind?: string; module?: string }) => r.kind === "module" && r.module === "primer";
+
+/** `makePrivate` narrows a document just created to the requester (Primer's PATCH /api/documents/:id visibility). */
+export function publisher(call: Call, owners: Owners = fileOwners(), makePrivate: (documentId: string) => Promise<void> = async () => {}): Executor {
   return {
     async plan(req) {
       const args = normalise(req.args, req.requester?.kind === "job");
       const by = byOf(req.requester ?? {}, req.task);
       if (by) args.by = by;
       const owner = args.documentId ? owners.get(args.documentId) : undefined;
-      if (owner && by && owner.agent === by.agent && owner.task === by.task) args.own = true;
+      if ((owner && by && owner.agent === by.agent && owner.task === by.task) || (args.documentId && isOwnFiling(req.requester ?? {}))) args.own = true;
       const sha = createHash("sha256").update(args.content).digest("hex");
       return {
         args,
@@ -76,7 +82,7 @@ export function publisher(call: Call, owners: Owners = fileOwners()): Executor {
           what: args.documentId ? `a new version of Primer document ${args.documentId}` : `the new document "${args.title}"`,
           changes: args.documentId
             ? `Adds this as the latest version of document ${args.documentId} (its earlier versions stay in its history)${args.baseVersionNumber ? `, merged onto version ${args.baseVersionNumber} so people's edits since are kept` : ""}; everyone who can read it sees it.`
-            : "Creates a new Primer document that everyone in the organization can read.",
+            : args.private ? "Creates a new Primer document that only its requester (the owner) can read." : "Creates a new Primer document that everyone in the organization can read.",
           from: args.path ? `, from the workspace file ${args.path}` : "",
         },
       };
@@ -98,6 +104,14 @@ export function publisher(call: Call, owners: Owners = fileOwners()): Executor {
       let ref = documentRef(r.text);
       if (!ref.documentId && ref.url) ref = { ...ref, ...documentRef((await call("primer_resolve_url", { url: ref.url })).text) };
       if (ref.documentId && by) owners.set(ref.documentId, by);
+      if (a.private) {
+        if (!ref.documentId) return { ok: false, text: `Published on Primer: ${ref.url ?? "(no link)"}, but its id wasn't in Primer's answer, so it couldn't be made private: make it private on Primer by hand` };
+        try {
+          await makePrivate(ref.documentId);
+        } catch (e) {
+          return { ok: false, text: `Published on Primer (document ${ref.documentId}: ${ref.url ?? "no link"}) but it couldn't be made private (${(e as Error).message.slice(0, 200)}): make it private on Primer before anything else` };
+        }
+      }
       return { ok: true, text: `Published on Primer: ${ref.url ?? "(no link in Primer's answer)"}${ref.documentId ? ` (document ${ref.documentId})` : ""}` };
     },
   };

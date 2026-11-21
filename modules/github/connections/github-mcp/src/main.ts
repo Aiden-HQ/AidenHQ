@@ -23,6 +23,7 @@ import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
 import { signedIn } from "./vendor/needs.js";
+import { setup } from "./setup.js";
 import { ReviewPoster } from "./review-post.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
@@ -631,6 +632,24 @@ const http = createServer(async (req, res) => {
     } catch (err) {
       const f = failure(err);
       return send(f.error === "refused" ? 400 : 502, f);
+    }
+  }
+  // Code review's deepsec setup (setup.ts): the executor of an approved code-review.setup record writes through this, with the same
+  // module token as /internal/review. One commit of the allowlisted files on an aidenhq/ branch, and its PR.
+  if (url.pathname === "/internal/setup") {
+    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    const send = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    try {
+      const chunks: Buffer[] = [];
+      let n = 0;
+      for await (const c of req) { n += (c as Buffer).length; if (n > 6_000_000) throw new GitHubRefused("too large"); chunks.push(c as Buffer); }
+      return send(200, await setup(github, JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")));
+    } catch (err) {
+      const refused = err instanceof GitHubRefused || err instanceof z.ZodError || err instanceof SyntaxError;
+      const detail = err instanceof z.ZodError ? err.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") : (err as Error).message.slice(0, 300);
+      log.warn({ detail }, "setup route failed");
+      return send(refused ? 400 : 502, { error: refused ? "refused" : "github_error", detail });
     }
   }
   // Code review's watcher (the code-review module's service) reads open PRs, a PR, new PR comments and a login's permission here.

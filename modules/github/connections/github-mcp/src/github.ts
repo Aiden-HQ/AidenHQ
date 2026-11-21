@@ -17,6 +17,11 @@ const RUN = "[1-9][0-9]{0,15}";
 /** A label name in a path, percent-encoded: no slashes. */
 const LABEL = "[^/]{1,300}";
 
+/** The only files code review's setup commit may carry (deepsec's committed setup). */
+export const SETUP_PATHS = [".deepsec/INFO.md", ".deepsec/deepsec.config.ts", ".deepsec/generated-matchers.ts", ".deepsec/package.json", ".deepsec/pnpm-lock.yaml", ".deepsec/package-lock.json"] as const;
+/** The branch namespace the setup commit may write: never the default branch or anyone's. */
+const SETUP_BRANCH = "aidenhq/[A-Za-z0-9._-]{1,80}";
+
 /** Requests the token may make. Anything else is refused before it leaves the process. */
 export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: /^\/user$/ },
@@ -68,6 +73,14 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },
+  // Code review's setup commit (setup.ts): the repo's default branch, then one commit of the allowlisted files on a branch under
+  // aidenhq/ (tree, commit, branch) and its PR. `guard` pins every body: no other path, no other branch, never a force.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/git/trees$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/git/commits$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/git/refs$`) },
+  { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/git/refs/heads/${SETUP_BRANCH}$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls$`) },
 ];
 
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -81,6 +94,11 @@ const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
   { method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/comments$/, fields: ["commit_id", "path", "subject_type", "body"] },
   { method: "POST", path: /\/statuses\/[0-9a-f]{40}$/, fields: ["state", "context", "description", "target_url"] },
+  { method: "POST", path: /\/git\/trees$/, fields: ["base_tree", "tree"] },
+  { method: "POST", path: /\/git\/commits$/, fields: ["message", "tree", "parents"] },
+  { method: "POST", path: /\/git\/refs$/, fields: ["ref", "sha"] },
+  { method: "PATCH", path: /\/git\/refs\/heads\//, fields: ["sha"] },
+  { method: "POST", path: /\/repos\/[^/]+\/[^/]+\/pulls$/, fields: ["title", "body", "head", "base"] },
 ];
 /** The one commit status context the token may set (code review's verdict mirror, review-post.ts). */
 const STATUS = "aidenhq/review";
@@ -113,6 +131,15 @@ export function guard(method: string, path: string, body?: unknown): void {
   // A standalone review comment is a file comment only (code review's thread for a finding on a file without diff lines).
   if (method === "POST" && /\/pulls\/[0-9]+\/comments$/.test(path) && (body as { subject_type?: unknown } | undefined)?.subject_type !== "file") throw new GitHubRefused("refused a pull request comment that isn't a file comment");
   if (method === "POST" && /\/statuses\//.test(path) && (body as { context?: unknown } | undefined)?.context !== STATUS) throw new GitHubRefused(`refused a commit status that isn't ${STATUS}`);
+  // The setup commit: files only from SETUP_PATHS as plain blobs, a ref only under refs/heads/aidenhq/ (never forced: no `force`
+  // field passes the body check), a PR only from such a branch.
+  if (method === "POST" && /\/git\/trees$/.test(path)) {
+    const tree = (body as { tree?: unknown } | undefined)?.tree;
+    const plain = (e: any) => e && typeof e === "object" && Object.keys(e).every((k) => ["path", "mode", "type", "content"].includes(k)) && e.mode === "100644" && e.type === "blob" && typeof e.content === "string" && (SETUP_PATHS as readonly string[]).includes(e.path);
+    if (!Array.isArray(tree) || !tree.length || !tree.every(plain)) throw new GitHubRefused(`refused a tree that isn't plain files from ${SETUP_PATHS.join(", ")}`);
+  }
+  if (method === "POST" && /\/git\/refs$/.test(path) && !new RegExp(`^refs/heads/${SETUP_BRANCH}$`).test(String((body as { ref?: unknown } | undefined)?.ref))) throw new GitHubRefused("refused a branch outside aidenhq/");
+  if (method === "POST" && /\/pulls$/.test(path) && !new RegExp(`^${SETUP_BRANCH}$`).test(String((body as { head?: unknown } | undefined)?.head))) throw new GitHubRefused("refused a pull request from a branch outside aidenhq/");
   // Inline comments are advice: only on a plain comment review, each with only the fields of a line comment.
   const comments = (body as { comments?: unknown } | undefined)?.comments;
   if (method === "POST" && /\/reviews$/.test(path) && comments !== undefined) {
