@@ -1,34 +1,34 @@
 // The review engines: each takes one task (the prompt and the brief), reads the checkout `root` with `base` as the diff's start,
 // and hands back its final message; fan-out, verification, dedupe, ranking and the schema are the recipe's (review.ts), the same
-// for every engine. An engine runs in the check box: no credentials but the run's capped model token (OPENROUTER_API_KEY, through
-// the gateway at OPENROUTER_BASE_URL), no shell, its only view of the repo the read-only repo tools (review-tools.ts: the head
-// tree and the box's own history; nothing runs or connects), and nothing of the PR loaded as its config. The exception is
-// codex-native, whose shell has full access inside the box (below).
+// for every engine. An engine runs in the check box with no credentials but the run's capped model token (OPENROUTER_API_KEY,
+// through the gateway at OPENROUTER_BASE_URL), and nothing of the PR loaded as its config.
 //
-// codex: the CI reviewer's own runner and config (code-review.ts, synced from the CI template): shell, hooks, plugins, apps,
-//   memories and web search off, an empty cwd, project docs off. Every task is our prompt.
+// One access policy for every engine that runs commands (owner, 2026-11-21: "same settings across all reviewers"): a shell that
+// reads the repo and the system and runs read-only commands, with the network open; it writes nowhere but the engine's own
+// per-run temp directory, and inherits no credential (codex: shell_environment_policy; Claude Code: its subprocess env scrub).
+// Verdicts come only from what the shell can't write: the engine's stdout stream, or its session files outside the writable
+// area. Every result is scrubbed of the token and key-shaped text (review.ts scrub). codex and codex-native get it from codex's
+// own sandbox (a read-only permission profile with network on: no network namespace, which gVisor can't set up), claude-code
+// from Claude Code's sandbox (bubblewrap, read-only but its empty cwd, no network restriction).
+//
+// codex: our prompts through `codex exec` from an empty cwd, the repo tools (review-tools.ts) as its MCP server and the shell.
 // claude-code: `claude -p` through the gateway's Anthropic-format route (ANTHROPIC_BASE_URL at its /api, the run's token as the
 //   bearer), from an empty cwd, user settings only (an empty HOME: no project settings, hooks, skills, MCP or CLAUDE.md of the PR),
-//   built-in tools off but Agent, the repo tools as its MCP server. Its finder step is Claude Code's own `/code-review <effort>`
-//   over the change, then, in the same session, our finder prompt restates what it found as our JSON; verify and recheck are our
-//   prompts.
+//   built-in tools off but Agent and Bash, the repo tools as its MCP server. Its finder step is Claude Code's own
+//   `/code-review <effort>` over the change, then, in the same session, our finder prompt restates what it found as our JSON;
+//   verify and recheck are our prompts.
 // codegenie: Polygon's review harness (`codegenie review --format json`) on a worktree of the trusted base (its codegenie.toml and
 //   .codegenie/skills are the base branch's, never the PR's) with the head as review data, its OpenRouter calls sent to the gateway
 //   by gateway-fetch.ts. It only reviews: its findings are mapped to ours, and the recipe's other prompts (recheck) go to codex on
 //   the same model.
 // codex-native: OpenAI's built-in reviewer, `codex exec review --base <base>` (its own prompt; the brief as its developer
-//   instructions), in the box's checkout (review.ts history: base, head), through the gateway like codex. It reads the change with
-//   git through its shell, which has full access inside the box (owner, 2026-11-21: review boxes may have a full shell and
-//   networking; they hold nothing but the run's capped, time-limited token; codex's own sandbox can't start under gVisor), with
-//   no inherited environment
-//   but PATH (never the run's token; a command that reads it from the process tree anyway is scrubbed: review.ts scrub); project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project
-//   never trusted (so none of the PR's .codex config loads). Its review (the rollout's ExitedReviewMode) is mapped to ours; it
-//   doesn't use our repo tools, so which parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
+//   instructions), in the box's checkout (review.ts history: base, head). It reads the change with git through the shell; its
+//   review (the session's ExitedReviewMode, which the shell can't write) is mapped to ours. It doesn't use our repo tools, so which
+//   parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config, runCodex } from "./code-review.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Each engine's efforts (what it accepts), and whether it answers our prompts (verify, recheck) or only reviews. */
@@ -98,14 +98,17 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   const home = join(tmp, "home"), cwd = join(tmp, "cwd"); // cwd: empty, not a repository, so codex loads nothing of the repo
   mkdirSync(home);
   mkdirSync(cwd);
-  writeFileSync(join(home, "config.toml"), config({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), root, base, instructions }));
-  const r = await runCodex({ prompt, home, cwd, out: join(tmp, "answer.txt"), key: process.env.OPENROUTER_API_KEY, minutes });
-  const calls = r.events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
+  writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions, repo: { root, base } }));
+  const out = join(tmp, "answer.txt");
+  const r = await run("codex", ["exec", "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, prompt], { cwd, minutes, env: codexEnv(home) });
+  const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+  const calls = events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
     .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []);
-  const done = r.code === 0 && r.events.some((e) => e?.type === "turn.completed");
-  const said = r.events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
-  const cause = done ? undefined : r.timedOut ? "timed out" : /\b402\b|cap_reached/.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
-  return { message: done ? r.message : "", read: calls.some((c) => c.tool === "diff"), calls, cause };
+  const done = r.code === 0 && events.some((e) => e?.type === "turn.completed");
+  const said = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
+  let message = "";
+  try { message = readFileSync(out, "utf8"); } catch {}
+  return { message: done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: done ? undefined : stopped(r, said) };
 }
 
 /** A child process to its end (killed at `minutes`): exit code, stdout, the tail of stderr. */
@@ -124,6 +127,7 @@ const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, 
 
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
+type CodexEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string } };
 type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; name?: string; input?: { path?: unknown } }[] } };
 
 async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
@@ -131,6 +135,10 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   const home = join(tmp, "home"), cwd = join(tmp, "cwd");
   mkdirSync(home);
   mkdirSync(cwd);
+  // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its empty cwd, no network restriction
+  // (none set, so no network namespace), never run outside it.
+  mkdirSync(join(home, ".claude"));
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false } }));
   const mcp = join(tmp, "mcp.json");
   writeFileSync(mcp, JSON.stringify({ mcpServers: { repo: { command: process.execPath, args: [join(HERE, "review-tools.ts"), root, base] } } }));
   const m = String(model).replace(/^openrouter\//, "");
@@ -142,9 +150,10 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     ANTHROPIC_DEFAULT_OPUS_MODEL: m, ANTHROPIC_DEFAULT_SONNET_MODEL: m, ANTHROPIC_DEFAULT_HAIKU_MODEL: m, CLAUDE_CODE_SUBAGENT_MODEL: m,
     CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "1", CLAUDE_CODE_EFFORT_LEVEL: effort,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", // its Bash never sees the token
   };
-  const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", "Agent",
-    "--allowedTools", ["Agent", ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
+  const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", "Agent,Bash",
+    "--allowedTools", ["Agent", "Bash", ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
   const calls: Call[] = [];
   const turn = async (task: string, resume?: string) => {
     const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes });
@@ -214,7 +223,6 @@ async function codegenie({ model, effort, root, base, minutes, scratch, own, tru
 /** codex review's own output (its ReviewOutputEvent), as far as the mapping reads it. */
 type NativeFinding = { title?: string; body?: string; priority?: number; code_location?: { absolute_file_path?: string; line_range?: { start?: number; end?: number } } };
 export type NativeReview = { findings?: NativeFinding[]; overall_correctness?: string; overall_explanation?: string };
-type NativeEvent = { type?: string; message?: string; error?: { message?: string }; item?: { type?: string; aggregated_output?: string } };
 
 /** The review in codex's session rollouts (JSONL): the last ExitedReviewMode item's output, or undefined. */
 export function nativeReview(rollouts: string[]): NativeReview | undefined {
@@ -240,19 +248,29 @@ export function nativeFindings(v: NativeReview, roots: string[]) {
   });
 }
 
-/** The codex config for its built-in review: the model through the gateway, the shell with full access in the box, nothing of the repo loaded. */
-export function nativeConfig({ model, effort, url, instructions }: { model: string; effort: string; url: string; instructions: string }) {
+/** One codex run's environment: its homes and the model key, never anything else of the caller's. */
+const codexEnv = (home: string) => ({ PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") });
+
+/**
+ * The codex config for both codex engines: the model through the gateway, the access policy (a read-only permission profile with
+ * the network on, the shell inheriting no credential), nothing of the repo loaded; `repo`: the repo tools as its MCP server.
+ */
+export function codexConfig({ model, effort, url, instructions, repo }: { model: string; effort: string; url: string; instructions: string; repo?: { root: string; base: string } }) {
   const q = (s: unknown) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
   return `model = ${q(model)}
 model_provider = "review"
 model_reasoning_effort = ${q(effort)}
 model_context_window = 262144
-sandbox_mode = "danger-full-access"
+default_permissions = "review"
 approval_policy = "never"
 web_search = "disabled"
 check_for_update_on_startup = false
 project_doc_max_bytes = 0
 developer_instructions = ${q(instructions)}
+
+[permissions.review]
+filesystem = { ":root" = "read" }
+network = { enabled = true }
 
 [model_providers.review]
 name = "review"
@@ -279,7 +297,11 @@ enabled = false
 
 [history]
 persistence = "none"
-`;
+${repo ? `
+[mcp_servers.repo]
+command = ${q(process.execPath)}
+args = [${[join(HERE, "review-tools.ts"), repo.root, repo.base].map(q).join(", ")}]
+` : ""}`;
 }
 
 async function codexNative({ instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
@@ -287,11 +309,9 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   const tmp = mkdtempSync(join(scratch, "codex-native-"));
   const home = join(tmp, "home");
   mkdirSync(home);
-  writeFileSync(join(home, "config.toml"), nativeConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));
-  const r = await run("codex", ["exec", "review", "--base", base, "--ignore-rules", "--json", "-o", join(tmp, "answer.txt")], {
-    cwd: root, minutes, env: { PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") },
-  });
-  const events: NativeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
+  writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));
+  const r = await run("codex", ["exec", "review", "--base", base, "--ignore-rules", "--json", "-o", join(tmp, "answer.txt")], { cwd: root, minutes, env: codexEnv(home) });
+  const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
   // It read the change: a command it ran printed a diff. Not its exit code: codex chains commands.
   const read = events.some((e) => e.type === "item.completed" && e.item?.type === "command_execution" && /^diff --git /m.test(String(e.item.aggregated_output ?? "")));
   let rollouts: string[] = [];
