@@ -214,6 +214,8 @@ export function oauth(o: OAuthOptions): Auth {
     if (t.resource) body.set("resource", t.resource);
     const res = await fetchImpl(endpoint, { method: "POST", body, headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
     const answer = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    // A reconnect saved a newer grant while this refresh was in flight: its answer, good or bad, is stale.
+    if (token !== t) return token!;
     let next;
     try {
       if (!res.ok && typeof answer.error !== "string") throw new AuthError(`${o.name} token endpoint answered ${res.status}`);
