@@ -252,11 +252,11 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     launch,
     /**
      * Once the previous kernel has exited (main.ts, before admission.recover drops their rows): the boxes of launches it left
-     * admitted go back. One the launcher can't take back now lapses with its lease.
+     * admitted go back, all at once. One the launcher can't take back now lapses with its lease.
      */
     async abandoned() {
-      for (const r of db.prepare("SELECT id FROM jobs WHERE state = 'admitted' AND box IS NOT NULL AND released IS NULL").all() as { id: string }[])
-        if (!launching.has(r.id)) await release(r.id).catch((e: Error) => log("couldn't release an abandoned launch's computer", { job: r.id, err: e.message }));
+      const rows = db.prepare("SELECT id FROM jobs WHERE state = 'admitted' AND box IS NOT NULL AND released IS NULL").all() as { id: string }[];
+      await Promise.all(rows.filter((r) => !launching.has(r.id)).map((r) => release(r.id).catch((e: Error) => log("couldn't release an abandoned launch's computer", { job: r.id, err: e.message }))));
     },
     /** jobs.ts onEnd: the job is over, its box goes. */
     ended: (id: string) => void release(id).catch((e: Error) => log("couldn't release a job's computer", { job: id, err: e.message })),
