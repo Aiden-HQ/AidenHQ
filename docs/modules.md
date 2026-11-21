@@ -86,7 +86,9 @@ be the graded head's own, byte for byte (a PR that rewrote the workflow ran its 
 be a directory at the graded head (`post-checks` posts nothing for one `run-suites.sh` reported `gone:`, so a deleted
 directory is a green job with nothing run). Because the workflows, the suite runner and the map are the
 inputs that decide what a shard ran, a PR that changes anything under `.github/workflows/` or `.github/ci/` mints no
-command fact at all.
+command fact at all. The same holds for `.ci-base/`: it is gitignored, so CI's own base checkout can own it, but a PR can
+still force-add a file there (`git add -f` beats `.gitignore`) and GitHub lists it, so a `.ci-base/` path in the PR's files
+refuses the fact rather than trusting where CI happened to write its checkout.
 
 What the fact proves, and what it does not: it proves a green shard job existed in that `ci.yml` run at that head and
 that CI's own `post-checks` job ran in the same attempt. It does not prove, from the check record alone, that that

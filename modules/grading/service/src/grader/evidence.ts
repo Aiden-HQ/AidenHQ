@@ -98,9 +98,10 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * to the head's (a PR that rewrote the workflow ran its own CI), and the suite's directory is a directory at the graded head
  * (`post-checks` posts nothing for a `gone:` one, so a deleted directory is a green job with nothing run). Which suites a shard
  * ran is known only inside the run (CI writes the plan to the `checks` job's outputs, which GitHub does not expose on the job),
- * so the fact does not re-derive it. Only a suite that map names mints a fact. The workflows, the map and the suite runner are the inputs that decide what a shard ran, so a PR that edits
- * anything under `.github/workflows/` or `.github/ci/` mints nothing at all. Every read that fails, or any field that doesn't
- * match, mints nothing.
+ * so the fact does not re-derive it. Only a suite that map names mints a fact. The workflows, the map and the suite runner are
+ * the inputs that decide what a shard ran, so a PR that edits anything under `.github/workflows/`, `.github/ci/` or `.ci-base/`
+ * mints nothing at all (`.ci-base/` is CI's base checkout, but a PR can force-add a file there past `.gitignore`). Every read
+ * that fails, or any field that doesn't match, mints nothing.
  */
 async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
   if (!deps.file || !deps.job || !deps.run || !deps.exists) return [];
@@ -109,8 +110,10 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
   const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
   if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
   // CI's own execution inputs (the workflows, the suite map and the selector and runner that read it): a PR that edits any of
-  // them may have run something else, so nothing it shows counts.
-  if (files.some((f) => f.startsWith(".github/workflows/") || f.startsWith(".github/ci/"))) return [];
+  // them may have run something else, so nothing it shows counts. `.ci-base/` is not a tracked path in normal use, but a PR can
+  // force-add one (`git add -f` beats .gitignore) and GitHub then lists it; refusing the prefix keeps the guard independent of
+  // where CI's own base checkout happens to write.
+  if (files.some((f) => f.startsWith(".github/workflows/") || f.startsWith(".github/ci/") || f.startsWith(".ci-base/"))) return [];
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
   if (rollup?.pageInfo?.hasNextPage) return [];
   const checks = (rollup?.nodes ?? []).filter((n: any) => n.__typename === "CheckRun" && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && n.name && n.externalId);

@@ -235,7 +235,9 @@ test("a check whose run is not ci.yml on a pull_request at the graded head mints
 });
 
 test("a PR that edits the workflows, the map or the suite runner mints nothing", async () => {
-  for (const edited of [".github/ci/areas.json", ".github/ci/select.ts", ".github/ci/run-suites.sh", ".github/workflows/ci.yml", ".github/workflows/other.yml"]) {
+  // `.ci-base/` is gitignored, but a PR can force-add a file there (`git add -f`), and GitHub lists it in the PR's files: the
+  // runner CI executes lives at that path, so a PR shipping one mints nothing.
+  for (const edited of [".github/ci/areas.json", ".github/ci/select.ts", ".github/ci/run-suites.sh", ".github/workflows/ci.yml", ".github/workflows/other.yml", ".ci-base/.github/ci/run-suites.sh"]) {
     const prs = [withChecks(304, "a", "b", [PASS("kernel#1", "7/120/1")], ["kernel/src/x.ts", edited])];
     const ev = await prEvidence([{ repo: REPO, number: 304, url: url(304), heads: ["branch-a"] }], "", factDeps(prs));
     assert.ok(noCommand(ev), edited);
