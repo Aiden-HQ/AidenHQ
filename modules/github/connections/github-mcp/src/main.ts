@@ -624,6 +624,7 @@ const http = createServer(async (req, res) => {
         // The status is already sent by then, so a failure is the body's `error`.
         res.writeHead(200, { "content-type": "application/json" });
         const beat = setInterval(() => res.write(" "), 30_000);
+        res.once("close", () => clearInterval(beat)); // the caller went away: the queued write still runs, only the blanks stop
         try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { return void res.end(JSON.stringify(failure(err))); } finally { clearInterval(beat); }
       }
       return send(404, { error: "no such operation" });
