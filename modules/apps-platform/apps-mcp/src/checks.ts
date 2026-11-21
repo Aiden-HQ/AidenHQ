@@ -2,12 +2,12 @@
 // app_rollback runs them after the health wait; app_check runs them on demand. Three kinds, picked from what the app is:
 //   health  every app: the existing health wait (health.url answers under 400, or its containers are healthy).
 //   render  web apps (exposed, with a port and health.url): load the pages in the headless renderer (view.ts's browser image, in the
-//           app's own network namespace) and fail on the clear signals of a broken page: a CSP violation, a stylesheet or
-//           script that failed or was blocked, a console error, or a linked stylesheet that didn't apply.
+//           app's own network namespace) and report what looks broken (a CSP violation, a stylesheet or script that failed or
+//           was blocked, a console error, a linked stylesheet that didn't apply) as warnings; a 5xx page is the only hard one.
 //   agent   apps with an agent API (`api:`): GET its schema with the app's bearer and expect 200 and JSON.
 // The app may set its own paths in its manifest (`checks: { render: [/, /audit], agent: [/api/agent/x/schema] }`; [] turns a
 // kind off). Inferred probes are lenient (a default `/` that 404s or isn't HTML, or a guessed schema path, is a warning);
-// declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy; warnings are reported.
+// declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy (health, a 5xx page, a declared page that won't open, the identity gate); warnings are reported.
 //   identity every TCP port any of the app's containers listens on or exposes: a security gate, not a light check
 //            (identityProbes below). Always hard, fails closed; only an app nobody can reach is skipped, and says so.
 // Everything a page says is app-authored: findings carry generated text, and page text only as a short sanitized sample.
@@ -67,7 +67,7 @@ export interface PageFacts {
   sheets?: { href: string; applied: boolean }[];
 }
 
-/** One page's facts → its findings. Hard only on the clear signals; everything uncertain is a warning. */
+/** One page's facts → its findings. Hard only for a 5xx and a declared page that is missing or not HTML; what the render shows is a warning. */
 export function judgePage(f: PageFacts, declared: boolean): Finding[] {
   const out: Finding[] = [];
   const strict = (what: string, s?: string) => out.push({ hard: declared, what, ...(s ? { untrusted_page_text: sample(s) } : {}) });
@@ -76,21 +76,21 @@ export function judgePage(f: PageFacts, declared: boolean): Finding[] {
   if (status >= 500) return [{ hard: true, what: `the page answered ${status}` }];
   if (status >= 400) return strict(`the page answered ${status}`), out;
   if (f.contentType && !/text\/html|application\/xhtml/i.test(f.contentType)) return strict("not an HTML page", f.contentType.split(";")[0]), out;
+  if (f.timedOut && !status) return strict(`the page never answered within ${PAGE_TIMEOUT_MS / 1000} s`), out;
   if (f.timedOut) out.push({ hard: false, what: `didn't finish loading within ${PAGE_TIMEOUT_MS / 1000} s (checked what had loaded)` });
-  for (const c of f.csp ?? []) out.push({ hard: true, what: "Content Security Policy blocked part of the page", untrusted_page_text: sample(c) });
+  for (const c of f.csp ?? []) out.push({ hard: false, what: "Content Security Policy blocked part of the page", untrusted_page_text: sample(c) });
   for (const r of f.failed ?? []) {
     const code = sample(r.why);
-    if (r.type === "stylesheet" || r.type === "script") out.push({ hard: true, what: `a ${r.type} failed to load (${code})`, untrusted_page_text: sample(r.url) });
+    if (r.type === "stylesheet" || r.type === "script") out.push({ hard: false, what: `a ${r.type} failed to load (${code})`, untrusted_page_text: sample(r.url) });
     else out.push({ hard: false, what: `a ${sample(r.type)} failed to load (${code})`, untrusted_page_text: sample(r.url) });
   }
-  // Unstyled: it links stylesheets and none applied. One empty or missing sheet among others is only a warning (a failed load
-  // or a CSP block of it is already hard above).
+  // Unstyled: it links stylesheets and none applied.
   const unapplied = (f.sheets ?? []).filter((s) => !s.applied);
   if (unapplied.length) {
     const none = unapplied.length === f.sheets!.length;
-    out.push({ hard: none, what: none ? "no linked stylesheet applied (the page renders unstyled)" : `${unapplied.length} of ${f.sheets!.length} linked stylesheets applied nothing`, untrusted_page_text: sample(unapplied.map((s) => s.href).join(" ")) });
+    out.push({ hard: false, what: none ? "no linked stylesheet applied (the page renders unstyled)" : `${unapplied.length} of ${f.sheets!.length} linked stylesheets applied nothing`, untrusted_page_text: sample(unapplied.map((s) => s.href).join(" ")) });
   }
-  for (const c of f.console ?? []) out.push({ hard: true, what: "console error", untrusted_page_text: sample(c) });
+  for (const c of f.console ?? []) out.push({ hard: false, what: "console error", untrusted_page_text: sample(c) });
   return out;
 }
 
