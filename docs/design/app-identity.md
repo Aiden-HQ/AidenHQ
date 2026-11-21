@@ -94,8 +94,12 @@ malformed body, an authentication code the protocol does not define or without t
 NUL-terminated and ended by a separate NUL), or an error without its severity, SQLSTATE and message — or with an empty
 value or a SQLSTATE that is not five characters — is not identification.
 
-An SSLRequest reply alone is not enough — a TLS listener offers SSL too, and a multiprotocol listener could serve HTTPS on
-the same port — so a socket that offers SSL stays closed, and a socket identified as PostgreSQL is also sent TLS hellos:
+A TLS listener may answer the plaintext request with a TLS alert rather than a protocol banner: those bytes are read as
+TLS, not as a harmless banner, so the port stays closed. A plaintext non-TLS banner is not proof of anything either, so the
+declared database socket is sent TLS hellos whatever its plaintext look was (a banner included); a banner that answers no
+hello is a recorded skip. An SSLRequest reply alone is not enough — a TLS listener offers SSL too, and a multiprotocol
+listener could serve HTTPS on the same port — so a socket that offers SSL stays closed, and a socket identified as
+PostgreSQL is also sent TLS hellos:
 one per hostname (the app's, and its share host's when distinct), each a valid single-name SNI list, and one with no name.
 A listener that serves HTTPS only for a recognized name answers that name's hello, and a router that serves its default
 route when SNI is absent and closes an unknown name answers the unnamed one. Either answer means the port speaks TLS, so

@@ -226,8 +226,9 @@ export function judgeIdentity(answers: { probe: IdentityProbe; status: number }[
  * probe got there (status 0: no HTTP answer). `raw`, when nothing answered HTTP, is what the socket said: `postgres` it
  * answered a PostgreSQL startup handshake (the one protocol identified positively, because a database answers silence to an
  * HTTP request; an SSLRequest reply alone is not enough, since a TLS listener offers SSL too), `banner` it spoke something
- * that isn't HTTP, `refused` nothing listens, `http` it said HTTP after all, `https` it speaks TLS, so it could be HTTP,
- * `closed` it hung up silently, `silent` no answer at all.
+ * that isn't HTTP, `refused` nothing listens, `http` it said HTTP after all, `https` it speaks TLS (a TLS record or a TLS
+ * alert answered the plaintext look, or a TLS hello got an answer), so it could be HTTP, `closed` it hung up silently,
+ * `silent` no answer at all.
  */
 export interface PortAnswers { service: string; port: number; host: string; listening: boolean; raw?: "banner" | "refused" | "http" | "https" | "closed" | "silent" | "postgres"; answers: { probe: IdentityProbe; status: number }[] }
 
@@ -292,15 +293,26 @@ const v6 = (h) => {
   for (let i = 0; i < 16; i += 2) g.push(((b[i] << 8) | b[i + 1]).toString(16));
   return g.join(":");
 };
+// A TLS listener may answer the plaintext GET with a TLS alert (record type 0x15 on TLS 0x03) instead of a protocol
+// banner. Those bytes are not a non-HTTP greeting: they are a TLS server refusing the plaintext request, so the port speaks
+// TLS and could be HTTP. The first TLS byte can arrive alone, so a 0x15/0x16 opening is only decided once its second byte
+// arrives (or the connection ends): "https" then, "banner" otherwise. "http" is an HTTP reply, "banner" other non-HTTP
+// bytes, "refused" nothing listens, "closed" a hang-up with nothing said, "silent" a timeout with nothing said.
+const TLS_OPEN = (b) => b.length >= 1 && (b[0] === 0x15 || b[0] === 0x16) && (b.length < 2 || b[1] === 0x03);
+const rawLook = (b) => !b.length ? "silent" : b.startsWith("HTTP/") ? "http" : TLS_OPEN(b) ? "https" : "banner";
 const raw = (host, port) => new Promise((done) => {
   let got = "";
   const end = (r) => { s.destroy(); done(r); };
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
   s.on("connect", () => s.write("GET / HTTP/1.0\r\n\r\n"));
-  s.on("data", (d) => { got += d; if (got.length >= 5) end(got.startsWith("HTTP/") ? "http" : "banner"); });
-  s.on("timeout", () => end(got ? "banner" : "silent"));
-  s.on("end", () => end(got ? (got.startsWith("HTTP/") ? "http" : "banner") : "closed"));
-  s.on("error", (e) => end(e.code === "ECONNREFUSED" ? "refused" : got ? "banner" : "silent"));
+  s.on("data", (d) => {
+    got += d;
+    const r = rawLook(got);
+    if (r === "http" || r === "https" || (r === "banner" && got.length >= 5)) end(r);
+  });
+  s.on("timeout", () => end(got ? rawLook(got) : "silent"));
+  s.on("end", () => end(got ? rawLook(got) : "closed"));
+  s.on("error", (e) => end(e.code === "ECONNREFUSED" ? "refused" : got ? rawLook(got) : "silent"));
 });
 // A PostgreSQL server waits for the client, so an HTTP GET makes it hang up (raw: closed) and says nothing about what it is.
 // An SSLRequest's reply alone is not identification either: a TLS listener offers SSL too. So the server must decline SSL
@@ -533,12 +545,14 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       let seen = look;
       if (r.postgresProbe && k.port === r.postgresProbe) {
         if (look === "closed" || look === "silent") seen = (await postgres(k.host, k.port)) || look;
-        // A TLS listener answers the plaintext GET with a TLS alert, which reads as a non-HTTP banner; skipping that would
-        // let a TLS listener evade the TLS probes. So the declared database socket gets the TLS probes whatever its
-        // plaintext look was, and stays hard if it speaks TLS: the port is exempt only when the PostgreSQL handshake
-        // identified it and no TLS hello got an answer. One hello per name, then one without: a TLS router may only answer
-        // its default route without SNI or only a recognized name with it, and any answer means the port could serve HTTPS.
-        // Names are only strings; a name over 255 bytes cannot be a hostname in SNI and is skipped.
+        // A TLS listener answers the plaintext GET with a TLS alert, which the raw look now reads as "https" and never
+        // reaches here. But a listener that answers the plaintext GET with a non-TLS banner and also speaks TLS on the
+        // same port would be skipped as a banner, so the declared database socket gets the TLS probes whatever its
+        // plaintext look was (a non-TLS banner included), and stays hard if it speaks TLS. The port is exempt only when a
+        // PostgreSQL handshake identified it, or a non-TLS banner answered no TLS hello. One hello per name, then one
+        // without: a TLS router may only answer its default route without SNI or only a recognized name with it, and any
+        // answer means the port could serve HTTPS. Names are only strings; a name over 255 bytes cannot be a hostname in
+        // SNI and is skipped.
         if (seen === "postgres" || seen === "banner") {
           for (const name of (r.sni ?? []).filter((n) => n && n.length <= 255)) if (await tls(k.host, k.port, name)) { seen = "https"; break; }
           if (seen !== "https" && (await tls(k.host, k.port))) seen = "https";

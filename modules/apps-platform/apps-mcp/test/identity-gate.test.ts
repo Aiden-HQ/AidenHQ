@@ -311,19 +311,38 @@ describe("identity gate", () => {
   }, 60_000);
 
   it.runIf(process.platform === "linux")("keeps a TLS listener hard when it answers the plaintext GET with a TLS alert", async () => {
-    // A TLS listener that answers the plaintext GET with a TLS alert reads as a non-HTTP banner, and the banner skip would
-    // end the probe before the TLS hellos run. The declared database socket gets the TLS probes whatever its plaintext
-    // look was, so a listener that speaks TLS stays hard and cannot evade the gate behind a banner.
+    // A TLS listener that answers the plaintext GET with a TLS alert is read as "https" by the plaintext look, not as a
+    // non-HTTP banner, so the gate never skips it. The declared database socket stays hard when it speaks TLS; only a
+    // positive PostgreSQL identification with no TLS answer is exempt.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const alert = await tcp(`(s) => {
       s.on("data", (d) => {
         if (d[0] === 0x16) return s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // a TLS hello gets a TLS alert
-        s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // the plaintext GET gets a TLS alert too: a non-HTTP banner
+        s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // the plaintext GET gets a TLS alert too, read as "https"
       });
     }`);
     const r = await scan(db, [alert]);
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("probes TLS on the declared database socket even when the plaintext look is a non-TLS banner", async () => {
+    // A listener that answers the plaintext GET with a protocol banner (not TLS) and also serves TLS on the same port would
+    // be skipped as a non-HTTP banner without the TLS probes. The declared database socket gets the TLS probes whatever its
+    // plaintext look was, so a banner cannot hide a TLS listener; a plain banner that never speaks TLS stays a recorded skip.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    const multiplexed = await tcp(`(s) => {
+      s.on("data", (d) => {
+        if (d[0] === 0x16) return s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // a TLS hello gets a TLS alert
+        s.end("-ERR unknown command\\r\\n"); // the plaintext GET gets a protocol banner, not TLS
+      });
+    }`);
+    const r = await scan(db, [multiplexed]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+    // A banner that never speaks TLS stays a non-hard skip: the TLS probes get no answer, so the port is not judged as HTTPS.
+    const banner = await tcp(`(s) => s.on("data", () => s.end("-ERR unknown command\\r\\n"))`);
+    expect(await scan(db, [banner])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/other than HTTP/) }] });
   }, 60_000);
 
   it.runIf(process.platform === "linux")("keeps a listener that offers SSL hard, even on an app the registry says serves no HTTP", async () => {
