@@ -15,8 +15,10 @@ export const reviewWith = (url: string): Review => (request, { modelToken, onPan
 
 if (import.meta.main) {
   const handle = serveReviewer(reviewWith(`${gateway}/api/v1/chat/completions`), { key: readFileSync(process.env.REVIEWER_KEY_FILE!, "utf8").trim(), log });
+  // The instance (a fresh one each start) is in /healthz: the kernel fails the reviews a recreated service lost.
+  const instance = handle.instance;
   http.createServer(async (req, res) => {
-    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance }));
     if (!(await handle(req, res))) res.writeHead(404, { "content-type": "application/json" }).end('{"error":"no such route"}');
   }).listen(Number(process.env.PORT ?? 8095), () => log("listening", { port: Number(process.env.PORT ?? 8095) }));
 }

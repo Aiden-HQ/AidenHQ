@@ -16,7 +16,7 @@
 //
 // Canonical copy: kernel/sdk/src/reviewer.ts. The reviewer module holds a byte-identical copy at src/aidenhq-sdk/reviewer.ts:
 // edit this one, then run `node scripts/sync-shared.ts`.
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string;
@@ -59,16 +59,24 @@ export const UNSURE = "reviewer_unsure";
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
 export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "grader_note", "comments"] as const;
 
+/** The handler POST `<path>/review` (serveReviewer), and the service instance it answers as (its /healthz). */
+export type ReviewerHandler = ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) & { instance: string };
 /** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;
 
 /**
- * A handler for POST `<path>/review`: answers and returns true, or returns false for any other path. It accepts at once and
- * sends the verdict to the kernel with the review's token (retried; a verdict the kernel no longer waits for is dropped).
- * A reviewer that throws sends `{ error }`: the requester counts it as a failed review (reviewer_failed) and tries again later.
+ * A handler for POST `<path>/review`: answers and returns true, or returns false for any other path. It accepts at once, naming
+ * the service instance that took the review (a fresh one each start, so the kernel fails what a recreated service lost), and
+ * sends the verdict to the kernel with the review's token (retried; a verdict the kernel no longer waits for is dropped). While
+ * it works, it keeps the review alive every BEAT_MS: the kernel bounds a review by progress, not only by its hour. A reviewer
+ * that throws sends `{ error }`: the requester counts it as a failed review (reviewer_failed) and tries again later.
  */
-export function serveReviewer(review: Review, { key, kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", path = "/aidenhq/v1/reviewer", log = () => {} }: {
-  key: string; kernelUrl?: string; path?: string; log?: (msg: string, f?: Record<string, unknown>) => void;
+const BEAT_MS = 60_000;
+export function serveReviewer(review: Review, { key, kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", path = "/aidenhq/v1/reviewer", instance = randomUUID(), beatMs = BEAT_MS, log = () => {} }: {
+  key: string; kernelUrl?: string; path?: string;
+  /** This service process's id: the kernel fails the reviews of an instance it saw before when another answers. */
+  instance?: string; beatMs?: number;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const send = (res: ServerResponse, status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   const keyed = (req: IncomingMessage) => {
@@ -83,7 +91,9 @@ export function serveReviewer(review: Review, { key, kernelUrl = process.env.AID
     }
     log("verdict not delivered", { id });
   }
-  return async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  /** A keepalive: the review is still working (the kernel's stall window is measured between them). */
+  const beat = (id: string, token: string) => fetch(`${kernelUrl}/v1/reviews/${id}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: '{"keepalive":true}', signal: AbortSignal.timeout(10_000) }).catch(() => {});
+  const handle: ReviewerHandler = Object.assign(async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     if (String(req.url ?? "") !== `${path}/review`) return false;
     if (req.method !== "POST") return send(res, 405, { error: "POST only" }), true;
     if (!keyed(req)) return send(res, 401, { error: "unauthorized" }), true;
@@ -99,10 +109,14 @@ export function serveReviewer(review: Review, { key, kernelUrl = process.env.AID
     if (!/^r-[0-9a-f]{16}$/.test(id) || !token || !modelToken || !body.request || typeof body.request !== "object") return send(res, 400, { error: "send {id, token, model_token, request}" }), true;
     // Only the fields a reviewer reads, each only when the requester sent it: an absent field keeps the reviewer's default.
     const request = Object.fromEntries(REQUEST_FIELDS.filter((k) => body.request![k] !== undefined).map((k) => [k, body.request![k]])) as unknown as ReviewRequest;
-    send(res, 202, { accepted: true });
+    send(res, 202, { accepted: true, instance });
+    const keep = setInterval(() => void beat(id, token), beatMs);
+    keep.unref();
     let marked = false;
     const v = await review(request, { modelToken, onPanel: async () => { marked = true; } }).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 300) }));
+    clearInterval(keep);
     await deliver(id, token, "error" in v ? v : { ...v, ...(marked ? { panel_marked: true } : {}) });
     return true;
-  };
+  }, { instance });
+  return handle;
 }

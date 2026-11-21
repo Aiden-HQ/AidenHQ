@@ -15,6 +15,10 @@ const url = (s) => `http://127.0.0.1:${s.address().port}`;
 const resolver = { resolve: async (u) => { const x = new URL(u); return { host: x.hostname, port: Number(x.port), path: x.pathname }; }, forget() {} };
 
 let gateway, module_, kernel, up = true;
+let serviceInstance = "instance-a";
+// How long the model gateway takes to answer (a slow model call shows the keepalive).
+let slowMs = 0;
+const beats = [];
 const calls = [];
 const answers = [];
 const verdicts = [];
@@ -23,13 +27,16 @@ before(async () => {
     let body = "";
     for await (const c of req) body += c;
     calls.push({ auth: req.headers.authorization, ...JSON.parse(body) });
+    if (slowMs) await new Promise((ok) => setTimeout(ok, slowMs));
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }], usage: {} }));
   });
   let kernelUrl = "";
   module_ = await listen(async (req, res) => {
     if (!up) return void res.writeHead(503).end();
     // The verdict goes to the kernel this test started (its port is known only after it listens).
-    if (!(await serveReviewer(reviewWith(`${url(gateway)}/api/v1/chat/completions`), { key: "svc-key", kernelUrl })(req, res))) res.writeHead(404).end();
+    const handle = serveReviewer(reviewWith(`${url(gateway)}/api/v1/chat/completions`), { key: "svc-key", kernelUrl, instance: serviceInstance, beatMs: 40 });
+    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance: handle.instance }));
+    if (!(await handle(req, res))) res.writeHead(404).end();
   });
   const reviews = createReviews({
     slot: () => ({ module: "ai-reviewer", url: `${url(module_)}/aidenhq/v1/reviewer`, auth_secret: "ai_reviewer_key" }),
@@ -40,8 +47,16 @@ before(async () => {
   });
   const backplane = createBackplane({ whoami: async () => { throw new Error("no"); }, asserter: {}, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), reviews, reviewerKey: () => "runner-key" });
   kernel = await listen(async (req, res) => {
-    if (req.method === "POST" && /^\/v1\/reviews\/r-/.test(req.url)) verdicts.push({ url: req.url, auth: req.headers.authorization });
-    await backplane(req, res);
+    const kept = /^\/v1\/reviews\/r-/.test(String(req.url)) && req.method === "POST";
+    if (!kept) return void (await backplane(req, res));
+    // Peek at the review's POST (a keepalive or a verdict), then hand it to the backplane again.
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    if (body.keepalive === true) beats.push(req.url);
+    else verdicts.push({ url: req.url, auth: req.headers.authorization });
+    const replay = Object.assign(Object.create(req), { [Symbol.asyncIterator]: async function* () { yield Buffer.concat(chunks); } });
+    await backplane(replay, res);
   });
   kernelUrl = url(kernel);
 });
@@ -89,4 +104,19 @@ test("a reviewer that can't be reached fails the review (the runner retries it);
   } finally {
     up = true;
   }
+});
+
+test("a working review keeps itself alive: the service beats the kernel while it runs, and its /healthz names its instance", async () => {
+  const before = beats.length;
+  answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
+  const health = await (await fetch(`${url(module_)}/healthz`)).json();
+  assert.equal(health.instance, serviceInstance, "a fresh instance each start: the kernel fails what a recreated service lost");
+  // A slow model call (the gateway answers after the beat interval) shows the keepalive, then the verdict.
+  slowMs = 140;
+  try {
+    assert.equal((await ask({ card, diff: "+x" })).status, 200);
+  } finally {
+    slowMs = 0;
+  }
+  assert.ok(beats.length > before, "the kernel saw keepalives, not a silent await");
 });
