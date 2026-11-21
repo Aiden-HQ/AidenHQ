@@ -43,7 +43,15 @@ const OWNER_SENTENCE: Record<string, string> = {
 };
 
 /** Alertmanager's webhook body: firing alerts are kept (or updated), resolved ones dropped. */
-export async function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
+export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
+  // One at a time: a call reads the map, awaits the owner notice, then writes the map back, so overlapping calls would drop each other's alerts.
+  const run = serial.then(() => applyAlerts(kv, alerts, notify, now));
+  serial = run.catch(() => {});
+  return run;
+}
+let serial: Promise<unknown> = Promise.resolve();
+
+async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now: Date): Promise<{ firing: number }> {
   const f = firing(kv);
   for (const a of alerts) {
     if (a.status === "resolved") { delete f[a.fingerprint]; continue; }

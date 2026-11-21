@@ -75,7 +75,9 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   if (q.length && !(await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.text}`).join("\n")}`))) return false;
-  store.setKv("digest:queue", "[]");
+  // Notices queued while the send was in flight stay for the next digest.
+  const left = (JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).slice(q.length);
+  store.setKv("digest:queue", JSON.stringify(left));
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }

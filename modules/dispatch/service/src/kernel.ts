@@ -58,7 +58,7 @@ export interface Kernel {
    */
   commentTask(task: string, body: string): Promise<boolean>;
   /** A message for the owner through the one notify (role kernel.owner-notice). */
-  notify(b: { kind: "decision"; text: string; task: string; dedupe_key: string }): Promise<void>;
+  notify(b: { kind: "decision"; text: string; task?: string; dedupe_key: string }): Promise<void>;
   /** The connections `agent` is granted that are down now (role kernel.jobs); the prompt lists them. */
   connectionsDown(agent: string): Promise<Down[]>;
   /** A note on a task with no job behind it (a redirect, a missing request), posted as the agent, once per wake. */
