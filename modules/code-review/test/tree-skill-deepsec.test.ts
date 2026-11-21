@@ -172,7 +172,7 @@ test("a deepsec engine returns setup files through review, only the allowlisted 
   const r = await review({ spec: treeSpec(), ws, out, run: async () => ({ read: true, covered: ["src/a.js"], setup, message: JSON.stringify({ findings: [], stale_guidance: [] }) }) });
   assert.deepEqual(Object.keys(r.setup).sort(), [".deepsec/data/repo/INFO.md", ".deepsec/deepsec.config.ts"]);
   // The run's token (or a key-shaped string) echoed into a setup file is redacted before it leaves the box.
-  assert.deepEqual(scrub({ message: "", read: true, setup: { ".deepsec/data/repo/INFO.md": "key ahqj_run_secret_1 and sk-abcdefghijklmnopqrst" } }, ["ahqj_run_secret_1"]).setup, { ".deepsec/data/repo/INFO.md": "key [redacted] and [redacted]" });
+  assert.deepEqual(scrub({ message: "", read: true, setup: { ".deepsec/data/repo/INFO.md": "key ahqj_run_secret_1 and sk-abcdefgh-ijklmnop" } }, ["ahqj_run_secret_1"]).setup, { ".deepsec/data/repo/INFO.md": "key [redacted] and [redacted]" });
   // A setup too large for the result is dropped as a gap; the important finding stays.
   const f = { id: "b".repeat(16), severity: "important", path: "src/a.js", line: 1, title: "t", why: "w", evidence: "e", fix_brief: "f" };
   const big = bound({ ...r, findings: [f], setup: { ".deepsec/deepsec.config.ts": "x".repeat(300_000) } });
