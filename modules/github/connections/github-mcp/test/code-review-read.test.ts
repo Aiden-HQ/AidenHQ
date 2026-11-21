@@ -11,6 +11,7 @@ const pr = (number: number, headRepo: string | null) => ({
 const gh = (async (input: URL | string) => {
   const u = new URL(String(input));
   if (u.pathname === "/repos/Acme/App/pulls") return Response.json([pr(1, "Acme/App"), pr(2, "stranger/App"), pr(3, null)]);
+  if (u.pathname === "/repos/Acme/App/pulls/4") return Response.json({ ...pr(4, "Acme/App"), state: "closed", merged_at: "2026-01-04T00:00:00Z" });
   if (u.pathname === "/repos/Acme/App/issues/comments") return Response.json([
     { id: 9, body: "hi", created_at: "2026-01-02T00:00:00Z", html_url: "https://github.com/Acme/App/pull/1#issuecomment-9", issue_url: "https://api.github.com/repos/Acme/App/issues/1", user: { login: "dev" } },
     { id: 10, body: "an issue", created_at: "2026-01-03T00:00:00Z", html_url: "https://github.com/Acme/App/issues/5#issuecomment-10", issue_url: "https://api.github.com/repos/Acme/App/issues/5", user: { login: "dev" } },
@@ -28,6 +29,10 @@ it("only the code-review module may call; PRs, PR comments and permission come b
 
   const prs = (await codeReviewRoute(reader, "prs", new URLSearchParams({ repo: "Acme/App" }))).body as { prs: { repo: string; fork: boolean; base_ref: string }[] };
   expect(prs.prs.map((p) => [p.repo, p.fork, p.base_ref])).toEqual([["acme/app", false, "main"], ["acme/app", true, "main"], ["acme/app", true, "main"]]);
+
+  // A merged PR says so (the engine posts a review that finishes after the merge, and one-offs review merged PRs).
+  const one = (await codeReviewRoute(reader, "pr", new URLSearchParams({ repo: "Acme/App", number: "4" }))).body as { pr: { open: boolean; merged: boolean } };
+  expect([one.pr.open, one.pr.merged]).toEqual([false, true]);
 
   const c = (await codeReviewRoute(reader, "comments", new URLSearchParams({ repo: "Acme/App", since: "2026-01-01T00:00:00Z" }))).body as { comments: { number: number }[]; cursor: string };
   expect(c.comments.map((x) => x.number)).toEqual([1]);
