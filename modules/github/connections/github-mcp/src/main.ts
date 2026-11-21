@@ -455,6 +455,18 @@ function buildServer(caller?: Caller): McpServer {
     run("github_pr_threads", async (a: { url?: string; repo?: string; number?: number }) => ({ notice: UNTRUSTED, threads: await poster.threads(parseRef(a)) })),
   );
   server.registerTool(
+    "github_pr_thread_reply",
+    {
+      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner, signed by you. Answer a code review finding: \"fixed: <what changed, commit>\" or \"disputed: <reason, file:line>\".",
+      inputSchema: { ...ref, comment: z.number().int().min(1), body: z.string().min(1).max(2000) },
+      annotations: write,
+    },
+    run(
+      "github_pr_thread_reply",
+      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, a.body, agent)),
+    ),
+  );
+  server.registerTool(
     "github_rerun_failed",
     {
       description: `Re-run the failed jobs of GitHub Actions runs: for a pull request, its latest runs that failed; or one workflow run by URL (https://github.com/owner/repo/actions/runs/123). Only when the user asked.`,

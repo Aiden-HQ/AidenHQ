@@ -62,6 +62,8 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   // threads' links, a file comment for a finding on a file without diff lines, and the one commit status it mirrors its verdict to.
   { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
   { method: "PUT", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}$`) },
+  // An agent's reply on a review thread (github_pr_thread_reply): how a finding is answered (fixed / disputed …).
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}/replies$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },
@@ -75,6 +77,7 @@ const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
   { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id", "comments"] },
   { method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },
   { method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },
+  { method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/comments$/, fields: ["commit_id", "path", "subject_type", "body"] },
   { method: "POST", path: /\/statuses\/[0-9a-f]{40}$/, fields: ["state", "context", "description", "target_url"] },
 ];
@@ -415,6 +418,13 @@ export class GitHub {
     // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than reviewing unseen commits.
     const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event: "COMMENT", commit_id: pr.head.sha, body: withFooter(body, agent), ...(comments?.length ? { comments } : {}) } });
     return { url: r.html_url, id: r.id, state: r.state };
+  }
+
+  /** A reply on a pull request's review thread (its first comment's id), signed by the agent. */
+  async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
+    if (!body.trim()) throw new GitHubRefused("a reply needs text");
+    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${comment}/replies`, { body: { body: withFooter(body, agent) } });
+    return { url: r.html_url, id: r.id };
   }
 
   /**

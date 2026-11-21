@@ -444,9 +444,12 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     }
   }
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);
-  result.findings = kept.slice(0, 100);
+  // An important finding is never withheld (it gates once stored): the cap of 100 drops the others.
+  const imp = kept.filter((f) => f.severity === "important"), rest = kept.filter((f) => f.severity !== "important");
+  const room = Math.max(0, 100 - imp.length);
+  result.findings = [...imp, ...rest.slice(0, room)];
   for (const k of Object.keys(withheld) as Severity[]) result.withheld[k] += withheld[k];
-  for (const f of kept.slice(100)) result.withheld[f.severity]++;
+  for (const f of rest.slice(room)) result.withheld[f.severity]++;
 
   // Previous findings: fixed only when confirmed gone (never merely missing from this run, never found again or restated now).
   const again = new Set([...kept.map((f) => f.id), ...restated]);
@@ -480,13 +483,16 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   return bound(result);
 }
 
-/** The result within what the kernel takes (RESULT_MAX, 256 KB): long lists cut, then the lowest-ranked findings withheld. */
+/** The result within what the kernel takes (RESULT_MAX, 256 KB): long lists cut, then the lowest-ranked findings withheld, never
+ * an important one (its texts are cut short instead): a real problem found always reaches the service and gates. */
 export function bound(result: Result, max = 200_000) {
   const cov = result.coverage;
   for (const k of ["reviewed", "excluded"] as const) if (cov[k].length > 500) { cov.incomplete = [cov.incomplete, `${cov[k].length - 500} more ${k} files not listed`].filter(Boolean).join("; "); cov[k] = cov[k].slice(0, 500); }
   // The post takes at most 500 characters of it (schemas/post.json): a long list of gaps is cut, never the post refused.
   if (cov.incomplete && cov.incomplete.length > 500) cov.incomplete = `${cov.incomplete.slice(0, 497)}…`;
-  while (result.findings.length && Buffer.byteLength(JSON.stringify(result)) > max) result.withheld[result.findings.pop()!.severity]++;
+  const over = () => Buffer.byteLength(JSON.stringify(result)) > max;
+  for (let i = result.findings.length - 1; i >= 0 && over(); i--) if (result.findings[i]!.severity !== "important") result.withheld[result.findings.splice(i, 1)[0]!.severity]++;
+  if (over()) for (const f of result.findings) Object.assign(f, { why: cap(f.why, 300), evidence: cap(f.evidence, 300), fix_brief: cap(f.fix_brief, 300) });
   return result;
 }
 

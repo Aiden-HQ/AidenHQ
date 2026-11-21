@@ -76,6 +76,9 @@ description: How code is written, tested and published here, in any repository -
   same PR comment) are not this change's work: list them in your reply under "Non-blocking code-review findings" with
   the PR link, so they become one backlog task.
 - When a check refuses a PR, read its complaint and fix that cause before filing again.
+- Aiden's code review findings: the merge waits on each important one until it is answered on its thread. Find them in the
+  merge's wait reason or the review (`github_pr_threads`), then answer each with `github_pr_thread_reply`: after fixing it,
+  `fixed: <what changed, commit>`; for one you judge wrong, `disputed: <reason, file:line>`.
 
 ## Publishing
 

@@ -47,7 +47,8 @@ agents:
     # (scripts/computers.ts privateGrants, checked at compile): a separate mode, not this agent's yet.
     connections:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
-      github?: read
+      # GitHub reads, a PR's review threads, and a reply on one: answering a code review finding (write-code skill, Checks).
+      github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_pr_thread_reply ]
       # Its own task only, never another's text: a `file` deliverable's file goes on it, and task_finish closes it through the
       # kernel's finish gate (graded: held for the grader) once its work has landed; task_wait records what it waits on.
       paperclip_tasks: [ task_file_upload, task_finish, task_wait ]

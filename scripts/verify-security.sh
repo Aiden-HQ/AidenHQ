@@ -749,6 +749,7 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
   -e '  { method: "DELETE", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },' \
   -e '  { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },' \
+  -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}/replies$`) },' \
   -e '  { method: "PUT", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments$`) },' \
   -e '  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },' \
@@ -758,10 +759,11 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
   && grep -qF 'await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) })' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
+  && grep -qF '{ method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '?.subject_type !== "file") throw new GitHubRefused' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '?.context !== STATUS) throw new GitHubRefused' modules/github/connections/github-mcp/src/github.ts \
-  && pass "github-mcp: every request goes through the guard (the one other fetch is a job-log download from GitHub log hosts only, without the token); the only writes are issue comments, new issues, issue state/labels/assignees, reviews, the review comment edited in place, a review's text updated (body only), file comments, the aidenhq/review commit status only, failed-job re-runs and GraphQL (modules/github/connections/github-mcp/src/github.ts)" || fail "github-mcp: unexpected GitHub requests allowed: $bad_gh"
+  && pass "github-mcp: every request goes through the guard (the one other fetch is a job-log download from GitHub log hosts only, without the token); the only writes are issue comments, new issues, issue state/labels/assignees, reviews, the review comment edited in place, an agent's reply on a review thread (body only), a review's text updated (body only), file comments, the aidenhq/review commit status only, failed-job re-runs and GraphQL (modules/github/connections/github-mcp/src/github.ts)" || fail "github-mcp: unexpected GitHub requests allowed: $bad_gh"
 gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/connections/github-mcp/src/github.ts | grep -oE 'mutation\([^)]*\) \{ [A-Za-z0-9]+' | awk '{print $NF}' | sort -u | tr '\n' ' ')"
 [ "$gh_mutations" = "addProjectV2ItemById resolveReviewThread updateProjectV2ItemFieldValue " ] && grep -q 'GRAPHQL_DOCS.has(' modules/github/connections/github-mcp/src/github.ts \
   && pass "github-mcp: GraphQL limited to fixed documents whose only mutations add an issue to a project, set its status and resolve a review thread" || fail "github-mcp: unexpected GraphQL mutations: $gh_mutations"
