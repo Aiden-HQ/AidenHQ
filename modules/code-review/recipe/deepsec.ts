@@ -44,6 +44,13 @@ export interface DeepsecOutput {
 const SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\/INFO\.md)$/;
 export const setupPath = (p: string) => SETUP.test(p);
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
+/** A regular file's text (at most 64 KB) at commit `rev` of the box's history, else undefined. */
+function baseFile(root: string, rev: string, rel: string) {
+  try {
+    const mode = execFileSync("git", ["-C", root, "ls-tree", rev, "--", rel], { encoding: "utf8" }).split(/\s/)[0];
+    return mode === "100644" || mode === "100755" ? execFileSync("git", ["-C", root, "cat-file", "blob", `${rev}:${rel}`], { encoding: "utf8", maxBuffer: 8 << 20 }).slice(0, 64_000) : undefined;
+  } catch { return undefined; }
+}
 /** CRITICAL, HIGH and HIGH_BUG are important; MEDIUM, BUG and LOW are nits. */
 export const deepsecSeverity = (s: unknown): "important" | "nit" => (["CRITICAL", "HIGH", "HIGH_BUG"].includes(String(s)) ? "important" : "nit");
 /** A verdict that says the finding isn't a live problem. */
@@ -107,8 +114,11 @@ export async function deepsec({ root, target, base, model, effort, budget_usd, s
   let setup: Record<string, string> | undefined;
 
   if (committed || pending.length) {
-    // INFO.md in as data: the committed one (a regular file, never through a link), else the pending setup's.
-    const info = plain(root, `.deepsec/data/${pid}/INFO.md`) ? readSmall(join(ws, "data", pid, "INFO.md"), 64_000) : pending.find(([p]) => p === `.deepsec/data/${pid}/INFO.md`)?.[1];
+    // INFO.md in as data: the committed one (a regular file, never through a link; for a change, the base's: the PR's own copy is
+    // its author's text), else the pending setup's.
+    const rel = `.deepsec/data/${pid}/INFO.md`;
+    const committedInfo = target === "pr" ? baseFile(root, String(base), rel) : plain(root, rel) ? readSmall(join(ws, "data", pid, "INFO.md"), 64_000) : undefined;
+    const info = committedInfo ?? pending.find(([p]) => p === rel)?.[1];
     mkdirSync(join(data, pid));
     if (info !== undefined) writeFileSync(join(data, pid, "INFO.md"), info);
     const s = await step("deepsec", ["scan", "--project-id", pid, "--root", root], w);
