@@ -86,7 +86,7 @@ test("a Tier 1 record is reviewed by the module and then executed; a reviewer's 
 test("the rejection that parks a task wakes its delegator once, with the reviewer's last note; a request refused as parked after it wakes nobody again", async (t) => {
   const mod = await reviewer(t);
   const told = [], owner = [];
-  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked" } };
+  const tasks = { "TASK-1": { id: "TASK-1", identifier: "WOR-1", status: "in_progress", parentId: "TASK-0" }, "TASK-0": { id: "TASK-0", identifier: "WOR-0", status: "blocked", assigneeAgentId: "a-boss" } };
   const k = await side(t, db(), mod, { escalate: (records) => {
     const e = createEscalate({ db: records.db, issue: async (id) => tasks[id], comments: async () => [], asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => told.push({ task, body }), owner: (n) => owner.push(n) });
     return (task, key, text) => e.delegator(task, key, text);
