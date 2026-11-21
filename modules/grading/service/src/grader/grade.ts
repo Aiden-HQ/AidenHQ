@@ -197,6 +197,7 @@ function deployFact(p: any, h: any, app: any): string {
 }
 
 export const PAGE_MAX = 120_000; // one rendered page's text, in its own fenced block: a 100k-character page arrives whole, and the block stays bounded
+export const PAGE_TOTAL = 300_000; // all live pages together, so five long pages still keep the prompt bounded
 export const PAGE_CAP = 200_000; // what apps-mcp's renderer keeps of one page's snapshot, so a page up to PAGE_MAX is never cut before it
 const AUTO_DEPLOY_WAIT_MS = 15 * 60_000; // apps-mcp polls origin every 2 minutes; past this, a missing deploy is a real one
 
@@ -209,13 +210,21 @@ export function rubricPaths(rubric: unknown[]): string[] {
   const paths = ["/"];
   for (const c of rubric) {
     // The path is plain, and its query keeps what the rubric wrote, normalised to characters plainPath (apps-mcp's api.ts) takes:
-    // a placeholder's `<item>` is encoded rather than dropped, so it never silently becomes the unfiltered page. A bare space
-    // ends the query (it is the prose around the path); one inside quotes or angle brackets is part of the value and is kept.
-    for (const m of String(c).matchAll(/(?<![\w:/.~-])(\/[A-Za-z0-9._~/-]*)\??/g)) {
-      const raw = m[1]!;
-      const query = String(c)[m.index! + m[0].length - 1] === "?" ? queryOf(String(c), m.index! + m[0].length) : undefined;
-      if (raw.includes("//") || raw.split("/").some((s) => s === "." || s === "..")) continue;
-      const p = `${raw}${query ? `?${encodeQuery(query)}` : ""}`.replace(/[.,:;]+$/, "");
+    // a placeholder's `<item>` is encoded rather than dropped, so it never silently becomes the unfiltered page. The scan moves
+    // past each path's query, so a `/` inside a query is never read as another route.
+    const text = String(c);
+    const START = /(?<![\w:/.~-])\/[A-Za-z0-9._~/-]*/g;
+    for (let m = START.exec(text); m; m = START.exec(text)) {
+      // The sentence's punctuation is stripped before the path is judged plain, so "/audit/.." is a traversal, not "/audit/".
+      const raw = m[0];
+      const at = m.index + m[0].length;
+      const found = text[at] === "?" ? queryOf(text, at + 1) : undefined;
+      const query = found?.replace(/[.,:;]+$/, "");
+      // Continue after the query's own text, so a `/` in it is never read as another route.
+      if (found !== undefined) START.lastIndex = at + 1 + found.length;
+      const bare = raw.replace(/[.,:;]+$/, "");
+      if ([raw, bare].some((p) => p.includes("//") || p.split("/").some((s) => s === "." || s === ".."))) continue;
+      const p = `${bare}${query ? `?${encodeQuery(query)}` : ""}`;
       if (paths.includes(p)) continue;
       if (paths.push(p) >= 5) return paths;
     }
@@ -223,16 +232,30 @@ export function rubricPaths(rubric: unknown[]): string[] {
   return paths;
 }
 
-/** The query starting just after its `?`: up to whitespace or prose punctuation, keeping a quoted or `<`…`>` value whole. */
+/**
+ * The query starting just after its `?`, up to the prose around it: whitespace, a quote, a backtick or a bracket ends it, so a
+ * rubric's own quoting (`"/slipped?q=x"`) never pulls the prose after it in. A quote that opens a value (`q="Big ETA"`) is that
+ * value's own and is read to its closing quote. A `<placeholder>` is one value and is kept whole.
+ */
 function queryOf(text: string, from: number): string | undefined {
-  const closers: Record<string, string> = { "<": ">", '"': '"', "'": "'" };
   let raw = "";
   for (let i = from; i < text.length; ) {
     const ch = text[i]!;
-    if (/\s/u.test(ch) || "()[]{}|\\^`#?!*".includes(ch)) break;
-    if (closers[ch]) {
-      const end = text.indexOf(closers[ch], i + 1);
-      if (end < 0) break; // an unmatched quote is the prose's, not the value's
+    if (/\s/u.test(ch) || "`()[]{}|\\^#?!*".includes(ch)) break;
+    if (ch === '"' || ch === "'") {
+      // Only a value's own wrapping (`q="Big ETA"`) is read; the quotes are dropped and the value kept. Any other quote is the
+      // prose's enclosing the URL and ends the query, so it never pairs with a later one and swallows the words between them.
+      const close = raw.endsWith("=") ? text.indexOf(ch, i + 1) : -1;
+      const value = close < 0 ? "" : text.slice(i + 1, close);
+      if (!value || /["'<>]/u.test(value)) break;
+      raw += value;
+      i = close + 1;
+      continue;
+    }
+    if (ch === "<") {
+      const end = text.indexOf(">", i + 1);
+      const value = end < 0 ? "" : text.slice(i + 1, end);
+      if (!value || /\s/u.test(value) || /["'<>]/u.test(value)) break; // an unmatched or multi-word `<` is the prose's
       raw += text.slice(i, end + 1);
       i = end + 1;
       continue;
@@ -260,6 +283,9 @@ export async function liveEvidence(app: any, rubric: unknown[], deps: any): Prom
   const paths = rubricPaths(rubric);
   const facts: string[] = [];
   const data: Record<string, string> = {};
+  // Each named page keeps an equal share of PAGE_TOTAL, never more than PAGE_MAX: every page a criterion names is represented,
+  // and all of them together stay bounded.
+  const keep = Math.min(PAGE_MAX, Math.floor(PAGE_TOTAL / paths.length));
   for (const [i, path] of paths.entries()) {
     let v: any;
     try {
@@ -271,9 +297,11 @@ export async function liveEvidence(app: any, rubric: unknown[], deps: any): Prom
     if (!v || v.error) return { awaiting: `the live page ${path} of ${app.name} could not be rendered yet (${String(v?.error ?? "no answer").slice(0, 160)})` };
     if (v.sha_before !== app.sha || v.sha_after !== app.sha) return { awaiting: `${app.name} was redeployed while its live pages were captured (graded ${app.sha.slice(0, 12)}, running ${String(v.sha_after || v.sha_before).slice(0, 12)}): captured again on the next look` };
     const text = `title: ${v.title ?? ""}\nurl: ${v.url ?? ""}\n${v.snapshot ?? ""}`;
-    const cut = v.truncated || text.length > PAGE_MAX;
-    facts.push(`app ${app.name}: live page ${path} (LIVE_PAGE_${i + 1}) rendered at deployed commit ${app.sha} (1280 px wide): HTTP ${Number(v.status) || 0}${v.timed_out ? ", still loading after 20 s" : ""}${cut ? `, text cut to its first ${Math.min(text.length, PAGE_MAX)} of ${text.length} characters${v.truncated ? ` (the snapshot itself was cut at ${PAGE_CAP})` : ""} (what is missing may be further down the page)` : ""}`);
-    data[`LIVE_PAGE_${i + 1}`] = text.slice(0, PAGE_MAX);
+    // A page cut says how much of how many it kept, and by which bound.
+    const cut = v.truncated || text.length > keep;
+    const cutBy = text.length <= keep ? "" : v.truncated ? ` (the snapshot itself was cut at ${Number(v.snapshotCap) || PAGE_CAP})` : keep < PAGE_MAX ? ` (all pages together keep ${PAGE_TOTAL})` : "";
+    facts.push(`app ${app.name}: live page ${path} (LIVE_PAGE_${i + 1}) rendered at deployed commit ${app.sha} (1280 px wide): HTTP ${Number(v.status) || 0}${v.timed_out ? ", still loading after 20 s" : ""}${cut ? `, text cut to its first ${Math.min(text.length, keep)} of ${text.length} characters${cutBy} (what is missing may be further down the page)` : ""}`);
+    data[`LIVE_PAGE_${i + 1}`] = text.slice(0, keep);
   }
   return { facts, data };
 }

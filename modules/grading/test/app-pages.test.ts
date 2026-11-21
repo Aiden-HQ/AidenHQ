@@ -2,7 +2,7 @@
 // rather than dropped, and the capture reaches a long page's named region instead of stopping at its first 8,000 characters.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { PAGE_CAP, PAGE_MAX, gradePrompt, liveEvidence, rubricPaths } from "../service/src/grader/grade.ts";
+import { PAGE_CAP, PAGE_MAX, PAGE_TOTAL, gradePrompt, liveEvidence, rubricPaths } from "../service/src/grader/grade.ts";
 
 /** apps-mcp's plainPath (api.ts:32-38), the check every captured path must still pass; kept here so this suite needs no install. */
 const PLAIN_QUERY = /^[A-Za-z0-9._~=&%+,:-]*$/;
@@ -30,13 +30,24 @@ describe("rubricPaths", () => {
   });
 
   it("keeps a quoted value's space whole, and ends a bare value at the prose's space", () => {
-    const [quoted] = rubricPaths(['the /items?q="Big ETA" page']).slice(1);
-    assert.equal(quoted, "/items?q=%22Big%20ETA%22");
-    plain(quoted!);
+    // A quote is the rubric's own wrapping: it ends the value, so the prose after it is never swallowed into the query.
+    assert.deepEqual(rubricPaths(['the "/items?q=ETA-7" page']), ["/", "/items?q=ETA-7"]);
+    // A value's own quotes are dropped and the value kept whole, space included.
+    assert.deepEqual(rubricPaths(['the /items?q="Big ETA" page']), ["/", "/items?q=Big%20ETA"]);
     // Unquoted, the space is the prose's: the URL the rubric wrote ends there, and nothing past it is invented.
     assert.deepEqual(rubricPaths(["/items?name=Big ETA"]), ["/", "/items?name=Big"]);
     // Every character plainPath takes stays as written, `+` included.
     assert.equal(rubricPaths(["/items?q=a&b=c+d"]).at(-1), "/items?q=a&b=c+d");
+  });
+
+  it("ends a query at an inner quote instead of pairing it with a later one and swallowing prose", () => {
+    const paths = rubricPaths(['the /items?q=x" then /audit shows both events']);
+    assert.deepEqual(paths, ["/", "/items?q=x", "/audit"]);
+  });
+
+  it("never reads a `/` inside a query as another route", () => {
+    assert.deepEqual(rubricPaths(["/items?next=/audit&q=1 shows it"]), ["/", "/items?next=%2Faudit&q=1"]);
+    plain(rubricPaths(["/items?next=/audit&q=1 shows it"])[1]!);
   });
 
   it("bounds the list at five paths, as before", () => {
@@ -78,6 +89,16 @@ describe("liveEvidence", () => {
     const shown = (ev.data.LIVE_PAGE_2 as string).length;
     assert.equal(shown, PAGE_MAX, "the block is still bounded by PAGE_MAX");
     assert.match(fact, new RegExp(`text cut to its first ${PAGE_MAX} of \\d+ characters \\(the snapshot itself was cut at ${PAGE_CAP}\\)`));
+  });
+
+  it("shares PAGE_TOTAL across five pages, so all five are represented and together stay bounded", async () => {
+    const page = "- row \"filler\"\n".repeat(9_000); // 126,000 characters each, over PAGE_MAX
+    const ev = await liveEvidence(APP, ["/a /b /c /d"], { view: view(() => page) });
+    const kept = Object.values(ev.data).map((text) => (text as string).length);
+    assert.equal(kept.length, 5);
+    assert.ok(kept.every((n) => n === Math.floor(PAGE_TOTAL / 5)), "each page keeps its equal share");
+    assert.ok(kept.reduce((a, b) => a + b, 0) <= PAGE_TOTAL, "the five blocks together stay within PAGE_TOTAL");
+    assert.ok(ev.facts.every((f: string) => /text cut to its first \d+ of \d+ characters \(all pages together keep/.test(f)), "each cut page says which bound cut it");
   });
 
   it("puts a long page's whole text into its fenced block in the grader's prompt", async () => {

@@ -20,7 +20,7 @@ export const RENDER_TIMEOUT_MS = 45_000; // the script exits itself at 40 s; doc
 const WIDTHS = { min: 320, max: 1920, default: 1280 };
 
 export interface RenderRequest { url: string; width: number; screenshot: boolean; web: boolean; snapshotCap?: number; headers?: Record<string, string> }
-export interface ViewResult { error?: string; status: number; url: string; title: string; timed_out: boolean; snapshot: string; truncated: boolean; png?: string }
+export interface ViewResult { error?: string; status: number; url: string; title: string; timed_out: boolean; snapshot: string; truncated: boolean; snapshotCap?: number; png?: string }
 /** Runs the renderer on a docker network (`container:<id>` or a named network) and returns its result. */
 export type Render = (network: string, req: RenderRequest) => Promise<ViewResult>;
 
@@ -30,7 +30,7 @@ const width = (w?: number): number => {
   return v;
 };
 
-/** How much of the snapshot this render keeps: an agent's view keeps SNAPSHOT_CAP; the grader may ask for more, up to SNAPSHOT_MAX. */
+/** How much of the snapshot a render keeps: an agent's view keeps SNAPSHOT_CAP; the grader's own capture may ask for more, up to SNAPSHOT_MAX. */
 const snapshotCap = (n?: number): number => {
   const v = n ?? SNAPSHOT_CAP;
   if (!Number.isInteger(v) || v < 1_000 || v > SNAPSHOT_MAX) throw new Error(`snapshot cap must be 1000-${SNAPSHOT_MAX}`);
@@ -42,7 +42,12 @@ export function canView(app: App, roles: string[]): boolean {
   return !app.access || app.access.roles.some((r) => roles.includes(r));
 }
 
-export async function viewApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean; snapshotCap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }): Promise<ViewResult> {
+export async function viewApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }): Promise<ViewResult> {
+  return renderApp(app, caller, req, d);
+}
+
+/** app_view with the snapshot cap chosen by the caller: only the grader's own capture passes more than SNAPSHOT_CAP. */
+async function renderApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }, cap?: number): Promise<ViewResult> {
   if (!canView(app, caller.roles)) throw new Error(`no access to ${app.name}`);
   const path = req.path ?? "/";
   plainPath(path);
@@ -55,7 +60,7 @@ export async function viewApp(app: App, caller: { key: string; roles: string[] }
   const secret = d.sign(app.name, caller.key, { role: "member", methods: ["GET", "HEAD"] });
   let r: ViewResult;
   try {
-    r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, ...(req.snapshotCap !== undefined ? { snapshotCap: snapshotCap(req.snapshotCap) } : {}), headers: { [IDENTITY_HEADER]: secret } });
+    r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, ...(cap !== undefined ? { snapshotCap: snapshotCap(cap) } : {}), headers: { [IDENTITY_HEADER]: secret } });
   } catch (e) {
     throw new Error(redact(String((e as Error).message ?? e), secret));
   }
@@ -77,7 +82,7 @@ export async function graderView(app: App, req: { path?: string; width?: number;
   if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view` };
   if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
   const sha_before = d.running(app.name) ?? "";
-  const r = await viewApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width, snapshotCap: req.cap }, d);
+  const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, req.cap);
   return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };
 }
 
@@ -248,7 +253,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const tree = await within(ab("snapshot"), 6000, {});
     const snap = String(tree.snapshot || "").replace(/ \[ref=e\d+\]/g, "").replace(/, ref=e\d+\]/g, "]").replace(/\[ref=e\d+, /g, "[");
     const cap = Math.min(Number(r.snapshotCap) || ${SNAPSHOT_CAP}, ${SNAPSHOT_MAX});
-    const o = { status: status.length ? status[status.length - 1] : 0, url, title: (await within(ab("get", "title"), 2000, {})).title || "", timed_out, snapshot: snap.slice(0, cap), truncated: snap.length > cap };
+    const o = { status: status.length ? status[status.length - 1] : 0, url, title: (await within(ab("get", "title"), 2000, {})).title || "", timed_out, snapshot: snap.slice(0, cap), truncated: snap.length > cap, snapshotCap: cap };
     if (r.screenshot && (await within(ab("screenshot", "/tmp/view.png"), 8000, null))) o.png = readFileSync("/tmp/view.png").toString("base64");
     out(o);
   } catch (e) {
