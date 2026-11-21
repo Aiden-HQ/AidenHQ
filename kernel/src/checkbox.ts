@@ -17,6 +17,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Answer } from "./codehost.ts";
 import { BOX_WORKSPACE, createChecks, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
 import { mintToken } from "./gateway/token.ts";
+import type { Pool } from "./pool.ts";
 import { alive, exitStatus, logTail, runAlive, spawnDetached } from "./jobs.ts";
 
 type Call = (route: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -30,10 +31,33 @@ const BUSY_WAIT_MS = 60 * 60_000;
 const BUSY_RETRY_MS = 30_000;
 const POLL_MS = 1_000;
 
-export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS }: { call: Call; spawnRun?: Spawn; sleep?: (ms: number) => Promise<void>; pollMs?: number }): CheckBox {
-  const release = (container: string) => call("/job/release", { container }).then(() => {}, () => {});
+export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS, pool }: { call: Call; spawnRun?: Spawn; sleep?: (ms: number) => Promise<void>; pollMs?: number; pool?: Pool }): CheckBox {
+  // The boxes this kernel's checks hold in the pool's check share, from their slot until their release.
+  const holding = new Set<string>();
+  const release = (container: string) => { if (holding.delete(container)) pool?.freeCheck(); return call("/job/release", { container }).then(() => {}, () => {}); };
   return {
-    async launch({ check, image, workspace, out, cwd, argv, env, timeoutMs, readOnly }) {
+    // Fair share (pool.ts): over its half of the pool, a check waits for its slot here, queued, never failed.
+    async launch(o) {
+      o.waiting?.(true);
+      let boxed = false;
+      try {
+        await pool?.takeCheck();
+        return await start(o, (container) => { boxed = true; holding.add(container); });
+      } catch (e) {
+        if (!boxed) pool?.freeCheck();
+        throw e;
+      } finally {
+        o.waiting?.(false);
+      }
+    },
+    async follow(run, signal) {
+      // A run an earlier kernel launched holds a box this kernel never counted: it counts from here to its release.
+      if (pool && !holding.has(run.container)) { holding.add(run.container); pool.adopt(); }
+      return await following(run, signal);
+    },
+  };
+  async function start({ check, image, workspace, cwd, argv, env, timeoutMs, readOnly, out }: Parameters<CheckBox["launch"]>[0], boxed: (container: string) => void): Promise<BoxRun> {
+    {
       // The eval's model token is its only credential: the launcher's gateway passes calls on for this box's token alone.
       const token = env.OPENROUTER_API_KEY || undefined;
       // Every computer busy (agent jobs hold them) is a wait, not a check that can't run: a merge gate gives up after a few of those.
@@ -47,6 +71,7 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
         }
       }
       const { container } = box;
+      boxed(container);
       // The env file, the log and its exit status sit beside the out folder, in the attempt's own folder: the kernel's, never
       // mounted in the box. The env file stays until the attempt's folder goes (docker reads it as the run starts).
       const envFile = `${out}.env`, log = `${out}.log`;
@@ -58,8 +83,10 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
         await release(container);
         throw e;
       }
-    },
-    async follow({ container, pid, log, deadline }, signal) {
+    }
+  }
+  async function following({ container, pid, log, deadline }: BoxRun, signal: AbortSignal): Promise<BoxOut | "gone" | "detached"> {
+    {
       // The run is still that run (a reused pid isn't), checked once; then only whether its pid lives (no `ps` each poll).
       let running = (p: number) => runAlive(p, log);
       for (;;) {
@@ -80,8 +107,8 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
         running = alive;
         await sleep(pollMs);
       }
-    },
-  };
+    }
+  }
 }
 
 /** Untar a gzipped tar stream into `into`: no owners or modes from the archive, nothing above `into` (tar's own rules). */
@@ -115,8 +142,10 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
 type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<Answer>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
-export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, log, spawnRun, pollMs }: {
+export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, log, spawnRun, pollMs }: {
   db: DatabaseSync; secret: (name: string) => string;
+  /** The computer pool's fair share (pool.ts): a check takes its slot before it asks the launcher for a box. */
+  pool: Pool;
   /** The installed modules' check recipes (config/kernel/modules.json `check_jobs`). */
   recipes: () => Recipes;
   /** The kernel's codehost broker (codehost.ts ask): snapshots under the asking module's grant. */
@@ -132,7 +161,7 @@ export function checkJobsFrom({ db, secret, recipes, ask, call, workDir, gateway
   spawnRun?: Spawn; pollMs?: number;
 }) {
   return createChecks({
-    db, log, workDir, gatewayUrl, recipes, box: checkBoxes({ call, ...(spawnRun ? { spawnRun } : {}), ...(pollMs ? { pollMs } : {}) }),
+    db, log, workDir, gatewayUrl, recipes, box: checkBoxes({ call, pool, ...(spawnRun ? { spawnRun } : {}), ...(pollMs ? { pollMs } : {}) }),
     secret: () => secret("receipt_secret"),
     snapshot: snapshots(ask),
     modelToken: (component, { ttlMs, capUsd }) => mintToken(secret("gateway_job_secret"), { kind: "check", component, ttlMs, ...(capUsd !== undefined ? { capUsd } : {}) }),

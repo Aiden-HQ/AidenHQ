@@ -6,14 +6,14 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { compile, grantEntry } from "../modules.ts";
+import { compile, defaultComputersMax, grantEntry } from "../modules.ts";
 import { computerSection, computersConfig, validateImages } from "../computers.ts";
 import { BUNDLE } from "./bundle.ts";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
-function inst(overrides) {
+function inst(overrides, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq" }, overrides }));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE], settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "o@x", product_repo: "acme/aidenhq", ...extra }, overrides }));
   mkdirSync(join(dir, "agents"));
   return dir;
 }
@@ -27,8 +27,12 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   assert.match(c.images.browser, /^aidenhq\/computer-browser:[0-9a-f]{12}$/);
   assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
   // One capacity setting: the launcher's pool and the kernel's admission both read computers.json `max`.
-  assert.equal(r.computersMax, 12);
-  assert.equal(computersConfig(r.paperclip, product, r.computersMax).max, 12);
+  assert.equal(r.computersMax, defaultComputersMax());
+  assert.equal(computersConfig(r.paperclip, product, r.computersMax).max, r.computersMax);
+  // Unset, the pool follows the host's RAM (one box per 1.5 GB, 4 to 64); a setting wins.
+  const GB = 2 ** 30;
+  assert.deepEqual([1, 8, 16, 32, 64, 128].map((g) => defaultComputersMax(g * GB)), [4, 5, 10, 21, 42, 64]);
+  assert.equal(compile(product, inst({}, { computers_max: 7 })).computersMax, 7);
   // A profile is compiled into the grants entry the kernel freezes into each job (crew unless the agent says otherwise).
   assert.equal(grantEntry("assistant", r.paperclip.agents.assistant, r.paperclip.routines).profile, "crew");
   const eng = compile(product, inst({ agents: { assistant: { image: "agent-base" } } }));

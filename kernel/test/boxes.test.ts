@@ -99,6 +99,7 @@ async function host(t) {
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
+    pool: { mayAgent: () => true },
     provenance: { settled: () => true, filedBy: () => undefined }, routineCap: async () => undefined, nextTurn: jobTools,
     db, grants: () => grants, kinds: () => ({}), capacity: () => 12, spend: () => [], mayDispatch: () => true, log: () => {},
     cp: { task: async (id) => ({ id, identifier: `PEN-${id.split("-")[1]}`, assigneeAgentId: "agent-1", status: "todo" }) },

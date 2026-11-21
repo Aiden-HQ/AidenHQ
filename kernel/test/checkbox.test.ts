@@ -125,8 +125,10 @@ test("check box: every computer busy is a wait for a free one, not a check that 
   const box = checkBoxes({ call, spawnRun: () => 4242, sleep: async () => void slept++ });
   const out = join(mkdtempSync(join(tmpdir(), "attempt-")), "out");
   const run = { check: "c-0000000000000000", image: "engineer", workspace: "/w", out, cwd: ".", argv: ["true"], env: {}, timeoutMs: 1000 };
-  const h = await box.launch(run);
+  const waits = [];
+  const h = await box.launch({ ...run, waiting: (w) => waits.push(w) });
   assert.deepEqual([h.container, h.pid, h.log], ["box-1", 4242, `${out}.log`]);
+  assert.deepEqual([...new Set(waits)], [true, false], "waiting while it has no computer, not once it has one");
   assert.equal(asks, 3);
   assert.equal(slept, 2);
   const refused = checkBoxes({ call: async () => { throw Object.assign(new Error("no image"), { status: 400 }); }, sleep: async () => assert.fail("a 400 isn't waited on") });

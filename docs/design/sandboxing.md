@@ -43,8 +43,13 @@ host: a repo's checks are check jobs.
 - **Lifecycle.** The kernel owns the box: it asks the launcher (`POST /job`, bearer `launcher_kernel_key`), renews the
   lease every 5 minutes (the launcher's lease is 15), and releases it when the job ends; a kernel restart re-adopts from
   the job rows. A box with a lapsed lease is destroyed. Check jobs use `POST /check`.
-- **Pool.** `settings.computers_max` (default 12, 1 to 64) is both the launcher's pool and the kernel's admission limit
-  (compile writes it to `config/computers.json` `max`), so no job is admitted that can't get a box. Past it the least
+- **Pool.** `settings.computers_max` (1 to 64; unset, the host's RAM in GB divided by 1.5, 4 to 64, worked out at compile
+  time: boxes mostly wait on model calls and use 0.3 to 0.45 GB each) is both the launcher's pool and the kernel's admission
+  limit (compile writes it to `config/computers.json` `max`), so no job is admitted that can't get a box. **Each kind is
+  guaranteed half the pool** (`kernel/src/pool.ts`): agent jobs (admission) and check jobs (code review, CI checks;
+  `checkbox.ts`). Either may borrow the other's idle boxes; when both are busy neither takes more than its half from the other:
+  new work of the kind over its half waits, queued and never failed, until something of its own kind ends. A check waiting
+  for a box reads `waiting: true` on `GET /v1/checks/:id`, and code review shows its run as `waiting`, not `running`. Past it the least
   recently used idle box is evicted; none idle, a job waits for the next tick. Limits per box are 6g memory
   (`AIDENHQ_COMPUTERS_MEMORY`; gVisor counts in-box tmpfs and `/dev/shm` against it) and 2 CPUs (`AIDENHQ_COMPUTERS_CPUS`),
   ceilings rather than reservations. Size the pool to the host's memory with no swap, and at least the sum of box agents'

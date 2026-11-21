@@ -1,5 +1,5 @@
 // Admission (spec §4.2a): a dispatcher module asks for a job on a wake it claimed; the kernel admits it in one SQLite
-// transaction (the wake still claimed by this module, no live job on the task, a free computer within the one capacity
+// transaction (the wake still claimed by this module, no live job on the task, a free computer within the pool's fair share
 // setting and the agent's max_parallel, spend caps not used up), freezing the job's authority from its profile and grants at
 // that instant (the job row's `authority`), and only then gets it a computer and starts it (`launch`, boxes.ts). A grant
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
@@ -13,6 +13,7 @@ import { JobError } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
 import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
+import type { Pool } from "./pool.ts";
 
 export const PROFILES = ["crew", "engineer", "check"] as const;
 export type Profile = (typeof PROFILES)[number];
@@ -68,7 +69,7 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, facts, log }: {
+export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, facts, log }: {
   /** Flow's fact log (facts.ts): job.queued and wake.bound at admission, job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
@@ -85,6 +86,8 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
   kinds: () => Record<string, { module: string; floor: number; tools: string[] }>;
   /** settings.computers_max (config/computers.json `max`): the launcher's pool, so no job is admitted it can't box. */
   capacity: () => number;
+  /** The pool's fair share (pool.ts): agent jobs and check jobs are each guaranteed half of `capacity`; this admits within it. */
+  pool: Pool;
   /** The spend caps a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
@@ -168,8 +171,7 @@ export function createAdmission({ db, grants, kinds, capacity, spend, mayDispatc
       if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
       // A member holds its team record's roles (heldRoles); the platform filter below still applies.
       const g: AgentGrant = { ...own, roles: heldRoles(grants(), agent) };
-      const live = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE ${LIVE}`).get() as { n: number }).n;
-      if (live >= capacity()) throw new JobError(429, "busy", `all ${capacity()} computers are taken; try again shortly`);
+      if (!pool.mayAgent(b.wake)) throw new JobError(429, "busy", `the computers agent jobs may take are taken (of ${capacity()}); try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
