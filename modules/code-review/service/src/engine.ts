@@ -771,10 +771,10 @@ export function createEngine(d: EngineDeps) {
           if (statusFiled.has(id)) continue;
         }
         const s = heads.get(p.head)!;
-        // One status per head: its verdict. The stages before it (queued, reviewing) are not written, unless the head shows a failure
-        // (its earlier verdict, now being reviewed again): that one pending write replaces the stale red; an unreported check already waits.
-        const shown = p.status_key?.startsWith("{") ? (JSON.parse(p.status_key) as Mirror).reason : "pass";
-        if (PENDING.has(s.reason) && (PENDING.has(shown) || shown === "pass")) continue;
+        // One status per head: its verdict. The stages before it (queued, reviewing) are not written, unless the head shows an earlier
+        // verdict (red or green) that is being reviewed again: that one pending write replaces it; an unreported check already waits.
+        const shown = p.status_key?.startsWith("{") ? (JSON.parse(p.status_key) as Mirror).reason : undefined;
+        if (PENDING.has(s.reason) && (!shown || PENDING.has(shown))) continue;
         const key = JSON.stringify(s), failed = statusFailed.get(id);
         if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
         saved(key, await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) })));
