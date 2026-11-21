@@ -176,7 +176,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // after all is named as there). Fail open: nobody is asked to decide.
       const esc = await escalationFor(ev, g.deliverable, deps);
       state.set(`evidence-woken:${issue.id}`, ""); // a later round of work gets its own wake
-      ev.version = "";
+      // A deliverable that is there keeps its version, so the close isn't read as stale once that version is found again.
+      if (!esc.hold) ev.version = "";
       v = { outcome: "error", model: "", criteria: [], reason: esc.hold ? `its deliverable is there (${esc.facts.join("; ").slice(0, 200)}) but its evidence never settled` : esc.reason };
     } else {
       // The author's model: its last job's engine and the agent's own model (setup's metadata); the grader is never of its family.

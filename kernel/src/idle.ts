@@ -394,7 +394,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
             const s = lastStatus(i.task);
             if (s?.to_ !== "in_review" || s.at > i.since || reviewParkable(task as ParkedIssue) || (task as ParkedIssue).monitorNextCheckAt) continue;
             const to = await escalate.delegator(i.task, `idle-review:${i.task}:${i.since}`, (id) => ({
-              body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then decide: finish it when the work meets what was asked, comment on it with the exact changes still needed, or cancel it only when the work should not proceed.`,
+              body: `**${id} sits in review with nothing running, filed or waiting on it** (${Math.round((t - Date.parse(i.since)) / 3600_000)} hours). Read its thread and its result, then comment on it (that wakes its agent): to finish it when the work meets what was asked, or with the exact changes still needed; cancel it only when the work should not proceed.`,
               ownerText: `**${id} sits in review with nothing running, filed or waiting on it.** It is yours: finish it if the work is right, comment on ${id} with what its agent changes, or cancel it.`,
             }));
             if (to !== "seen" && to !== "gone") opened.push(i.task);
