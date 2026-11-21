@@ -1,0 +1,16 @@
+{
+ "name": "sw-two-rejections-ask",
+ "routine": "software",
+ "why": "A second rejection of the same change that names no new defect stops the republish: the Engineer reports both rejection ids and asks the delegator to clarify or accept, instead of opening a third head.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-23 -> {\"title\":\"Add an index on acme-agents/ledger's orders.created_at\",\"description\":\"Add a b-tree index on orders(created_at) in db/migrations, and name the migration.\"}\nworkspace: /workspace/ledger (acme-agents/ledger at 5d2c9e1), one commit on fix/orders-index, tests pass.\nYour first card was rejected (approval k-4a11c0d2): 'The migration is not reversible; add a down migration.' You added the down migration and published again.\nYour second card was rejected (approval k-b7e93f18) with the same note: 'The migration is not reversible; add a down migration.' The second head already has the down migration.",
+ "expect": [
+  {
+   "tool": "reply"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_publish"
+  }
+ ]
+}
