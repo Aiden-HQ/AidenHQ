@@ -14,7 +14,8 @@
 // memory of it at all. The family is the only one it can list or close this way (kernel/src/modtasks.ts).
 //
 // Only the instance's product pin: the official modules are the product's modules/ (owner, 2026-11-18). The task is filed
-// when the bump files (no description updates as merges land), and its assignment wakes the Platform Engineer once.
+// when the bump files (no description updates as merges land), filed quiet so its assignment wakes nobody: the card carries
+// the work and the train follows it.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pinOwner } from "./aidenhq-sdk/pin-owner.ts";
@@ -149,7 +150,7 @@ export function createReleaseTrain(o: TrainOptions) {
       const source = `release:instance:${to}`;
       // Idempotent per source: a restart adopts the task an earlier process filed for this commit instead of opening a second.
       const task = await o.kernel("POST", "/v1/tasks", {
-        title: "Pin bump: this instance's product", role: "platform-engineer", source,
+        title: "Pin bump: this instance's product", role: "platform-engineer", source, quiet: true,
         description: trainDescription({ what: `Moves this instance's product pin (\`product:\` in ${o.instanceRepo}'s instance.yaml) to the newest green commit of ${o.productRepo}'s main, as one apply.`, carries, windowMinutes: o.windowMinutes, marker: source }),
       });
       s.filing = { to, task: task.id, identifier: task.identifier };

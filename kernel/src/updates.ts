@@ -260,6 +260,11 @@ export async function verify(d: Pick<Deps, "base" | "fetch" | "download">, text:
 const isMain = (release: string) => SHA.test(release);
 /** How the owner reads a move: the release's name, or the main commit. */
 export const labelOf = (release: string) => (isMain(release) ? `main commit ${release.slice(0, 12)}` : release);
+/**
+ * The task the kernel files for a prepared release: the platform-engineer role's, keyed by the release and its commit, and
+ * quiet (the backlog, a holder for the apply's record) because no agent works on it.
+ */
+export const updateTask = (r: Ready) => ({ title: `Update AidenHQ to ${labelOf(r.release)}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, quiet: true, description: `Installs AidenHQ ${labelOf(r.release)} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });
 
 export type MainMove = { sha: string; from: string; compare: string; text: string };
 /**

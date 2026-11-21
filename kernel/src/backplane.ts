@@ -39,10 +39,11 @@
 //   POST /v1/routines/pause   (a module with role kernel.routines) {routine}: that routine paused, as the owner (never resumed here)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
 //   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the chief of staff)
-//   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?}: a task of the module's
+//   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?, quiet?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
 //                              the open tasks of the module's own `release:instance:` family (the release train's sweep); POST /v1/tasks/:task/close
-//                              {status: done|cancelled, body}: one it filed
+//                              {status: done|cancelled, body}: one it filed. `quiet: true` files it in the backlog, a holder for
+//                              records whose assignment wakes nobody.
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
 //   POST /v1/reviews/:review   (that review's token, once) the reviewer module's verdict
 //   POST /v1/jobs {wake, prompt, session?}, GET/DELETE /v1/jobs/:job, POST /v1/jobs/:job/input  (a module with role kernel.jobs)

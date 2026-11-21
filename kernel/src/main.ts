@@ -92,7 +92,7 @@ import { createWork } from "./work.ts";
 import { readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
-import { createUpdates, labelOf, runCheck, runMain, runVerify } from "./updates.ts";
+import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
 import { TYPED, limitIssueLists, markCode } from "./cplimit.ts";
 
@@ -315,7 +315,7 @@ const updates = createUpdates({
   db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
   ownerLine: toOwner("done"), check: runCheck(repo), main: runMain(repo), log,
   file: async (r) => {
-    const task = await moduleTasks.file("kernel", { title: `Update AidenHQ to ${labelOf(r.release)}`, role: "platform-engineer", source: `release:${r.release}:${r.sha}`, description: `Installs AidenHQ ${labelOf(r.release)} (from ${r.from}), filed by the release updater as one apply. No agent works on this task; it closes when the apply ends.\n\nWhat changed: ${r.compare}` });
+    const task = await moduleTasks.file("kernel", updateTask(r));
     try {
       return { record: (await writes.fileKernel("kernel.apply", { args: { repo: repos().instance, branch: r.branch, sha: r.sha }, task: task.id, requester: UPDATER })).id, task: task.id };
     } catch (e) {

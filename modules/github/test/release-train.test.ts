@@ -94,6 +94,7 @@ test("a green tip past the window files one kernel.apply; a restart adopts that 
   await train(dir, f, clock).step();
   assert.equal(f.k.tasks.length, 1, "one task per tip");
   assert.equal(f.k.tasks[0].role, "platform-engineer");
+  assert.equal(f.k.tasks[0].quiet, true, "filed quiet: the card carries the bump and no agent is woken for it");
   assert.deepEqual(f.k.writes.map((w) => [w.kind, w.args.repo, w.args.sha, w.task]), [["kernel.apply", "acme/aidenhq-instance", "e".repeat(40), "t-release:instance:" + NEW]], "the filed card is adopted, not requested again");
   assert.equal(Object.keys(f.k.records).length, 1, "one record: the same request");
   // In flight: nothing else files. Applied: the task closes and the same tip is never filed again.
