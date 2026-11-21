@@ -358,10 +358,13 @@ const pgFrame = (b) => {
   }
   return "invalid";
 };
+// The connection the PostgreSQL probe reads from. TCP does not preserve write boundaries, so a test that needs a reply
+// delivered in one read event replaces this line with a controlled socket; the probe's parsing is otherwise unchanged.
+const pgConnect = (host, port) => net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
 const postgres = (host, port) => new Promise((done) => {
   let stage = 0, got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
-  const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
+  const s = pgConnect(host, port);
   s.on("connect", () => s.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47])));
   s.on("data", (d) => {
     got = Buffer.concat([got, d]);

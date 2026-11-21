@@ -52,7 +52,7 @@ async function gate(app: typeof tailnet, base: string, node = true) {
  * `proc` replays a container's proc tree (a real one's topology needs Docker's pid namespace); without it the host's /proc
  * stands in, and sockets are off unless `keep`.
  */
-function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string; sni?: string[]; declared?: Door | null } = {}) {
+function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string; sni?: string[]; declared?: Door | null; pg?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
   // The compose mapping the registry declaration names: the app's published port → its container port. A test server listens
@@ -62,7 +62,10 @@ function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ip
   const input = { ports: exposed, ips: o.ips ?? [], ...(declared ? { postgresProbe: Number(declared.port) } : {}), sni: o.sni ?? [app.name, app.share?.host].filter(Boolean), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
-    const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
+    let script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
+    // A controlled socket for the PostgreSQL probe: TCP does not preserve write boundaries, so a test that needs a reply in
+    // one read event (or two) replaces the probe's connection instead of hoping a server's writes arrive that way.
+    if (o.pg) script = script.replace("const s = pgConnect(host, port);", `const s = ${o.pg};`);
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
@@ -315,32 +318,47 @@ describe("identity gate", () => {
 
   it.runIf(process.platform === "linux")("keeps a coalesced SSL refusal with trailing bytes hard: the refusal must be exactly one byte", async () => {
     // A server that declines SSL sends exactly "N" and nothing else. If a peer sends "N" and a well-formed AuthenticationOk
-    // frame in the same write, a probe that keeps the trailing bytes would read the frame as the startup reply and identify
-    // the port as PostgreSQL without a valid one-byte refusal. The trailing bytes are not the server's answer to this probe.
+    // frame in the same read event, a probe that keeps the trailing bytes would read the frame as the startup reply and
+    // identify the port as PostgreSQL without a valid one-byte refusal. TCP does not preserve write boundaries, so the
+    // controlled socket delivers both in one event rather than relying on how a server's write arrives.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const coalesced = await tcp(`(s) => {
-      let stage = 0;
-      s.on("data", (d) => {
-        if (stage === 0 && d[0] === 0x47) return s.destroy();
-        if (stage === 0 && d[0] === 0x16) return s.destroy();
-        if (stage === 0) { stage = 1; return s.write(Buffer.concat([Buffer.from("N"), Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])])); }
-        s.destroy();
-      });
-    }`);
-    const r = await scan(db, [coalesced]);
+    const silent = await tcp(`(s) => s.on("data", () => s.destroy())`); // the raw look gets a closed socket
+    const coalesced = `(() => {
+      const { EventEmitter } = require("events");
+      const e = new EventEmitter();
+      let wrote = false;
+      e.destroy = () => {};
+      e.write = () => {
+        if (wrote) return true;
+        wrote = true;
+        setImmediate(() => e.emit("data", Buffer.concat([Buffer.from("N"), Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])])));
+        return true;
+      };
+      setImmediate(() => e.emit("connect"));
+      return e;
+    })()`;
+    const r = await scan(db, [silent], { pg: coalesced });
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
-    // The refusal arriving in its own write is the normal case and stays identified: only extra bytes in the same write fail.
-    const split = await tcp(`(s) => {
-      let stage = 0;
-      s.on("data", (d) => {
-        if (stage === 0 && d[0] === 0x47) return s.destroy();
-        if (stage === 0 && d[0] === 0x16) return s.destroy();
-        if (stage === 0) { stage = 1; return s.write("N"); }
-        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
-      });
-    }`);
-    expect(await scan(db, [split])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
+    // The refusal arriving in its own read event is the normal case and stays identified: only extra bytes in the same event fail.
+    const split = `(() => {
+      const { EventEmitter } = require("events");
+      const e = new EventEmitter();
+      let wrote = false;
+      e.destroy = () => {};
+      e.write = () => {
+        if (wrote) return true;
+        wrote = true;
+        setImmediate(() => {
+          e.emit("data", Buffer.from("N"));
+          setImmediate(() => e.emit("data", Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])));
+        });
+        return true;
+      };
+      setImmediate(() => e.emit("connect"));
+      return e;
+    })()`;
+    expect(await scan(db, [silent], { pg: split })).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
   }, 60_000);
 
   it.runIf(process.platform === "linux")("keeps a truncated PostgreSQL reply hard: a header alone is not a protocol message", async () => {
