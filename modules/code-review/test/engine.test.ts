@@ -280,3 +280,19 @@ test("a run whose check job has no computer yet shows as waiting, not running", 
   await w.tick();
   assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status), ["running"]);
 });
+
+test("a review that finishes on a closed PR whose merged state can't be read now waits for the next tick, then posts once it is known", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [a] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] });
+  await w.tick();
+  w.finish(0, {}, 0.2);
+  const get = w.prs.get(7);
+  w.prs.delete(7); // GitHub can't answer: the read throws
+  await w.tick();
+  assert.deepEqual([w.engine.run(a.id).run.status, w.posted.length], ["running", 0]);
+  w.prs.set(7, get);
+  await w.tick();
+  assert.equal(w.posted.length, 1);
+});

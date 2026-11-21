@@ -302,7 +302,13 @@ export function createEngine(d: EngineDeps) {
     // A run whose PR moved on (a push) while it ran is superseded: it never posts over the newer head. One closed unmerged is
     // dropped; a merged one is still reviewed and posted (a review of merged code is useful, and was paid for).
     if (pr && pr.open && pr.head !== r.head) return done("skipped", "superseded: a newer head is being reviewed");
-    if (pr && !pr.open && !(await d.source.get(r.repo, r.number).then((c) => c.merged, () => false))) return done("skipped", "closed");
+    if (pr && !pr.open) {
+      // Merged or closed unmerged: GitHub says which. When it can't say now, the run stays running and the next tick finishes it
+      // again (its review is kept; the writes above are idempotent), never dropped as closed on a failed read.
+      const merged = await d.source.get(r.repo, r.number).then((c) => !!c.merged, () => undefined);
+      if (merged === undefined) return void log("finished review not posted yet: whether its PR merged can't be read now; the next tick asks again", { run: r.id });
+      if (!merged) return done("skipped", "closed");
+    }
     const previous = lastPosted(r);
     let posted: Posted;
     try {
