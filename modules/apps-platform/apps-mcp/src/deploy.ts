@@ -194,13 +194,16 @@ export function createEngine(d: Deps) {
         record(app, r, o.by, `${next.err ?? `health check failed within ${app.health.grace_sec}s`}; stopped (no previous good deploy)`);
         return r;
       }
-      const back = await apply(app, prev.sha).catch((e: Error) => e);
+      const back = await apply(app, prev.sha).catch((e) => new Error(String((e as Error)?.message ?? e)));
       if (back instanceof Error) {
         // The rollback target can't even start (a missing secret, a policy it no longer passes): stop the failed commit, don't leave it serving.
-        await compose(app, ["down", "--remove-orphans"]).catch(() => "");
-        d.store.clearRunning(app.name);
-        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, previous: prev.sha, ...(checks ? { checks } : {}) };
-        record(app, r, o.by, `${next.err ?? "health check failed"}; rollback to ${prev.sha.slice(0, 8)} could not start: ${back.message.slice(0, 200)}; stopped`);
+        // A commit that never built left the previous containers up: they stay. No `previous`: nothing was rolled back to.
+        if (next.built) {
+          await compose(app, ["down", "--remove-orphans"]).catch(() => "");
+          d.store.clearRunning(app.name);
+        }
+        const r: Result = { sha: next.sha, status: next.built ? "failed" : "build_failed", images: next.images, ...(checks ? { checks } : {}) };
+        record(app, r, o.by, `${next.err ?? "health check failed"}; rollback to ${prev.sha.slice(0, 8)} could not start: ${back.message.slice(0, 200)}${next.built ? "; stopped" : ""}`);
         return r;
       }
       // The rollback target was healthy before: health alone decides it (its pages may predate a newer check), except after

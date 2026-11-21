@@ -45,8 +45,9 @@ export function checkPath(app: App, path: string, paths = app.api!.paths, method
   const seg = segmentsOf(p);
   const ok = (entry: string) => {
     const r = parseRoute(entry);
-    if (!r) return under(entry) && app.api!.paths.some(under);
-    return r.method === method && app.api!.paths.some(under) && r.segments.length === seg.length && r.segments.every((s, i) => (s === undefined ? seg[i] !== "" : s === seg[i]));
+    if (!app.api!.paths.some(under)) return false;
+    if (!r) return under(entry);
+    return r.method === method && r.segments.length === seg.length && r.segments.every((s, i) => (s === undefined ? seg[i] !== "" : s === seg[i]));
   };
   if (!paths.some(ok)) throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller (${paths.join(", ")})`);
 }
