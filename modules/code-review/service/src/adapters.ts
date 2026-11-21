@@ -3,17 +3,19 @@
 //   as the Maintainer's issue read is), as the owner's GitHub sign-in github-mcp holds.
 // - Review runs: the kernel's credential-free check job `code-review` (POST /v1/checks; the recipe is lane E's), its Review read
 //   from the finished check.
-// - Posting: kernel write records (POST /v1/writes) of this module's kinds code-review.post (Tier 1, the AI reviewer decides) and
-//   code-review.notice (Tier 0), which this service executes (executor@1) through github-mcp's /internal/review routes.
+// - Posting: kernel write records (POST /v1/writes) of this module's kinds code-review.post and .ruling (Tier 1, the AI reviewer
+//   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
+//   /internal/review routes.
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
-import type { Ack, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Thread } from "./seams.ts";
+import type { Ack, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
 
 export const RECIPE = "code-review";
 /** This module's write kinds (module.yaml writes), executed by this service through github-mcp's review routes. */
 export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
 export const RULING_KIND = "code-review.ruling";
+export const STATUS_KIND = "code-review.status";
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 
@@ -68,7 +70,8 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
       const billed = { ...(typeof v.billed_usd === "number" ? { billed_usd: v.billed_usd } : {}), ...(v.box_at ? { box_at: v.box_at } : {}) };
       if (v.state === "running") return { state: "running", ...billed, ...(v.waiting ? { waiting: true } : {}) };
       if (v.state === "done" && v.receipt?.verdict === "pass" && v.result?.version === 1) return { state: "done", review: v.result, ...billed };
-      return { state: "failed", why: (v.error ?? v.receipt?.summary ?? `the check ended ${v.state}`).slice(0, 300), ...billed };
+      // A check that failed before it got a box (its snapshot couldn't be read, a restart) ran nothing, so spent nothing.
+      return { state: "failed", why: (v.error ?? v.receipt?.summary ?? `the check ended ${v.state}`).slice(0, 300), ...billed, ...(!v.box_at && billed.billed_usd === undefined ? { billed_usd: 0 } : {}) };
     },
   };
 }
@@ -90,13 +93,15 @@ export function reasonOf(why: string | undefined): string | undefined {
 /** A write record's state as a post's: done with an ok outcome is posted; failed, rejected, stale or cancelled is refused. */
 function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: string } | null }): Posted {
   if (r.state === "done") {
-    if (r.outcome && !r.outcome.ok) return { state: "refused", why: `write ${r.id}: ${r.outcome.text.slice(0, 200)}` };
+    if (r.outcome && !r.outcome.ok) return { state: "refused", why: `write ${r.id}: ${r.outcome.text.slice(0, 200)}`, retry: true };
     // The executor's outcome (github-mcp review-post.ts): the review's link, the threads it resolved, the identity it posted as.
     let o: { review?: unknown; resolved?: unknown; identity?: unknown } = {};
     try { o = JSON.parse(r.outcome?.text ?? "{}"); } catch {}
     return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" ? { identity: o.identity } : {}) };
   }
-  if (["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}` };
+  // Failed or stale (what it acted on changed, e.g. a restart between its approval and its run) may post when filed again; a
+  // rejection is the AI reviewer's or the owner's answer, and a cancel is someone's decision.
+  if (["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}`, ...(["failed", "stale", "unknown"].includes(r.state) ? { retry: true } : {}) };
   return { state: "pending" };
 }
 
@@ -124,8 +129,12 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100) };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated };
       const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
+      return { ...settled(r), write: r.id };
+    },
+    async status(s: Status) {
+      const r = (await kernel.call("POST", "/v1/writes", { kind: STATUS_KIND, args: { repo: s.repo, pr: s.number, head: s.head, reason: s.reason, important: s.important, running: s.running.slice(0, 8) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
     async ruling(g) {
@@ -157,7 +166,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
  * no other requester can post a review through these kinds.
  */
 export function reviewExecutor(github: (op: "preview" | "execute", body: unknown) => Promise<any>, runOf: (id: string) => { repo: string; number: number; head: string } | undefined): Executor {
-  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === RULING_KIND ? "ruling" : undefined);
+  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === RULING_KIND ? "ruling" : k === STATUS_KIND ? "status" : undefined);
   return {
     async plan(req) {
       const kind = kindOf(req.kind);
@@ -165,7 +174,7 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
       if (!kind) throw new Error(`not a code-review kind: ${req.kind}`);
       if (req.requester?.kind !== "module" || req.requester.module !== "code-review") throw new Error("only the code-review service files these");
       const run = a.run ? runOf(a.run) : undefined;
-      if (kind !== "notice" && (!run || run.repo !== String(a.repo).toLowerCase() || run.number !== a.pr || run.head !== a.head)) throw new Error(`the ${kind} doesn't match its run`);
+      if (kind !== "notice" && kind !== "status" && (!run || run.repo !== String(a.repo).toLowerCase() || run.number !== a.pr || run.head !== a.head)) throw new Error(`the ${kind} doesn't match its run`);
       const v = (await github("preview", { kind, args: req.args })) as { facts?: Record<string, unknown>; targets?: Record<string, unknown> };
       return { args: req.args, ...(v.facts ? { facts: v.facts } : {}), ...(v.targets ? { targets: v.targets } : {}) };
     },

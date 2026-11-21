@@ -2,7 +2,7 @@ name: code-review
 description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. Idle until a repo is added: nothing runs or spends by itself."
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
-# internal read (as this module, never /mcp), decides which head gets which combos (triggers, `@aiden review …` from someone with
+# internal read (as this module, never /mcp), decides which head gets which combos (triggers, `aiden review …` from someone with
 # write access now, debounce, supersede, a run starts only while the day's real spend is under its caps), runs each review as the kernel's
 # check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's run_usd), hands the
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
@@ -85,7 +85,7 @@ agents:
     connections:
       apps: [ app_view ]
       code_review: [ code_review_config, code_review_runs, code_review_run, code_review_configure ]
-      # A PR's review threads (replies to its findings) and one comment answering an `@aiden` question, as the posting identity's
+      # A PR's review threads (replies to its findings) and one comment answering an `aiden` question, as the posting identity's
       # write: a kernel record the AI reviewer decides.
       github: [ github_pr_threads, github_issue_comment ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_cancel, task_finish ]
@@ -103,7 +103,8 @@ connections:
 # Posting: this service files a record per post, per acknowledgement and per ruling and executes it (executor@1) through
 # github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post is Tier 1 (the AI reviewer
 # reads the whole rendered review first), and so is a ruling (a dispute's answer on the finding's thread: the judge's text); a
-# notice is Tier 0 (fixed words: phase and reason only). Plan refuses a record this service didn't file for one of its runs.
+# notice is Tier 0 (fixed words: phase and reason only), and so is a status (the commit status aidenhq/review on a gated repo's PR
+# head, mirroring the merge verdict in fixed words). Plan refuses a record this service didn't file for one of its runs.
 providers:
   board: { url: "http://code-review:8098", auth: code_review_api_token }
   executor:
@@ -122,6 +123,11 @@ writes:
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
   notice:
     args: schemas/notice.json
+    floor: 0
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  status:
+    args: schemas/status.json
     floor: 0
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }

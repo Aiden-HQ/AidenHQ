@@ -14,7 +14,7 @@ function world(settings = {}) {
   const prs = new Map();
   const comments = [];
   const perms = { alice: "write", mallory: "read" };
-  const started = [], posted = [], acks = [], facts = [];
+  const started = [], posted = [], acks = [], facts = [], statuses = [];
   const results = new Map();
   const outcomes = new Map();
   const rewritten = new Set(), closed = [], fails = [], rulings = [];
@@ -44,7 +44,7 @@ function world(settings = {}) {
       result: async (c) => results.get(c) ?? { state: "running" },
     },
     poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); },
-      ruling: async (r) => (rulings.push(r), { state: "pending", write: `r-${rulings.length}` }) },
+      ruling: async (r) => (rulings.push(r), { state: "pending", write: `r-${rulings.length}` }), status: async (st) => (statuses.push(st), { state: "posted" }) },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
     emit: (f) => facts.push(f),
   });
@@ -54,7 +54,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { db, engine, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
+  return { db, engine, statuses, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
@@ -137,31 +137,32 @@ test("a force-push past the last reviewed head reviews in full", async () => {
   assert.deepEqual([w.started[1].incremental_from, w.started[1].full], [null, true]);
 });
 
-test("commands: only a writer's count, our own posts and quoted lines never do, repeats are one batch; stop stops", async () => {
+test("commands: a comment whose first word is aiden (an @ or not), from a writer; our own posts and later lines never count; repeats are one batch; stop stops", async () => {
   const w = world();
   await w.tick();
   w.pr(7, sha("7"), { draft: true }); // a draft waits: no automatic review in the way
   await w.tick();
   w.later(1000);
   w.say(7, "mallory", "@aiden review");
-  w.say(7, "alice", "> @aiden review\nquoted, not asked");
+  w.say(7, "alice", "> aiden review\nquoted, not asked");
+  w.say(7, "alice", "Looks fine.\naiden review found nothing new"); // prose on a later line asks nothing
   w.say(7, "alice", "Summary <!-- aidenhq-review: {} -->\n@aiden review");
   await w.tick();
   assert.equal(w.started.length, 0);
   w.later(1000);
-  w.say(7, "alice", "please\n@aiden review full");
+  w.say(7, "alice", "Aiden review full");
   w.say(7, "alice", "@aiden review full");
   await w.tick();
   assert.deepEqual(w.started.map((s) => [label(s), s.full, s.number]), [["codex/medium", true, 7]]);
   assert.equal(w.acks.filter((a) => a.state === "queued").length, 2); // both asks answered, one run
   w.later(1000);
-  w.say(7, "alice", "@aiden review stop");
+  w.say(7, "alice", "aiden review stop");
   await w.tick();
   w.pr(7, sha("8")); w.later(DEBOUNCE + 1); await w.tick(); await w.tick();
   assert.equal(w.started.length, 1, "a stopped PR gets no automatic review");
-  assert.deepEqual(parseCommand("@aiden review focus: the retry path"), { cmd: "focus", text: "the retry path" });
-  assert.deepEqual(parseCommand("@aiden review deep"), { cmd: "unknown", word: "deep" });
-  assert.equal(parseCommand("```\n@aiden review\n```"), undefined);
+  assert.deepEqual(parseCommand("aiden review focus: the retry path"), { cmd: "focus", text: "the retry path" });
+  assert.deepEqual(parseCommand("aiden review deep"), { cmd: "unknown", word: "deep" });
+  assert.equal(parseCommand("```\naiden review\n```"), undefined);
 });
 
 test("the day budget counts real spend only: a running run at its spend so far; a queued run starts while spent is under the cap; drafts and forks skip with a reason", async () => {
@@ -385,18 +386,20 @@ test("an important finding gates until a mandatory recheck confirms it fixed; a 
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("6"))), ["findings"]);
 });
 
-test("two mandatory combos: coverage needs both; one failing (after its retry) waits for @aiden review; an incremental head counts only from a covered one", async () => {
+test("two mandatory combos: coverage needs both; one failing (after its retry, a minute later) waits for aiden review; an incremental head counts only from a covered one", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
   w.finish(0, NONE);
   w.results.set("c-2", { state: "failed", why: "engine crashed", billed_usd: 0.1 });
   await w.tick();
+  assert.equal(w.started.length, 2, "the retry waits a minute (a restart that failed it is likely over)");
+  w.later(60_001); await w.tick({ github: false });
   assert.equal(w.started.length, 3, "retried once");
   w.results.set("c-3", { state: "failed", why: "engine crashed again" });
   await w.tick();
   const v = w.engine.verdict(REPO, 2, sha("2"));
   assert.deepEqual(codes(v), ["failed"]);
-  assert.match(v.reasons[0].unblock, /@aiden review/);
+  assert.match(v.reasons[0].unblock, /`aiden review`/);
   // A push now: nothing is covered, so it is a first review (on_open), full.
   w.pr(2, sha("3")); await w.tick();
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, s.combo.engine, s.incremental_from]), [[sha("3"), "codex", null], [sha("3"), "claude-code", null]]);
@@ -410,7 +413,7 @@ test("a mandatory review that covered only part of the PR doesn't cover its head
   const v = w.engine.verdict(REPO, 2, sha("2"));
   assert.deepEqual(codes(v), ["incomplete"]);
   assert.match(v.reasons[0].text, /covered only part of the pull request: 1 of 2 finders didn't finish/);
-  assert.match(v.reasons[0].unblock, /@aiden review full/);
+  assert.match(v.reasons[0].unblock, /`aiden review full`/);
 });
 
 test("a mandatory run is never skipped for budget; the owner dismisses an open finding and the merge may go", async () => {
@@ -489,4 +492,45 @@ test("a PR open before its repo was gated gets its mandatory review; a fork's au
   f.threads.set(3, [{ ours: true, finding: "f1", comment: 41, replies: [{ id: 60, author: "outsider", body: "not a bug", ruling: false }] }]);
   await f.tick();
   assert.equal(f.started.filter((s) => s.judge).length, 0);
+});
+
+test("the commit status mirrors the verdict per head, written only when it changes: pending while the review runs, failure with findings open, success once clean", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  const last = () => { const s = w.statuses.at(-1); return [s.head, s.reason, s.important, s.running.length]; };
+  assert.deepEqual(last(), [sha("2"), "running", 0, 1]);
+  const n = w.statuses.length;
+  await w.tick({ github: false });
+  assert.equal(w.statuses.length, n, "nothing changed, nothing written");
+  w.finish(0); await w.tick({ github: false });
+  assert.deepEqual(last(), [sha("2"), "findings", 1, 0]);
+  w.pr(2, sha("3")); await w.tick();
+  assert.deepEqual(last(), [sha("3"), "queued", 1, 1], "the push's review waits out its debounce");
+  w.later(DEBOUNCE + 1); await w.tick({ github: false });
+  w.finish(1, { findings: [], fixed: ["f1"] }); await w.tick({ github: false });
+  assert.deepEqual(last(), [sha("3"), "pass", 0, 0]);
+  // An ungated repo gets no status.
+  const plain = world();
+  await opened(plain, 4, sha("4"));
+  assert.equal(plain.statuses.length, 0);
+});
+
+test("a post refused by a restart (stale) or a failed GitHub call is filed once more; a rejection isn't", async () => {
+  const w = world();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale", retry: true });
+  await w.tick({ github: false });
+  assert.equal(w.engine.runs({ repo: REPO })[0].posted, "retry");
+  w.later(2 * 60_000 + 1); await w.tick({ github: false });
+  assert.equal(w.posted.length, 2, "filed again");
+  w.outcomes.set("k-2", { state: "refused", why: "write k-2 failed", retry: true });
+  await w.tick({ github: false });
+  assert.deepEqual([w.engine.runs({ repo: REPO })[0].status, w.posted.length], ["failed", 2], "once only");
+  const r = world();
+  await opened(r, 3, sha("3"));
+  r.finish(0); await r.tick();
+  r.outcomes.set("k-1", { state: "refused", why: "write k-1 rejected" });
+  r.later(5 * 60_000); await r.tick({ github: false }); await r.tick({ github: false });
+  assert.deepEqual([r.engine.runs({ repo: REPO })[0].status, r.posted.length], ["failed", 1]);
 });

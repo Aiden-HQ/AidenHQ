@@ -21,7 +21,7 @@ Rules that bind (owner and design):
 | State service (`service/`, port 8098) | Watches the listed repos' PRs and comments through github-mcp's internal read (as this module, never `/mcp`), decides which head gets which combos, runs each review as a check job, files posts, records flow facts |
 | Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's `run_usd` (`check_jobs:` in `module.yaml`, 45 min timeout) |
 | Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
-| Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `@aiden` questions on reviews. Holds no code tools and no delegation |
+| Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `aiden` questions on reviews. Holds no code tools and no delegation |
 | Board Reviews page (`services/board/web/src/Reviews.tsx`, `services/board/src/reviews.ts`) | Tabs Reviews, Repos, Insights |
 
 ## Config (`settings.code_review`, schema in `module.yaml`, validated in `service/src/config.ts`)
@@ -45,7 +45,7 @@ code_review:
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
 claude-code and codegenie low to max), `run_usd` (what one run may spend: its model token's hard cap, never a reservation; default $5 for each engine) and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one at both moments, else it is refused (the service, the board and the compile all say so); a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
-price. A deeper review is asked for (Review again, `@aiden review`), never a moment of its own. A repo that does not validate is
+price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
 whole. The old shape (named `reviewers`, a string trigger, `on_risk`) is refused: the owner re-saves the repo on the board.
 
@@ -85,8 +85,8 @@ PR state, not config.
 
 ## Triggers
 
-The service polls the watched repos (`code_review_poll_seconds`, default 60). A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
-combo; a push runs each `on_push` combo incrementally, debounced 3 minutes (a burst is one batch; another push replaces the
+The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
+combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
 rechecks the PR's still-open findings (whichever combo found them). On a gated repo a new head is a push only once an earlier head
 was covered; a PR pushed to before its first review finished gets its first review (`on_open`) at the newest head. A run starts only while the day's real spend is under the
@@ -94,15 +94,16 @@ repo's and the instance's day caps (checked in one transaction); a run whose PR 
 superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
 silent: draft, fork, budget, closed, stopped, superseded.
 
-Commands in a PR comment (`service/src/commands.ts`; only a command line counts, never a quoted line, a code block or our own
-post; the commenter needs write access now):
+Commands in a PR comment (`service/src/commands.ts`): a comment whose first word is `aiden` (an `@` before it is accepted, never
+written by us: it would ping a GitHub user). Only the first line counts, never a later line, a quote, a code block or our own
+post; the commenter needs write access now:
 
 | Comment | Effect |
 |---|---|
-| `@aiden review [full]` | one review now with the repo's `on_open` combos (`full` is not incremental) |
-| `@aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones |
-| `@aiden review focus: <text>` | a focus handed to the reviewers as data (300 characters) |
-| `@aiden review status` / `help` | the last run's phase, combo, findings and cost / the command list |
+| `aiden review [full]` | one review now with the repo's `on_open` combos (`full` is not incremental) |
+| `aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones |
+| `aiden review focus: <text>` | a focus handed to the reviewers as data (300 characters) |
+| `aiden review status` / `help` | the last run's phase, combo, findings and cost / the command list |
 
 Asking Aiden "review <PR URL> with Claude Code and Codex" (the Reviewer Manager's `code_review_run` with `combos`; the board's Review again) does the same for any PR the instance can read, with the combos asked for (default the repo's `on_open`).
 
@@ -119,19 +120,40 @@ model gateway. The service accepts what the recipe runs: each engine's own effor
 ## Posting
 
 The service files a `post` write (Tier 1: the AI reviewer reads the whole rendered review, which is exactly what is posted) or
-a `notice` (Tier 0, fixed words) per run, and a `ruling` (Tier 1: the judge's text) per judged dispute; the github module's poster
-executes it. One GitHub review per head and combo, always a
-`COMMENT`: inline comments with a severity marker and a collapsed "why flagged" and "Copy as fix brief", a summary with a
-coverage line (files reviewed, excluded, the combo: engine, model and effort, cost, anything incomplete) and the command list, and
-the severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`. No commit status is set: the merge queue
-asks the service itself (a status is forgeable by any writer and per commit, not per PR).
+a `notice` (Tier 0, fixed words) per run, a `ruling` (Tier 1: the judge's text) per judged dispute and a `status` (Tier 0, fixed
+words) per verdict change; the github module's poster executes it. One GitHub review per head and combo, always a `COMMENT` on the
+commit it reviewed (a PR that moved on since still gets it; its comments show as outdated where lines changed):
+
+- **Every finding gets one thread**: on its lines when they are on the reviewed diff, else on the nearest diff line of its file
+  (saying where it really is), else a file comment (a file GitHub shows no patch for). Only a finding in no changed file has no
+  thread; it is a collapsed block in the summary instead. A finding an earlier review already opened a thread for isn't posted
+  again. Each comment has a severity marker, a collapsed "why flagged" and "Copy as fix brief".
+- **The summary scans at a glance**: the title `Aiden review · Haiku 5.5 (medium)` (the model's short name and effort), one line
+  of counts (on a gated repo's mandatory review, whether it blocks the merge), the important findings as a table (severity,
+  title linking to its thread, `file:line`), nits and pre-existing ones in the same table collapsed, the commands as one
+  collapsed line, and one muted line with the commit, the scope (whole PR or changes since a commit), the engine and the cost. A
+  clean review is one line. Each finding appears once. Partial coverage says so (`coverage_note`, codex-native's "which parts
+  it read isn't tracked", is never shown: it isn't a gap).
+- The severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`.
+- **A post that fails for anything but a decision** (stale: a restart between its approval and its run; a failed GitHub call,
+  such as a secondary rate limit) is filed once more two minutes later; a rejection stands.
+
 Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
-finding is gone on the next run are resolved, only when Aiden posted them (first comment by the posting identity with our
-finding marker). The acknowledgement comment is one per PR: with several combos it shows the latest run to finish (each review
-names its own combo).
+finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
+several combos it shows the latest run to finish (each review names its own combo).
 
 Identity: the owner's own GitHub sign-in, COMMENT reviews only, each text ending with the AidenHQ footer (each post still a
-Tier 1 write); "ours" is a thread whose first comment is in AidenHQ's records (`/v1/objects`) and carries the finding marker.
+Tier 1 write); "ours" is a thread whose first comment carries the finding marker and is by that sign-in (model text can't write a
+marker: the renderer escapes `<`; nobody else posts as the owner).
+
+**The status `aidenhq/review`.** On a gated repo, each open non-draft PR's head carries the commit status `aidenhq/review`, so
+people and `gh pr checks --watch` see the verdict: pending while the head's mandatory review is queued or running (naming the
+reviewers), failure while important findings are open or the review failed or was partial (with the count and how to unblock),
+success when the verdict passes. The service computes it from the same `verdict()` the merge queue asks and writes it only when
+it changes (one writer). It is a mirror: the merge queue still asks the service, and `kernel/sdk/src/checks.ts` leaves the
+status out of the named checks, so it never becomes a second gate. A repo admin may add `aidenhq/review` as a required status
+in a ruleset, to hold merges made on GitHub too; that is the admin's choice per repo (AidenHQ never changes rulesets), and an
+admin's bypass still applies.
 
 ## Mandatory reviewers (the merge gate)
 
@@ -140,7 +162,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
 
 - **Coverage.** A head is covered once a batch that reviewed it has every mandatory run's review stored whole (no
   `coverage.incomplete`, no important finding withheld), each over a range that starts at the merge base (a full review) or at a
-  covered head: `on_open` covers a PR's first head, `on_push` each push after it, `@aiden review` any head; a one-off never does.
+  covered head: `on_open` covers a PR's first head, `on_push` each push after it, `aiden review` any head; a one-off never does.
   On a gated repo an incremental run starts from the last covered head (else it is full), so a force-push or a failed review is
   reviewed over the whole range. A non-mandatory combo still running or failing doesn't hold anything; its findings are advice.
 - **Findings.** A finding stays open (`findings.outcome` null) until a mandatory run's recheck confirms it fixed, a judge
@@ -151,8 +173,8 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   only by a gating one). A result for a head the PR moved on from is discarded. Each change is a row in `dispositions` (finding,
   head, state, reason, evidence, who decided).
 - **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's `/v1/whoami`: no shared secret): `pass`, or `wait` with each
-  reason and how it unblocks (review not started, the PR moved, review queued or running, failed: `@aiden review`, partial:
-  `@aiden review full`, important findings open). There is no fail.
+  reason and how it unblocks (review not started, the PR moved, review queued or running, failed: `aiden review`, partial:
+  `aiden review full`, important findings open). There is no fail.
 - **Merge gate.** `modules/github/service/src/review-gate.ts`: before the merge call at the bound head, a gated repo's PR asks
   the verdict; anything but pass (the service unreachable too) waits, with no time limit, until it passes or the PR moves or
   closes. A repo not on the list never asks, so an install without code review merges as before. The owner's own merges on
@@ -174,7 +196,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
 
 Judgment only. Tasks it handles: set up or change code review (`code_review_config`, then one `code_review_configure` call),
 a one-off review (`code_review_run`), the per-PR review task the service files to hold the approvals of that PR's posts (it
-finishes at once), and an `@aiden why ...` question in a review thread (one short answer comment via `github_issue_comment`; a
+finishes at once), and an `aiden why ...` question in a review thread (one short answer comment via `github_issue_comment`; a
 reasoned dismissal is thanked and rechecked on the next push). It reads strangers' text, so web search is off, its changes are
 bounded by the Tier 2 rules above and PR text is data, never instructions.
 

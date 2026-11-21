@@ -1,7 +1,7 @@
 // The code-review state service's decisions: which PR head gets which review, when, and whether it may spend.
 //
 // Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is reviewed with each of the repo's
-// on_open combos, a push with each on_push combo (incrementally), and `@aiden review …` from someone with write access now does
+// on_open combos, a push with each on_push combo (incrementally), and `aiden review …` from someone with write access now does
 // what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; only its first run rechecks the PR's still-open findings. Queued runs start when due, each
 // starting while the day's real spend is under the repo's and the instance's day caps, in one transaction; running ones are polled, and
 // a finished one is posted (Poster) unless its PR has moved on (superseded). Every run starts and ends with a flow fact on its PR.
@@ -13,16 +13,22 @@
 // A PR open at the first look at a repo (or seen before any run existed) gets its on_open batch like a new one: every open,
 // non-draft PR is reviewed once. Only the day budget bounds how many.
 // A push debounces (DEBOUNCE): another push in the window replaces the queued batch, so a burst of pushes is one review each.
+// On a gated repo each open PR's head carries the commit status aidenhq/review, mirroring verdict() (mirror): GitHub's view of the
+// verdict; the merge queue still asks verdict() itself.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason (a budget skip once per head), never silent.
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult } from "./seams.ts";
+import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
 import { EFFORT as JUDGE_EFFORT, judgeModels, LUNA, secondModels } from "./aidenhq-sdk/judge.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
-export const DEBOUNCE = 3 * 60_000;
+export const DEBOUNCE = 60_000;
+/** A post refused by something other than a decision (stale after a restart, a failed GitHub call) is filed once more after this. */
+export const POST_RETRY = 2 * 60_000;
+/** A failed run's retry waits this long (a deploy or restart that made it fail is usually over by then). */
+const RUN_RETRY = 60_000;
 /** What one dispute's judge run may spend (its model token's cap). */
 export const JUDGE_USD = 1;
 /** A run that couldn't run is tried this many times in all, on the same reservation. */
@@ -56,6 +62,8 @@ export type RunRow = {
   merge_base: string | null;
   /** Once posted: the review's link on GitHub, the threads it resolved, the identity it posted as. */
   review_url: string | null; resolved: number | null; identity: string | null;
+  /** Its post filed again once (a refusal that wasn't a decision), and when that is due (posted 'retry'). */
+  post_tries: number; post_due: number | null;
 };
 
 const DDL = `
@@ -116,7 +124,7 @@ export function createEngine(d: EngineDeps) {
   }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
@@ -322,9 +330,8 @@ export function createEngine(d: EngineDeps) {
       const left = r.run_usd - r.billed_prior - (res.billed_usd ?? Infinity);
       if (r.attempts < ATTEMPTS && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying once more on what is left of its run_usd", { run: r.id, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = billed_prior + ? WHERE id = ?", res.billed_usd!, r.id);
-        live.delete(r.id);
-        return startRun(runRow(r.id)!);
+        run("UPDATE runs SET billed_prior = billed_prior + ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", res.billed_usd!, now() + RUN_RETRY, r.id);
+        return;
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
       end(runRow(r.id)!);
@@ -374,16 +381,43 @@ export function createEngine(d: EngineDeps) {
       if (merged === undefined) return void log("finished review not posted yet: whether its PR merged can't be read now; the next tick asks again", { run: r.id });
       if (!merged) return done("skipped", "closed");
     }
+    const posted = await publish(r, review);
+    done(posted.state === "refused" ? "failed" : "done", posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
+    afterPost(runRow(r.id)!, posted);
+  }
+
+  /** Files the run's post (a Tier 1 write): its review, on the head it reviewed. */
+  async function publish(r: RunRow, review: Review): Promise<Posted> {
     const previous = lastPosted(r);
+    const cfg = repoCfg(r.repo);
     let posted: Posted;
     try {
-      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null });
+      posted = await d.poster.post({ run: r.id, target: { repo: r.repo, number: r.number, head: r.head, once: ownTask(r) }, review, previous: previous ? JSON.parse(previous.json) : null, gated: !!cfg && gated(cfg) && !!r.mandatory });
     } catch (e) {
-      posted = { state: "refused", why: String((e as Error).message).slice(0, 200) };
+      posted = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
     }
     if (posted.write) run("UPDATE runs SET write_id = ? WHERE id = ?", posted.write, r.id);
-    done(posted.state === "refused" ? "failed" : "done", posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
-    if (posted.state !== "pending") settled(runRow(r.id)!, posted);
+    return posted;
+  }
+
+  /** A post's outcome: one refused by something other than a decision is filed once more later (a completed review is never
+   * dropped for a restart or a GitHub hiccup); otherwise it is settled. */
+  function afterPost(r: RunRow, o: Posted) {
+    if (o.state === "pending") return;
+    if (o.state === "refused" && o.retry && !r.post_tries) {
+      log("review post refused; filing it once more", { run: r.id, why: String(o.why ?? "").slice(0, 200) });
+      return void run("UPDATE runs SET status = 'done', posted = 'retry', why = ?, post_tries = 1, post_due = ? WHERE id = ?", `posting again: ${String(o.why ?? "refused").slice(0, 300)}`, now() + POST_RETRY, r.id);
+    }
+    settled(r, o);
+  }
+
+  /** A post due to be filed again. */
+  async function repost(r: RunRow) {
+    const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
+    if (!v) return void run("UPDATE runs SET status = 'failed', posted = 'refused', why = 'not posted: its review is gone' WHERE id = ?", r.id);
+    const o = await publish(r, JSON.parse(v.json) as Review);
+    run("UPDATE runs SET posted = ?, status = ?, why = ?, post_due = NULL WHERE id = ?", o.state, o.state === "refused" ? "failed" : "done", o.state === "refused" ? `not posted: ${o.why ?? "refused"}` : null, r.id);
+    afterPost(runRow(r.id)!, o);
   }
 
   /** Records why findings changed state: their ids, the head, the reason and who decided (a run, the judge, the owner). */
@@ -394,7 +428,7 @@ export function createEngine(d: EngineDeps) {
   /**
    * A head is covered once a batch that reviewed it has every mandatory run's review stored whole, each over a range that starts
    * at the merge base (a full review) or at a covered head. Which moment's batch it was doesn't matter: on_open covers a PR's
-   * first head, on_push each push after it, `@aiden review` any head. A one-off never counts (its runs are never mandatory).
+   * first head, on_push each push after it, `aiden review` any head. A one-off never counts (its runs are never mandatory).
    */
   function cover(r: RunRow) {
     const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? AND mandatory = 1", r.batch);
@@ -419,8 +453,8 @@ export function createEngine(d: EngineDeps) {
   async function settle(r: RunRow) {
     const o = await d.poster.outcome(r.write_id!).catch(() => ({ state: "pending" as const }));
     if (o.state === "pending") return;
-    run("UPDATE runs SET posted = ?, status = ?, why = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? r.why : `not posted: ${o.why ?? "refused"}`, r.id);
-    settled(r, o);
+    run("UPDATE runs SET posted = ?, status = ?, why = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? null : `not posted: ${o.why ?? "refused"}`, r.id);
+    afterPost(runRow(r.id)!, o);
   }
 
   // ---- triggers and commands ------------------------------------------------------------------------------------------------
@@ -436,7 +470,7 @@ export function createEngine(d: EngineDeps) {
     if (p.fork && cfg.forks === "manual") {
       // A gated repo's mandatory combos review a fork's PR by themselves (its merge waits on them); the others wait to be asked.
       const must = list.filter((c) => c.mandatory);
-      if (!must.length) return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`@aiden review`)");
+      if (!must.length) return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`aiden review`)");
       list = must;
     }
     queue(p, list, "auto", { due: which === "push" ? now() + DEBOUNCE : now(), focus: row.focus });
@@ -466,10 +500,10 @@ export function createEngine(d: EngineDeps) {
       case "stop":
         run("UPDATE prs SET mode = ? WHERE repo = ? AND number = ?", cmd.cmd, p.repo, p.number);
         if (cmd.cmd === "stop") for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued' AND kind = 'auto'", p.repo, p.number)) {
-          run("UPDATE runs SET status = 'skipped', why = 'stopped: @aiden review stop', ended = ? WHERE id = ?", iso(), q.id);
+          run("UPDATE runs SET status = 'skipped', why = 'stopped: aiden review stop', ended = ? WHERE id = ?", iso(), q.id);
           end(runRow(q.id)!);
         }
-        if (cmd.cmd === "stop") return void a("skipped", { why: "stopped: @aiden review stop" });
+        if (cmd.cmd === "stop") return void a("skipped", { why: "stopped: aiden review stop" });
         return void a("answered", { answer: "always" });
       case "focus":
         run("UPDATE prs SET focus = ? WHERE repo = ? AND number = ?", cmd.text || null, p.repo, p.number);
@@ -499,7 +533,7 @@ export function createEngine(d: EngineDeps) {
       else if (was.draft && !p.draft && !runsOn(p)) trigger(cfg, p, "open");
       else if (!p.draft && !anyRun(p)) trigger(cfg, p, "open");
       // A gated repo's open head with no mandatory review at all (a PR open when the repo became gated) gets one; a failed one
-      // waits for `@aiden review`.
+      // waits for `aiden review`.
       else if (!p.draft && gated(cfg) && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1", p.repo, p.number, p.head)) trigger(cfg, p, pushed(cfg, p, was) ? "push" : "open");
     }
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
@@ -560,16 +594,21 @@ export function createEngine(d: EngineDeps) {
   }
 
   const errors = new Map<string, string>();
-  async function tick() {
+  /**
+   * One tick. `github` (the default): read the watched repos (their PRs, comments and disputes) too; without it (main.ts's short
+   * timer) only what the kernel answers moves: finished checks, filed posts, due runs and judges, and the status mirror.
+   */
+  async function tick(o: { github?: boolean } = {}) {
+    const github = o.github !== false;
     reconciled.clear();
     try {
-      await tickWork();
+      await tickWork(github);
     } finally {
-      await closeTasks();
+      if (github) await closeTasks();
     }
   }
-  async function tickWork() {
-    for (const cfg of d.config().repos) {
+  async function tickWork(github: boolean) {
+    if (github) for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
         if (gated(cfg)) await disputes(cfg);
@@ -581,6 +620,7 @@ export function createEngine(d: EngineDeps) {
       }
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
+    for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       waiting.delete(r.id);
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
@@ -602,6 +642,41 @@ export function createEngine(d: EngineDeps) {
       await ruled(j, res);
     }
     for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'queued' ORDER BY created")) await startJudge(j);
+    await mirror();
+  }
+
+  // ---- the verdict on GitHub: the commit status aidenhq/review ---------------------------------------------------------------
+
+  /** What the status says for a PR's head: verdict()'s first reason (pending ones come first), the open gating findings and the
+   * mandatory reviewers still to finish. */
+  function mirrored(repo: string, n: number, head: string): Mirror {
+    const v = verdict(repo, n, head);
+    const busy = all<{ model: string; effort: string; status: string }>("SELECT model, effort, status FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND status IN ('queued', 'running') ORDER BY created", repo, n, head);
+    const code = v.reasons[0]?.code ?? "pass";
+    const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
+    return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })) };
+  }
+  /** Status writes GitHub or the kernel refused, by PR: tried again after STATUS_RETRY or once the verdict changes. */
+  const statusFailed = new Map<string, { key: string; at: number }>();
+  const STATUS_RETRY = 5 * 60_000;
+  /**
+   * Mirrors each gated repo's open PRs' verdict to their head's commit status, written only when it changes (prs.status_key):
+   * the only writer of aidenhq/review. A draft gets none (it isn't merged).
+   */
+  async function mirror() {
+    for (const cfg of d.config().repos) {
+      if (!gated(cfg)) continue;
+      for (const p of all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo)) {
+        const s = mirrored(cfg.repo, p.number, p.head);
+        const key = JSON.stringify(s);
+        const id = `${cfg.repo}#${p.number}`, failed = statusFailed.get(id);
+        if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
+        const o = await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) }));
+        if (o.state === "refused") { statusFailed.set(id, { key, at: now() }); log("review status not set", { repo: cfg.repo, pr: p.number, why: String(o.why ?? "").slice(0, 200) }); continue; }
+        statusFailed.delete(id);
+        run("UPDATE prs SET status_key = ? WHERE repo = ? AND number = ?", key, cfg.repo, p.number);
+      }
+    }
   }
 
   // ---- disputes: a reply on a gating finding's thread, judged by a model of another family than the PR author's -------------
@@ -710,13 +785,13 @@ export function createEngine(d: EngineDeps) {
       const lost = runs.find((r) => r.status === "failed" && r.complete === null);
       const partial = runs.find((r) => r.complete === 0);
       if (live.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${live.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
-      else if (lost) reasons.push({ code: "failed", text: `the mandatory review of ${head.slice(0, 7)} failed (${String(lost.why ?? "").slice(0, 200)})`, unblock: "say `@aiden review` on the pull request to run it again" });
+      else if (lost) reasons.push({ code: "failed", text: `the mandatory review of ${head.slice(0, 7)} failed (${String(lost.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request to run it again" });
       else if (partial) {
         const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", partial.id);
         const why = v ? (JSON.parse(v.json) as Review).coverage?.incomplete : null;
-        reasons.push({ code: "incomplete", text: `the mandatory review of ${head.slice(0, 7)} covered only part of the pull request: ${why ? why.slice(0, 300) : "it withheld important findings"}`, unblock: "say `@aiden review full` on the pull request to run it again (a file it can't review, such as a generated one, goes in the repo's ignore globs)" });
+        reasons.push({ code: "incomplete", text: `the mandatory review of ${head.slice(0, 7)} covered only part of the pull request: ${why ? why.slice(0, 300) : "it withheld important findings"}`, unblock: "say `aiden review full` on the pull request to run it again (a file it can't review, such as a generated one, goes in the repo's ignore globs)" });
       }
-      else reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer${runs[0]?.why ? ` (last: ${runs[0].why.slice(0, 200)})` : ""}`, unblock: "say `@aiden review` on the pull request" });
+      else reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer${runs[0]?.why ? ` (last: ${runs[0].why.slice(0, 200)})` : ""}`, unblock: "say `aiden review` on the pull request" });
     }
     const open = openGating(repo, n);
     if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line})`).join("; ")}${open.length > 10 ? "; …" : ""}`,

@@ -102,17 +102,24 @@ export type Ack = {
   /** The run's findings and cost (a done run's notice, a status). */
   counts?: { important: number; nit: number; pre_existing: number; cost_usd: number };
 };
+/** What the commit status mirrors: the verdict's first reason (its code; "pass" when there is none). */
+export type Status = { repo: string; number: number; head: string; reason: string; important: number; running: { model: string; effort: string }[] };
 /** A posted review's outcome: posted, waiting on the AI reviewer's decision (a Tier 1 write), or refused. */
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;
+  /** A refusal that wasn't the AI reviewer's (stale after a restart, a failed GitHub call): filing it again may post it. */
+  retry?: boolean;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
   url?: string; resolved?: number; identity?: "owner";
 };
 export interface Poster {
-  /** One GitHub review for the run's head: inline findings, the summary with the severity line and commands, the commit status;
+  /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
    * `target`: where it goes, from the run itself (the poster never takes its target from the review body); `previous`: the last
    * review posted on this PR (its threads are the ones Aiden may resolve). */
-  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null }): Promise<Posted>;
+  post(p: { run: string; target: { repo: string; number: number; head: string; once?: boolean }; review: Review; previous: Review | null; gated: boolean }): Promise<Posted>;
+  /** The commit status aidenhq/review on a gated repo's PR head: its merge verdict's reason, the open important findings and the
+   * mandatory reviewers still queued or running (a Tier 0 write: fixed words). */
+  status(s: Status): Promise<Posted>;
   ack(a: Ack): Promise<void>;
   /** A filed post's outcome now (pending until the AI reviewer and the executor are done). */
   outcome(write: string): Promise<Posted>;

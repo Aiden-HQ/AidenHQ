@@ -38,3 +38,10 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });
   assert.deepEqual(JSON.parse(spec.previous), { findings: s.previous });
 });
+
+test("a check that failed before it got a box spent nothing, so its run retries; one that ran with no figure counts whole", async () => {
+  const { kernelRunner } = await import("../service/src/adapters.ts");
+  const runner = (v) => kernelRunner({ call: async () => v });
+  assert.deepEqual(await runner({ state: "failed", error: "github is unreachable", receipt: null, box_at: null, billed_usd: null }).result("c"), { state: "failed", why: "github is unreachable", billed_usd: 0 });
+  assert.equal((await runner({ state: "failed", error: "x", receipt: null, box_at: "2026-11-21T09:00:00Z", billed_usd: null }).result("c")).billed_usd, undefined);
+});
