@@ -21,8 +21,9 @@ function world(settings = {}) {
   const threads = new Map(), commits = new Map();
   const { db: _db, ...rest } = settings;
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
+  const db = settings.db ?? new DatabaseSync(":memory:");
   const engine = createEngine({
-    db: settings.db ?? new DatabaseSync(":memory:"),
+    db,
     config: () => cfg,
     now: () => t,
     source: {
@@ -53,7 +54,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { engine, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
+  return { db, engine, threads, commits, rulings, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
@@ -471,4 +472,21 @@ test("a judge is of no family any trailer on the PR's commits names (a forged on
   w.threads.set(2, [{ ours: true, finding: "f1", comment: 41, replies: [{ id: 51, author: "bob", body: "not a bug", ruling: false }] }]);
   await w.tick();
   assert.equal(w.started.at(-1).combo.model, "~z-ai/glm-flash-latest");
+});
+
+test("a PR open before its repo was gated gets its mandatory review; a fork's author can't start a judge", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [CODEX] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  // The owner marks the combos mandatory (the service restarts with the new setting, on the same data).
+  const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
+  g.pr(2, sha("2")); await g.tick();
+  assert.deepEqual(g.started.map((s) => [s.head, s.combo.effort]), [[sha("2"), "medium"]], "an open review: nothing was covered yet");
+
+  const f = gatedWorld();
+  await f.tick(); f.later(1000); f.pr(3, sha("3"), { fork: true, author: "outsider" }); await f.tick();
+  f.finish(0); await f.tick();
+  f.threads.set(3, [{ ours: true, finding: "f1", comment: 41, replies: [{ id: 60, author: "outsider", body: "not a bug", ruling: false }] }]);
+  await f.tick();
+  assert.equal(f.started.filter((s) => s.judge).length, 0);
 });

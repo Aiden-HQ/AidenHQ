@@ -498,6 +498,9 @@ export function createEngine(d: EngineDeps) {
       else if (was.head !== p.head) trigger(cfg, p, pushed(cfg, p, was) ? "push" : "open");
       else if (was.draft && !p.draft && !runsOn(p)) trigger(cfg, p, "open");
       else if (!p.draft && !anyRun(p)) trigger(cfg, p, "open");
+      // A gated repo's open head with no mandatory review at all (a PR open when the repo became gated) gets one; a failed one
+      // waits for `@aiden review`.
+      else if (!p.draft && gated(cfg) && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1", p.repo, p.number, p.head)) trigger(cfg, p, pushed(cfg, p, was) ? "push" : "open");
     }
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
@@ -607,11 +610,11 @@ export function createEngine(d: EngineDeps) {
     status: string; check_job: string | null; verdict: string | null; reason: string | null; cost_usd: number; created: string; ended: string | null; write_id: string | null };
   /**
    * A gated repo's open PRs with open gating findings: each new reply on Aiden's own thread for one of them, from the PR's author
-   * or someone with write access now, starts one judge (a stranger's reply is passed over; the owner can still dismiss on the
+   * (not a fork's: an outsider) or someone with write access now, starts one judge (a stranger's reply is passed over; the owner can still dismiss on the
    * board). Aiden's own rulings are never disputes. Each reply is handled once.
    */
   async function disputes(cfg: Repo) {
-    for (const p of all<{ number: number; author: string }>("SELECT number, author FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+    for (const p of all<{ number: number; author: string; fork: number }>("SELECT number, author, fork FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
       if (!open.size) continue;
       for (const t of await d.source.threads(cfg.repo, p.number)) {
@@ -620,7 +623,7 @@ export function createEngine(d: EngineDeps) {
           const key = `reply:${r.id}`;
           if (r.ruling || one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
           const who = r.author.toLowerCase();
-          const may = who === p.author || WRITERS.has(await d.source.permission(cfg.repo, r.author));
+          const may = (who === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author));
           // One judge per finding per head: once ruled at this head, a new dispute needs a new head (or the owner's Dismiss).
           const head = prRow(cfg.repo, p.number)?.head;
           const busy = one("SELECT 1 FROM judges WHERE repo = ? AND number = ? AND finding = ? AND (status IN ('queued', 'running') OR (status = 'done' AND head = ?))", cfg.repo, p.number, t.finding, head);
