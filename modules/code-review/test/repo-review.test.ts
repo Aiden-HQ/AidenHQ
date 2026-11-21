@@ -27,7 +27,9 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
     poster: {},
     codehost: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }), setupBranch: async () => branch.setup, setup: async (b) => (setups.push(b), { write: `w-${setups.length}` }) },
     catalog: () => CATALOG,
-    ...(primer ? { publisher: async (r) => (published.push(r), { documentId: "doc-1", version: published.length, url: "https://primer.example.com/d/doc-1" }) } : {}),
+    // Primer's publish record: approved on the next look, or refused (Primer not connected).
+    publisher: { file: async (r) => (published.push(r), primer ? { state: "pending", write: `p-${published.length}` } : { state: "refused", write: "p-x", why: "Primer isn't connected" }),
+      outcome: async (w) => ({ state: "done", write: w, documentId: "doc-1", version: Number(w.slice(2)), url: "https://primer.example.com/d/doc-1" }) },
   });
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
@@ -118,15 +120,15 @@ test("a second repo review of the repo adds a version to the same Primer documen
   const w = world();
   for (let i = 0; i < 2; i++) {
     await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks"] });
-    await w.tick(); w.finish(i); await w.tick();
+    await w.tick(); w.finish(i); await w.tick(); await w.tick();
   }
-  assert.deepEqual(w.published.map((p) => [p.title, p.documentId]), [["Repo review: acme/app", undefined], ["Repo review: acme/app", "doc-1"]]);
+  assert.deepEqual(w.published.map((p) => [p.title, p.documentId, p.versionNote]), [["Repo review: acme/app", undefined, `${sha("1").slice(0, 7)} 2026-11-22`], ["Repo review: acme/app", "doc-1", `${sha("1").slice(0, 7)} 2026-11-22`]]);
   assert.deepEqual([w.engine.batches({})[0].primer_url, w.engine.batches({})[0].report_url.endsWith("/report")], ["https://primer.example.com/d/doc-1", true]);
-  // Without Primer the report stays on the board, saying why.
+  // Primer refusing the record: the report stays on the board, saying why.
   const v = world({ primer: false });
   await v.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks"] });
   await v.tick(); v.finish(0); await v.tick();
-  assert.match(v.engine.batches({})[0].why, /Primer can.t be reached/);
+  assert.match(v.engine.batches({})[0].why, /not in Primer: Primer isn't connected/);
 });
 
 test("deepsec's set-up files are asked for once as a setup PR through the code host; while its branch exists runs scan with its files and nothing is asked again", async () => {
@@ -138,7 +140,7 @@ test("deepsec's set-up files are asked for once as a setup PR through the code h
   assert.deepEqual(w.setups.map((s) => [s.repo, s.branch, s.expected_tip, Object.keys(s.files)]), [[REPO, "aidenhq/deepsec-setup", null, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
   await review(); // asked for, not on the code host yet: not asked again within the day
   assert.equal(w.setups.length, 1);
-  w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app" } };
+  w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app", ".deepsec/package-lock.json": "{}" } };
   w.later(2 * 24 * 3600_000);
   await review(); // the branch exists (its PR pending or open): scanned with, never asked again
   assert.equal(w.setups.length, 1);
