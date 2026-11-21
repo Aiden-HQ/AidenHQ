@@ -250,7 +250,12 @@ export function createAdmin(d: Deps) {
   }
 
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(String(req.url ?? "/"), "http://x");
+    let url: URL;
+    try {
+      url = new URL(String(req.url ?? "/"), "http://x");
+    } catch {
+      return void res.writeHead(400, { "content-type": "text/plain" }).end("bad request");
+    }
     const host = String(req.headers.host ?? "").toLowerCase();
     try {
       if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");

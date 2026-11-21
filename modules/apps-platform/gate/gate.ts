@@ -274,6 +274,11 @@ export const originOf = (cfg: Pick<GateConfig, "origin">, host: string, site?: S
 const exactOrigin = (req: IncomingMessage, origin: string) => req.headers.origin === origin;
 
 /** Same-origin for a state-changing request or an upgrade: the exact origin of this host, else Sec-Fetch-Site. */
+function safeEqual(a: string, b: string) {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
 export function sameOrigin(req: IncomingMessage, origin: string) {
   const o = req.headers.origin;
   if (o !== undefined) return o === origin;
@@ -847,7 +852,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const clear = { "set-cookie": [STATE_CLEAR] };
     if (!code || code.length > 512 || !STATE.test(state)) return plain(res, 400, "bad request", clear);
     const mine = cookies(req).filter((c) => cookieName(c) === STATE_COOKIE).map((c) => c.slice(STATE_COOKIE.length + 1).trim());
-    if (mine.length !== 1 || mine[0]!.length !== state.length || !timingSafeEqual(Buffer.from(mine[0]!), Buffer.from(state))) {
+    if (mine.length !== 1 || !safeEqual(mine[0]!, state)) {
       log({ msg: "handoff refused", host: hostOf(req), why: "state mismatch" });
       // Over plain http a browser that keeps no Secure cookie there (Safari on localhost) never has one: say so.
       return plain(res, 403, cfg.origin?.scheme === "http" && !mine.length ? "Open this app in Chrome or Firefox. Safari doesn't keep the sign-in for apps on a local install." : "forbidden: this sign-in didn't start in this browser; open the app again", clear);
