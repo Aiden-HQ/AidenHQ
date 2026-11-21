@@ -162,12 +162,12 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   }
   // A jammed gate (a PR on code review, an approval card with the AI reviewer, an answered wait that never resumed) stays closed for
   // everyone while it is open, so two hours after it was raised the owner hears one fixed line, whether or not a task carried it.
-  // A gate someone is acting on is not jammed: its two hours restart from the last job or holder/Steward activity (`acting`).
+  // A gate someone is acting on is not jammed: its two hours restart from the last job or agent comment (`acting`).
   const jammed: [string, Open][] = [];
   if (stewardOn) for (const [key, o] of Object.entries(s.open)) {
     if (!JAMMED.test(key) || o.jammed || Date.parse(at) - Date.parse(o.at) <= GATE_ESCALATE_MS) continue;
     const task = /^(?:gate|unresumed):(.+)$/.exec(key)?.[1];
-    const last = task && acting ? await acting(task).catch(() => at) : undefined; // an unreadable task is not escalated this tick
+    const last = task && acting ? await acting(task).catch(() => undefined) : undefined; // an unreadable task has no known activity: the clock decides, as it did before activity counted
     if (Date.parse(at) - Math.max(Date.parse(o.at), Date.parse(last ?? "") || 0) > GATE_ESCALATE_MS) jammed.push([key, o]);
   }
   if (jammed.length && (await notify("A gate has been jammed for over two hours (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer) and the Fleet Steward has not cleared it. Ask Aiden to look at the fleet detector.").then(() => true, () => false))) for (const [, o] of jammed) o.jammed = true;
@@ -221,14 +221,14 @@ const GATE_ESCALATE_MS = 2 * HOUR_MS; // a jammed gate's flag still open this lo
 const JAMMED = /^(gate|unresumed|review-stall):/;
 const MAX_LOOKUPS = 20;
 /**
- * When a gate's task was last acted on, for tick's two-hour escalation: now while a job runs, is queued or is held on it (the kernel's
- * `job_running`, `job_queued`, `job_held`: its holder is working it), else the newest agent comment (its holder's or the Steward's;
+ * When a gate's task was last acted on, for tick's two-hour escalation: now while a job runs or is queued on it (the kernel's
+ * `job_running`, `job_queued`; a `job_held` capacity hold is QUEUE_MS's, not work), else the newest agent comment (any agent's;
  * the kernel's own markers don't count). Undefined when neither.
  */
 export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (task: string) => Promise<string | undefined> {
   return async (task) => {
     const row = ((await d.kernel.call("GET", `/v1/tasks/state?ids=${encodeURIComponent(task)}`)).tasks ?? [])[0] as StateRow | undefined;
-    if (row && ["job_running", "job_queued", "job_held"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
+    if (row && ["job_running", "job_queued"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
     const comments = (await d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`)) as CommentRow[];
     return comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)))?.createdAt;
   };
