@@ -2311,7 +2311,12 @@ export function createApp(opts: AppOptions): Server {
   }
 
   return createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://board");
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://board");
+    } catch {
+      return send(res, 400, "bad request", "text/plain");
+    }
     if (url.pathname === "/healthz") return send(res, 200, "ok", "text/plain");
     if (mode === "internal") {
       try {

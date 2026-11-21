@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { openAccounts, AccountError } from "../src/accounts.ts";
 import { createSignin } from "../src/signin.ts";
 import { PASSWORD, authApiServer, jsonBrowser, reqWith, silent, stepListener, totp } from "./auth-helpers.ts";
-import { serve } from "./helpers.ts";
+import { rawStatus, serve } from "./helpers.ts";
 
 const GATE_SECRET = "g".repeat(64);
 const HOST = { admin: "localhost:3120", gate: "127.0.0.1:3129", signin: "apps.example.com" };
@@ -76,6 +76,11 @@ test("a session opened on the admin listener: TOTP at sign-in, a code once", asy
   assert.equal((await b("POST", "/api/auth/two-factor/verify-totp", { code: totp(ownerUri, 1) })).status, 200);
   assert.equal((await sessionOf(b)).ready, true);
   assert.equal((await b("POST", "/api/auth/two-factor/verify-totp", { code: totp(ownerUri, -1), trustDevice: true })).status, 400);
+});
+
+test("the sign-in listener answers a request target the URL parser rejects with 400 and keeps serving", async () => {
+  for (const target of ["//[", "http://[::1", "//"]) assert.equal(await rawStatus(signin.url, target), 400, target);
+  assert.equal(await rawStatus(signin.url, "/healthz"), 200);
 });
 
 test("the sign-in listener serves no sign-in page, no Better Auth route of its own and no admin route; the operator key is not a session", async () => {

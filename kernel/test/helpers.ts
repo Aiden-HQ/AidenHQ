@@ -1,5 +1,6 @@
 // A kernel wired as main.ts wires it, against a fake control plane and module servers, in a temp dir.
 import http from "node:http";
+import net from "node:net";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -64,6 +65,8 @@ export function fakeBox(run) {
   };
 }
 export const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
+/** A raw GET with a request target `fetch` would refuse to send: the status line's code. */
+export const rawStatus = (url, target) => new Promise((r) => { const u = new URL(url); const c = net.connect(+u.port, u.hostname, () => c.write(`GET ${target} HTTP/1.1\r\nHost: ${u.host}\r\nConnection: close\r\n\r\n`)); let d = ""; c.on("data", (x) => (d += x)).on("close", () => r(+d.split(" ")[1])); });
 export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });
 
 /**

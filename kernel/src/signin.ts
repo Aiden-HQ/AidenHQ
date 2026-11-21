@@ -78,7 +78,12 @@ export function createSignin(o: { accounts: Accounts; hosts: string[]; gate: () 
   }
 
   return async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://signin");
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://signin");
+    } catch {
+      return text(res, 400, "bad request", "text/plain");
+    }
     const path = url.pathname;
     if (path === "/healthz") return text(res, 200, "ok", "text/plain");
     try {
