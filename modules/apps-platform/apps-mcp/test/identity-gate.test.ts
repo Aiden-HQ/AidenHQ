@@ -332,13 +332,14 @@ describe("identity gate", () => {
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 0])).toBe(true); // AuthenticationOk
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 3])).toBe(true); // cleartext password
     expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 5, 1, 2, 3, 4])).toBe(true); // MD5 with its salt
-    expect(await hard([0x52, 0, 0, 0, 14, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d, 0])).toBe(true); // SASL, mechanism list
+    expect(await hard([0x52, 0, 0, 0, 15, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d, 0, 0])).toBe(true); // SASL, mechanism list with its own terminator
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 99])).toBe(false); // a code PostgreSQL never sends
     expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 0, 1, 2, 3, 4])).toBe(false); // AuthenticationOk with a payload
     expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 3, 1, 2, 3, 4])).toBe(false); // cleartext with a payload
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 5])).toBe(false); // MD5 without its salt
     expect(await hard([0x52, 0, 0, 0, 11, 0, 0, 0, 5, 1, 2, 3])).toBe(false); // MD5 with a short salt
     expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d])).toBe(false); // SASL, unterminated list
+    expect(await hard([0x52, 0, 0, 0, 14, 0, 0, 0, 10, 0x53, 0x43, 0x52, 0x41, 0x4d, 0])).toBe(false); // SASL, one NUL, no list terminator
     expect(await hard([0x52, 0, 0, 0, 5, 0, 0, 0, 10, 0])).toBe(false); // SASL, an empty mechanism
     expect(await hard([0x52, 0, 0, 0, 12, 0, 0, 0, 11, 1, 2, 3, 4])).toBe(false); // a continuation code on a first reply
   }, 90_000);
@@ -358,15 +359,37 @@ describe("identity gate", () => {
 
   it.runIf(process.platform === "linux")("finds an HTTPS listener that serves only the app's name: the TLS hello carries SNI", async () => {
     // A listener that serves HTTPS only for a recognized hostname closes a hello without SNI. The probe offers the app's
-    // name, so such a port is still found and stays hard instead of passing as a database.
+    // name, so such a port is still found and stays hard instead of passing as a database. The server parses the
+    // ClientHello's SNI extension, so a malformed hostname length (one byte instead of two) is not read as the name.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
-    // Each probe opens its own connection: the HTTP GET, the SSLRequest then startup, and the TLS hello.
     const sniOnly = await tcp(`(s) => {
       let stage = 0, got = Buffer.alloc(0);
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
         if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
-          if (got.includes(Buffer.from("warehouse"))) s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
+          // Parse the ClientHello's SNI extension from its structure: record header (5), handshake header (4), version
+          // (2), random (32), session id (1 + n), cipher suites (2 + n), compression (1 + n), extensions (2 + n), then
+          // each extension's type (2) and length (2). Inside SNI (type 0): list length (2), name type (1), name length
+          // (2), name. A one-byte hostname length would land the name in the wrong place and read as a different host.
+          let host = "";
+          try {
+            let i = 5 + 4 + 2 + 32;
+            i += 1 + got[i]; // session id
+            i += 2 + got.readUInt16BE(i); // cipher suites
+            i += 1 + got[i]; // compression
+            const end = i + 2 + got.readUInt16BE(i);
+            i += 2;
+            while (i + 4 <= end) {
+              const type = got.readUInt16BE(i), len = got.readUInt16BE(i + 2);
+              const at = i + 4;
+              if (type === 0 && len >= 5) {
+                const nameLen = got.readUInt16BE(at + 3);
+                host = got.subarray(at + 5, at + 5 + nameLen).toString("ascii");
+              }
+              i = at + len;
+            }
+          } catch {}
+          if (host === "warehouse") s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
           else s.destroy();
           return;
         }
@@ -376,6 +399,30 @@ describe("identity gate", () => {
       });
     }`);
     const r = await scan(db, [sniOnly]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("finds an HTTPS listener that serves only its default route without SNI: both TLS hellos are tried", async () => {
+    // The other side of the same finding: a TLS router that serves its default endpoint when SNI is absent and silently
+    // closes an unknown name. A probe that only sends the named hello would miss it, so the unnamed hello is tried too.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const unnamed = await tcp(`(s) => {
+      let stage = 0, got = Buffer.alloc(0);
+      s.on("data", (d) => {
+        got = Buffer.concat([got, d]);
+        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+          const names = got.includes(Buffer.from("warehouse"));
+          if (names) s.destroy(); // an unknown name: close silently, as a strict router does
+          else s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // the default route answers TLS
+          return;
+        }
+        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
+        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+      });
+    }`);
+    const r = await scan(db, [unnamed]);
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);

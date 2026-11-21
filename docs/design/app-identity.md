@@ -84,12 +84,14 @@ probed the same way, and a socket that answers HTTP is still judged. A database 
 such an app's socket is identified positively as PostgreSQL: it must decline SSL and then answer a startup message with
 a complete, well-formed PostgreSQL protocol frame — a truncated header, a malformed body, an authentication code the
 protocol does not define or without the payload that code carries (AuthenticationOk, cleartext, GSS and SSPI carry none;
-MD5 a four-byte salt; SASL a non-empty mechanism list), or an error without its severity, SQLSTATE and message is not
-identification. An SSLRequest
+MD5 a four-byte salt; SASL a non-empty mechanism list, each name NUL-terminated and ended by a separate NUL), or an error
+without its severity, SQLSTATE and message is not identification. An SSLRequest
 reply alone is not enough — a TLS listener offers SSL too, and a multiprotocol listener could serve HTTPS on the same
-port — so a socket that offers SSL stays closed, and a socket identified as PostgreSQL is also sent a TLS hello naming
-the app (and its share host) in SNI: one that answers TLS is a web app and stays closed too. Only a socket identified as
-a database alone is skipped, with a non-hard finding; silence alone is never enough. On any other app, or for any socket
+port — so a socket that offers SSL stays closed, and a socket identified as PostgreSQL is also sent a TLS hello both
+naming the app (and its share host) in SNI and without a name: a listener that serves HTTPS only for a recognized name
+answers the named hello, and a router that serves its default route when SNI is absent and closes an unknown name answers
+the unnamed one. Either answer means the port speaks TLS, so it is a web app and stays closed too. Only a socket identified
+as a database alone is skipped, with a non-hard finding; silence alone is never enough. On any other app, or for any socket
 not identified that way, the same silence — `closed`, `silent` — fails closed.
 
 ## Agents (app_api, app_view)

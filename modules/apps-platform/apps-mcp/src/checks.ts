@@ -310,9 +310,13 @@ const pgFrame = (b) => {
     if ([0, 3, 7, 9].includes(code)) return rest.length === 0 ? "postgres" : "invalid";
     if (code === 5) return rest.length === 4 ? "postgres" : "invalid";
     if (code === 10) {
-      if (rest.length < 3 || rest[rest.length - 1] !== 0) return "invalid";
+      // The mechanism list is each name followed by a NUL, then a separate NUL ending the list: SCRAM-SHA-256\0\0. Require
+      // that list terminator (so the byte before it is a name's NUL), trim it, split on the name terminators and drop the
+      // empty element it leaves, and refuse an empty name. A list without its separate terminator is not identification.
+      if (rest.length < 4 || rest[rest.length - 1] !== 0 || rest[rest.length - 2] !== 0) return "invalid";
       const names = rest.subarray(0, rest.length - 1).toString("latin1").split("\0");
-      return names.every((n) => n.length > 0) ? "postgres" : "invalid";
+      if (names[names.length - 1] === "") names.pop();
+      return names.length > 0 && names.every((n) => n.length > 0) ? "postgres" : "invalid";
     }
     return "invalid";
   }
@@ -359,13 +363,14 @@ const postgres = (host, port) => new Promise((done) => {
 // A multiplexer can serve PostgreSQL and HTTPS on one port: the plaintext probes never see that HTTP, so a socket identified as
 // PostgreSQL gets a TLS ClientHello as well. A TLS record back (a handshake, or the alert of an HTTPS server that rejects this
 // hello) means the port speaks TLS too, so it could be HTTP and stays hard. The hello is hand-built: no certificate is needed
-// to see the answer, only its record header. It names the app (and any share host) in SNI, so a listener that serves HTTPS
-// only for a recognized name still answers instead of closing the connection.
+// to see the answer, only its record header. A listener that serves HTTPS only for a recognized name needs the hello to name
+// the app (and any share host) in SNI, but a router that serves its default endpoint when SNI is absent and silently closes
+// an unknown name only answers a hello without SNI, so both are tried and either answer keeps the socket hard.
 const hello = (names) => {
   const ext = [];
   const list = names.filter((n) => n.length <= 255).map((n) => Buffer.from(n, "ascii"));
   if (list.length) {
-    const entry = (n) => Buffer.concat([Buffer.from([0]), Buffer.from([n.length]), n]);
+    const entry = (n) => Buffer.concat([Buffer.from([0]), Buffer.from([n.length >> 8, n.length & 255]), n]);
     const body = Buffer.concat(list.map(entry));
     ext.push(Buffer.from([0, 0, (body.length + 2) >> 8, (body.length + 2) & 255, body.length >> 8, body.length & 255]), body);
   }
@@ -450,7 +455,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       let seen = look;
       if (r.postgresProbe && (look === "closed" || look === "silent")) {
         seen = (await postgres(k.host, k.port)) || look;
-        if (seen === "postgres" && (await tls(k.host, k.port, r.sni ?? []))) seen = "https";
+        // Both a named and an unnamed hello: a TLS router may only answer its default route without SNI or only the app's
+        // name with it, and either answer means the port could serve HTTPS.
+        if (seen === "postgres" && ((await tls(k.host, k.port, r.sni ?? [])) || (await tls(k.host, k.port, [])))) seen = "https";
       }
       out.push({ ...k, statuses, raw: seen });
     }
