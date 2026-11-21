@@ -1,6 +1,6 @@
 ---
 name: fleet-check
-description: A detector check - find the cause of each open fleet incident (stuck, failing or looping runs, reviewer-rejection loops, unclosed work, a capacity queue beside idle computers, a card stuck with the AI reviewer, a silent front door, sources and apps down, alerts, stale PRs, health flags), nudge or route the fix once, report product bugs through the Maintainer, and tell the owner only what needs them.
+description: A detector check - find the cause of each open fleet incident (stuck, failing or looping runs, reviewer-rejection loops, unclosed work, a capacity queue beside idle computers, a card stuck with the AI reviewer, a PR held on code review with nobody reviewing it, an answered wait that never resumed, a silent front door, sources and apps down, alerts, stale PRs, health flags), nudge or route the fix once, report product bugs through the Maintainer, and tell the owner only what needs them.
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -141,7 +141,7 @@ request open over an hour without merging) or something recovered.
   say when the last went): one `notify` (`kind: fyi`) with the card's title (`fleet_status` `approvals`), how long it has
   waited and your recommended default for them to tap. Log `reminder · <card> · <time>`. Silence never approves a card, and
   the owner decides it.
-- **Stuck work the detector names** (`unstarted:<task>`, `deadlock:<key>`, `pingpong:<task>`, `duplicate:<hash>`, `queue:<agent>`, `review-stall:<card>`): read the
+- **Stuck work the detector names** (`unstarted:<task>`, `deadlock:<key>`, `pingpong:<task>`, `duplicate:<hash>`, `queue:<agent>`, `review-stall:<card>`, `gate:<task>`, `unresumed:<task>`): read the
   tasks and their comments, then act once.
   - `unstarted`: a delegated task nobody ran in an hour: comment once on it (waking its agent) with what is asked; if its
     agent is paused or missing, tell the delegator's task. When `queue:<agent>` is open for that agent, the task waits on that
@@ -164,7 +164,18 @@ request open over an hour without merging) or something recovered.
     apply or a restart). Its reason names the card, its task and its age. This is a product defect (the reviewer path), not
     agent work: report it once through the product-bug path (slug `review-stall`) with the card id, its kind, its age and the
     last apply from `fleet_generation_status` as the evidence. The card and the agent waiting on it stay as they are.
-  - For either, a stall still open a day after the report is told to the owner once, as "When to tell the owner" says.
+  - `gate:<task>`: the merge queue has held the task's PR for code review's verdict over 30 minutes with no review run open and
+    no job on the task, so the verdict will not change by itself. Read the PR's reviews and the code review posts' cards
+    (`task_approvals` on the Reviewer Manager's task for that PR, `app_view`) to see which step stopped: a post card refused
+    or parked, a run never queued, a finding nobody can resolve. Fix it at its source: a rule or settings change through the
+    Engineer or the Reviewer Manager, or the product-bug path (slug `review-gate-stall`) with the verdict text, the card ids
+    and the last apply from `fleet_generation_status` as the evidence.
+  - `unresumed:<task>`: the wait's answer is on the task (its reason names how long ago) and nothing resumed the task. Comment
+    once on the task, naming the answering comment and what is asked next, so its holder wakes; a task that still does not
+    resume is a product bug (slug `answered-wait`) with the task, the wait's start and the answering comment's time.
+  - For `queue` and `review-stall`, a stall still open a day after the report is told to the owner once, as "When to tell the
+    owner" says. A `gate`, `unresumed` or `review-stall` flag that jams work (a card or a PR no agent can move) is told once
+    after two hours, since the gate is closed meanwhile.
 - **Hard cases** (two causes equally likely, or a fix touching more than one agent): don't guess. Log it with `deep-look`
   and what you checked; the evening digest takes a second look. If it is on the alert list, alert the owner now anyway.
 
@@ -176,7 +187,7 @@ request open over an hour without merging) or something recovered.
 - a service or source down over 15 minutes, or anything that needs the owner's sign-in or setup;
 - a reviewer-rejection loop or a repeated failure your wake didn't resolve, the front door being silent, or an unclosed task whose
   next step is the owner's (a waiver, spend or a Tier 2 card): each with a recommended default and what you did;
-- a `queue` or `review-stall` flag still open a day after its product-bug report, with the report's task and what is waiting;
+- a `queue` flag still open a day after its product-bug report, or a `gate`, `unresumed` or `review-stall` flag open two hours after it, with the report's task and what is waiting;
 - a security or data-loss signal (a secret in a comment or log, data deleted, an agent acting outside its grants).
 
 One message, plain words: what is wrong, since when, what you did, what you need from them. Everything else waits for

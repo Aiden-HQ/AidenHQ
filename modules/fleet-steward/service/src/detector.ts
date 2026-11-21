@@ -203,9 +203,11 @@ const PING_PONG = { n: 5, spanMs: 12 * HOUR_MS }; // runs of one task that alter
 const CARD_WAIT_MS = DAY_MS; // a Tier 2 card waiting on the owner this long gets the Steward's one reminder a day
 const QUEUE_MS = HOUR_MS; // an agent's tasks held on capacity this long (the oldest hold), while computers sit idle
 const REVIEW_STALL_MS = 15 * MIN; // a card with the AI reviewer, undecided this long (a review normally takes seconds to a few minutes)
+const REVIEW_GATE_MS = 30 * MIN; // a PR the merge queue holds for code review's verdict, with no review run open and no job on the task, this long
+const UNRESUMED_MS = HOUR_MS; // a task still waiting on an answer that arrived this long ago
 const MAX_LOOKUPS = 20;
 /** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
-type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string }[]; idle_wakes: number; wait_since?: string };
+type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string; ref?: string }[]; idle_wakes: number; wait_since?: string; stage?: string };
 /** Idle with nothing recorded to wake it, a wake nothing took, or its history pruned: the state's unexplained idle. */
 const UNEXPLAINED = ["unpolled", "orphaned", "unknown", "history_expired"];
 type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
@@ -229,6 +231,35 @@ export function mergeDeadlocks(rows: StateRow[], t: number): { key: string; reas
       if (n.reason !== "blocked" || ring.includes(n.identifier ?? n.task)) break;
       ring.push(n.identifier ?? n.task);
     }
+  }
+  return out;
+}
+
+/**
+ * Tasks the merge queue holds for code review's verdict (a `module_wait` whose reason is `code_review`) with no review run open
+ * (the kernel row has no stage: code review's review.started has no review.ended) and no job running on the task, over
+ * REVIEW_GATE_MS: the verdict is not going to change by itself (a post parked, a run never queued).
+ */
+export function reviewGateStalls(rows: StateRow[], t: number): { key: string; reason: string }[] {
+  return rows
+    .filter((r) => r.reason === "module_wait" && r.ref === "code_review" && !r.stage && age(r.since, t) > REVIEW_GATE_MS)
+    .map((r) => ({ key: r.task, reason: `task ${r.identifier ?? r.task}: its PR has waited ${mins(age(r.since, t))} on code review's verdict with no review run open and no job on the task` }));
+}
+
+/**
+ * Tasks whose open owner or delegator wait (the task_wait fact: ref `wait:<task>`) has a comment that ends it by the kernel's own rule
+ * (task-state.ts: the owner's typed words, or anyone but the holder and the kernel) newer than the wait, for over UNRESUMED_MS: the
+ * answer came and nothing resumed the task. `comments` reads a task's comments, newest first; unreadable counts as not answered.
+ */
+export async function unresumedWaits(rows: StateRow[], t: number, comments: (task: string) => Promise<CommentRow[]>): Promise<{ key: string; reason: string }[]> {
+  const out: { key: string; reason: string }[] = [];
+  let looked = 0;
+  for (const r of rows) {
+    const w = r.attention.find((a) => (a.why === "owner_wait" || a.why === "delegator_wait") && a.ref?.startsWith("wait:"));
+    const since = r.wait_since ?? r.since;
+    if (!w || age(since, t) <= UNRESUMED_MS || exempt({ identifier: r.identifier, originKind: null }) || looked++ >= MAX_LOOKUPS) continue;
+    const answer = (await comments(r.task).catch(() => [])).find((c) => !c.deletedAt && Date.parse(c.createdAt) > Date.parse(since) && !/<!-- aidenhq-/.test(String(c.body)) && (w.why === "owner_wait" ? ownerWords(c) : c.authorAgentId !== r.holder));
+    if (answer) out.push({ key: r.task, reason: `task ${r.identifier ?? r.task} has not resumed ${mins(age(answer.createdAt, t))} after its ${w.why === "owner_wait" ? "owner's" : "delegator's"} answer arrived (the wait began ${mins(age(since, t))} ago)` });
   }
   return out;
 }
@@ -583,6 +614,15 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
         else out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} idle for ${mins(age(i.since, t))} with nothing running, filed or waiting on it (${slug(i.reason)})` });
       }
       return out;
+    },
+    // A PR held for code review's verdict with nobody reviewing it: the merge gate's own jam (a post parked, a run never queued).
+    async gate() {
+      return reviewGateStalls((await openStates()).filter((i) => !exempt({ identifier: i.identifier, originKind: null })), now());
+    },
+    // An answered owner or delegator wait the kernel has not resumed: the answer is on the task, the work is not moving.
+    async unresumed() {
+      const read = (task: string) => d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>;
+      return unresumedWaits(await openStates(), now(), read);
     },
     // Observe mode (docs/design/flow.md): a stage that got slower week over week is logged as what it would file; nothing is filed until promoted.
     async flow() {

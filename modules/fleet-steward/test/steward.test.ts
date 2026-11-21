@@ -532,6 +532,32 @@ test("a capacity queue over an hour fires only while computers sit idle; a revie
   assert.match(s[0].reason, /card c1 \(github-merge\) on task wor-1 has been with the AI reviewer for 90 min/);
 });
 
+test("a PR held for code review with no review run fires after 30 minutes; an answered owner or delegator wait that never resumed fires after an hour", async () => {
+  const row = (task, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(45), reason: "module_wait", ref: "code_review", holder: "a1", attention: [], idle_wakes: 0, ...o });
+  const mk = (rows, comments = {}) => {
+    const w = world({ tasks: {}, records: [] });
+    const call = w.call, read = w.read;
+    w.call = async (m, p) => (p.startsWith("/v1/tasks/state?open=1") ? { tasks: rows } : call(m, p));
+    w.read = async (p) => { const m = /^\/api\/issues\/(\w+)\/comments/.exec(p); return m ? comments[m[1]] ?? [] : read(p); };
+    return detect(w);
+  };
+  const gated = await mk([row("a"), row("b", { stage: "Code review" }), row("c", { since: minsAgo(10) }), row("d", { ref: "checks" })]).gate();
+  assert.deepEqual(gated.map((i) => i.key), ["a"]);
+  assert.match(gated[0].reason, /WOR-A: its PR has waited 45 min on code review's verdict/);
+
+  const wait = (task, why, o = {}) => ({ task, identifier: `WOR-${task.toUpperCase()}`, since: minsAgo(120), wait_since: minsAgo(120), reason: why, holder: "a1", attention: [{ who: "x", why, ref: `wait:${task}` }], idle_wakes: 0, ...o });
+  const owner = { authorType: "user", body: "Go ahead.", createdAt: minsAgo(90) };
+  const agent = { authorType: "agent", authorAgentId: "boss", body: "Do it.", createdAt: minsAgo(90) };
+  const found = await mk([wait("a", "owner_wait"), wait("b", "delegator_wait"), wait("c", "owner_wait"), wait("d", "delegator_wait"), wait("e", "owner_wait", { wait_since: minsAgo(30), since: minsAgo(30) }), wait("f", "delegator_wait", { attention: [{ who: "agent", why: "delegator_wait", ref: "task:f" }] })], {
+    a: [owner], b: [agent],
+    c: [{ ...owner, createdAt: minsAgo(150) }], // before the wait
+    d: [{ authorType: "agent", authorAgentId: "a1", body: "Waiting.", createdAt: minsAgo(90) }, { authorType: "user", body: "note <!-- aidenhq-approval -->", createdAt: minsAgo(80) }], // the holder's own and the kernel's
+    e: [owner], f: [agent], // too recent; a release, which comments don't end
+  }).unresumed();
+  assert.deepEqual(found.map((i) => i.key), ["a", "b"]);
+  assert.match(found[0].reason, /WOR-A has not resumed 90 min after its owner's answer arrived/);
+});
+
 test("quiet start: the detector still checks but files and notifies nothing until the Steward's digest routine is on", async () => {
   const routine = (status) => ({ read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : [{ title: "Fleet Ops: daily digest", status }]) });
   assert.equal(await stewardOn(routine("paused"), "on"), false);
