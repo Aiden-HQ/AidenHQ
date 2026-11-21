@@ -8,12 +8,19 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/vm/ufw-rules.sh");
+// A stand-in ufw as a shell function, sourced through BASH_ENV: no executable file, so no exec bit, PATH or temp-dir
+// mount can stop it running. It records each call; `status` prints the configured state and rules; `allow` fails on FAIL=1.
+const standIn = (dir: string) => {
+  const file = join(dir, "ufw.bash");
+  writeFileSync(file, 'ufw() {\n  printf \'%s\\n\' "$*" >> "$UFW_LOG"\n  case "$1" in\n    status) printf \'%s\\n\' "$UFW_STATE"; printf \'%s\\n\' "$UFW_RULES" ;;\n    allow) [ "${UFW_FAIL:-0}" = 1 ] && return 1; return 0 ;;\n  esac\n}\n');
+  return file;
+};
 const run = ({ mode, active = true, status = "", fail = false } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), "ufw-"));
   const log = join(dir, "calls.log");
-  // A stand-in ufw: records each call; `status` prints the configured rules (or is inactive); allow exits 1 when `fail`.
-  writeFileSync(join(dir, "ufw"), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\ncase "$1" in\n  status) printf '%s\\n' ${JSON.stringify(active ? "Status: active" : "Status: inactive")}; printf '%s\\n' ${JSON.stringify(status)} ;;\n  allow) ${fail ? "exit 1" : ":"} ;;\nesac\n`, { mode: 0o755 });
-  const out = execFileSync("bash", [script, mode], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { PATH: `${dir}:${process.env.PATH}` } });
+  writeFileSync(log, "");
+  const env = { ...process.env, BASH_ENV: standIn(dir), UFW_LOG: log, UFW_STATE: active ? "Status: active" : "Status: inactive", UFW_RULES: status, UFW_FAIL: fail ? "1" : "0" };
+  const out = execFileSync("bash", [script, mode], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env });
   const calls = readFileSync(log, "utf8").split("\n").filter((l) => l && !l.startsWith("status"));
   return { calls, out };
 };
@@ -57,9 +64,11 @@ test("ufw-rules: a rule already listed is not added again", () => {
 
 test("ufw-rules: a rule it can't add warns that sign-in will fail, with the commands", () => {
   const dir = mkdtempSync(join(tmpdir(), "ufw-"));
-  writeFileSync(join(dir, "ufw"), "#!/usr/bin/env bash\ncase \"$1\" in status) echo 'Status: active' ;; allow) echo 'ERROR: you need to be root' >&2; exit 1 ;; esac\n", { mode: 0o755 });
+  const log = join(dir, "calls.log");
+  writeFileSync(log, "");
   // Setup goes on (a firewall rule must not fail the install), but loudly: the board can't reach the kernel without it.
-  const r = spawnSync("bash", [script, "tailscale"], { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}` } });
+  const env = { ...process.env, BASH_ENV: standIn(dir), UFW_LOG: log, UFW_STATE: "Status: active", UFW_RULES: "", UFW_FAIL: "1" };
+  const r = spawnSync("bash", [script, "tailscale"], { encoding: "utf8", env });
   assert.equal(r.status, 0);
   assert.match(r.stderr, /cannot reach the kernel, and sign-in will fail/);
   assert.match(r.stderr, /ufw allow in on br\+ to 10\.231\.0\.1 port 3130 proto tcp/);
