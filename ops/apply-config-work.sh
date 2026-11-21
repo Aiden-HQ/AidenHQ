@@ -705,8 +705,10 @@ switchOver() {
   # Boot finishes an apply that died (ops/apply-config.sh --recover): installed and enabled, never started here.
   local rec="$HOME/.config/systemd/user/aidenhq-apply-recover.service"
   if ! cmp -s ops/units/aidenhq-apply-recover.service "$rec"; then
-    cp ops/units/aidenhq-apply-recover.service "$rec" && systemctl --user daemon-reload && systemctl --user enable --quiet aidenhq-apply-recover \
-      && echo "apply recovery unit installed/updated"
+    cp ops/units/aidenhq-apply-recover.service "$rec"
+    systemctl --user daemon-reload
+    systemctl --user enable --quiet aidenhq-apply-recover
+    echo "apply recovery unit installed/updated"
   fi
   # The computer launcher holds live run tokens in memory: restart it only when its code or its unit changed (running computers
   # get new tokens next run). Setup installed the unit once, so a changed unit (its ExecStart path) reaches the host here.
