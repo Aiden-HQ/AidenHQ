@@ -28,7 +28,10 @@ process.env.BOARD_MODULES_FILE = join(dir, "modules.json");
 
 const run: Run = { id: "r1", repo: "acme/payments", number: 42, head: "a".repeat(40), engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", status: "done", why: null, cost_usd: 0.4, tokens_in: 10, tokens_out: 5, duration_ms: 1000, full: false, incremental_from: null, posted: true, important: 1, nit: 2, pre_existing: 0, started: new Date().toISOString(), ended: new Date().toISOString(), resolved: 1 };
 const asked: unknown[] = [];
+const TREE = { target: { tree: true, repo: "acme/payments" }, options: ["sec.quick-scan"], combo: { model: "~deepseek/deepseek-flash-latest", effort: "medium" }, run_usd: 25 };
 const reviews = {
+  catalog: async (q: unknown) => (asked.push({ catalog: q }), { sha: "b".repeat(40), options: [] }),
+  runTree: async (b: unknown) => (asked.push({ tree: b }), { batch: "b1" }),
   list: async (q: unknown) => (asked.push(q), { runs: [run] }),
   run: async (b: unknown) => (asked.push(b), { runs: [run] }),
 } as unknown as Reviews;
@@ -43,7 +46,8 @@ const pc = {
 
 describe("the Reviews page's routes", () => {
   const records = fakeRecords();
-  const app = createApp({ paperclip: pc, store: new Store(":memory:"), records, reviews, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" }) });
+  let role: "admin" | "user" = "admin";
+  const app = createApp({ paperclip: pc, store: new Store(":memory:"), records, reviews, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role }) });
   let port = 0;
   beforeAll(async () => {
     await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
@@ -66,6 +70,18 @@ describe("the Reviews page's routes", () => {
     expect((await call("POST", "/api/reviews", { pr_url: "https://evil.example.com/acme/x/pull/1" })).status).toBe(400);
     expect((await call("POST", "/api/reviews", { pr_url: "https://github.com/acme/payments/pull/42", combos: [COMBO] })).status).toBe(200);
     expect(asked).toEqual([{ repo: "acme/payments", status: undefined, limit: 100 }, { pr_url: "https://github.com/acme/payments/pull/42", combos: [COMBO] }]);
+  });
+
+  it("proxies the repo-review catalog with its repo, and starts a tree review for admins only", async () => {
+    asked.length = 0;
+    expect((await call("GET", "/api/reviews/catalog?repo=acme/payments&commit=abc1234")).body.sha).toBe("b".repeat(40));
+    expect((await call("GET", "/api/reviews/catalog?repo=not-a-repo")).status).toBe(400);
+    expect((await call("POST", "/api/reviews", { ...TREE, run_usd: 151 })).status).toBe(400);
+    expect(await call("POST", "/api/reviews", TREE)).toMatchObject({ status: 200, body: { batch: "b1" } });
+    role = "user";
+    expect((await call("POST", "/api/reviews", TREE)).status).toBe(403);
+    role = "admin";
+    expect(asked).toEqual([{ catalog: { repo: "acme/payments", commit: "abc1234" } }, { tree: TREE }]);
   });
 
   it("files a watched repo as one settings change, and refuses the old reviewers and string-trigger shape", async () => {

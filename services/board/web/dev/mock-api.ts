@@ -189,11 +189,37 @@ const flows = () => ({
   ],
 });
 
+// The Reviews page: a watched repo, a PR run, two whole-repo batches, and the catalog a repo review offers.
+const REVIEW_COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 5 };
+const reviewRuns = () => [{ id: "cr-000000000001", repo: "acme/payments", number: 42, head: "a".repeat(40), engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", status: "done", why: null, cost_usd: 0.4, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, important: 1, nit: 2, pre_existing: 0, started: ago(30), ended: ago(28), full: false, incremental_from: null, posted: true, title: "Retry failed charges" }];
+const reviewBatches = () => [
+  { id: "b-000000000001", repo: "acme/payments", sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260) },
+  { id: "b-000000000002", repo: "acme/web", sha7: "9b0c7de", verdict: null, cost_usd: 1.2, status: "running", started: ago(4), ended: null },
+];
+const O = (id: string, lens: string, kind: string, recommended: boolean, runs_code: boolean, cost: string, repo: string, version: string, licence: string) => ({ id, lens, kind, recommended, runs_code, cost, source: { repo, version, licence } });
+const catalog = () => ({ sha: "4e1a9c2f0b7d".padEnd(40, "0"), options: [
+  O("correctness.model-review", "correctness", "engine", true, false, "medium", "aidenhq/code-review", "1.0.0", "MIT"),
+  O("correctness.tsc", "correctness", "tool", true, true, "low", "microsoft/typescript", "5.6.3", "Apache-2.0"),
+  O("sec.quick-scan", "security", "skill", true, false, "medium", "aidenhq/code-review", "1.0.0", "MIT"),
+  O("sec.semgrep", "security", "tool", true, false, "low", "semgrep/semgrep", "1.95.0", "LGPL-2.1"),
+  O("sec.deepsec", "security", "engine", false, true, "high", "vercel-labs/deepsec", "0.4.0", "Apache-2.0"),
+  O("maint.knip", "maintainability", "tool", true, false, "low", "webpro-nl/knip", "5.38.0", "ISC"),
+  O("maint.jscpd", "maintainability", "tool", false, false, "low", "kucherenko/jscpd", "4.0.5", "MIT"),
+  O("perf.linters", "performance", "tool", true, false, "low", "aidenhq/code-review", "1.0.0", "MIT"),
+] });
+const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
+
 function route(method: string, url: URL): [number, unknown] {
   const p = url.pathname;
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   const m = (re: RegExp) => re.exec(p);
   switch (p) {
+    case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200 }, problems: [] }];
+    case "/api/reviews": return [200, { runs: reviewRuns(), batches: reviewBatches() }];
+    case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2 }];
+    case "/api/reviews/engines": return [200, { engines: { codex: { label: "Codex", efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high"], models: ["~anthropic/claude-haiku-latest"], run_usd: 5 }, codegenie: { label: "Codegenie", efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", efforts: ["low", "medium"], models: ["~openai/gpt-sol-latest"], run_usd: 5 } } }];
+    case "/api/reviews/available": return [200, { repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }] }];
+    case "/api/reviews/catalog": return [200, catalog()];
     case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true }, googleConnect: true, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
     case "/api/board": return [200, board()];
     case "/api/welcome": return [200, welcome()];
@@ -227,6 +253,8 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/costs/features": return [200, { features: [], unattributed: { usd: 0, calls: 0 } }];
   }
   let x: RegExpExecArray | null;
+  if (m(/^\/api\/reviews\/report\/[\w-]+$/)) return [200, { markdown: REPORT }];
+  if (m(/^\/api\/reviews\/report\/[\w-]+$/)) return [200, { markdown: REPORT }];
   if ((x = m(/^\/api\/chats\/([^/]+)$/))) return [200, chatDetail(decodeURIComponent(x[1]!))];
   if ((x = m(/^\/api\/issues\/([^/]+)\/feature-cost$/))) return [200, { cost: null }];
   if ((x = m(/^\/api\/issues\/([^/]+)\/lineage$/))) return [200, lineage(decodeURIComponent(x[1]!))];

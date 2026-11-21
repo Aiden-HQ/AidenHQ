@@ -115,6 +115,50 @@ export interface Combo {
   /** Its review gates the repo's merges (a gated repo has one at both moments). */
   mandatory?: boolean;
 }
+/** The four lenses a repo review looks through, in the order the form lists them. */
+export const LENSES = ["correctness", "security", "maintainability", "performance"] as const;
+export type Lens = (typeof LENSES)[number];
+/** GET /catalog?repo=&commit=: what a repo review can run at that commit; `recommended` options come pre-ticked. */
+export interface CatalogOption {
+  id: string;
+  lens: Lens;
+  kind: "tool" | "skill" | "engine";
+  recommended: boolean;
+  runs_code: boolean;
+  cost: "low" | "medium" | "high";
+  source: { repo: string; version: string; licence: string };
+}
+export interface Catalog {
+  sha: string;
+  options: CatalogOption[];
+}
+/** A whole-repo (tree) review batch as GET /reviews lists it, next to the PR runs. */
+export type Verdict = "blocked" | "concerns" | "incomplete" | "clean";
+export interface TreeBatch {
+  id: string;
+  repo: string;
+  sha7: string;
+  verdict: Verdict | null;
+  cost_usd: number;
+  status: RunStatus;
+  why?: string | null;
+  started: string | null;
+  ended: string | null;
+  /** The report the service serves (GET /reviews/:batch/report) and, when published, its Primer document. */
+  report_url?: string;
+  primer_url?: string;
+}
+/** The run cap of a repo review: one shared cap over every option (default $25, most $150). */
+export const TREE_RUN_USD = { default: 25, min: 1, max: 150 };
+export const TreeRequestSchema = z
+  .object({
+    target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{7,40}$/i, "a commit is a hex SHA").optional() }).strict(),
+    options: z.array(z.string().regex(/^[\w.-]{1,64}$/)).min(1, "tick at least one option").max(60),
+    combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict(),
+    run_usd: z.number().min(TREE_RUN_USD.min).max(TREE_RUN_USD.max),
+  })
+  .strict();
+export type TreeRequest = z.infer<typeof TreeRequestSchema>;
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
 

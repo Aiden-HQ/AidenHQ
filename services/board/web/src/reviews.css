@@ -160,3 +160,28 @@
 .rv-sample figcaption { font-size: var(--text-xs); color: var(--faint); }
 .rv-stats .ui-card { align-content: start; }
 
+
+/* Repo review: a whole repo at a commit. Options sit in four lens columns; each lens keeps its own hue. */
+.rv-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+@media (max-width: 760px) { .rv-split { grid-template-columns: minmax(0, 1fr); } }
+.rv-loading-sm { min-height: 96px; }
+.rv-lenses { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.rv-lens { --lens: var(--accent); display: grid; align-content: start; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-top: 3px solid var(--lens); border-radius: var(--radius-md); background: var(--surface); }
+.rv-lens-correctness { --lens: var(--accent); }
+.rv-lens-security { --lens: var(--sev-important); }
+.rv-lens-maintainability { --lens: var(--sev-nit); }
+.rv-lens-performance { --lens: var(--sev-pre); }
+.rv-lens h4 { margin: 0; font-size: var(--text-md); font-weight: 650; }
+.rv-lens > p { margin: 0 0 4px; font-size: var(--text-xs); }
+.rv-lens-none { font-size: var(--text-sm); }
+.rv-opt { display: grid; align-items: start; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 2px; padding: 6px 4px; border-top: 1px solid var(--border); font-size: var(--text-sm); cursor: pointer; }
+.rv-opt input { accent-color: var(--lens); margin: 2px 0 0; }
+.rv-opt-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-weight: 600; overflow-wrap: anywhere; }
+.rv-opt-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; font-weight: 400; }
+.rv-opt-src { grid-column: 2; font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-opt:has(input:checked) .rv-opt-name { color: var(--lens); }
+.rv-report { padding: 20px 24px; max-width: none; }
+.rv-report pre { overflow-x: auto; }
+.rv-batch .rv-run-who { display: flex; }
+.rv-form { display: grid; gap: 18px; padding: 20px 22px; }
+.rv-form-actions { display: flex; justify-content: flex-end; gap: 8px; }

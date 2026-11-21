@@ -3,7 +3,7 @@ import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, As
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
-import type { CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run } from "../../src/reviews";
+import type { Catalog, CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run, TreeBatch, TreeRequest } from "../../src/reviews";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -260,7 +260,7 @@ export const api = {
   settings: () => call<SettingsData>("GET", "/api/settings"),
   /** The Reviews page (Reviews.tsx): the code-review module's setup, runs, repos and the owner's settings change. */
   reviewsSetup: () => call<ReviewsSetup>("GET", "/api/reviews/setup"),
-  reviews: (q: { repo?: string; status?: string; limit?: number } = {}) => call<{ runs: Run[] }>("GET", `/api/reviews?${new URLSearchParams(Object.entries(q).flatMap(([k, v]) => (v === undefined || v === "" ? [] : [[k, String(v)]])))}`),
+  reviews: (q: { repo?: string; status?: string; limit?: number } = {}) => call<{ runs: Run[]; batches?: TreeBatch[] }>("GET", `/api/reviews?${new URLSearchParams(Object.entries(q).flatMap(([k, v]) => (v === undefined || v === "" ? [] : [[k, String(v)]])))}`),
   review: (id: string) => call<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
   dismissFinding: (b: { repo: string; number: number; id: string; reason: string }) => call<{ dismissed: string }>("POST", "/api/reviews/dismiss", b),
   reviewRepos: () => call<ReposView>("GET", "/api/reviews/repos"),
@@ -268,6 +268,9 @@ export const api = {
   reviewAvailable: (q: string) => call<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>("GET", `/api/reviews/available?q=${encodeURIComponent(q)}`),
   reviewInsights: (days: number) => call<ReviewInsights>("GET", `/api/reviews/insights?days=${days}`),
   reviewRun: (body: { pr_url: string; combos?: Combo[]; focus?: string; full?: boolean }) => call<{ runs: Run[] }>("POST", "/api/reviews", body),
+  reviewCatalog: (repo: string, commit?: string) => call<Catalog>("GET", `/api/reviews/catalog?${new URLSearchParams({ repo, ...(commit ? { commit } : {}) })}`),
+  reviewTreeRun: (body: TreeRequest) => call<{ batch: string }>("POST", "/api/reviews", body),
+  reviewReport: (batch: string) => call<{ markdown: string }>("GET", `/api/reviews/report/${encodeURIComponent(batch)}`),
   /** settings.code_review, and/or a GitHub org reviews may post in as the owner, as one settings change. */
   reviewConfig: (body: { value: CodeReview }) => call<{ identifier: string }>("POST", "/api/reviews/config", body),
   connections: (fresh = false) => call<ConnectionsData>("GET", `/api/settings/connections${fresh ? "?fresh" : ""}`),
