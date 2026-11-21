@@ -127,8 +127,8 @@ export function createMerges(d: {
       if (v.do === "done") {
         // Merged after a merge call that got no answer: that call merged it. Merged at the bound head without our call (GitHub's
         // own auto-merge, or the owner): it stays skipped, so it gates no further merge here, but its merge commit is evidence.
-        const ours = p.unanswered && pull?.mergeCommit?.oid;
-        const sha = pull?.mergeCommit?.oid ?? undefined;
+        const sha: string | undefined = pull?.mergeCommit?.oid ?? undefined;
+        const ours = Boolean(p.unanswered && sha);
         if (ours) Object.assign(p, { status: "merged", sha, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
         if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));

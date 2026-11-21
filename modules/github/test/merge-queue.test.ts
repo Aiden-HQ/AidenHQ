@@ -285,6 +285,7 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.deepEqual(listed, [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the bound head and its real merge commit, what the grader reads");
   assert.match(listed[0].head, /^[0-9a-f]{40}$/);
   assert.match(listed[0].sha, /^[0-9a-f]{40}$/);
+  assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's, so it names no object as made here");
 
   // Merged by someone else at another head: never evidence for this record's bound head.
   outcomes.length = 0;
