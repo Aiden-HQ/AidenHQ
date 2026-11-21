@@ -37,7 +37,7 @@ for (const kind of kinds) for (const panel of [true, false]) for (const mode of 
     const refusals: string[] = [];
     for (let pass = 0; pass < PASSES && records.get(r.id)!.state === "review"; pass++) {
       const out = await writes.review(r.id, { input: { tier: 1, rule: "x", reason: "x" }, request: { card: {} } });
-      if (out.refused) assert.notEqual(out.refused, refusals.at(-1), `refused the same way twice: ${out.refused}`);
+      if (out.refused) assert.ok(!refusals.includes(out.refused), `refused the same way twice: ${out.refused}`);
       if (out.refused) refusals.push(out.refused);
     }
     const state = records.get(r.id)!.state;
