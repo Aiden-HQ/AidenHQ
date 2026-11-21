@@ -214,7 +214,7 @@ export function oauth(o: OAuthOptions): Auth {
       if (res.status < 500) mark("expired", String((err as Error).message));
       throw err;
     }
-    save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token });
+    save({ ...t, ...next, refresh_token: next.refresh_token ?? t.refresh_token, scope: next.scope ?? t.scope });
     return token!;
   }
 

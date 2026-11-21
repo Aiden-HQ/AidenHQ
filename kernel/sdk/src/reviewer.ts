@@ -93,6 +93,7 @@ export function serveReviewer(review: Review, { key, kernelUrl = process.env.AID
       let n = 0;
       for await (const c of req) { n += c.length; if (n > 64_000_000) throw new Error("too large"); chunks.push(c); }
       body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!body || typeof body !== "object") throw new Error("send {id, token, model_token, request}");
     } catch (e) { return send(res, 400, { error: (e as Error).message }), true; }
     const id = String(body.id ?? ""), token = String(body.token ?? ""), modelToken = String(body.model_token ?? "");
     if (!/^r-[0-9a-f]{16}$/.test(id) || !token || !modelToken || !body.request || typeof body.request !== "object") return send(res, 400, { error: "send {id, token, model_token, request}" }), true;

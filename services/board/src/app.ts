@@ -1002,9 +1002,9 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), schedule(decodeURIComponent(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!)), recurringChange(decodeURIComponent(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(decodeURIComponent(m[1]!), parse(MergeSchema, body).into), merge(decodeURIComponent(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(dec(m[1]!)), schedule(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(dec(m[1]!)), recurringChange(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(dec(m[1]!), parse(MergeSchema, body).into), merge(dec(m[1]!), body)) },
     {
       // An agent attaches a file to the task it is working on (a `file` deliverable): only that task, never another's.
       // The body is the browser route's ({name, type, data} base64); the reply is the new file as the board lists it.
@@ -1013,7 +1013,7 @@ export function createApp(opts: AppOptions): Server {
       maxBody: MAX_UPLOAD_BODY + 1024,
       handle: async (m, body, _u, req) => {
         const agent = await requireAgentTool(req, "task_file_upload");
-        const ref = decodeURIComponent(m[1]!);
+        const ref = dec(m[1]!);
         if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
         await refuseMemoryInbox(ref);
         const issue = await pc.issue(ref);
@@ -1032,9 +1032,9 @@ export function createApp(opts: AppOptions): Server {
       // The Researcher through the tasks bridge.
       handle: async (m, body, _u, req) => {
         await requireAgentTool(req, "task_pass_on", "board-writer");
-        await refuseMemoryInbox(decodeURIComponent(m[1]!));
+        await refuseMemoryInbox(dec(m[1]!));
         const { comment, to, by } = parse(PassSchema, body);
-        const { ctx, issue } = await ownIssue(decodeURIComponent(m[1]!));
+        const { ctx, issue } = await ownIssue(dec(m[1]!));
         const task = await userTaskOf(issue, ctx);
         if (!task) throw new HttpError(400, "only on the user's tasks and their agents' parts");
         const c = (await pc.comments(issue.id)).find((x) => x.id === comment && !x.deletedAt);
@@ -1269,9 +1269,9 @@ export function createApp(opts: AppOptions): Server {
         return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
       },
     },
-    { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(decodeURIComponent(m[1]!)) },
+    { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(dec(m[1]!)) },
     { method: "GET", path: /^\/api\/runs\/(j-[0-9a-f]{16})$/, handle: async (m) => runView(m[1]!) },
-    { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m, _b, url) => chatView(decodeURIComponent(m[1]!), url.searchParams.has("peek")) },
+    { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m, _b, url) => chatView(dec(m[1]!), url.searchParams.has("peek")) },
     { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
@@ -1476,13 +1476,13 @@ export function createApp(opts: AppOptions): Server {
     },
     // The fast chat lane's agents and their chats (lane.ts): each agent's chat task.
     { method: "GET", path: /^\/api\/lane$/, handle: async () => ({ agents: await laneAgents(pc, opts.lane) }) },
-    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(pc, opts.lane, decodeURIComponent(m[1]!), url.searchParams.get("after") ?? "") },
+    { method: "GET", path: /^\/api\/lane\/([^/]+)\/messages$/, handle: async (m, _b, url) => laneMessages(pc, opts.lane, dec(m[1]!), url.searchParams.get("after") ?? "") },
     {
       method: "POST",
       path: /^\/api\/lane\/([^/]+)\/messages$/,
       handle: async (m, body, _u, req) => {
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }).strict(), body);
-        await laneSend(pc, opts.lane, decodeURIComponent(m[1]!), text, await laneByline(req));
+        await laneSend(pc, opts.lane, dec(m[1]!), text, await laneByline(req));
         return { ok: true };
       },
     },
@@ -1491,7 +1491,7 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/not-right$/,
       handle: async (m, body) => {
-        const own = await editableIssue(decodeURIComponent(m[1]!), "this task isn't yours");
+        const own = await editableIssue(dec(m[1]!), "this task isn't yours");
         const { ctx } = own;
         const { issue } = own;
         const { text } = parse(z.object({ text: z.string().trim().min(1).max(500) }).strict(), body);
@@ -1588,7 +1588,7 @@ export function createApp(opts: AppOptions): Server {
       method: "GET",
       path: /^\/api\/issues\/([^/]+)\/feature-cost$/,
       handle: async (m) => {
-        const { issue } = await ownIssue(decodeURIComponent(m[1]!));
+        const { issue } = await ownIssue(dec(m[1]!));
         const { tasks, truncated } = await descendants(issue, (id) => pc.children(id));
         if (!tasks.length) return { cost: null };
         const ids = [issue, ...tasks].flatMap((i) => [i.id, i.identifier]);
@@ -1733,7 +1733,7 @@ export function createApp(opts: AppOptions): Server {
       method: "PATCH",
       path: /^\/api\/issues\/([^/]+)$/,
       handle: async (m, body) => {
-        const { ctx, issue } = await editableIssue(decodeURIComponent(m[1]!));
+        const { ctx, issue } = await editableIssue(dec(m[1]!));
         const update = parse(UpdateSchema, body);
         const patch = paperclipUpdate(issue, update, ctx);
         if (Object.keys(patch).length) await pc.updateIssue(issue.id, patch);
@@ -1758,7 +1758,7 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/comments$/,
       handle: async (m, body, _u, req) => {
-        const { ctx, issue: asked } = await editableIssue(decodeURIComponent(m[1]!));
+        const { ctx, issue: asked } = await editableIssue(dec(m[1]!));
         const issue = asked;
         // `brief`: the chat's send, which refetches the chat itself, so the reply skips building the whole task view.
         const { body: text, brief } = parse(z.object({ body: z.string().trim().min(1).max(30_000), answer: z.boolean().optional(), brief: z.boolean().optional() }).strict(), body);
@@ -1792,7 +1792,7 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/stop$/,
       handle: async (m) => {
-        const { issue } = await editableIssue(decodeURIComponent(m[1]!));
+        const { issue } = await editableIssue(dec(m[1]!));
         const stopped = await work.stop({ task: issue.id }, stopper());
         log.info({ issue: issue.identifier, stopped }, "run stopped by the owner");
         store.events.emit("chat", issue.id);
@@ -1804,7 +1804,7 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/agents$/,
       handle: async (m, body) => {
-        const { ctx, issue } = await ownIssue(decodeURIComponent(m[1]!));
+        const { ctx, issue } = await ownIssue(dec(m[1]!));
         if (issue.assigneeUserId !== ctx.me) throw new HttpError(403, "agents join your own tasks");
         const input = parse(AddAgentSchema, body);
         const agent = ctx.assignees.find((a) => a.key === input.agent && a.kind !== "me");
@@ -1818,7 +1818,7 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/handover$/,
       handle: async (m, body) => {
-        const { ctx, issue } = await ownIssue(decodeURIComponent(m[1]!));
+        const { ctx, issue } = await ownIssue(dec(m[1]!));
         if (issue.assigneeUserId !== ctx.me) throw new HttpError(403, "only your own tasks");
         const { from, to } = parse(HandOverSchema, body);
         if (!REF.test(from)) throw new HttpError(400, "bad task reference");
@@ -1836,23 +1836,23 @@ export function createApp(opts: AppOptions): Server {
         return issueView(issue.id);
       },
     },
-    { method: "POST", path: /^\/api\/issues\/([^/]+)\/files$/, maxBody: MAX_UPLOAD_BODY + 1024, handle: async (m, body) => attach(decodeURIComponent(m[1]!), body) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/files$/, maxBody: MAX_UPLOAD_BODY + 1024, handle: async (m, body) => attach(dec(m[1]!), body) },
     {
       method: "POST",
       path: /^\/api\/issues\/([^/]+)\/move$/,
       handle: async (m, body) => {
-        const { issue } = await editableIssue(decodeURIComponent(m[1]!));
+        const { issue } = await editableIssue(dec(m[1]!));
         const { bucket, position } = parse(z.object({ bucket: z.enum(BUCKETS), position: z.enum(["top", "bottom"]).default("top") }).strict(), body);
         store.move(issue.id, bucket, position);
         return { ok: true };
       },
     },
-    { method: "POST", path: /^\/api\/issues\/([^/]+)\/schedule$/, handle: async (m, body) => schedule(decodeURIComponent(m[1]!), body) },
-    { method: "POST", path: /^\/api\/issues\/([^/]+)\/recurring$/, handle: async (m, body) => recurringChange(decodeURIComponent(m[1]!), body) },
-    { method: "POST", path: /^\/api\/issues\/([^/]+)\/merge$/, handle: async (m, body) => merge(decodeURIComponent(m[1]!), body) },
-    { method: "GET", path: /^\/api\/issues\/([^/]+)\/lineage$/, handle: async (m) => lineage(decodeURIComponent(m[1]!)) },
-    { method: "POST", path: /^\/api\/issues\/([^/]+)\/settle$/, handle: async (m, body) => settle(decodeURIComponent(m[1]!), body) },
-    { method: "POST", path: /^\/api\/issues\/([^/]+)\/aside$/, maxBody: 100_000, handle: async (m, body) => aside(decodeURIComponent(m[1]!), body) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/schedule$/, handle: async (m, body) => schedule(dec(m[1]!), body) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/recurring$/, handle: async (m, body) => recurringChange(dec(m[1]!), body) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/merge$/, handle: async (m, body) => merge(dec(m[1]!), body) },
+    { method: "GET", path: /^\/api\/issues\/([^/]+)\/lineage$/, handle: async (m) => lineage(dec(m[1]!)) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/settle$/, handle: async (m, body) => settle(dec(m[1]!), body) },
+    { method: "POST", path: /^\/api\/issues\/([^/]+)\/aside$/, maxBody: 100_000, handle: async (m, body) => aside(dec(m[1]!), body) },
     // The Settled view: what the owner settled, searchable by identifier, title or agent.
     { method: "GET", path: /^\/api\/settled$/, handle: async (_m, _b, url) => ({ settled: store.settledList((url.searchParams.get("q") ?? "").slice(0, 200)) }) },
     {
@@ -2089,7 +2089,7 @@ export function createApp(opts: AppOptions): Server {
     const path = url.pathname;
     return perRequest.run({ session, req }, async () => {
       const file = req.method === "GET" ? /^\/api\/issues\/([^/]+)\/files\/([0-9a-f-]{36})$/.exec(path) : null;
-      if (file) return download(res, decodeURIComponent(file[1]!), file[2]!);
+      if (file) return download(res, dec(file[1]!), file[2]!);
       // Live updates (events.ts): an event stream, behind the same gate.
       if (req.method === "GET" && path === "/api/events") {
         return store.events.stream(req, res, SECURITY_HEADERS);
@@ -2246,7 +2246,7 @@ export function createApp(opts: AppOptions): Server {
   }
 
   async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string) {
-    const rel = normalize(decodeURIComponent(path)).replace(/^(\.\.[/\\])+/, "");
+    const rel = normalize(dec(path)).replace(/^(\.\.[/\\])+/, "");
     let file = join(opts.staticDir, rel);
     if (!file.startsWith(opts.staticDir)) throw new HttpError(404, "not found");
     const isFile = await stat(file).then((s) => s.isFile()).catch(() => false);
@@ -2388,6 +2388,15 @@ export function createApp(opts: AppOptions): Server {
 const OPERATOR: BoardSession = { accountId: "operator", role: "admin" };
 
 const statusOf = (err: unknown) => (err instanceof HttpError || err instanceof AccountError ? err.status : err instanceof BadRequest ? 400 : err instanceof PaperclipError ? (err.status === 404 ? 404 : 502) : 500);
+
+/** A percent-decoded path part; a malformed escape is the caller's 400, not a thrown URIError. */
+function dec(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    throw new HttpError(400, "bad request");
+  }
+}
 
 function keyMatches(header: string | string[] | undefined, key: string): boolean {
   const given = Buffer.from(typeof header === "string" ? header : "");

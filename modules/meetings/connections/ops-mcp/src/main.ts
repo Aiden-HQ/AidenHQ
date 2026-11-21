@@ -57,7 +57,8 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   try {
     if (url.pathname === "/healthz" && req.method === "GET") {
       const h = await healthChecks(app);
@@ -82,6 +83,7 @@ const http = createServer(async (req, res) => {
     }
     send(res, 404, { error: "not found" });
   } catch (err) {
+    if (err instanceof SyntaxError && !res.headersSent) return send(res, 400, { error: "invalid JSON body" });
     log.error({ err: err instanceof Error ? err.message : String(err), path: url.pathname }, "request failed");
     if (!res.headersSent) send(res, 500, { error: "internal error" });
   }

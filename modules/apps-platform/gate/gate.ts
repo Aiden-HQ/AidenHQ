@@ -446,7 +446,18 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
  * fromTunnel: this server listens on cloudflared's socket (main.ts), so CF-Connecting-IP names the visitor.
  */
-export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
+export function createGate({ config: readConfig, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
+  let lastConfig: GateConfig | undefined;
+  /** The latest config; a torn gate.json keeps the last good one (the first read has none, so it throws at start). */
+  const config = (): GateConfig => {
+    try {
+      return (lastConfig = readConfig());
+    } catch (e) {
+      if (!lastConfig) throw e;
+      log({ msg: "config unreadable, keeping the last good one", err: String(e) });
+      return lastConfig;
+    }
+  };
   const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
   const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
   const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)

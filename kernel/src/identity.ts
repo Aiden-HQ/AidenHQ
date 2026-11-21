@@ -41,7 +41,10 @@ export type Identity = {
 export class Unknown extends Error { code = "denied_unknown_caller"; }
 export class NoGrants extends Error { code = "denied_no_grants"; }
 
-const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a: string, b: string) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return Boolean(a && b) && x.length === y.length && timingSafeEqual(x, y);
+};
 /** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
 export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
 /** An agent's roles as it holds them: its own, and a team member's team record's too (the record alone carries them for filing). */

@@ -26,7 +26,7 @@ export function capabilityProblems(all: Record<string, ModuleDef>): string[] {
     if (RESERVED.test(name)) p.push(`module ${name}: the name is reserved`);
     for (const c of strs(def.provides)) {
       if (!CAPABILITY.test(c)) p.push(`module ${name}: provides ${c} is not a capability name (a-z, 0-9, -, optionally :<variant>)`);
-      else if (c in all) p.push(`module ${name}: provides ${c}, which is a module's name`);
+      else if (Object.hasOwn(all, c)) p.push(`module ${name}: provides ${c}, which is a module's name`);
       else if (SLOTS.includes(c.split(":")[0]!) && !map(def.providers)[c.split(":")[0]!]) p.push(`module ${name}: provides ${c} without a providers.${c.split(":")[0]} entry`);
     }
     for (const r of strs(def.replaces)) if (r === name) p.push(`module ${name}: replaces itself`);
@@ -37,7 +37,7 @@ export function capabilityProblems(all: Record<string, ModuleDef>): string[] {
 /** Each virtual capability and the enabled modules that provide it. */
 export function virtualProviders(enabled: Record<string, ModuleDef>): Record<string, string[]> {
   const out: Record<string, string[]> = {};
-  for (const [name, def] of Object.entries(enabled)) for (const c of strs(def.provides)) (out[c] ??= []).push(name);
+  for (const [name, def] of Object.entries(enabled)) for (const c of strs(def.provides)) (out[c] = Object.hasOwn(out, c) ? out[c]! : []).push(name);
   return out;
 }
 
@@ -47,8 +47,8 @@ export function conflictProblems(enabled: Record<string, ModuleDef>): string[] {
   const p: string[] = [];
   for (const [name, def] of Object.entries(enabled)) {
     for (const c of strs(def.conflicts)) {
-      if (c !== name && c in enabled) p.push(`module ${name} conflicts with module ${c}`);
-      for (const other of (providers[c] ?? []).filter((o) => o !== name)) p.push(`module ${name} conflicts with ${c}, which ${other} also provides`);
+      if (c !== name && Object.hasOwn(enabled, c)) p.push(`module ${name} conflicts with module ${c}`);
+      for (const other of (Object.hasOwn(providers, c) ? providers[c]! : []).filter((o) => o !== name)) p.push(`module ${name} conflicts with ${c}, which ${other} also provides`);
     }
   }
   return p;
@@ -80,9 +80,9 @@ export function danglingBindings(enabled: Record<string, ModuleDef>, instance: I
     for (const r of strs(map(def.roles).requests)) if (!r.endsWith("?") && !role(r)) add("roles.requests", `module ${name}`, `role ${r}`);
     const services = map(def.services);
     for (const c of Object.keys(map(services.grants))) if (!connections.has(c)) add("services.grants", `module ${name}`, `connection ${c}`);
-    for (const svc of Object.values(map(services.run))) for (const j of strs(map(svc).join)) if (!(j in enabled)) add("services.run.join", `module ${name}`, `module ${j}`);
-    for (const m of [...strs(map(def.workspaces).share_with), ...strs(map(services.workspaces).share_with)]) if (!(m in enabled)) add("workspaces.share_with", `module ${name}`, `module ${m}`);
-    for (const r of strs(def.requires)) if (!(r in enabled) && !providers[r]?.length) add("requires", `module ${name}`, r);
+    for (const svc of Object.values(map(services.run))) for (const j of strs(map(svc).join)) if (!Object.hasOwn(enabled, j)) add("services.run.join", `module ${name}`, `module ${j}`);
+    for (const m of [...strs(map(def.workspaces).share_with), ...strs(map(services.workspaces).share_with)]) if (!Object.hasOwn(enabled, m)) add("workspaces.share_with", `module ${name}`, `module ${m}`);
+    for (const r of strs(def.requires)) if (!Object.hasOwn(enabled, r) && !(Object.hasOwn(providers, r) && providers[r]!.length)) add("requires", `module ${name}`, r);
   }
   const reviewer = map(instance.reviewer);
   for (const k of ["primary", "panel"]) {

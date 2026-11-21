@@ -125,7 +125,8 @@ const reader = appsReader(kernelUrl);
 // chat) needs the internal token, which agents and modules don't have.
 let reconcile: () => Promise<void> = async () => undefined; // set once the loops start
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   try {
     if (url.pathname === "/healthz") return send(res, 200, { ok: true });
     if (url.pathname === "/internal/status" && req.method === "GET") return send(res, 200, p.apps().map((a) => p.cached(a)));

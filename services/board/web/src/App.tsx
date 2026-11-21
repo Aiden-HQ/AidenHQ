@@ -28,7 +28,7 @@ import { clearCache, load, peek, setAccount } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
 import type { ModuleTab } from "./ModulePage";
-import { QUERIES, VIEW_CHUNKS, useQuery } from "./queries";
+import { QUERIES, VIEW_CHUNKS, hashPath, useQuery } from "./queries";
 import { ChatWorkspace } from "./Workspace";
 import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
 import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
@@ -106,7 +106,7 @@ function parseRoute(): Route {
     history.replaceState(null, "", `#/settings/connections?connect=${connect[1]}${connect[2] ? `&${connect[2]}` : ""}`);
     return { kind: "settings", cat: "connections" };
   }
-  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
+  const h = hashPath();
   // #/t/PEN-12 opens a task; #/t/PEN-12/PEN-15 opens it on the agent working in PEN-15.
   if (h.startsWith("t/")) {
     const [ref = "", focus] = h.slice(2).split("/");

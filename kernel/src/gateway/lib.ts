@@ -116,7 +116,10 @@ const CI_REFUSALS_LOGGED = 20;
 
 export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a: string, b: string) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return Boolean(a && b) && x.length === y.length && timingSafeEqual(x, y);
+};
 const fail = (status: number, type: string, message: string, extra: Record<string, unknown> = {}): GatewayError => Object.assign(new Error(message), { status, type, extra });
 
 /** A JSON file re-read when it changes; `fallback` when it's missing or unreadable. */

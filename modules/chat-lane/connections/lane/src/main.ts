@@ -70,7 +70,8 @@ function authorized(req: IncomingMessage): boolean {
 }
 
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (!authorized(req)) return void res.writeHead(401).end();
