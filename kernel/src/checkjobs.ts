@@ -37,9 +37,9 @@
 // Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
 // a re-run asked meanwhile supersedes it.
 // A judge that writes no usable result is the harness's failure, never the change's: the check ends in error, with no receipt.
-// A judged run the eval-day spend cap cut short (a case the reviewer returns `review_cap`, or the eval's `capped` list) is the
-// same: the reviewer never judged it, so the check ends in error with a budget reason and no receipt, the run does not use up a
-// try (the same head is judged again once the cap frees), and it never runs the partial second pass into an exhausted cap.
+// A judged run a spend cap cut short (a case the reviewer returns `review_cap`, named in the eval's `capped` list with the cap's
+// scope) is the same: the reviewer never judged it, so the check ends in error naming that cap, with no receipt, the run does not
+// use up a try (the same head is judged again once the cap frees), and it never runs the partial second pass into it.
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
 // modules repos never do).
@@ -102,6 +102,9 @@ export type Binding = { repo: string; head: string; run: Run; judge?: string; po
 /** `result`: the recipe's result object (data: made from the repo's text); `billed_usd`: its model token's spend by the gateway's
  * ledger (a failed run's too; a running check's so far); both null for other recipes. */
 export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null;
+  /** Its last end was a spend cap ("eval-day", "install", …): a budget outcome, not the change's failure (a later ask runs
+   * it again); null when it didn't end at one. */
+  capped: string | null;
   /** Running, but still waiting for a computer (the pool is full): nothing is running in a box yet. */
   waiting: boolean;
   /** When the check got its box (ISO), kept through restarts and retries of one attempt; null before. Wall time runs from here, queueing excluded. */
@@ -129,9 +132,12 @@ type Step = { prior: number } | { n: 1 | 2; names: string[]; added: string[]; fi
 /** A run that a draining kernel stopped following (the next one does), or whose box is gone (lost). */
 class Detached extends Error {}
 class Gone extends Error {}
-/** A judged run the eval-day spend cap cut short: the reviewer didn't judge its cases, so it is no verdict on the change, and
- * the attempt doesn't use up a try (the same head is judged again once the cap frees). */
-class CapReached extends Error {}
+/** A judged run a spend cap cut short: the reviewer didn't judge its cases, so it is no verdict on the change, and the attempt
+ * doesn't use up a try (the same head is judged again once that cap frees). `cap` is the budget's name, as the eval reports it. */
+class CapReached extends Error {
+  readonly cap: string;
+  constructor(cap: string, reason: string) { super(reason); this.cap = cap; }
+}
 /** codehost-github's snapshot op: `repo` at commit `ref`, extracted into the empty folder `into` (no .git, no credentials). */
 export type Snapshot = (repo: string, ref: string, into: string) => Promise<void>;
 
@@ -237,26 +243,31 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
   return out;
 }
 type Failure = { file: string; want?: string; got?: string; reason?: string };
-/** A case the reviewer never judged: its call stopped at a spend cap (`review_cap`), so it is neither a pass nor a miss. */
-type EvalResult = { total: number; passed: number; failed: Failure[]; capped: string[]; broken?: true };
-/** Whether a failure line is a cap, not a verdict: the reviewer's reason code in `got` is `review_cap` (never its `reason`,
- * the model's own words). */
-const cappedCase = (f: Failure) => (f.got ?? "").split(/\s+/).includes("review_cap");
+/** A budget's name for a person: the eval's day cap, the install's daily cap, or (unrecognised) a spend cap. */
+const capName = (cap: string) => (cap === "eval-day" ? "eval-day cap" : cap === "install" ? "install's daily cap" : "spend cap");
+/** A case the reviewer never judged: its call stopped at the spend cap (`review_cap`), so it is neither a pass nor a miss. */
+type EvalResult = { total: number; passed: number; failed: Failure[]; capped: string[]; cap: string; broken?: true };
 /** The shared pass rule (kernel/sdk/src/pass-rule.ts) over a run's failures, each named by the kind of miss it is. */
 const evalPasses = (failed: Failure[], total: number, added: string[]) =>
   passes(total, failed.map((f) => ({ file: f.file, kind: missKind((f.want ?? "").split("|"), (f.got ?? "").split(" ")[0]!) })), added);
 /** The judge's result, checked against the cases it was given; missing, malformed or miscounted, every case failed (broken). */
 function readResult(file: string, cases: string[]): EvalResult {
   let r: any;
-  try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], broken: true }; }
+  try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], cap: "eval-day", broken: true }; }
   const failed: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
-  // The eval names the cases a spend cap cut before the reviewer judged them; a failure line that says review_cap counts too,
-  // so a judge from before the `capped` list can never score a capped case as a miss either.
-  const capped = [...new Set([...(Array.isArray(r?.capped) ? r.capped : []).filter((f: any) => cases.includes(f)), ...failed.filter(cappedCase).map((f) => f.file)])];
-  // Each case counts once, capped or failed: a capped case's line may sit in `failed` beside the `capped` list.
-  const notPassed = new Set([...failed.map((f) => f.file), ...capped]);
-  if (r?.total !== cases.length || r?.passed !== cases.length - notPassed.size) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's counts don't match its ${cases.length} cases` })), capped: [], broken: true };
-  return { total: cases.length, passed: r.passed, failed, capped };
+  // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list): the judge and the kernel
+  // read one contract. A malformed list is the harness's failure, as any malformed result is.
+  const capped = [...new Set<string>((Array.isArray(r?.capped) ? r.capped : []).filter((f: any) => cases.includes(f)))];
+  // Which cap stopped it (the eval names it: "eval-day", "install", or `unknown`): a name, never a path or free text, and
+  // `eval-day` when an older judge wrote no scope (its only case then was the eval's own day cap).
+  const cap = typeof r?.capScope === "string" && /^[a-z][a-z-]{0,30}$/.test(r.capScope) ? r.capScope : "eval-day";
+  // Each case counts once, capped or failed: a capped case's line may sit in `failed` beside the `capped` list. A duplicate
+  // row in `failed` is malformed, never counted twice into the pass rule.
+  const failedFiles = failed.map((f) => f.file);
+  const notPassed = new Set([...failedFiles, ...capped]);
+  if (new Set(failedFiles).size !== failedFiles.length || r?.total !== cases.length || r?.passed !== cases.length - notPassed.size)
+    return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's counts don't match its ${cases.length} cases` })), capped: [], cap: "eval-day", broken: true };
+  return { total: cases.length, passed: r.passed, failed, capped, cap };
 }
 /** A case folder's JSON files, read as small regular files (a link or a special file is a case that can't be read: its text is empty). */
 function casesIn(dir: string): Map<string, string> {
@@ -319,19 +330,22 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   if (!cols.has("follow")) db.exec("ALTER TABLE checks ADD COLUMN follow TEXT");
   // When the running attempt got its box (epoch ms; the first box of its passes).
   if (!cols.has("box_at")) db.exec("ALTER TABLE checks ADD COLUMN box_at INTEGER");
+  // Which spend cap the attempt ended at ("eval-day", "install", …): a budget outcome, not the change's failure (a later ask
+  // runs it again); NULL when it didn't end at one.
+  if (!cols.has("capped")) db.exec("ALTER TABLE checks ADD COLUMN capped TEXT");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
-  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean; cap?: boolean }) => {
+  const end = (id: string, started: number, state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean; cap?: string }) => {
     const r = row(id)!;
     const at = now();
     db.exec("SAVEPOINT check_end");
     try {
-      // A lost run gives its try back (a restart isn't the check's failure) and is counted against MAX_LOST; so does a run the
-      // eval-day cap cut short (the cap is the eval's limit, not the change's failure), which isn't a lost run.
+      // A lost run gives its try back (a restart isn't the check's failure) and is counted against MAX_LOST; so does a run a
+      // spend cap cut short (the cap is the eval's limit, not the change's failure), which isn't a lost run.
       const lost = state === "lost" ? 1 : 0;
-      const give = lost || set.cap ? 1 : 0;
-      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ?, tries = MAX(tries - ?, 0), lost = lost + ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, give, lost, id, started).changes === 0) {
+      const give = set.cap ? 1 : lost ? 1 : 0;
+      if (db.prepare("UPDATE checks SET state = ?, receipt = ?, error = ?, ended = ?, result = ?, cost_usd = COALESCE(?, cost_usd), retry = ?, capped = ?, tries = MAX(tries - ?, 0), lost = lost + ? WHERE id = ? AND at = ?").run(state, set.receipt ?? null, set.error ?? null, at, set.result ?? null, set.cost ?? null, set.retry ? 1 : 0, set.cap ?? null, give, lost, id, started).changes === 0) {
         db.exec("RELEASE check_end");
         return false;
       }
@@ -357,7 +371,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     for (const w of waiters.get(id) ?? []) w();
     waiters.delete(id);
   };
-  const view = (r: Record<string, any>): CheckView => ({ waiting: r.state === "running" && boxless.has(r.id), box_at: r.box_at ? new Date(r.box_at).toISOString() : null, id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
+  const view = (r: Record<string, any>): CheckView => ({ capped: r.capped ? String(r.capped) : null, waiting: r.state === "running" && boxless.has(r.id), box_at: r.box_at ? new Date(r.box_at).toISOString() : null, id: r.id, repo: r.repo, head: r.head, run: r.run, state: r.state, receipt: r.receipt ? JSON.parse(r.receipt) : null, error: r.error ?? null, version: versions.get(r.id) ?? 0, result: r.result ? JSON.parse(r.result) : null, billed_usd: r.state === "running" && r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : r.cost_usd ?? null });
 
   /** A run launched in a fresh box (its handle). `trees`: commit trees by spec field, moved into the out folder (the recipe's
    * history); `spec`: written to the out folder's spec.json. */
@@ -470,9 +484,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     // The harness broke, not the change: no receipt (asking again runs it again), and the box's output says why.
     if (res.broken) throw new Error(`${r.title} wrote no usable result (${res.failed[0]?.reason ?? "no cases"})\n${tail(o)}`);
     // A spend cap cut the run short: the reviewer didn't judge those cases, so it is no verdict on the change. No receipt,
-    // the check ends in error with a budget reason, and asking again runs it again once the cap frees. A second pass would
-    // only spend into the same exhausted cap, so the run ends here, at step 1.
-    if (res.capped.length) throw new CapReached(`${r.title} reached the eval-day cap before it judged ${res.capped.length} of its ${res.total} case(s) (${res.capped.slice(0, 8).join(", ")}${res.capped.length > 8 ? ", …" : ""}); eval-day cap reached; retry when it frees`);
+    // the check ends in error with a budget reason (the cap the eval names, so the operator waits on the right one), and
+    // asking again runs it again once that cap frees. A second pass would only spend into the same exhausted cap, so the run
+    // ends here, at step 1.
+    if (res.capped.length) throw new CapReached(res.cap, `${capName(res.cap)} reached; retry when it frees: ${r.title} judged ${res.total - res.capped.length} of its ${res.total} case(s) before the cap (${res.capped.slice(0, 6).join(", ")}${res.capped.length > 6 ? `, … ${res.capped.length - 6} more` : ""})`);
     const first = step.first ?? { passed: res.passed, total: res.total };
     const score = `${first.passed}/${first.total}`;
     if (step.n === 1) {
@@ -499,7 +514,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const dir = join(workDir, "checks", attempt);
     const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
     // Its end, tried again a few times (a busy database): a run that can't record its end stays `running` until a restart.
-    const ended = async (state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean; cap?: boolean }) => {
+    const ended = async (state: "done" | "error" | "lost", set: { receipt?: string; error?: string; result?: string; cost?: number; retry?: boolean; cap?: string }) => {
       for (let n = 0; ; n++) {
         try {
           const landed = end(id, r.at, state, set);
@@ -543,11 +558,11 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // It couldn't run (no snapshot, no box, no result from the judge): no receipt; asking again runs it again.
       const msg = String((e as Error).message ?? e);
       const why = msg.split("\n")[0]!.slice(0, 300);
-      // A judged run the eval-day cap cut short: no receipt (a fail receipt would cache the head as unmergeable), the same
-      // error path, its try given back so the same head runs again once the cap frees.
-      const cap = e instanceof CapReached;
+      // A judged run a spend cap cut short: no receipt (a fail receipt would cache the head as unmergeable), the same error
+      // path, its try given back so the same head runs again once the cap frees.
+      const cap = e instanceof CapReached ? e.cap : undefined;
       // What its model token spent before it broke counts, as a lost run's does (a caller charges unknown spend at its whole cap).
-      if (await ended("error", { error: why, ...(cap ? { cap: true } : {}), ...(cost !== undefined ? { cost } : {}) })) log(cap ? "WARNING: check ended at the eval-day cap, no receipt" : "WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
+      if (await ended("error", { error: why, ...(cap ? { cap } : {}), ...(cost !== undefined ? { cost } : {}) })) log(cap ? `WARNING: check ended at the ${cap} spend cap, no receipt` : "WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
       mine.delete(id);
       if (!kept) rmSync(dir, { recursive: true, force: true });
@@ -578,7 +593,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
-      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
+      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
       log("check started", { check: id, module, repo, head, run });
       execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));
