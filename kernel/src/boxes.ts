@@ -141,8 +141,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   /**
    * An engineer job's repositories: each one its task names that its dispatcher may clone, cloned by its box itself from the
    * code host's bundle (`aidenhq clone <org/name>` in the box, as the job) into /workspace/<name> on its default branch, before
-   * the run starts; one already there (`--keep`: <name> or <org>--<name>, its origin this repo or none) is kept as it is; one
-   * of another org's same-named repo is refused. Host git and host fs writes never run in the
+   * the run starts; one already there (`--keep`: <name> or <org>--<name>, its origin this repo) is kept as it is; one
+   * whose origin is another repo, or none, is refused. Host git and host fs writes never run in the
    * workspace. A refusal is told to the job (its notes); a kernel or code host that can't answer now makes the launch a 503, so
    * admission tries again.
    */
