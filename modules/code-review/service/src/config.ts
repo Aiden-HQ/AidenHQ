@@ -4,7 +4,7 @@
 
 // The recipe's values (recipe/engines.ts runs the review in its own box: no shared import across that image boundary).
 // `models`: the short list the board and the Reviewer Manager offer for each (any other OpenRouter id may be typed; the gateway
-// refuses one models-openrouter doesn't price).
+// refuses one OpenRouter doesn't list).
 export const ENGINES = {
   codex: { label: "Codex", efforts: ["minimal", "low", "medium", "high", "xhigh"], run_usd: 5,
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"] },

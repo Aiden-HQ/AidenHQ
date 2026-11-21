@@ -1,7 +1,7 @@
 // App CI code review end to end, against a fake GitHub (its OIDC keys) and a fake OpenRouter: a job's OIDC token traded for
 // a CI token bound to its repo and PR; the token's scope (the CI listener only, the allowed model and fields only); the
 // ledger record; the repo-day cap's refusal (a reservation that doesn't fit); the off switch. Then the Responses route a CLI
-// reviewer uses: the same guarantees (ZDR, priced models, reservation and settlement, A11 and A12 within CI's caps).
+// reviewer uses: the same guarantees (ZDR, listed models, reservation and settlement, A11 and A12 within CI's caps).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGateway } from "../src/gateway/lib.ts";
 import { CI_AUDIENCE, GITHUB_ISSUER } from "../src/gateway/ci.ts";
+import { modelsList } from "./models-list.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -20,8 +21,8 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const secrets = { openrouter_key: "sk-real", gateway_board_key: "gw-board", gateway_source_key: "src-key" };
   const settingsFile = join(dir, "gateway.json");
   // A review call reserves 4096 output tokens at $25 per million: $0.1024 (and a little for its input).
-  const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
-  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], review: { model: "~deepseek/deepseek-flash-latest", effort: "high" }, repo_day_usd: 0.22, day_usd: 1, ...ci } }));
+  const { url: modelsUrl } = await modelsList({ "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, max_output: 4096 } });
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ ci: { orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest"], review: { model: "~deepseek/deepseek-flash-latest", effort: "high" }, repo_day_usd: 0.22, day_usd: 1, ...ci } }));
   settings({});
 
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -46,7 +47,7 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
       if (held.length === 12) held.splice(0).forEach((f) => f());
     });
   });
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, githubJwksUrl: github.url, now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, modelsUrl, githubJwksUrl: github.url, now: () => now });
   const ci = await serve((req, res) => gw.handle(req, res, { ci: true }));
   const main = await serve((req, res) => gw.handle(req, res));
   t.after(() => { for (const x of [github, upstream, ci, main]) x.s.close(); gw.close(); });
@@ -90,7 +91,7 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const race = oidc({ run_id: "5151" });
   const both = await Promise.all([exchange(race), exchange(race)]);
   assert.deepEqual(both.map((r) => r.status).sort(), [200, 401]);
-  const restarted = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, githubJwksUrl: github.url, now: () => now });
+  const restarted = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => secrets[n] ?? "", upstream: upstream.url, modelsUrl, githubJwksUrl: github.url, now: () => now });
   const ci2 = await serve((req, res) => restarted.handle(req, res, { ci: true }));
   t.after(() => { ci2.s.close(); restarted.close(); });
   assert.equal((await post(`${ci2.url}/ci/token`, race, { head: "ab".repeat(20) })).status, 401);
@@ -117,19 +118,21 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   const [row] = await usage();
   assert.deepEqual({ ...row, at: undefined, runKey: undefined }, { key: "gen-1", at: undefined, agentId: null, component: "ci-code-review", model: "deepseek/v4", input: 10, cached: 0, output: 2, costUsd: 0.1, runKey: undefined, runId: null, issueId: null, rev: "ab".repeat(20), kind: "ci-code-review", ms: 0, status: "ok", subject: "acme-agents/app#12" });
 
-  // Repo-day cap $0.22: the second call's reservation fits ($0.10 billed + $0.10), the third can't buy its least output
-  // ($0.20 billed, $0.02 left), nor can a fresh token's. Another repo has its own. Every call carried its bounded max_tokens.
+  // Repo-day cap $0.22 on real cost: calls go ahead while what was billed is under it ($0.10, then $0.20: the third bounded to
+  // its least output, what $0.02 buys being less), then the next is refused at $0.30, and so is a fresh token's. Another repo
+  // has its own. Every call carried its bounded max_tokens.
+  assert.equal((await review(tok)).status, 200);
   assert.equal((await review(tok)).status, 200);
   const refused = await review(tok);
   assert.equal(refused.status, 402);
-  assert.match(refused.json.error.message, /^spend cap reached: CI repo-day \$0\.20 of \$0\.22;/);
-  assert.deepEqual(seen.map((s) => s.body.max_tokens), [4096, 4096]);
+  assert.match(refused.json.error.message, /^spend cap reached: CI repo-day \$0\.30 of \$0\.22;/);
+  assert.deepEqual(seen.map((s) => s.body.max_tokens), [4096, 4096, 1024]);
   assert.equal((await review((await exchange(oidc({ ref: "refs/pull/13/merge" }))).json.token)).status, 402);
   assert.equal((await review((await exchange(oidc({ repository: "acme-agents/other" }))).json.token)).status, 200);
   assert.equal((await usage()).filter((r) => r.status === "cap_reached").length, 1);
 
   // Module removed (no ci block): no new tokens and every issued one refused at once. Back, a token still expires after its 2 hours.
-  writeFileSync(settingsFile, JSON.stringify({ models }));
+  writeFileSync(settingsFile, "{}");
   assert.equal((await exchange(oidc())).status, 403);
   assert.equal((await review(tok)).status, 403);
   settings({ repo_day_usd: 5, day_usd: 5 });
@@ -141,12 +144,13 @@ test("gateway: CI code review trades a GitHub OIDC token for a scoped, capped, a
   assert.equal((await review(tok)).status, 401);
 });
 
-test("gateway: CI's Responses route (a CLI reviewer): ZDR, priced models only, reserved then settled from response.completed, A11 and A12", async (t) => {
+test("gateway: CI's Responses route (a CLI reviewer): ZDR, listed models only, checked then settled from response.completed, A12", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-ci-responses-"));
   const settingsFile = join(dir, "gateway.json");
-  // $25 per million output tokens, input free: a call reserves 4096 output tokens, $0.1024. acme/unpriced is allowed, not priced.
-  const models = { "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, peak: 1, max_output: 4096 } };
-  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ models, ci: { orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest", "acme/unpriced"], repo_day_usd: 5, day_usd: 5, ...ci } }));
+  // $25 per million output tokens, input free: a call reserves 4096 output tokens, $0.1024. acme/unpriced is allowed, but
+  // OpenRouter doesn't list it.
+  const { url: modelsUrl } = await modelsList({ "~deepseek/deepseek-flash-latest": { in: 0, cached_in: 0, out: 25, max_output: 4096 } });
+  const settings = (ci) => writeFileSync(settingsFile, JSON.stringify({ ci: { orgs: ["acme-agents"], models: ["~deepseek/deepseek-flash-latest", "acme/unpriced"], repo_day_usd: 5, day_usd: 5, ...ci } }));
   settings({});
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const github = await serve((req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1", alg: "RS256", use: "sig" }] })));
@@ -155,7 +159,6 @@ test("gateway: CI's Responses route (a CLI reviewer): ZDR, priced models only, r
   const oidc = `${body}.${sign("RSA-SHA256", Buffer.from(body), privateKey).toString("base64url")}`;
 
   const seen = [];
-  let held = [], release;
   const upstream = await serve((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       const j = JSON.parse(b), n = seen.push({ path: req.url, body: j });
@@ -166,11 +169,10 @@ test("gateway: CI's Responses route (a CLI reviewer): ZDR, priced models only, r
         res.end(["response.created", "response.output_text.delta"].map((type) => `event: ${type}\ndata: ${JSON.stringify({ type })}\n\n`).join("") + `event: response.completed\ndata: ${JSON.stringify(done)}\n\n`);
       };
       if (j.input?.[0] === "cut") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(`data: ${JSON.stringify({ type: "response.created" })}\n\n`); return setTimeout(() => res.destroy(), 20); }
-      if (j.input?.[0] === "hold") return held.push(answer) && release?.();
       answer();
     });
   });
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => ({ openrouter_key: "sk-real" })[n] ?? "", upstream: upstream.url, githubJwksUrl: github.url, now: () => now });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile, secret: (n) => ({ openrouter_key: "sk-real" })[n] ?? "", upstream: upstream.url, modelsUrl, githubJwksUrl: github.url, now: () => now });
   const ci = await serve((req, res) => gw.handle(req, res, { ci: true }));
   t.after(() => { for (const x of [github, upstream, ci]) x.s.close(); gw.close(); });
   const tok = (await (await fetch(`${ci.url}/ci/token`, { method: "POST", headers: { authorization: `Bearer ${oidc}` }, body: "{}" })).json()).token;
@@ -190,27 +192,22 @@ test("gateway: CI's Responses route (a CLI reviewer): ZDR, priced models only, r
   assert.deepEqual(rows(), ["resp-1", "resp-2"].map((key) => ({ key, status: "ok", cost_usd: 0.01, input: 6, cached: 4, output: 2, task_subject: "acme-agents/app#7" })));
 
   // Refused before anything is reserved or sent: a stored response, a server tool, a stored conversation, a fallback model,
-  // a model CI may not use, and an allowed model with no declared price.
+  // a model CI may not use, and an allowed model OpenRouter doesn't list.
   for (const extra of [{ store: true }, { tools: [{ type: "web_search" }] }, { tools: [{ type: "namespace", name: "x", tools: [{ type: "mcp", server_url: "https://example.com" }] }] }, { previous_response_id: "resp-1" }, { models: ["openai/gpt-sol"] }, { model: "openai/gpt-sol" }, { model: "acme/unpriced" }]) {
     assert.equal((await call(extra)).status, 403, JSON.stringify(extra));
   }
   assert.equal(seen.length, 2);
 
-  // A12: a stream cut before its response.completed is charged its whole reservation (fail closed).
+  // A12: a stream cut before its response.completed keeps its reservation, the input's estimate ($0 here: input is free).
   await call({ stream: true, input: ["cut"] }).catch(() => {});
-  assert.deepEqual(rows().at(-1).status, "upstream_aborted");
-  assert.ok(Math.abs(rows().at(-1).cost_usd - 0.1024) < 1e-9);
+  assert.deepEqual([rows().at(-1).status, rows().at(-1).cost_usd], ["upstream_aborted", 0]);
 
-  // A11: 20 calls in flight with room for 3 under the repo-day cap ($0.1224 spent; 3 x $0.1024 left, plus $0.01, under the
-  // least output of 1024 tokens): exactly 3 reach the upstream, the other 17 are refused at the cap.
-  settings({ repo_day_usd: 0.1224 + 3 * 0.1024 + 0.01 });
-  const reached = new Promise((r) => (release = () => held.length === 3 && r()));
-  const calls = Array.from({ length: 20 }, () => call({ stream: true, input: ["hold"] }));
-  await reached;
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(held.length, 3);
-  held.splice(0).forEach((f) => f());
-  const out = await Promise.all(calls);
-  assert.deepEqual(out.map((c) => c.status).sort(), [...Array(3).fill(200), ...Array(17).fill(402)]);
-  assert.deepEqual(rows().filter((r) => r.status === "ok").map((r) => r.cost_usd), Array(5).fill(0.01));
+  // At the repo-day cap ($0.02 billed so far), refused before anything is sent; raised, the next call goes ahead.
+  settings({ repo_day_usd: 0.02 });
+  const n = seen.length;
+  assert.equal((await call()).status, 402);
+  assert.equal(seen.length, n);
+  settings({ repo_day_usd: 0.03 });
+  assert.equal((await call()).status, 200);
+  assert.deepEqual(rows().filter((r) => r.status === "ok").map((r) => r.cost_usd), Array(3).fill(0.01));
 });
