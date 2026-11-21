@@ -168,6 +168,26 @@ describe("posting", () => {
     expect(out).toMatchObject({ inline: 0, earlier: 1 });
   });
 
+  it("a review already on the pull request is kept and reported as made, even when a later step fails", async () => {
+    // The review is created, then the acknowledgement write fails: the record's outcome must still name the review, so a refused
+    // post's notice ("was not posted") never contradicts a review readers can already see.
+    const w = world();
+    let failAck = true;
+    const flaky = (async (u: URL | string, i?: RequestInit) => {
+      if (failAck && (i?.method ?? "GET") === "POST" && new URL(String(u)).pathname.endsWith("/issues/12/comments")) return new Response("boom", { status: 500 });
+      return w.impl(u, i);
+    }) as typeof fetch;
+    const p = new ReviewPoster(new GitHub(accessFor((u, i) => flaky(u, i)), flaky), accessFor((u, i) => flaky(u, i)), records());
+    const out = JSON.parse((await p.execute("post", postArgs(review([finding("f_partial_1", "src/pay.ts", 2)])))).text);
+    expect(out.review).toBe("https://github.com/acme/payments/pull/12#pullrequestreview-1");
+    expect(out.partial).toBeTruthy();
+    expect(w.state.reviews).toHaveLength(1);
+    // The same failure before the review exists is still a refusal: nothing was posted, and the head check still refuses.
+    failAck = false;
+    const moved = world({ headSha: "c".repeat(40) });
+    await expect(poster(moved).execute("post", postArgs(review([])))).rejects.toThrow(/head moved/);
+  });
+
   it("resolves only Aiden's own open threads (in AidenHQ's records, with the marker) for findings no longer reported", async () => {
     // The owner's own thread carries the marker too (the fleet posts as the owner): only the records tell them apart.
     const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41), thread("T_owner", "f_owner_1", "owner1", 42), thread("T_person", null, "alice", 43), thread("T_forged", "f_forged_1", "alice", 44)] });

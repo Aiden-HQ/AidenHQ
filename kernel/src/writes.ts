@@ -272,6 +272,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const plan: Plan = own ? await own({ kind, args, requester, task, ...(workspace ? { workspace } : {}) }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
     if (k.args) validate(k.args, plan.args);
     const targets = plan.targets ?? {};
+    // A head-bound kind (`binds`) must name what it acts on in its plan: filing one that doesn't would only be staled on its
+    // re-plan, and refiled blank again. A plan that can't say which head it is of is refused here, never carded.
+    if (k.binds?.length && boundOf(targets, k.binds) === undefined)
+      throw fail(422, "refused", `its plan names no ${k.binds.join("/")} target: a ${kind} is of one ${k.binds.join(", ")} and must say which`);
     // The kernel's planner writes its card whole; a module's kind renders its manifest's templates.
     const whole = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card }, Infinity);
     // Cut for storage only with code's note: an open record's card is shown whole from its context (backplane GET /v1/writes).
@@ -389,13 +393,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (!(await revalidate(pre))) return void runRetries.delete(id);
       open = !pre.task || (await onTask.open(pre.task));
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
-        // The same executor (module, address and code revision) and policy, or the record is stale (A9). A kind that declares
-        // `binds` is head-bound: only its target fields decide (the executor may be redeployed, its card or the base may move
-        // while the head it posts on stands). An executor that refuses the plan now (a 4xx) makes it stale; one that can't
-        // answer now is tried again.
+        // The same executor (module, address and code revision) and the same kind declaration (policy), or the record is stale
+        // (A9). A kind that declares `binds` is head-bound: it may be redeployed while the head it posts on stands, so its code
+        // revision is not compared (the kind's declaration still is: a raised floor or a new panel requirement holds it). An
+        // executor that refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.
         const binds = k?.binds?.length ? k.binds : undefined;
         const same = k && k.module === pre.executor.module && k.executor?.url === pre.executor.url
-          && (binds ? true : k.executor?.rev === pre.executor.rev && policy(k) === pre.policy);
+          && policy(k) === pre.policy && (binds ? true : k.executor?.rev === pre.executor.rev);
         again = same ? await call(k, "plan", { kind: pre.kind, args: pre.args, requester: pre.requester, task: pre.task, revalidate: true }).catch((e) => { if (transient(e)) throw e; return undefined; }) : undefined;
         // A head-bound record compares only what it binds to, and a plan that can't name it at all (either side) is stale.
         const was = binds ? boundOf(pre.targets, binds) : undefined;

@@ -239,14 +239,20 @@ export class ReviewPoster {
     review ??= await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {
       body: { event: "COMMENT", commit_id: r.head, body: withFooter(summary, AGENT), ...(comments.length ? { comments: comments.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
     });
-    // Its inline comments, by id, for AidenHQ's records: a later run resolves only threads it finds there.
-    const inlineIds = (await this.gh.request<{ id: number }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } })).map((c) => `${objectRef(ref)}/comment/${c.id}`);
-    // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only Aiden's own
-    // open threads for findings the review no longer reports are resolved.
-    const present = new Set(r.findings.map((f) => f.id));
-    const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
-    const c = counts(r.findings);
-    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`);
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url }), objects: [...inlineIds, ack.object] };
+    // The review is on the pull request from here on: a later step failing (its comment ids, its threads, its acknowledgement)
+    // must not report the review as not posted. What it made is kept, and what didn't finish is named for the run's row.
+    try {
+      // Its inline comments, by id, for AidenHQ's records: a later run resolves only threads it finds there.
+      const inlineIds = (await this.gh.request<{ id: number }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } })).map((c) => `${objectRef(ref)}/comment/${c.id}`);
+      // A missing finding isn't proof of a fix: the state service names the ids its recheck confirmed, and only Aiden's own
+      // open threads for findings the review no longer reports are resolved.
+      const present = new Set(r.findings.map((f) => f.id));
+      const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
+      const c = counts(r.findings);
+      const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`);
+      return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url }), objects: [...inlineIds, ack.object] };
+    } catch (e) {
+      return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, partial: String((e as Error).message).slice(0, 200) }), objects: [] };
+    }
   }
 }

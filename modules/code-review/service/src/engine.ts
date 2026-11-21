@@ -44,6 +44,9 @@ export type RunRow = {
   batch: string; recheck: number;
   /** Its combo was mandatory when queued: its review counts toward the head's coverage and its important findings gate merges. */
   mandatory: number;
+  /** A refused post's notice on the pull request: pending until the kernel takes the notice write, sent, or failed once tries run out
+   * (a kernel that is down for a while never leaves the pull request silent without a trace). */
+  notice: "pending" | "sent" | "failed" | null; notice_tries: number;
   /** 1 once its review is stored whole (no important finding withheld); what coverage reads, never its post's fate. */
   complete: number | null;
   /** The ledger's tokens for its model token (the kernel's figure), and how long it ran. */
@@ -116,7 +119,7 @@ export function createEngine(d: EngineDeps) {
   }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
@@ -390,9 +393,36 @@ export function createEngine(d: EngineDeps) {
 
   /** A refused post is never silent: the run row keeps the reason, and the PR's notice says (in fixed words) that this head's
    * review was not posted. The PR's task is quiet, so it is not where an author would see it; a per-push run has no author to
-   * tell, so the pull request is the place. */
+   * tell, so the pull request is the place. Delivery is its own state on the row (pending), so a kernel that can't take the notice
+   * now is tried again on later ticks instead of the pull request staying silent. */
   function refused(r: RunRow, why: string) {
-    void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why });
+    run("UPDATE runs SET notice = 'pending' WHERE id = ? AND notice IS NULL", r.id);
+    void deliver(runRow(r.id)!);
+  }
+
+  /** The notice writes a refused post's fixed words reach the pull request, retried while they are pending (a permanent failure
+   * is tried a bounded number of times, then logged and left as failed rather than every tick forever). */
+  const NOTICE_TRIES = 8;
+  const delivering = new Set<string>();
+  async function deliver(r: RunRow) {
+    if (r.notice !== "pending" || delivering.has(r.id)) return;
+    delivering.add(r.id);
+    try {
+      await deliverOnce(r);
+    } finally {
+      delivering.delete(r.id);
+    }
+  }
+  async function deliverOnce(r: RunRow) {
+    const write = { repo: r.repo, number: r.number, head: r.head, state: "failed" as const, run: r.id, combo: comboOf(r), why: r.why ?? "not posted: refused" };
+    try {
+      await d.poster.ack(write);
+      run("UPDATE runs SET notice = 'sent' WHERE id = ?", r.id);
+    } catch (e) {
+      const n = (r.notice_tries ?? 0) + 1;
+      run("UPDATE runs SET notice_tries = ?, notice = ? WHERE id = ?", n, n >= NOTICE_TRIES ? "failed" : "pending", r.id);
+      log(n >= NOTICE_TRIES ? "refused post's notice not posted; given up" : "refused post's notice not posted; the next tick asks again", { repo: r.repo, pr: r.number, run: r.id, tries: n, err: String((e as Error).message).slice(0, 200) });
+    }
   }
 
   /** Records why findings changed state: their ids, the head, the reason and who decided (a run, the judge, the owner). */
@@ -592,6 +622,7 @@ export function createEngine(d: EngineDeps) {
       }
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
+    for (const r of all<RunRow>("SELECT * FROM runs WHERE notice = 'pending'")) await deliver(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       waiting.delete(r.id);
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));

@@ -9,7 +9,7 @@ import { reviewInput, requestChain } from "../src/review-loop.ts";
 import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
 import { carryTarget } from "../src/successor.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.ts";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -236,12 +236,12 @@ test("a head-bound kind stays valid when its executor revision or base moves; ev
   await review(unnamed.approval, verdict);
   await until(() => k.records.get(unnamed.approval).state === "stale");
   assert.equal(k.records.get(unnamed.approval).state, "stale");
-  // Nor does one whose plan names no target at all: two blank plans are not "the same".
+  // A plan that names no target at all is refused when it is filed, never carded: it could not say which head it is of, and
+  // a stale close that refiled it would file the same blank plan again (the next test covers the filing refusal).
   fx.headTargets = {};
-  const blank = await pending(await tool("head_post"));
-  await review(blank.approval, verdict);
-  await until(() => k.records.get(blank.approval).state === "stale");
-  assert.equal(k.records.get(blank.approval).state, "stale");
+  const blank = await tool("head_post");
+  assert.match(await text(blank), /names no repo\/ref\/commit target/);
+  assert.equal(k.records.get(unnamed.approval).state, "stale");
   fx.headTargets = { "acme/x#1": { repo: "acme/x", ref: "pull/1", commit: "h1", base_sha: "b2" } };
 
   // Every other kind keeps today's full revalidation. A redeployed executor stales it...
@@ -259,6 +259,40 @@ test("a head-bound kind stays valid when its executor revision or base moves; ev
   await until(() => k.records.get(based.approval).state === "stale");
   assert.equal(k.records.get(based.approval).state, "stale");
   assert.equal(fx.executes.filter((e) => e.id === based.approval).length, 0);
+});
+
+test("a head-bound kind keeps its approval requirements, and a plan that names no head is refused before it is filed", async (t) => {
+  const { k, fx, tool, pending, review, redeploy } = await twin(t, { binds: ["repo", "ref", "commit"] });
+  const verdict = { decision: "approve", reason: "ok", model: "~acme/model-a" };
+  // A raised floor or a new panel requirement is the kind's declaration (its policy), and it holds a record approved under the
+  // old one: the head still standing doesn't let a weaker yes run under a stricter rule.
+  const raised = await pending(await tool("head_post"));
+  const kinds = JSON.parse(readFileSync(join(k.dir, "writes.json"), "utf8"));
+  writeFileSync(join(k.dir, "writes.json"), JSON.stringify({ ...kinds, "twin.head": { ...kinds["twin.head"], floor: 2, panel: true } }));
+  await review(raised.approval, verdict);
+  await until(() => k.records.get(raised.approval).state === "stale");
+  assert.equal(k.records.get(raised.approval).state, "stale");
+  assert.equal(fx.executes.filter((e) => e.id === raised.approval).length, 0);
+  // The redeploy alone (the code revision) still does not stale it once the stricter kind is back to the record's policy.
+  writeFileSync(join(k.dir, "writes.json"), JSON.stringify(kinds));
+  const bound = await pending(await tool("head_post"));
+  redeploy("r-next");
+  await review(bound.approval, verdict);
+  await until(() => k.records.get(bound.approval).state === "done");
+  assert.equal(fx.executes.filter((e) => e.id === bound.approval).length, 1);
+
+  // A plan that names no head is refused at filing: no record, no card, nothing to stale and refile blank.
+  const count = () => k.records.db.prepare("SELECT COUNT(*) n FROM records WHERE kind = 'twin.head'").get().n;
+  const before = count();
+  fx.headTargets = {};
+  const refused = await tool("head_post");
+  // The tool's answer is the refusal; the executor never sees it, and no record was filed.
+  assert.match(await text(refused), /names no/);
+  assert.equal(count(), before);
+  // A target missing one of the bound fields is the same: it can't say which head it is of.
+  fx.headTargets = { "acme/x#1": { repo: "acme/x", ref: "pull/1", commit: "" } };
+  assert.match(await text(await tool("head_post")), /names no/);
+  assert.equal(count(), before);
 });
 
 test("a module write on a task under a routine's run task gets that routine's autonomy cap, as the runner's kinds do", async (t) => {
