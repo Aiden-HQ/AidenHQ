@@ -72,11 +72,13 @@ the fact also needs, from the code host, the `<job id>` as a real Actions job of
 (`packages (<shard>)`/`modules (<shard>)`, conclusion `success`) whose `run_attempt` has a completed `success`
 `post-checks` job: the poster CI itself ran. The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
 whose `head_sha` is the graded head. The fact names the suite's `run` and directory from `areas.json` at the run's own
-base (`base_sha`; a merged PR's run no longer lists its PR, so the PR's own base oid stands in) and only when that map
-is byte-identical to the head's, never the branch tip. Two of CI's own preconditions are checked too: `ci.yml` at the
-run's base must be the graded head's own, byte for byte (a PR that rewrote the workflow ran its own CI), and the suite's
-directory must be a directory at the graded head (`post-checks` posts nothing for one `run-suites.sh` reported `gone:`,
-so a deleted directory is a green job with nothing run). Because the workflows, the suite runner and the map are the
+base (`base_sha`), and only when that map is byte-identical to the head's, never the branch tip. That `base_sha` is the
+only immutable base: GitHub drops a run's `pull_requests` entry once the PR merges, so a merged run may answer no base,
+and the PR's `baseRef` is where its base branch points now, not where it pointed when the run started — it is never a
+stand-in, and such a run mints nothing. Two of CI's own preconditions are checked too: `ci.yml` at the run's base must
+be the graded head's own, byte for byte (a PR that rewrote the workflow ran its own CI), and the suite's directory must
+be a directory at the graded head (`post-checks` posts nothing for one `run-suites.sh` reported `gone:`, so a deleted
+directory is a green job with nothing run). Because the workflows, the suite runner and the map are the
 inputs that decide what a shard ran, a PR that changes anything under `.github/workflows/` or `.github/ci/` mints no
 command fact at all.
 

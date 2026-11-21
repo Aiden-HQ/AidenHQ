@@ -146,8 +146,9 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
       for (const j of jobs) if (j?.name === "post-checks") post.push({ run_attempt: j.run_attempt ?? null, state: j.status ?? null, conclusion: j.conclusion ?? null });
       if (jobs.length < 100) break;
     }
-    // The run's own base: main as it was when this run started (a PR payload's base.sha goes stale as main moves), and one
-    // value only — two PRs on one run are an ambiguity, never a pick.
+    // The run's own base: main as it was when this run started, as this run recorded it. One value only — two PRs on one run,
+    // or two bases, are an ambiguity, never a pick. GitHub drops the `pull_requests` entry once the PR merges, which is why a
+    // merged run answers no base; the PR's own `baseRef` is the branch tip now, not this, and is never used in its place.
     const bases = new Set((u?.pull_requests ?? []).filter((p: any) => p?.head?.sha === u?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
     return { status: 200, json: { id: u.id, run_attempt: u.run_attempt ?? null, event: u.event ?? null, head_sha: u.head_sha ?? null, status: u.status ?? null,
       workflow_id: u.workflow_id ?? null, workflow_path: w?.path ?? null, workflow_state: w?.state ?? null, base_sha: bases.size === 1 ? String([...bases][0]) : null,

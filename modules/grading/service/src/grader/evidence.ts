@@ -90,9 +90,11 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * and again at `5c9381c` (suite `121603408900`). Requiring either would refuse every real per-suite check, so the job record
  * and the `post-checks` job are what this fact binds to.
  *
- * The command and directory come from `areas.json` at the run's own base, byte-identical to the head's: CI reads the map from
- * the base commit, so the two agree unless main's map moved or the PR edited it, and either way the base can't name a command
- * the graded head doesn't carry. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
+ * The command and directory come from `areas.json` at the run's own recorded base (`base_sha`), byte-identical to the head's:
+ * CI reads the map from the base commit, so the two agree unless main's map moved or the PR edited it, and either way the base
+ * can't name a command the graded head doesn't carry. That base is the only immutable one; the PR's `baseRef` is where its base
+ * branch points now, which moves as main advances, so it is never a stand-in, and a run whose base GitHub no longer records
+ * mints nothing. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
  * to the head's (a PR that rewrote the workflow ran its own CI), and the suite's directory is a directory at the graded head
  * (`post-checks` posts nothing for a `gone:` one, so a deleted directory is a green job with nothing run). Which suites a shard
  * ran is known only inside the run (CI writes the plan to the `checks` job's outputs, which GitHub does not expose on the job),
@@ -104,10 +106,6 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
   if (!deps.file || !deps.job || !deps.run || !deps.exists) return [];
   const head = String(pr.headRefOid ?? "");
   if (!SHA40.test(head)) return [];
-  // The base CI read the workflow and the map from. A pull-request run's own `pull_requests` names it while the PR is open;
-  // GitHub drops that list once the PR merges, so a graded merge falls back to the PR's own base oid — the same main the run
-  // started from, and no branch tip invented for it.
-  const prBase = String(pr.baseRef?.target?.oid ?? "");
   const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
   if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
   // CI's own execution inputs (the workflows, the suite map and the selector and runner that read it): a PR that edits any of
@@ -143,8 +141,11 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     const attempt = String(j.run_attempt ?? u.run_attempt ?? "");
     const post = (u.post_checks ?? []).find((p: any) => String(p?.run_attempt ?? "") === attempt && p?.state === "completed" && p?.conclusion === "success");
     if (!post) return undefined;
-    // The run's base is where CI read `areas.json` (main as it was when the run started); without one there is no command to name.
-    const base = SHA40.test(String(u.base_sha ?? "")) ? String(u.base_sha) : prBase;
+    // The run's own recorded base is where CI read `areas.json` and the workflow (main as it was when the run started). It is
+    // the only immutable source: the PR's `baseRef` is the current tip of its base branch, which moves as main advances, so it
+    // cannot stand in. A run whose base GitHub no longer records (the `pull_requests` entry is dropped once the PR merges)
+    // mints nothing: without the run's own base, nothing establishes which workflow or command actually ran.
+    const base = String(u.base_sha ?? "");
     if (!SHA40.test(base)) return undefined;
     return { name: String(c.name), base };
   }));

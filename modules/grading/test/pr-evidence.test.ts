@@ -267,18 +267,25 @@ test("an unreadable map, a truncated list, or a suite the map does not name mint
   assert.ok(noCommand(await at(factDeps(cutFiles))), "a cut file list");
 });
 
-test("a merged PR's run, whose pull_requests list GitHub dropped, takes the base from the PR itself", async () => {
-  // GitHub empties a run's `pull_requests` once the PR merges: the run answers no base, and the PR's own base oid is what CI
-  // read the map from. The fact still mints, and names the same command.
+test("a run whose own base GitHub no longer records mints nothing: the PR's current base is not a stand-in", async () => {
+  // GitHub empties a run's `pull_requests` once the PR merges, so the run answers no base. The PR's `baseRef` is where its base
+  // branch points *now*, and main has moved since that run; a map read there is a different commit's map. No fact either way,
+  // even though that current tip reads fine.
+  const tip = SHA("f");
   const prs = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
-  prs[0].baseRef = { target: { oid: SHA("c") } };
-  const ev = await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "", factDeps(prs, { runs: { 7: { base_sha: null } }, base: SHA("c") }));
-  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
-  // Neither one readable: no base, no fact.
-  const none = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
-  none[0].baseRef = { target: { oid: "" } };
-  assert.ok(noCommand(await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "", factDeps(none, { runs: { 7: { base_sha: null } } }))));
+  prs[0].baseRef = { target: { oid: tip } };
+  const ev = await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "", factDeps(prs, { runs: { 7: { base_sha: null } }, base: tip }));
+  assert.ok(noCommand(ev), ev.facts.join("\n"));
+  // A base that is not a full sha is no answer either.
+  const bad = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
+  assert.ok(noCommand(await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "", factDeps(bad, { runs: { 7: { base_sha: "main" } } }))));
+  // The run's own recorded base is what mints, even when the PR's current tip is something else entirely.
+  const ok = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
+  ok[0].baseRef = { target: { oid: tip } };
+  const good = await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "", factDeps(ok, { base: SHA("d") }));
+  assert.ok(good.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), good.facts.join("\n"));
 });
+
 
 test("an external_id that isn't CI's <run>/<job>/<shard> mints nothing", async () => {
   for (const external of ["", "7/122", "7/122/1/2", "7/x/1", "abc/122/1"]) {
