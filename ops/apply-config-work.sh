@@ -768,6 +768,16 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-security-sbom.timer
     rm -f "$units/aidenhq-security-sbom.service" "$units/aidenhq-security-sbom.timer" "$HOME/.config/aidenhq-security-sbom.env" && systemctl --user daemon-reload && echo "security sbom timer removed (security off)"
   fi
+  # The runner template the enabled units run (ops/setup.sh installs it on a fresh host): an apply keeps it in step with the
+  # checkout, so a rollout lands the ExecStartPre backoff with the scripts it calls and a rollback (or a checkout without the
+  # new helper) never leaves a unit whose ExecStartPre names a file that isn't there; the next start picks it up. Only while
+  # the instance declares runner units, so a host without them keeps nothing.
+  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then
+    if ! cmp -s ops/units/aidenhq-ci-runner@.service "$units/aidenhq-ci-runner@.service"; then
+      cp ops/units/aidenhq-ci-runner@.service "$units/"
+      systemctl --user daemon-reload && echo "ci runner unit template installed/updated"
+    fi
+  fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
   # drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each start limit cleared before its
   # start (ops/ci-runner-units.sh).

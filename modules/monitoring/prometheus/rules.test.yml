@@ -181,6 +181,76 @@ tests:
         alertname: CiRunnerRestartLooping
         exp_alerts: []
 
+  # The backoff itself, not the sampled active bit: a unit backing off a refused token is activating for nearly the whole
+  # 60s cap, so its active state can read 0 across every scrape. Once the wait has sat at the cap for 10 minutes it fires,
+  # and it names the unit. (The 10m+5m window: the input starts at the cap and holds it.)
+  - name: a runner backing off at the cap fires CiRunnerBackoff even while it never reads active
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_backoff{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '60x40'
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '0x40'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x40'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerBackoff
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scope: user
+              unit: aidenhq-ci-runner@3.service
+            exp_annotations:
+              summary: "CI runner unit aidenhq-ci-runner@3.service has been backing off a refused registration token for over 10 minutes: its sign-in is probably missing admin:org"
+
+  # The first refusals are a short delay (1s, 2s, 4s, ... below the cap): that is the backoff working, not a stuck sign-in.
+  - name: a runner in the first seconds of backoff stays quiet
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_backoff{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '1 2 4 8 16 32 1 2 4 8 16 32 1 2 4 8 16 32 1 2 4 8 16 32 1 2 4 8 16 32 1 2 4 8 16 32'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x36'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x36'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerBackoff
+        exp_alerts: []
+
+  # A runner that mints tokens has no backoff series at all: quiet.
+  - name: a runner with no persisted backoff is quiet
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '1x36'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x36'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x36'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerBackoff
+        exp_alerts: []
+
+  # A planned drain stops the units on purpose; a stale marker a drain left at the cap raises nothing.
+  - name: a persisted backoff during a planned drain fires nothing
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_backoff{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '60x40'
+      - series: 'aidenhq_fleet_draining'
+        values: '1x40'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerBackoff
+        exp_alerts: []
+
   # A unit that failed is still in the snapshot, so it reads as UnitFailed and the missing-unit rule leaves it alone.
   - name: a failed CI runner unit reads as UnitFailed, not as missing
     interval: 1m

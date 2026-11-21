@@ -1,7 +1,7 @@
 // The kernel brokers the GitHub code host's operations: one grant check here, the code host's own key on the call, the answer
 // passed back as it came; no code host → 404. The owner's token is never an op: the code host holds it and runs each op itself.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import http, { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import { createCodehost } from "../src/codehost.ts";
@@ -379,4 +379,44 @@ test("an oversized error answer streams through unchanged and records no need", 
   await op.op("ci", "runner_token", { org: "acme" }, res);
   assert.deepEqual(needs, [], "a partial read never records a need");
   assert.equal(Buffer.concat(chunks).toString("utf8"), answer, "the answer reaches the caller as it came");
+});
+
+// The caller hanging up mid-answer settles the op and cancels the upstream read: a wrapper parked on a full pipe (a caller
+// that stopped reading an oversized body) neither stalls op() forever nor leaves the code host's response open. The caller
+// here is a real ServerResponse whose client destroys its socket after the headers.
+test("a caller that disconnects mid-answer cancels the oversized stream", async (t) => {
+  // A body far past NEED_BODY, written slowly, so the source stays pending until the disconnect ends it.
+  let upstreamEnded = false;
+  const big = Buffer.alloc(4 << 20, 0x78);
+  const host = createServer((req, res) => {
+    req.resume().on("end", () => {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.write('{"error":"');
+      const pump = () => { if (res.destroyed) { upstreamEnded = true; return; } if (res.write(big)) setImmediate(pump); else res.once("drain", pump); };
+      res.on("close", () => { upstreamEnded = true; });
+      pump();
+    });
+  });
+  await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
+  t.after(() => host.close());
+  const url = `http://127.0.0.1:${host.address().port}`;
+  const op = createCodehost({
+    grants: () => [{ module: "ci", runner: { orgs: ["acme"] } }],
+    repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }),
+    secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
+  });
+  // The kernel's own side of the answer: a real response over a socket whose client hangs up after reading a little.
+  const caller = createServer((req, res) => { void op.op("ci", "runner_token", { org: "acme" }, res); });
+  await new Promise((ok) => caller.listen(0, "127.0.0.1", ok));
+  t.after(() => caller.close());
+  await new Promise<void>((ok) => {
+    const req = http.request({ host: "127.0.0.1", port: caller.address().port, path: "/v1/codehost/runner_token", method: "POST" }, (r) => {
+      r.once("data", () => { r.destroy(); ok(); });
+    });
+    req.on("error", () => ok());
+    req.end("{}");
+  });
+  // The op's promise settles and the upstream answer is torn down, rather than a stalled write waiting on a dead caller.
+  for (let i = 0; i < 200 && !upstreamEnded; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(upstreamEnded, "the disconnected caller ends the upstream answer");
 });

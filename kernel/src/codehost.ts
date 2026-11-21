@@ -283,8 +283,17 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
           size += n.value.length;
           if (size > NEED_BODY) {
             // Too big to hold whole: hand what was read and the rest of the answer on unread, and record no need from a partial read.
+            // `it` is driven by the source, so a caller that hangs up ends this generator through `more.destroy()`, which
+            // returns the upstream answer to the code host's pool instead of leaving it stalled under a full pipe.
             const head = Buffer.concat([...chunks, n.value]);
-            more = Readable.from((async function* () { yield head; for (;;) { const x = await it.next(); if (x.done) return; yield x.value; } })());
+            const source = it;
+            more = Readable.from((async function* () {
+              try { yield head; for (;;) { const x = await source.next(); if (x.done) return; yield x.value; } }
+              finally { void Promise.resolve(source.return?.()).catch(() => {}); }
+            })());
+            // Destroying the wrapper (pipeline does it when the caller hangs up) returns the upstream answer even while the
+            // generator is parked awaiting a chunk under backpressure: nothing is left holding the code host's connection.
+            more.once("close", () => r.destroy());
             break;
           }
           chunks.push(n.value);
@@ -306,8 +315,17 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       }
       res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json"), ...(r.headers["x-aidenhq-commit"] ? { "x-aidenhq-commit": String(r.headers["x-aidenhq-commit"]) } : {}) });
       if (body) return void res.end(body);
+      // The caller's answer is streamed, and the op settles when the response or the answer closes: a caller that hangs up
+      // mid-answer destroys the source, so an oversized body parked on a full pipe stops the upstream read rather than
+      // stalling this op and holding the code host's connection open.
       const out = more ?? r;
-      await new Promise<void>((ok, reject) => { out.pipe(res); out.on("end", ok).on("error", reject); });
+      await new Promise<void>((ok, reject) => {
+        let settled = false;
+        const done = (e?: Error) => { if (settled) return; settled = true; if (e) reject(e); else ok(); };
+        out.on("end", () => done()).on("error", done).on("close", () => done());
+        res.on("close", () => { if (!res.writableEnded) out.destroy(); });
+        out.pipe(res);
+      });
     },
   };
 }

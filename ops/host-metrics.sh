@@ -54,6 +54,25 @@ write() { # name: atomic, so node-exporter never reads half a file
         echo "aidenhq_unit_failed{scope=\"$scope\",unit=\"$unit\"} $([ "$active" = failed ] && ! is_paused "$unit" && echo 1 || echo 0)"
       done
   done
+  # A runner unit's persisted wait after a refused registration token (ops/lib/ci-runner-backoff.sh): seconds, absent once a
+  # token mints or the marker is stale. It is the loop's own state, not the unit's sampled active bit: a unit backing off is
+  # activating for nearly the whole 60s cap, so a 30s snapshot can miss every active interval and CiRunnerRestartLooping's
+  # changes() can stay at zero; CiRunnerBackoff reads this instead and cannot miss a loop that is backing off.
+  echo "# HELP aidenhq_unit_backoff The CI runner unit's wait after a refused registration token, in seconds (0 when there is none)."
+  echo "# TYPE aidenhq_unit_backoff gauge"
+  for backoff_dir in "$data"/ci-runner; do
+    [ -d "$backoff_dir" ] || continue
+    for marker in "$backoff_dir"/*.backoff; do
+      [ -f "$marker" ] || continue
+      delay="$(cat "$marker" 2>/dev/null || true)"
+      [[ "$delay" =~ ^[0-9]+$ ]] && [ "$delay" -ge 1 ] || continue
+      stamp="$(stat -c %Y "$marker" 2>/dev/null || true)"
+      [[ "$stamp" =~ ^[0-9]+$ ]] || continue
+      [ $(( $(date +%s) - stamp )) -le 900 ] || continue
+      [ "$delay" -le 60 ] || delay=60
+      echo "aidenhq_unit_backoff{scope=\"user\",unit=\"aidenhq-ci-runner@$(basename "$marker" .backoff).service\"} $delay"
+    done
+  done
   # The declared set: the enabled user units above. A per-unit `is-enabled` reads a unit systemd unloaded after a stop as absent, which
   # would look like a retirement; `list-unit-files` reads the unit files, so a stopped unit still counts as declared.
   systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null \

@@ -132,6 +132,19 @@ test("a marker that can't be written still ends the attempt as a refusal", async
   assert.ok(!r.calls.some((c) => c.startsWith("docker compose run")), "the job's container never runs without a token");
 });
 
+// The same unwritable data dir must not keep the runner down once GitHub mints again: clearing the marker is best effort
+// (rm -f fails with ENOTDIR under a file where the dir should be), so the token that mints still starts the job's container.
+test("after the token service recovers, an unwritable state dir does not stop the runner", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "fail"), "");
+  writeFileSync(join(dir, "data"), "not a directory");
+  assert.equal((await run(dir)).status, 1, "a refusal is still a refusal while the marker cannot be written");
+  rmSync(join(dir, "fail")); // GitHub mints again; the broken data dir is unchanged
+  const minted = await run(dir);
+  assert.equal(minted.status, 0, minted.out);
+  assert.ok(minted.calls.some((c) => c.startsWith("docker compose run")), "the job's container runs once the token mints");
+});
+
 // The scripts keep the marker through one helper, so its path and sanitisation live in one place: an org id with a slash
 // (impossible in a unit name, possible in an argument) never writes outside the data dir.
 test("one marker per unit, under the data dir, from both scripts", async () => {

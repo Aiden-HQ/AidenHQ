@@ -100,10 +100,10 @@ groups:
       # Restart=always with RestartSec=1 never made UnitFailed (the unit never fails), so a runner whose registration token is
       # refused was a silent one-second loop; this names the unit that loops. A looping unit changes active state again and
       # again and spends real time out of it; a runner going job to job changes twice per job and is otherwise active, so its
-      # churn stays quiet (the average gate) unless almost all its jobs are under a couple of minutes. The ExecStartPre backoff
-      # (ops/ci-runner-backoff.sh) leaves a refused unit activating, which also empties CiRunnersDown's active count once the
-      # whole fleet refuses; this one fires sooner (5m) and on one unit among healthy ones. Gated like its neighbours: no
-      # planned drain, a fresh units.prom.
+      # churn stays quiet (the average gate). It is the second of two: a refusal that backs off (ops/ci-runner-backoff.sh) is
+      # activating for nearly the whole 60s wait, so 30s snapshots can miss every active interval and changes() can be zero --
+      # CiRunnerBackoff below reads the wait itself, which no scrape can miss. Gated like its neighbours: no planned drain, a
+      # fresh units.prom.
       - alert: CiRunnerRestartLooping
         expr: |
           changes(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) > 4
@@ -114,6 +114,20 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "CI runner unit {{ $labels.unit }} keeps restarting and isn't staying up: its registration token is probably refused"
+      # The runner's own record of a refused token: aidenhq_unit_backoff is the wait ops/ci-runner.sh persisted before its last
+      # attempt (seconds, absent once a token mints or the marker is stale), so a unit that is backing off reads as backing off
+      # however the active bit is sampled. Fires when the wait has been at the 60s cap for 10 minutes: a short spike in the
+      # delay is a first refusal (1s, 2s, 4s: under five attempts), while a refusal that isn't clearing sits at the cap. One
+      # unit among healthy ones, which CiRunnersDown cannot see. Gated like its neighbours: no planned drain, a fresh units.prom.
+      - alert: CiRunnerBackoff
+        expr: |
+          min_over_time(aidenhq_unit_backoff{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) >= 60
+          and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "CI runner unit {{ $labels.unit }} has been backing off a refused registration token for over 10 minutes: its sign-in is probably missing admin:org"
       # A unit that reported within the last day and is gone from the snapshot now is named by unit: expected units
       # come from the series themselves (a unit that was there), not a fixed list. A dead exporter is HostMetricsExporterStale's.
       # A unit stopped and disabled in one step is retired, and absent is what it should look like, so only a unit systemd still

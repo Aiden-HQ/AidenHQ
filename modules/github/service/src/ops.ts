@@ -148,11 +148,28 @@ async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): P
   return { status: 200, json: { sha: String(r.body?.commit?.sha ?? "") } };
 }
 
+/** The scopes that cover `admin:org`'s runner registration, GitHub's OAuth tree (its client.ts IMPLIES): any of these grants it. */
+const RUNNER_SCOPES = ["admin:org", "write:org", "manage_runners:org"];
+/**
+ * A runner registration refused with no usable `X-Accepted-OAuth-Scopes` header (the client cannot name the scope from the
+ * answer alone) is still a missing `admin:org` when the sign-in's own scopes say so: the owner's fix is the same one. GitHub
+ * omits that header on some 403s, so the op derives the need from the known scopes instead of leaving a plain error.
+ */
+const missingRunnerScope = (ctx: OpsContext) => !RUNNER_SCOPES.some((s) => ctx.access.scopes().includes(s));
+
 /** One op's answer: a status, then a JSON body (or, for fetch, the bundle's open file stream in `json`). */
 export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<Answer> {
   if (op === "runner_token") {
     if (!/^[\w.-]+$/.test(String(b.org ?? ""))) throw fail(400, `${String(b.org)} is not an org`);
-    const r = await ok(ctx, "POST", `/orgs/${b.org}/actions/runners/registration-token`);
+    const path = `/orgs/${b.org}/actions/runners/registration-token`;
+    // The client classifies a 403 with a usable X-Accepted-OAuth-Scopes as a scope need and throws it here unchanged; a 403
+    // it could not classify comes back as an answer, and is still the owner's missing runner permission when the sign-in's
+    // own scopes say admin:org is absent. Otherwise it stays the plain error it was.
+    const r = await ctx.access.rest("POST", path);
+    if (r.status >= 300) {
+      if (r.status === 403 && missingRunnerScope(ctx)) throw Object.assign(fail(403, `GitHub needs the \`admin:org\` permission: reconnect GitHub on the board (Settings, Connections)`), { need: { cause: "scope", scope: "admin:org" } });
+      throw fail(r.status === 409 ? 409 : 502, `GitHub POST ${path}: ${r.status} ${r.body?.message ?? ""}`.trim());
+    }
     return { status: 200, json: { token: r.body?.token, expires_at: r.body?.expires_at } };
   }
   const s = slugOf(b.repo);

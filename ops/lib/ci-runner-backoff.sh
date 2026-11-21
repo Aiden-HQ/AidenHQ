@@ -49,5 +49,9 @@ ci_runner_backoff_write() {
   fi
 }
 
-# Forget the delay (a token minted): the next refusal starts again at a second.
-ci_runner_backoff_clear() { rm -f "$(ci_runner_backoff_marker "$1")"; }
+# Forget the delay (a token minted): the next refusal starts again at a second. Best effort: a data dir that cannot be
+# written (a file where the dir should be, ENOTDIR) must not stop the job now that GitHub mints again -- the marker is only
+# a wait, and a stale one is dropped by ci_runner_backoff_read's staleness check anyway.
+ci_runner_backoff_clear() {
+  rm -f "$(ci_runner_backoff_marker "$1")" 2>/dev/null || true
+}
