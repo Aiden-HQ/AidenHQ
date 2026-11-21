@@ -151,6 +151,7 @@ describe("graded done", () => {
     completionGate(grades, "t", "task_finish");
     const criteria = [{ id: "1", met: "no", evidence: "open" }];
     expect(grades.record("t", { version: "c1", outcome: "cannot_judge", model: "glm", criteria })).toMatchObject({ state: "needs_revision", attempts: 1 });
+    expect(grades.get("t").verdicts.at(-1).verdict).toBe("needs_revision");
   });
 
   it("cannot_judge settles the row ungraded on the first pass, with no retry ladder", () => {

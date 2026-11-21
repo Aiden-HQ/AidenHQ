@@ -56,7 +56,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // An empty recorded version (no deliverable then) is stale once one appears.
           const found = now.status === "done" || now.status !== s.status ? "" : (await gather(s.deliverable, gradeDeps(now), s.rubric)).version ?? "";
           // A versionless close also waits out work that has started since: an open sub-task or a card on the task.
-          const active = !s.version && now.status !== "done" && ((await pc.children(now.id)).length > 0 || (await recordsOn(now).catch(() => [])).some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome)));
+          const active = !s.version && now.status !== "done" && ((await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome)));
           if (now.status !== "done" && (now.status !== s.status || active || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
@@ -75,7 +75,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         // A refused close (the task is already done, or moved on): "is done" is told only when it is done.
         if (s.do === "done" && (await pc.issue(task).then((i: Json) => i.status, () => "")) !== "done") {
           // An ungraded close the kernel refuses (its change request is still open): the row goes back to waiting, so the next pass tries again.
-          if (s.ungraded && status === 409) await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" }).catch(() => {});
+          if (s.ungraded && status === 409) {
+            try { await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" }); }
+            catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
+          }
           steps.length = 1;
         }
       }

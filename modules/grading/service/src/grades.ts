@@ -377,7 +377,9 @@ export class Grades {
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt, now);
-    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
+    // A verdict that marks a criterion unmet is a rejection whatever its outcome says, in the history too.
+    const unmet = ["cannot_judge", "error"].includes(v.outcome) && v.criteria.some((c) => c.met === "no");
+    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
     const verdicts = [...g.verdicts, verdict].slice(-20);
     if (v.outcome === "satisfied") return set("satisfied", g.attempts, verdicts, 0, null, now);
     // Grader infrastructure failing, cannot_judge, missing evidence and unverified-only close the task done, ungraded (the loop's note says why).
@@ -386,8 +388,7 @@ export class Grades {
       if (failures >= MAX_GRADER_FAILURES) return set("satisfied", g.attempts, verdicts, 0, null, now);
       return set("grading_failed", g.attempts, verdicts, failures, new Date(now).toISOString(), now);
     }
-    // A verdict that marks a criterion unmet is a rejection whatever its outcome says.
-    if ((v.outcome !== "needs_revision" && !v.criteria.some((c) => c.met === "no")) || unverifiedOnly(v.criteria)) return set("satisfied", g.attempts, verdicts, 0, null, now);
+    if ((v.outcome !== "needs_revision" && !unmet) || unverifiedOnly(v.criteria)) return set("satisfied", g.attempts, verdicts, 0, null, now);
     if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("escalated", g.attempts, verdicts, 0, null, now);
     const attempts = g.attempts + 1;
     return set(attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);
