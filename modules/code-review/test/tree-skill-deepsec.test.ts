@@ -1,11 +1,12 @@
 // Tree mode, skill options and the deepsec engine, against stub CLIs (a fake deepsec, a fake claude).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deepsec, deepsecSeverity, setupPath } from "../recipe/deepsec.ts";
-import { review } from "../recipe/review.ts";
+import { bound, review, scrub } from "../recipe/review.ts";
 import { comboProblem, resolveSkill, runEngine } from "../recipe/engines.ts";
 
 const A = "a".repeat(40), E = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -17,7 +18,7 @@ const withEnv = async (env, fn) => { const old = { ...process.env }; Object.assi
 function fakeDeepsec() {
   const bin = mkdtempSync(join(tmpdir(), "cr-ds-"));
   writeFileSync(join(bin, "deepsec"), `#!/bin/sh
-{ echo "CMD:$*"; echo "CWD:$(pwd)"; echo "DATA:$DEEPSEC_DATA_ROOT"; echo "PI:$PI_CODING_AGENT_DIR"; env | grep -E '^(OPENROUTER_API_KEY|GH_TOKEN)=' ; } >> "${bin}/log"
+{ echo "CMD:$*"; echo "CWD:$(pwd)"; echo "DATA:$DEEPSEC_DATA_ROOT"; echo "PI:$PI_CODING_AGENT_DIR"; env | grep -E '^(OPENROUTER_API_KEY|GH_TOKEN)=' ; cat "$DEEPSEC_DATA_ROOT"/*/INFO.md 2>/dev/null | sed 's/^/INFO:/'; } >> "${bin}/log"
 cmd=$1; pid=repo; while [ $# -gt 0 ]; do [ "$1" = --project-id ] && pid=$2; shift; done
 case "$cmd" in
   init) mkdir -p .deepsec/data/repo "$DEEPSEC_DATA_ROOT/repo"
@@ -48,6 +49,9 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
   assert.match(cmds[1], /--agent pi --model gateway\/~deepseek\/deepseek-flash-latest --thinking-level high/);
   assert.equal(out.setup, undefined);
   assert.match(log, new RegExp(`DATA:${scratch}/deepsec-[^/]+/data\\n`));
+  // Every step runs from the run's own workspace and config, never the checkout's .deepsec (whose config deepsec would load as code).
+  assert.deepEqual([...new Set(log.match(/^CWD:.*$/gm))], [`CWD:${realpathSync(scratch)}/${log.match(/DATA:.*\/(deepsec-[^/]+)\/data/)[1]}/w`]);
+  assert.match(log, /^INFO:# svc$/m);
   assert.match(log, /^OPENROUTER_API_KEY=ahqj_run$/m);
   assert.doesNotMatch(log, /GH_TOKEN|ghs_secret/);
   const models = JSON.parse(readFileSync(join(log.match(/PI:(.+)/)[1], "models.json"), "utf8"));
@@ -55,29 +59,66 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
   assert.deepEqual(out.review.covered, ["src/a.js"]);
   assert.match(out.review.incomplete, /left 1 file unanalysed \(src\/b\.js\)/);
 
-  // A PR with no .deepsec: init (spend capped at the budget, on the local route), then process --diff over the change.
+  // A PR with no .deepsec: init (spend capped at the budget, on the local route), then process --diff over the change. The
+  // scan's candidates in files the PR doesn't change (src/b.js) stay pending and are no gap.
   const bin2 = fakeDeepsec(), root2 = repoRoot();
-  const r2 = await withEnv({ ...gw, PATH: `${bin2}:${process.env.PATH}` }, () => deepsec({ root: root2, target: "pr", base: A, model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 3.5, scratch }));
+  const git = (...a) => execFileSync("git", ["-C", root2, "-c", "user.email=t@t", "-c", "user.name=t", ...a], { encoding: "utf8" }).trim();
+  git("init", "-q"); git("add", "src/b.js"); git("commit", "-qm", "base");
+  const baseSha = git("rev-parse", "HEAD");
+  git("add", "src/a.js"); git("commit", "-qm", "change");
+  const r2 = await withEnv({ ...gw, PATH: `${bin2}:${process.env.PATH}` }, () => deepsec({ root: root2, target: "pr", base: baseSha, model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 3.5, scratch }));
   const cmds2 = readFileSync(join(bin2, "log"), "utf8").split("\n").filter((l) => l.startsWith("CMD:")).map((l) => l.slice(4));
   assert.match(cmds2[0], /^init \.deepsec \. --id repo .*--model-auth local .*--max-cost-usd 3\.5 /);
-  assert.match(cmds2[1], new RegExp(`^process .*--diff ${A}$`));
+  assert.match(cmds2[1], new RegExp(`^process .*--diff ${baseSha}$`));
   assert.equal(cmds2.length, 2);
   assert.ok(r2.setup);
+  assert.equal(r2.review.incomplete, undefined);
 });
 
 test("a setup returns only the allowlisted .deepsec files, and a pending setup's files are scanned, never set up again", async () => {
   const bin = fakeDeepsec(), scratch = mkdtempSync(join(tmpdir(), "cr-s-")), root = repoRoot();
   const { setup } = await withEnv({ ...gw, PATH: `${bin}:${process.env.PATH}` }, () => deepsec({ root, target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 1, scratch }));
-  assert.deepEqual(Object.keys(setup).sort(), [".deepsec/data/repo/INFO.md", ".deepsec/deepsec.config.ts", ".deepsec/generated-matchers.ts", ".deepsec/package-lock.json", ".deepsec/package.json"]);
+  assert.deepEqual(Object.keys(setup).sort(), [".deepsec/data/repo/INFO.md", ".deepsec/deepsec.config.ts", ".deepsec/generated-matchers.ts", ".deepsec/package.json"]);
   assert.equal(setup[".deepsec/data/repo/INFO.md"], "# the repo\n");
-  for (const p of [".deepsec/README.md", ".deepsec/AGENTS.md", ".deepsec/.gitignore", ".deepsec/node_modules/x/index.js", ".deepsec/data/repo/files/a.json", ".deepsec/../etc/passwd", ".github/workflows/x.yml", "src/a.js"]) assert.ok(!setupPath(p), p);
-  // The same files given as a pending setup: written, then scanned (no init), and no setup comes back.
+  for (const p of [".deepsec/README.md", ".deepsec/AGENTS.md", ".deepsec/.gitignore", ".deepsec/node_modules/x/index.js", ".deepsec/data/repo/files/a.json", ".deepsec/../etc/passwd", ".deepsec/data/../INFO.md", ".github/workflows/x.yml", "src/a.js"]) assert.ok(!setupPath(p), p);
+  // The same files given as a pending setup: scanned with its INFO.md (no init), nothing written to the checkout, no setup back.
   const bin2 = fakeDeepsec(), root2 = repoRoot();
   const again = await withEnv({ ...gw, PATH: `${bin2}:${process.env.PATH}` }, () => deepsec({ root: root2, target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 1, scratch, setupFiles: { ...setup, ".github/workflows/evil.yml": "x", "src/a.js": "owned" } }));
   assert.equal(again.setup, undefined);
   assert.ok(!existsSync(join(root2, ".github/workflows/evil.yml")));
   assert.equal(readFileSync(join(root2, "src/a.js"), "utf8"), "const q = 1;\nquery(q);\n");
   assert.ok(!readFileSync(join(bin2, "log"), "utf8").includes("CMD:init"));
+  assert.match(readFileSync(join(bin2, "log"), "utf8"), /^INFO:# the repo$/m);
+  assert.ok(!existsSync(join(root2, ".deepsec")));
+});
+
+test("repo content never runs with the token or leaks through a link: a committed binary, linked files, a root config", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "cr-outside-"));
+  writeFileSync(join(outside, "secret"), "host secret\n");
+  const scratch = mkdtempSync(join(tmpdir(), "cr-s-"));
+  // A committed deepsec binary (node_modules only) and a committed INFO.md that links out of the checkout: scanned with the
+  // image's deepsec, the linked INFO.md never read.
+  const bin = fakeDeepsec(), root = repoRoot({ ".deepsec/node_modules/.bin/deepsec": `#!/bin/sh\ntouch "${outside}/ran"\n` });
+  chmodSync(join(root, ".deepsec/node_modules/.bin/deepsec"), 0o755);
+  mkdirSync(join(root, ".deepsec/data/repo"), { recursive: true });
+  symlinkSync(join(outside, "secret"), join(root, ".deepsec/data/repo/INFO.md"));
+  const a = await withEnv({ ...gw, PATH: `${bin}:${process.env.PATH}` }, () => deepsec({ root, target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 1, scratch }));
+  const log = readFileSync(join(bin, "log"), "utf8");
+  assert.ok(!existsSync(join(outside, "ran")));
+  assert.ok(!log.includes("CMD:init") && log.includes("CMD:scan"));
+  assert.doesNotMatch(log, /host secret/);
+  assert.equal(a.setup, undefined);
+  // A committed config that is only a link (to a host file) is "set up": never init, so never read into a setup.
+  const bin2 = fakeDeepsec(), root2 = repoRoot();
+  mkdirSync(join(root2, ".deepsec"));
+  symlinkSync(join(outside, "secret"), join(root2, ".deepsec/deepsec.config.ts"));
+  const b = await withEnv({ ...gw, PATH: `${bin2}:${process.env.PATH}` }, () => deepsec({ root: root2, target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 1, scratch }));
+  assert.ok(!readFileSync(join(bin2, "log"), "utf8").includes("CMD:init"));
+  assert.equal(b.setup, undefined);
+  // A repo-root deepsec config (init's cwd would load it as code): refused before anything runs.
+  const bin3 = fakeDeepsec(), root3 = repoRoot({ "deepsec.config.ts": "export default {}\n" });
+  await assert.rejects(withEnv({ ...gw, PATH: `${bin3}:${process.env.PATH}` }, () => deepsec({ root: root3, target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", budget_usd: 1, scratch })), /deepsec\.config\.ts at its root/);
+  assert.ok(!existsSync(join(bin3, "log")));
 });
 
 test("deepsec's severities: CRITICAL, HIGH and HIGH_BUG are important, the rest nits; a false positive is dropped", async () => {
@@ -130,6 +171,21 @@ test("a deepsec engine returns setup files through review, only the allowlisted 
   const setup = { ".deepsec/data/repo/INFO.md": "# r\n", ".deepsec/deepsec.config.ts": "c", ".github/workflows/x.yml": "evil" };
   const r = await review({ spec: treeSpec(), ws, out, run: async () => ({ read: true, covered: ["src/a.js"], setup, message: JSON.stringify({ findings: [], stale_guidance: [] }) }) });
   assert.deepEqual(Object.keys(r.setup).sort(), [".deepsec/data/repo/INFO.md", ".deepsec/deepsec.config.ts"]);
+  // The run's token (or a key-shaped string) echoed into a setup file is redacted before it leaves the box.
+  assert.deepEqual(scrub({ message: "", read: true, setup: { ".deepsec/data/repo/INFO.md": "key ahqj_run_secret_1 and sk-abcdefghijklmnopqrst" } }, ["ahqj_run_secret_1"]).setup, { ".deepsec/data/repo/INFO.md": "key [redacted] and [redacted]" });
+  // A setup too large for the result is dropped as a gap; the important finding stays.
+  const f = { id: "b".repeat(16), severity: "important", path: "src/a.js", line: 1, title: "t", why: "w", evidence: "e", fix_brief: "f" };
+  const big = bound({ ...r, findings: [f], setup: { ".deepsec/deepsec.config.ts": "x".repeat(300_000) } });
+  assert.equal(big.setup, undefined);
+  assert.match(big.coverage.incomplete, /setup files were too large/);
+  assert.equal(big.findings[0].why, "w");
+});
+
+test("tree mode: a skill engine that doesn't report its reads is shown covering no file, never the whole tree", async () => {
+  const r = await review({ spec: treeSpec({ combo: JSON.stringify({ engine: "skill:sec.x", harness: "claude-code", skill: "/security-audit", model: "~deepseek/deepseek-flash-latest", effort: "low" }) }), ...treeBox({ "src/a.js": "a\n", "src/b.js": "b\n" }),
+    run: async () => ({ read: true, untracked: "/security-audit reads the code its own way", message: JSON.stringify({ findings: [], stale_guidance: [] }) }) });
+  assert.deepEqual([r.coverage.eligible, r.coverage.reviewed, r.coverage.counts], [["src/a.js", "src/b.js"], [], { eligible: 2, reviewed: 0 }]);
+  assert.match(r.coverage_note, /its own way/);
 });
 
 test("a skill option runs the installed skill in its harness over the range, then restates its findings in the same session; only that skill is loaded", async () => {

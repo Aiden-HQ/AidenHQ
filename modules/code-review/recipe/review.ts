@@ -30,13 +30,14 @@
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
 import { checklistText, globRe, matchChecklist } from "./review-checklist.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
+import { plain, readSmall } from "./proc.ts";
 import { page, tools } from "./review-tools.ts";
 import type { Combo, EngineResult } from "./engines.ts";
 
@@ -88,19 +89,6 @@ const LENSES = [
 
 const cap = (s: unknown, n: number) => String(s ?? "").replace(/\u0000/g, "").slice(0, n);
 const fence = (t: unknown, marker: string) => `${marker}\n${String(t).replaceAll(marker, "")}\n${marker}`;
-
-/** A small regular file, never through a link; undefined otherwise. */
-export function readSmall(file: string, max = 20_000) {
-  let fd: number;
-  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
-  try { const st = fstatSync(fd); return st.isFile() ? readFileSync(fd, "utf8").slice(0, max) : undefined; } finally { closeSync(fd); }
-}
-/** Whether `rel` under `root` resolves without a link at any step (a tree may hold one pointing out of it). */
-const plain = (root: string, rel: string) => {
-  let at = root;
-  for (const part of rel.split("/")) { at = join(at, part); const st = lstatSync(at, { throwIfNoEntry: false }); if (!st || st.isSymbolicLink()) return false; }
-  return true;
-};
 
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. */
 export function history(ws: string, out: string, spec: Spec) {
@@ -281,14 +269,15 @@ When you are done, your final message is only this JSON: {"fixed": ["<id>", ...]
 // Credential shapes no review may carry out of the box: our tokens (ahqj_, ahqci_, ahqu_) and sk- style keys.
 const KEYS = /\bahq[a-z]{0,3}_[A-Za-z0-9._-]{8,}|\bsk-[A-Za-z0-9_-]{16,}/g;
 /**
- * An engine's result with credentials taken out of everything it hands back (its message, cause and coverage note): the run's
+ * An engine's result with credentials taken out of everything it hands back (its message, cause, coverage notes and setup files): the run's
  * own token (`secrets`; an engine with a shell could read it from the process tree) and any key-shaped text. The one point every
  * engine's output passes before it is mapped and posted.
  */
 export function scrub(r: EngineResult, secrets: unknown[] = [process.env.OPENROUTER_API_KEY]): EngineResult {
   const known = secrets.filter((k) => typeof k === "string" && k.length >= 8) as string[];
   const s = (t: string) => known.reduce((acc, k) => acc.replaceAll(k, "[redacted]"), t).replace(KEYS, "[redacted]");
-  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}) };
+  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}),
+    ...(r.setup ? { setup: Object.fromEntries(Object.entries(r.setup).map(([p, t]) => [p, s(String(t))])) } : {}) };
 }
 
 /** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
@@ -522,9 +511,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
   if (tree) {
     // The eligible files, apart from what was actually covered: the files the engine says it analysed, else those whose diff a
-    // finder read to the end (an engine that doesn't report its reads covers what it was eligible for, said in coverage_note).
+    // finder read to the end. An engine that doesn't report its reads (untracked) is shown covering none, never the whole tree.
     const unreadSet = new Set(unread), got = covered ? new Set(covered) : undefined;
-    const actual = reviewed.filter((p) => (got ? got.has(p) : !unreadSet.has(p)));
+    const actual = untracked && !got ? [] : reviewed.filter((p) => (got ? got.has(p) : !unreadSet.has(p)));
     Object.assign(result.coverage, { eligible: reviewed, reviewed: actual, counts: { eligible: reviewed.length, reviewed: actual.length } });
   }
   if (spec.option) for (const f of result.findings) Object.assign(f, { option: spec.option, ...(spec.lens ? { lens: spec.lens } : {}) });
@@ -536,6 +525,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
  * can't fit are the last importants withheld too, and the review says so (incomplete): a result over the limit would lose all. */
 export function bound(result: Result, max = 200_000) {
   const cov = result.coverage;
+  // The post takes at most 500 characters of it (schemas/post.json): a long list of gaps is cut, never the post refused.
+  const gap = (t?: string) => { const g = [cov.incomplete, t].filter(Boolean).join("; "); cov.incomplete = g.length > 500 ? `${g.slice(0, 497)}…` : g || null; };
   // A tree has thousands of files: a list cut short is no gap there (the counts say how many), just a shorter list.
   for (const k of ["eligible", "reviewed", "excluded"] as const) {
     const list = cov[k];
@@ -543,8 +534,6 @@ export function bound(result: Result, max = 200_000) {
     if (!result.target) cov.incomplete = [cov.incomplete, `${list.length - 500} more ${k} files not listed`].filter(Boolean).join("; ");
     cov[k] = list.slice(0, 500);
   }
-  // The post takes at most 500 characters of it (schemas/post.json): a long list of gaps is cut, never the post refused.
-  const gap = (t?: string) => { const g = [cov.incomplete, t].filter(Boolean).join("; "); cov.incomplete = g.length > 500 ? `${g.slice(0, 497)}…` : g || null; };
   gap();
   // Sizes summed, not the whole result restringified per finding (a tools run can have thousands); 600 bytes of room for the
   // counts' digits and the note below.
@@ -560,6 +549,8 @@ export function bound(result: Result, max = 200_000) {
     }
   };
   withhold(false);
+  // A setup too large to carry is dropped (said as a gap) before any important finding is cut short.
+  if (total > max && result.setup) { total -= size(result.setup); delete result.setup; gap("deepsec's setup files were too large to file"); }
   if (total > max) {
     for (const f of result.findings) Object.assign(f, { why: cap(f.why, 300), evidence: cap(f.evidence, 300), fix_brief: cap(f.fix_brief, 300) });
     total = size(result) + 600;
