@@ -182,15 +182,19 @@ const withChecks = (n, head, merge, checks, files = ["kernel/src/x.ts"]) => ({
  */
 const PASS = (name, external) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external, app: { slug: "github-actions" } });
 /**
- * The command facts' reads: `file` answers `areas.json` at a base and `ci.yml` at the head; `job` answers the shard's Actions
- * job (null is the 404 a check with no job behind it gets); `run` answers the workflow run CI made. `bases` names the run's
- * base (the base `file` is read at), never the PR's own moving base. No log read exists at all.
+ * The command facts' reads: `file` answers `areas.json` at a base, `ci.yml` at the head and its base, and the map; `job`
+ * answers the shard's Actions job (null is the 404 a check with no job behind it gets); `run` answers the workflow run CI
+ * made; `exists` answers whether a suite's directory is a directory at the head. `base` names the run's base (the base `file`
+ * is read at), never the PR's own moving base. No log read exists at all.
  */
-const factDeps = (prs, { areas = AREAS, jobs = {}, runs = {}, base = SHA("d"), baseAreas } = {}) => {
+const factDeps = (prs, { areas = AREAS, jobs = {}, runs = {}, base = SHA("d"), baseAreas, headWorkflow = "name: ci\n", baseWorkflow, dirs } = {}) => {
   const head = prs[0].headRefOid;
+  const here = dirs ?? ["kernel", "modules/grading", "scripts"];
   return {
     ...depsFor(prs),
-    file: async (_repo, path, ref) => path === ".github/ci/areas.json" && ref === head ? areas : path === ".github/ci/areas.json" && ref === base ? baseAreas ?? areas : null,
+    file: async (_repo, path, ref) => path === ".github/ci/areas.json" ? (ref === head ? areas : ref === base ? baseAreas ?? areas : null)
+      : path === ".github/workflows/ci.yml" ? (ref === head ? headWorkflow : ref === base ? baseWorkflow ?? headWorkflow : null) : null,
+    exists: async (_repo, path, ref) => ref === head && here.includes(path),
     job: async (_repo, id) => jobs[id] === null ? null : { id: Number(id), name: "packages (1)", state: "completed", conclusion: "success", run_id: 7, run_attempt: 1, ...(jobs[id] ?? {}) },
     run: async (_repo, id) => runs[id] === null ? null : { id: Number(id), event: "pull_request", head_sha: head, workflow_path: ".github/workflows/ci.yml",
       workflow_state: "active", run_attempt: 1, base_sha: base, post_checks: [{ run_attempt: 1, state: "completed", conclusion: "success" }], ...(runs[id] ?? {}) },
@@ -315,6 +319,33 @@ test("a job or run read that throws is no answer, not a failed grade", async () 
   const ev = await prEvidence([{ repo: REPO, number: 312, url: url(312), heads: ["branch-a"] }], "", deps);
   assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), ev.facts.join("\n"));
   assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+});
+
+test("a suite whose directory is gone at the graded head mints nothing: a green job that ran nothing is not a pass", async () => {
+  const prs = [withChecks(320, "a", "b", [PASS("kernel#1", "7/171/1"), PASS("modules/grading", "7/172/3")])];
+  // `kernel` is absent at the head (a deleted directory: `run-suites.sh` writes `gone:` and exits 0); `modules/grading` is there.
+  const ev = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", factDeps(prs, { dirs: ["modules/grading", "scripts"], jobs: { 172: { name: "modules (3)" } } }));
+  assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), "a deleted directory cannot pass its suite");
+  assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+  // An exists read that fails mints nothing at all: no answer is never a pass.
+  const deps = factDeps(prs);
+  deps.exists = async () => { throw new Error("GitHub said 502"); };
+  const bad = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", deps);
+  assert.ok(noCommand(bad), bad.facts.join("\n"));
+});
+
+test("a head whose ci.yml differs from the run's base mints nothing: that CI was not the repository's", async () => {
+  const prs = [withChecks(321, "a", "b", [PASS("kernel#1", "7/181/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "",
+    factDeps(prs, { headWorkflow: "name: ci\njobs: { test: { runs-on: ubuntu-latest } }\n", baseWorkflow: "name: ci\n" }));
+  assert.ok(noCommand(ev), ev.facts.join("\n"));
+  // Byte-identical at both ends is the one that mints. Same map, same workflow.
+  const ok = await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "", factDeps(prs));
+  assert.ok(ok.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ok.facts.join("\n"));
+  // An unreadable ci.yml at the head mints nothing either.
+  const unreadable = factDeps(prs);
+  unreadable.file = async (_repo, path) => (path === ".github/workflows/ci.yml" ? null : AREAS);
+  assert.ok(noCommand(await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "", unreadable)));
 });
 
 test("a check that only claims a job's id mints nothing: a real job, run and poster must stand behind it", async () => {

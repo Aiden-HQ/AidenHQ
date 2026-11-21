@@ -9,8 +9,9 @@
 //                fetches it itself, so host git never runs in a workspace a box can write
 //   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
 //   head         {repo, ref: <branch>} → {sha}
-//   read         {repo, kind: pr | issue | diff | job | prs | file | run, ...} → that object (a PR or issue as the grader reads it,
-//                a diff, a job, the open PRs, a workflow run's identity; `file` a listed path at a commit)
+//   read         {repo, kind: pr | issue | diff | job | prs | file | run | exists, ...} → that object (a PR or issue as the grader
+//                reads it, a diff, a job, the open PRs, a workflow run's identity; `file` a listed path's text at a commit, `exists`
+//                whether such a path is there)
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
@@ -59,7 +60,7 @@ export type Answer = Readable & { statusCode?: number; headers: http.IncomingHtt
 // github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
 // repos), never from a module's settings. A commit grant names the paths it writes, an evidence grant the files it reads; a
 // runner grant, the orgs.
-export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
+export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; exists?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
 
 const SLUG = /^([\w.-]+)\/([\w.-]+|\*)$/;
 const DOTS = /^\.+$/;
@@ -122,9 +123,9 @@ function ownerNeed(answer: string): Need | undefined {
   const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: n as Record<string, unknown> } });
   return need && { ...need, detail: typeof j!.error === "string" ? j!.error : need.detail };
 }
-const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "run"];
-/** The kinds their own narrow grant covers: a `file` read is `evidence` (a listed path's contents), never the general read. */
-const KIND_GRANT: Record<string, "evidence"> = { file: "evidence" };
+const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "run", "exists"];
+/** The kinds their own narrow grant covers: a `file` read (a listed path's text) is `evidence`; `exists` (only whether a path is a directory) has its own grant. */
+const KIND_GRANT: Record<string, "evidence" | "exists"> = { file: "evidence", exists: "exists" };
 const PATH = /^[\w.-][\w./-]{0,499}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
 const int = (v: unknown, what: string) => {
@@ -154,7 +155,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
     if (kind === "prs") return { kind };
     if (kind === "job") return { kind, id: int(b.id, "id") };
     if (kind === "run") return { kind, id: int(b.id, "id") };
-    if (kind === "file") {
+    if (kind === "file" || kind === "exists") {
       const path = String(b.path ?? ""), ref = String(b.ref ?? "");
       if (!PATH.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw fail(400, `${path.slice(0, 100)} is not a path in the repository`);
       if (!SHA40.test(ref)) throw fail(400, "ref is a full commit sha");

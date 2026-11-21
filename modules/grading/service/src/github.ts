@@ -35,5 +35,12 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
       if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
       return text("/v1/codehost/read", { repo, kind: "file", path, ref });
     },
+    /** Whether a path is a directory at an exact commit (`exists`, the same `evidence` grant as `file`): false when it is
+     * not there, and a read that fails throws so the caller mints nothing. */
+    async exists(repo: string, path: string, ref: string): Promise<boolean> {
+      if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
+      const a = await read(repo, { kind: "exists", path, ref });
+      return a?.exists === true;
+    },
   };
 }

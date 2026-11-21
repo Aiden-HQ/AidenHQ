@@ -21,7 +21,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
       { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
       { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
       { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
-      { module: "grading", read: { repos: ["*/*"] }, evidence: { repos: ["*/*"], paths: [".github/ci/areas.json"] } },
+      { module: "grading", read: { repos: ["*/*"] }, evidence: { repos: ["*/*"], paths: [".github/ci/areas.json"] }, exists: { repos: ["*/*"] } },
       { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
     ],
     repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"], orgs: ["partner"] }),
@@ -129,6 +129,11 @@ test("a file read needs the evidence grant and a listed path; the general read n
   assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: "../secrets", ref })).status, 400, "not a path in the repo");
   assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "main" })).status, 400, "a full sha");
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref })).status, 403, "a read grant is not an evidence grant");
+  // `exists` is its own grant and takes any path: it answers only whether it is a directory, never contents, so it is not
+  // tied to the evidence paths a `file` read needs.
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "exists", path: "kernel", ref })).status, 200, "an exists read");
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "exists", path: "../../etc", ref })).status, 400, "still a repo path");
+  assert.equal((await call("reviewer", "read", { repo: "acme/x", kind: "exists", path: "kernel", ref })).status, 403, "a module without the exists grant");
   assert.equal((await call("grading", "read", { repo: "acme/x", kind: "run", id: 7 })).status, 200, "a run is an ordinary read");
   assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "run", id: 7 });
 });

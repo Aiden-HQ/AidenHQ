@@ -92,14 +92,16 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  *
  * The command and directory come from `areas.json` at the run's own base, byte-identical to the head's: CI reads the map from
  * the base commit, so the two agree unless main's map moved or the PR edited it, and either way the base can't name a command
- * the graded head doesn't carry. Which suites a shard ran is known only inside the run (CI writes the plan to the `checks`
- * job's outputs, which GitHub does not expose on the job), so the fact does not re-derive it. Only a suite that map names
- * mints a fact. The workflows, the map and the suite runner are the inputs that decide what a shard ran, so a PR that edits
+ * the graded head doesn't carry. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
+ * to the head's (a PR that rewrote the workflow ran its own CI), and the suite's directory is a directory at the graded head
+ * (`post-checks` posts nothing for a `gone:` one, so a deleted directory is a green job with nothing run). Which suites a shard
+ * ran is known only inside the run (CI writes the plan to the `checks` job's outputs, which GitHub does not expose on the job),
+ * so the fact does not re-derive it. Only a suite that map names mints a fact. The workflows, the map and the suite runner are the inputs that decide what a shard ran, so a PR that edits
  * anything under `.github/workflows/` or `.github/ci/` mints nothing at all. Every read that fails, or any field that doesn't
  * match, mints nothing.
  */
 async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
-  if (!deps.file || !deps.job || !deps.run) return [];
+  if (!deps.file || !deps.job || !deps.run || !deps.exists) return [];
   const head = String(pr.headRefOid ?? "");
   if (!SHA40.test(head)) return [];
   // The base CI read the workflow and the map from. A pull-request run's own `pull_requests` names it while the PR is open;
@@ -161,10 +163,27 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     if (map) maps.set(b, map);
   }
   if (!maps.size) return [];
+  // CI's own preconditions, read against the same trees the run used. `ci.yml` at the run's base must be the graded head's
+  // own, byte for byte: a PR that rewrote the workflow ran its own CI, so a job named for a suite proves nothing there (the
+  // `.github/` guard above already refuses the PR's own edit; this covers the workflow at the head it actually checked out).
+  // And the suite's directory must be a directory at the graded head: `post-checks` posts nothing for one `run-suites.sh`
+  // reported `gone:`, so a deleted directory is a green job with nothing run.
+  const headWorkflow = await withTimeout(() => deps.file(repo, CI_WORKFLOW, head), COMMAND_TIMEOUT_MS);
+  if (typeof headWorkflow !== "string" || !headWorkflow) return [];
+  const sameWorkflow = new Map<string, boolean>();
+  for (const b of bases) {
+    const at = await withTimeout(() => deps.file(repo, CI_WORKFLOW, b), COMMAND_TIMEOUT_MS);
+    sameWorkflow.set(b, typeof at === "string" && at === headWorkflow);
+  }
+  const present = new Map<string, boolean>();
   const facts: string[] = [];
   for (const { name, base } of green) {
     const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
-    if (suite) facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${suite.dir}/ — passed`);
+    if (!suite || sameWorkflow.get(base) !== true) continue;
+    if (!present.has(suite.dir)) present.set(suite.dir, (await withTimeout(() => deps.exists(repo, suite.dir, head), COMMAND_TIMEOUT_MS)) === true);
+    // Not a directory (or not readable) at the head: the suite did not run there, so nothing is a fact.
+    if (present.get(suite.dir) !== true) continue;
+    facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${suite.dir}/ — passed`);
   }
   return [...new Set(facts)];
 }

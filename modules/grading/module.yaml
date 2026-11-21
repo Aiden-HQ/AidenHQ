@@ -27,13 +27,16 @@ checks:
     label: grading
 # PR and issue evidence: typed reads of the instance's known repositories (agents org, product, github_orgs, maintainer_repos)
 # through the kernel's code host (POST /v1/codehost/read, service/src/github.ts): a PR, its checks and its diff, an issue, a job
-# and its run, plus the one map file a command fact's command and directory come from.
+# and its run, the one map file a command fact's command and directory come from, and whether a suite's directory exists at the
+# graded head (a boolean only: no contents).
 codehost:
   read:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
   evidence:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
     paths: [ ".github/ci/areas.json" ]
+  exists:
+    repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.

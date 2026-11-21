@@ -26,6 +26,18 @@ test("a file at an exact commit is its text — a parsed JSON body goes back out
   assert.equal((await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: sha }, c)).status, 404);
 });
 
+test("an exists read answers only whether a path is a directory at a commit: 404 is not there, a listing is, a file is not", async () => {
+  const c = ctx();
+  const ref = "a".repeat(40);
+  const asDir = await answerOp("read", { module: "grading", repo: "acme/app", kind: "exists", path: "kernel", ref }, withRest(c, async () => ok([{ name: "a.ts", type: "file" }])));
+  assert.deepEqual(asDir.json, { exists: true }, "a directory lists as an array");
+  const asFile = await answerOp("read", { module: "grading", repo: "acme/app", kind: "exists", path: "kernel/x.ts", ref }, withRest(c, async () => ok({ name: "x.ts", type: "file" })));
+  assert.deepEqual(asFile.json, { exists: false }, "a file is not a directory (run-suites.sh tests -d)");
+  const gone = await answerOp("read", { module: "grading", repo: "acme/app", kind: "exists", path: "kernel", ref }, c);
+  assert.deepEqual(gone.json, { exists: false }, "a 404 is a real answer: not there");
+  await assert.rejects(() => answerOp("read", { module: "grading", repo: "acme/app", kind: "exists", path: "kernel", ref }, withRest(c, async () => ({ status: 502, body: {}, headers: new Headers() }))), /502/, "an unreadable answer throws, so the caller mints nothing");
+});
+
 test("a workflow run's identity is its workflow, event, head, attempt and its own base", async () => {
   const c = ctx();
   const rest = async (_m: string, path: string) => path.includes("/jobs") ?
