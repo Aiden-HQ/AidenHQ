@@ -99,8 +99,8 @@ main() {
   # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
   local recovered=0
   recoverLogged || true
-  if [ "$recover" = 1 ]; then # the boot unit fails, and keeps failing on each retry, while the newest generation is not good
-    [ -z "$(genLkg)" ] || [ "$(genGet "$(( $(genJs next) - 1 ))" health)" = good ] || { echo "apply alert: the newest generation is not good: a recovery or its revert failed; see its log in $GEN_DIR" >&2; exit 1; }
+  if [ "$recover" = 1 ]; then # the boot unit fails, and keeps failing on each retry, while the newest generation is failed
+    [ "$(genGet "$(( $(genJs next) - 1 ))" health)" != failed ] || { echo "apply alert: the newest generation failed and was not recovered; see its log in $GEN_DIR" >&2; exit 1; }
     return 0
   fi
   [ "$recovered" = 0 ] || unset AIDENHQ_APPLY_BEFORE AIDENHQ_APPLY_INST_BEFORE
@@ -704,7 +704,7 @@ switchOver() {
   done
   # Boot finishes an apply that died (ops/apply-config.sh --recover): installed and enabled, never started here.
   local rec="$HOME/.config/systemd/user/aidenhq-apply-recover.service"
-  if ! cmp -s ops/units/aidenhq-apply-recover.service "$rec"; then
+  if ! cmp -s ops/units/aidenhq-apply-recover.service "$rec" || ! systemctl --user is-enabled --quiet aidenhq-apply-recover; then
     cp ops/units/aidenhq-apply-recover.service "$rec"
     systemctl --user daemon-reload
     systemctl --user enable --quiet aidenhq-apply-recover
