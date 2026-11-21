@@ -23,14 +23,25 @@ const TRIAGE_BATCH = 10;
 const PR_CAP = 100;
 
 // A close's note must cite a PR in a form the grader's parser reads (owner/name#number or its full /pull/ URL): a bare
-// "PR #12" reads as no citation at all, so the issue looks closed without one. Matched case-insensitively, over the
-// note's whole text, including "PR#12" and "the PR #12"; an "owner/name#12" or a /pull/12 URL never trips it.
-const BARE_PR = /(?<![\w./:=-])PR\s*#\s*\d+\b/i;
+// "PR #12" reads as no citation at all, so the issue looks closed without one. The word PR standing on its own is the
+// bare form wherever it sits — "PR #12", "PR#12", "the PR #12", "abc/PR #12", "see acme/product/PR #12" — and none of
+// those is a form the parser reads. The one "PR#N" that is a citation is a repo actually named PR in owner/name#N
+// ("acme/PR#12"), so that case, and only that case, is let through; the ordinary accepted forms ("owner/name#12",
+// "/pull/12", "codehost:.../change/12") carry no standalone PR at all.
+const PR_TOKEN = /(?<!\w)PR\s*#\s*\d+\b/gi;
+// "owner/PR#N" with nothing between the slash and the word PR, where the owner starts where the parser starts one: the
+// only PR#N that is a citation. "acme/ PR#12" is not one (findPrs reads no PR there), so the slash must be adjacent.
+const REPO_NAMED_PR = /(?<![\w./:-])[\w.-]+\/$/;
 
 /** Why a close's `note` is refused, or undefined when it cites what it must. */
 export function noteProblem(note: string, state: "open" | "closed", reason?: "completed" | "not_planned"): string | undefined {
   if (state !== "closed") return undefined;
-  if (BARE_PR.test(note)) return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
+  for (const m of note.matchAll(PR_TOKEN)) {
+    // A spaced "PR #N" is never a citation, whatever sits before it; an unspaced "PR#N" is one only as owner/PR#N, with
+    // the slash immediately before PR (a space after the slash is not the owner/name#N form the parser reads).
+    const citation = !/\s/.test(m[0]) && REPO_NAMED_PR.test(note.slice(0, m.index));
+    if (!citation) return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
+  }
   return undefined;
 }
 
