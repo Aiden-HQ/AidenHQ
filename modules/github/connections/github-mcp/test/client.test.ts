@@ -128,6 +128,79 @@ it("a secondary-limit 403 pauses the queue (reads keep working), then retries th
   await access.rest("GET", "/repos/acme/api");
 });
 
+it("a write queued past its budget fails fast as a typed need without ever calling fetch", async () => {
+  let clock = 1_000_000;
+  const sent: { at: number; path: string }[] = [];
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (u) => {
+      sent.push({ at: clock, path: new URL(String(u)).pathname });
+      // The first write holds the queue for longer than the whole write budget.
+      clock += 250_000;
+      return answer(201, {});
+    },
+  });
+  const first = access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
+  const second = access.rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" });
+  await first;
+  const started = clock;
+  const err = await second.catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "write_busy" });
+  // The queued write failed without waiting and was never sent.
+  expect(clock).toBe(started);
+  expect(sent.map((s) => s.path)).toEqual(["/repos/acme/api/issues/1/comments"]);
+});
+
+it("a secondary-limit refusal past the deadline fails at once as rate_limited with that until", async () => {
+  let clock = 1_000_000;
+  let calls = 0;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async () => {
+      calls++;
+      return answer(403, { message: "You have exceeded a secondary rate limit." }, { "retry-after": "600" });
+    },
+  });
+  const refusalUntil = new Date(clock + 600_000).toISOString();
+  const start = clock;
+  const err = await access.rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "rate_limited", until: refusalUntil });
+  // It neither slept towards the refusal nor sent again.
+  expect(clock).toBe(start);
+  expect(calls).toBe(1);
+});
+
+it("a read issued while a write is blocked still returns without waiting", async () => {
+  let clock = 1_000_000;
+  let release!: () => void;
+  let readDone = false;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (u, init) => {
+      if (init?.method === "POST") {
+        await new Promise<void>((r) => (release = r));
+        return answer(201, {});
+      }
+      expect(new URL(String(u)).pathname).toBe("/repos/acme/api");
+      readDone = true;
+      return answer(200, {});
+    },
+  });
+  const write = access.rest("POST", "/repos/acme/api/issues", { title: "t" });
+  await access.rest("GET", "/repos/acme/api");
+  expect(readDone).toBe(true);
+  release();
+  await write;
+});
+
 it("a write that stays refused past the patience fails as a transient rate_limited need", async () => {
   let clock = 1_000_000;
   const access = createAccess({
