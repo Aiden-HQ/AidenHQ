@@ -65,7 +65,11 @@ function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ip
     let script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
     // A controlled socket for the PostgreSQL probe: TCP does not preserve write boundaries, so a test that needs a reply in
     // one read event (or two) replaces the probe's connection instead of hoping a server's writes arrive that way.
-    if (o.pg) script = script.replace("const s = pgConnect(host, port);", `const s = ${o.pg};`);
+    if (o.pg) {
+      // The factory is evaluated once: a connection counter inside it must persist across the probe's two connections.
+      script = script.replace("const postgres = (host, port) => new Promise", `const pgFactory = ${o.pg};\nconst postgres = (host, port) => new Promise`);
+      script = script.replace("const s = pgConnect(host, port);", "const s = pgFactory(host, port);");
+    }
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
@@ -240,12 +244,14 @@ describe("identity gate", () => {
   // A PostgreSQL server's first bytes, as the gate sees them: an HTTP GET makes it hang up (raw: closed); an SSLRequest gets
   // `N` (SSL is off, as in the official image); the StartupMessage then gets AuthenticationRequest (`R`). The startup message
   // must be well-formed: its length covers the whole packet and its protocol is 3.0, so a broken emission fails the test.
+  // The probe reads the SSL refusal on one connection and sends the startup message on a fresh one, so each connection is
+  // classified by its first message: an HTTP GET or TLS hello is hung up on, an SSLRequest gets "N", a startup message gets R.
+  // SSLRequest is an 8-byte frame whose length is 8 and whose protocol code is 80877103 (0x04d2162f).
   const PG = `(s) => {
-    let stage = 0;
     s.on("data", (d) => {
-      if (stage === 0 && d[0] === 0x47) return s.destroy();
-      if (stage === 0 && d[0] === 0x16) return s.destroy(); // a TLS hello: not a startup packet, so Postgres hangs up
-      if (stage === 0) { stage = 1; return s.write("N"); }
+      if (d[0] === 0x47) return s.destroy();
+      if (d[0] === 0x16) return s.destroy(); // a TLS hello: not a startup packet, so Postgres hangs up
+      if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N");
       const len = d.readUInt32BE(0), proto = d.readUInt32BE(4);
       if (len !== d.length || proto !== 196608) return s.destroy();
       s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
@@ -287,11 +293,10 @@ describe("identity gate", () => {
     // The plaintext probes never see its HTTP, so a TLS hello must still find it: a port that speaks TLS could be HTTP.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const both = await tcp(`(s) => {
-      let stage = 0;
       s.on("data", (d) => {
-        if (stage === 0 && d[0] === 0x16) return s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // a TLS alert
-        if (stage === 0 && d[0] === 0x47) return s.destroy();
-        if (stage === 0) { stage = 1; return s.write("N"); }
+        if (d[0] === 0x16) return s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // a TLS alert
+        if (d[0] === 0x47) return s.destroy();
+        if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N");
         s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
       });
     }`);
@@ -316,49 +321,48 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
   }, 60_000);
 
-  it.runIf(process.platform === "linux")("keeps a coalesced SSL refusal with trailing bytes hard: the refusal must be exactly one byte", async () => {
-    // A server that declines SSL sends exactly "N" and nothing else. If a peer sends "N" and a well-formed AuthenticationOk
-    // frame in the same read event, a probe that keeps the trailing bytes would read the frame as the startup reply and
-    // identify the port as PostgreSQL without a valid one-byte refusal. TCP does not preserve write boundaries, so the
-    // controlled socket delivers both in one event rather than relying on how a server's write arrives.
+  it.runIf(process.platform === "linux")("reads the SSL refusal on its own connection: trailing bytes after N never supply the startup reply", async () => {
+    // A server that declines SSL sends "N" and nothing else. A peer that sends "N" plus a well-formed AuthenticationOk
+    // frame must not be identified: those bytes are not a reply to a startup message this probe sent. The probe reads the
+    // refusal on one connection and sends the startup message on a fresh one, so bytes after "N" are never parsed. TCP
+    // does not preserve write boundaries, so a controlled socket delivers the trailing bytes in one event and in two.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const silent = await tcp(`(s) => s.on("data", () => s.destroy())`); // the raw look gets a closed socket
-    const coalesced = `(() => {
+    // The factory stands in for net.connect: connection 1 answers the SSLRequest with "N" and trailing bytes; connection 2
+    // (the startup message) hangs up without an answer, so the port is not identified. The reply is emitted after the probe
+    // has attached its listeners, so its "end" is seen.
+    const controlled = (firstData: string, secondData: string | null) => `(() => {
       const { EventEmitter } = require("events");
-      const e = new EventEmitter();
-      let wrote = false;
-      e.destroy = () => {};
-      e.write = () => {
-        if (wrote) return true;
-        wrote = true;
-        setImmediate(() => e.emit("data", Buffer.concat([Buffer.from("N"), Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])])));
-        return true;
+      let n = 0;
+      return (host, port) => {
+        const e = new EventEmitter();
+        const first = ++n === 1;
+        e.destroy = () => {};
+        e.write = () => {
+          setImmediate(() => {
+            if (first) {
+              for (const d of ${firstData}) e.emit("data", d);
+            } else if (${secondData} === null) e.emit("end");
+            else e.emit("data", ${secondData});
+          });
+          return true;
+        };
+        setImmediate(() => e.emit("connect"));
+        return e;
       };
-      setImmediate(() => e.emit("connect"));
-      return e;
     })()`;
-    const r = await scan(db, [silent], { pg: coalesced });
-    expect(r.ok).toBe(false);
-    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
-    // The refusal arriving in its own read event is the normal case and stays identified: only extra bytes in the same event fail.
-    const split = `(() => {
-      const { EventEmitter } = require("events");
-      const e = new EventEmitter();
-      let wrote = false;
-      e.destroy = () => {};
-      e.write = () => {
-        if (wrote) return true;
-        wrote = true;
-        setImmediate(() => {
-          e.emit("data", Buffer.from("N"));
-          setImmediate(() => e.emit("data", Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])));
-        });
-        return true;
-      };
-      setImmediate(() => e.emit("connect"));
-      return e;
-    })()`;
-    expect(await scan(db, [silent], { pg: split })).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
+    const frame = "Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])";
+    const coalesced = controlled(`[Buffer.concat([Buffer.from("N"), ${frame}])]`, "null");
+    const split = controlled(`[Buffer.from("N"), ${frame}]`, "null");
+    for (const pg of [coalesced, split]) {
+      const r = await scan(db, [silent], { pg });
+      expect(r.ok).toBe(false);
+      expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
+    }
+    // A server that refuses SSL on one connection and answers the startup message on a fresh one is identified: the frame
+    // arrives only after this probe sent a startup message, so it is a real PostgreSQL reply, not trailing bytes.
+    const answers = controlled(`[Buffer.from("N")]`, frame);
+    expect(await scan(db, [silent], { pg: answers })).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
   }, 60_000);
 
   it.runIf(process.platform === "linux")("keeps a truncated PostgreSQL reply hard: a header alone is not a protocol message", async () => {
@@ -366,15 +370,15 @@ describe("identity gate", () => {
     // sends, then hangs up. A header is not a message: the gate must wait for the whole frame and stay closed when it never
     // arrives, or a multiplexer could answer one plausible type byte and be exempted on the strength of it.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const truncated = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 100])); }); }`);
+    const truncated = await tcp(`(s) => { s.on("data", (d) => { if (d[0] === 0x47) return s.destroy(); if (d[0] === 0x16) return s.destroy(); if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N"); s.end(Buffer.from([0x52, 0, 0, 0, 100])); }); }`);
     const r = await scan(db, [truncated]);
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
     // A frame whose body is not the type's structure (an ErrorResponse with no terminator field) is not identification either.
-    const malformed = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x45, 0, 0, 0, 6, 0x53, 0x41])); }); }`);
+    const malformed = await tcp(`(s) => { s.on("data", (d) => { if (d[0] === 0x47) return s.destroy(); if (d[0] === 0x16) return s.destroy(); if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N"); s.end(Buffer.from([0x45, 0, 0, 0, 6, 0x53, 0x41])); }); }`);
     expect(await scan(db, [malformed])).toMatchObject({ ok: false, findings: [{ hard: true, what: expect.stringMatching(/no HTTP answer/) }] });
     // The same frame, sent whole, is identified: it is the completeness, not the type byte, that decides.
-    const whole = await tcp(`(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); }); }`);
+    const whole = await tcp(`(s) => { s.on("data", (d) => { if (d[0] === 0x47) return s.destroy(); if (d[0] === 0x16) return s.destroy(); if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N"); s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); }); }`);
     expect(await scan(db, [whole])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
   }, 60_000);
 
@@ -383,11 +387,10 @@ describe("identity gate", () => {
     // one-byte reply, call it not-TLS, and skip the port as PostgreSQL while it also serves HTTPS. The prefix is buffered.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const split = await tcp(`(s) => {
-      let stage = 0;
       s.on("data", (d) => {
-        if (stage === 0 && d[0] === 0x16) { stage = 2; s.write(Buffer.from([0x16])); return setTimeout(() => s.end(Buffer.from([0x03, 0x03, 0, 2, 2, 40])), 100); }
-        if (stage === 0 && d[0] === 0x47) return s.destroy();
-        if (stage === 0) { stage = 1; return s.write("N"); }
+        if (d[0] === 0x16) { s.write(Buffer.from([0x16])); return setTimeout(() => s.end(Buffer.from([0x03, 0x03, 0, 2, 2, 40])), 100); }
+        if (d[0] === 0x47) return s.destroy();
+        if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N");
         s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
       });
     }`);
@@ -400,7 +403,7 @@ describe("identity gate", () => {
     // A complete frame is not enough: the AuthenticationRequest's code must be one PostgreSQL sends, with the payload that
     // code requires. An unknown code, or MD5 without its four-byte salt, is a malformed message and not identification.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
+    const frame = (bytes: number[]) => `(s) => { s.on("data", (d) => { if (d[0] === 0x47) return s.destroy(); if (d[0] === 0x16) return s.destroy(); if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N"); s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
     const hard = async (bytes: number[]) => (await scan(db, [await tcp(frame(bytes))])).ok;
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 0])).toBe(true); // AuthenticationOk
     expect(await hard([0x52, 0, 0, 0, 8, 0, 0, 0, 3])).toBe(true); // cleartext password
@@ -421,7 +424,7 @@ describe("identity gate", () => {
     // PostgreSQL always sends severity (S/V), SQLSTATE (C) and a message (M). A terminated field list without them is not an
     // ErrorResponse a server sends, so it must not identify the port.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
-    const frame = (bytes: number[]) => `(s) => { let stage = 0; s.on("data", (d) => { if (stage === 0 && d[0] === 0x47) return s.destroy(); if (stage === 0 && d[0] === 0x16) return s.destroy(); if (stage === 0) { stage = 1; return s.write("N"); } s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
+    const frame = (bytes: number[]) => `(s) => { s.on("data", (d) => { if (d[0] === 0x47) return s.destroy(); if (d[0] === 0x16) return s.destroy(); if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N"); s.end(Buffer.from(${JSON.stringify(bytes)})); }); }`;
     const hard = async (bytes: number[]) => (await scan(db, [await tcp(frame(bytes))])).ok;
     const err = (fields: number[]) => [0x45, 0, 0, 0, 5 + fields.length, ...fields, 0];
     expect(await hard(err([0x53, 0x46, 0x41, 0x54, 0x41, 0x4c, 0, 0x43, 0x32, 0x38, 0x50, 0x30, 0x31, 0, 0x4d, 0x62, 0x6f, 0x6f, 0]))).toBe(true); // S C M
@@ -468,20 +471,20 @@ describe("identity gate", () => {
     // ClientHello's SNI extension, so a malformed hostname length (one byte instead of two) is not read as the name.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const sniOnly = await tcp(`(s) => {
-      let stage = 0, got = Buffer.alloc(0);
+      let got = Buffer.alloc(0);
       const host = ${SNI_HOST};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
-        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+        if (got[0] === 0x16) { // the TLS hello, on its own connection
           const name = host(got);
           if (name === null) return; // not all arrived yet: judge only the whole hello
           if (name === "warehouse") s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
           else s.destroy();
           return;
         }
-        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
-        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
-        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+        if (got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (got.length >= 8 && got.readUInt32BE(0) === 8 && got.readUInt32BE(4) === 80877103) return s.end("N"); // the SSLRequest
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
       });
     }`);
     const r = await scan(db, [sniOnly]);
@@ -494,20 +497,20 @@ describe("identity gate", () => {
     // closes an unknown name. A probe that only sends the named hello would miss it, so the unnamed hello is tried too.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const unnamed = await tcp(`(s) => {
-      let stage = 0, got = Buffer.alloc(0);
+      let got = Buffer.alloc(0);
       const host = ${SNI_HOST};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
-        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+        if (got[0] === 0x16) { // the TLS hello, on its own connection
           const name = host(got);
           if (name === null) return; // not all arrived yet: judge only the whole hello
           if (name) s.destroy(); // a named hello: an unknown name, closed silently as a strict router does
           else s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40])); // no SNI: the default route answers TLS
           return;
         }
-        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
-        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
-        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+        if (got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (got.length >= 8 && got.readUInt32BE(0) === 8 && got.readUInt32BE(4) === 80877103) return s.end("N"); // the SSLRequest
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
       });
     }`);
     const r = await scan(db, [unnamed]);
@@ -522,20 +525,20 @@ describe("identity gate", () => {
     // its share host; the app itself declares protocol: postgres, so the database probe runs.
     const app = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const shareOnly = await tcp(`(s) => {
-      let stage = 0, got = Buffer.alloc(0);
+      let got = Buffer.alloc(0);
       const host = ${SNI_HOST};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
-        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+        if (got[0] === 0x16) { // the TLS hello, on its own connection
           const name = host(got);
           if (name === null) return; // not all arrived yet: judge only the whole hello
           if (name === "db.example.com") s.end(Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
           else s.destroy(); // the app's name, or no name: close silently
           return;
         }
-        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
-        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
-        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+        if (got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (got.length >= 8 && got.readUInt32BE(0) === 8 && got.readUInt32BE(4) === 80877103) return s.end("N"); // the SSLRequest
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
       });
     }`);
     const r = await scan(app, [shareOnly], { sni: ["warehouse", "db.example.com"] });
@@ -581,20 +584,20 @@ describe("identity gate", () => {
     // 1.3-only side answers it and the port stays hard.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const modern = await tcp(`(s) => {
-      let stage = 0, got = Buffer.alloc(0);
+      let got = Buffer.alloc(0);
       const offers = ${HELLO_OFFERS};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
-        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+        if (got[0] === 0x16) { // the TLS hello, on its own connection
           const o = offers(got);
           if (o === null) return; // not all arrived yet: judge only the whole hello
           if (o.v13 && o.shares.includes(0x001d)) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40])); // a 1.3-capable endpoint answers
           else s.destroy(); // unsupported hello: closed silently, as a 1.3-only listener does
           return;
         }
-        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
-        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
-        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+        if (got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (got.length >= 8 && got.readUInt32BE(0) === 8 && got.readUInt32BE(4) === 80877103) return s.end("N"); // the SSLRequest
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
       });
     }`);
     const r = await scan(db, [modern], { sni: ["warehouse"] });
@@ -609,20 +612,20 @@ describe("identity gate", () => {
     // the 1.2-only side answers it and the port stays hard.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const legacy = await tcp(`(s) => {
-      let stage = 0, got = Buffer.alloc(0);
+      let got = Buffer.alloc(0);
       const offers = ${HELLO_OFFERS};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
-        if (stage === 0 && got[0] === 0x16) { // the TLS hello, on its own connection
+        if (got[0] === 0x16) { // the TLS hello, on its own connection
           const o = offers(got);
           if (o === null) return; // not all arrived yet: judge only the whole hello
           if (o.suites.includes(0xc02f)) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40])); // a 1.2-capable endpoint answers
           else s.destroy(); // unsupported hello: closed silently, as a 1.2-only listener does
           return;
         }
-        if (stage === 0 && got[0] === 0x47) return s.destroy(); // the HTTP GET
-        if (stage === 0) { stage = 1; return s.write("N"); } // the SSLRequest
-        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
+        if (got[0] === 0x47) return s.destroy(); // the HTTP GET
+        if (got.length >= 8 && got.readUInt32BE(0) === 8 && got.readUInt32BE(4) === 80877103) return s.end("N"); // the SSLRequest
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // the startup message
       });
     }`);
     const r = await scan(db, [legacy], { sni: ["warehouse"] });
@@ -635,20 +638,20 @@ describe("identity gate", () => {
     // share for both groups, so such a listener answers and its port stays hard instead of being read as a database.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const p256 = await tcp(`(s) => {
-      let stage = 0, got = Buffer.alloc(0);
+      let got = Buffer.alloc(0);
       const offers = ${HELLO_OFFERS};
       s.on("data", (d) => {
         got = Buffer.concat([got, d]);
-        if (stage === 0 && got[0] === 0x16) {
+        if (got[0] === 0x16) {
           const o = offers(got);
           if (o === null) return;
           if (o.v13 && o.groups.includes(0x0017) && o.shares.includes(0x0017)) s.end(Buffer.from([0x16, 0x03, 0x03, 0, 2, 2, 40]));
           else s.destroy();
           return;
         }
-        if (stage === 0 && got[0] === 0x47) return s.destroy();
-        if (stage === 0) { stage = 1; return s.write("N"); }
-        if (stage === 1) s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+        if (got[0] === 0x47) return s.destroy();
+        if (got.length >= 8 && got.readUInt32BE(0) === 8 && got.readUInt32BE(4) === 80877103) return s.end("N");
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
       });
     }`);
     const r = await scan(db, [p256], { sni: ["warehouse"] });
@@ -661,11 +664,10 @@ describe("identity gate", () => {
     // "not TLS" because the header never finished: bytes already received are still evidence the port could serve HTTPS.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
     const stalled = await tcp(`(s) => {
-      let stage = 0;
       s.on("data", (d) => {
-        if (stage === 0 && d[0] === 0x16) { stage = 2; s.write(Buffer.from([0x16, 0x03])); return; }
-        if (stage === 0 && d[0] === 0x47) return s.destroy();
-        if (stage === 0) { stage = 1; return s.write("N"); }
+        if (d[0] === 0x16) { s.write(Buffer.from([0x16, 0x03])); return; }
+        if (d[0] === 0x47) return s.destroy();
+        if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N");
         s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
       });
     }`);

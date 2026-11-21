@@ -302,12 +302,12 @@ const raw = (host, port) => new Promise((done) => {
 });
 // A PostgreSQL server waits for the client, so an HTTP GET makes it hang up (raw: closed) and says nothing about what it is.
 // An SSLRequest's reply alone is not identification either: a TLS listener offers SSL too. So the server must decline SSL
-// with exactly one byte (\"N\"), with no trailing bytes, and then answer a startup message with a *complete, well-formed*
-// protocol message (AuthenticationRequest, ErrorResponse or NoticeResponse). A refusal that carries anything after the
-// \"N\" is not a server's answer to this probe: those bytes would be read as the startup reply without a valid one-byte
-// refusal, so the port stays closed. A truncated header, a frame whose length runs past what arrived, or a malformed body
-// is not identification either: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at
-// the server's first answer. A server that offers SSL (\"S\") is not identified: the port may be HTTPS, so it stays closed.
+// with "N" and then answer a startup message with a *complete, well-formed* protocol message (AuthenticationRequest,
+// ErrorResponse or NoticeResponse). The refusal and the startup message are read on separate connections: bytes after the
+// "N" on the refusal connection are never read as the startup reply, so a coalesced or split "N" plus trailing data cannot
+// identify the socket. A truncated header, a frame whose length runs past what arrived, or a malformed body is not
+// identification either: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at the
+// server's first answer. A server that offers SSL ("S") is not identified: the port may be HTTPS, so it stays closed.
 // "postgres" identifies the socket, "invalid" is a definitive no (stop reading), "" needs more bytes. One complete frame,
 // validated against its own type, or nothing.
 const pgFrame = (b) => {
@@ -358,35 +358,50 @@ const pgFrame = (b) => {
   }
   return "invalid";
 };
-// The connection the PostgreSQL probe reads from. TCP does not preserve write boundaries, so a test that needs a reply
-// delivered in one read event replaces this line with a controlled socket; the probe's parsing is otherwise unchanged.
+// The refusal is read on one connection and the startup message is sent on a fresh one. A server that answers "N" and
+// then sends a frame without waiting for a startup message would otherwise be read as a database; on a separate
+// connection the frame can only be the reply to the startup message this probe sent. Trailing bytes after "N" on the
+// refusal connection are never parsed, and a split "N" plus trailing data cannot identify the socket. A test that needs a
+// controlled socket replaces pgConnect below; the parsing is otherwise unchanged.
 const pgConnect = (host, port) => net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
 const postgres = (host, port) => new Promise((done) => {
-  let stage = 0, got = Buffer.alloc(0);
-  const end = (r) => { s.destroy(); done(r); };
-  const s = pgConnect(host, port);
-  s.on("connect", () => s.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47])));
-  s.on("data", (d) => {
-    got = Buffer.concat([got, d]);
-    if (stage === 0) {
-      if (!got.length) return;
-      if (got[0] !== 0x4e) return end(""); // "S" offers SSL: the port may be HTTPS, so it is not identified
-      if (got.length > 1) return end(""); // the refusal is exactly "N": trailing bytes are not the server's answer to this probe
-      got = Buffer.alloc(0);
-      stage = 1;
-      const user = Buffer.from("user\0postgres\0database\0postgres\0\0", "utf8");
-      const head = Buffer.alloc(8); head.writeUInt32BE(8 + user.length, 0); head.writeUInt32BE(196608, 4);
-      s.write(Buffer.concat([head, user])); // a startup message, protocol 3.0
-    }
-    if (stage === 1) {
+  let stage = 0, token = 0;
+  const connect = () => {
+    const me = ++token;
+    const s = pgConnect(host, port);
+    let got = Buffer.alloc(0);
+    const stop = (r) => { if (me !== token) return; token++; s.destroy(); done(r); };
+    s.on("connect", () => {
+      if (me !== token) return;
+      if (stage === 0) s.write(Buffer.from([0, 0, 0, 8, 4, 210, 22, 47])); // SSLRequest
+      else {
+        const user = Buffer.from("user\0postgres\0database\0postgres\0\0", "utf8");
+        const head = Buffer.alloc(8); head.writeUInt32BE(8 + user.length, 0); head.writeUInt32BE(196608, 4);
+        s.write(Buffer.concat([head, user])); // a startup message, protocol 3.0
+      }
+    });
+    s.on("data", (d) => {
+      if (me !== token) return;
+      got = Buffer.concat([got, d]);
+      if (stage === 0) {
+        if (!got.length) return;
+        if (got[0] !== 0x4e) return stop(""); // "S" offers SSL: the port may be HTTPS, so it is not identified
+        // "N" declines SSL. This connection is done: bytes after it are not a reply to a startup message sent on it.
+        token++;
+        s.destroy();
+        stage = 1;
+        connect();
+        return;
+      }
       const r = pgFrame(got);
-      if (r) return end(r === "postgres" ? r : ""); // an invalid frame is a no: stop reading at once
-      if (got.length > 1 << 20) return end(""); // still incomplete, and past any frame a header may declare
-    }
-  });
-  s.on("timeout", () => end(""));
-  s.on("end", () => end(stage === 1 && pgFrame(got) === "postgres" ? "postgres" : ""));
-  s.on("error", () => end(""));
+      if (r) return stop(r === "postgres" ? r : ""); // an invalid frame is a no: stop reading at once
+      if (got.length > 1 << 20) return stop(""); // still incomplete, and past any frame a header may declare
+    });
+    s.on("timeout", () => stop(""));
+    s.on("end", () => stop(stage === 1 && pgFrame(got) === "postgres" ? "postgres" : ""));
+    s.on("error", () => stop(""));
+  };
+  connect();
 });
 // A multiplexer can serve PostgreSQL and HTTPS on one port: the plaintext probes never see that HTTP, so a socket identified as
 // PostgreSQL gets a TLS ClientHello as well. A TLS record back (a handshake, or the alert of an HTTPS server that rejects this
