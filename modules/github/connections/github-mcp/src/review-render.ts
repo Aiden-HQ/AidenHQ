@@ -164,7 +164,8 @@ export const COMMANDS = [
   "`@aiden review focus: <text>`: look at one thing",
   "`@aiden review status` and `@aiden review help`",
 ];
-const commandsBlock = () => `<details><summary>Commands</summary>\n\n${COMMANDS.map((c) => `- ${c}`).join("\n")}\n\n</details>`;
+/** The fixed help block every review summary ends with: how people on the PR ask Aiden for more (never the review's own words). */
+export const commandsBlock = () => `<details><summary>Commands</summary>\n\n${COMMANDS.map((c) => `- ${c}`).join("\n")}\n\n</details>`;
 
 /** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. */
 export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">): string {

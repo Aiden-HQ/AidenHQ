@@ -167,10 +167,13 @@ describe("posting", () => {
     expect(w.calls.find((c) => c.path.includes("/statuses/"))?.body.state).toBe("success");
   });
 
-  it("previews exactly the text it posts and binds the record to the head", () => {
+  it("previews the text it posts (the fixed Commands help named) and binds the record to the head", () => {
     const p = poster(world());
     const out = p.preview("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])));
     expect(out.facts.details).toContain("<!-- aidenhq-finding: f_on_line1 -->");
+    // The fixed Commands help is named for the reviewer, not shown (its `@aiden review` lines read as instructions to it).
+    expect(out.facts.details).toContain("fixed Commands help");
+    expect(out.facts.details).not.toContain("review always");
     expect(out.targets).toEqual({ "acme/payments#12": { repo: "acme/payments", ref: "pull/12", commit: HEAD, base_sha: BASE } });
   });
 });
