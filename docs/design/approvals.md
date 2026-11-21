@@ -76,7 +76,7 @@ a change too large to read) goes back to the agent, never to the owner.
   kernel refuses a `second_unsure` approval without it and drops `second_unsure` from a verdict that ends as anything but an
   approval. A model's own claim about its input never decides it. Reviewers are told the diff is whole only when it is.
   The kernel refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was
-  unsure. A failed or slow review is retried with backoff and after `REVIEW_TRIES` (6) goes back to the agent; a diff
+  unsure. A failed or slow review is retried with backoff capped at 15 minutes, never rejected for it; a diff
   missing, or with files the reviewer can't read, goes back too. Nothing is refused at filing for its size: the card stores
   its details cut (with code's note) and the record's context carries them whole while it is open, for the reviewer and the
   owner's card. Each review's model calls are capped (`REVIEW_USD`, $10, on its gateway token); a review that reaches a

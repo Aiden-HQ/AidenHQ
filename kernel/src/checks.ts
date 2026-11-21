@@ -2,12 +2,11 @@
 // /v1/cp/agent (cp.ts) and the runner's own closes through /v1/finish. A module declares its checks (`checks:`, compiled
 // into config/kernel/checks.json); all that match run in parallel and none sees another's verdict. Any deny refuses the
 // close and moves nothing; any reopen reopens; any hold or pending holds the task in review with the check's label and a
-// scheduled check; otherwise it passes. A check never marks a task done. Fail closed: a check that errors, answers non-2xx
-// or malformed, or takes over 10 s refuses the close, and so do a checks file that is missing or won't load, and a graded
-// agent's task (the grants table's `graded`) that no check covers: the gate never fails open. The one exception is a service
-// being replaced: a check whose address doesn't resolve yet or whose socket refuses is asked again a few times, and if it is
-// still down an enforcing check holds the task in review for its scheduled re-check rather than refusing a finish that would
-// be lost. The check's module later
+// scheduled check; otherwise it passes. A check never marks a task done. Fail open on infrastructure: a check that errors,
+// answers non-2xx or malformed, takes over 10 s or can't be reached (a socket that refuses is asked again a few times first)
+// holds the task in review for its scheduled re-check rather than refusing a finish that would be lost; only an explicit deny
+// or reopen refuses. A graded agent's task that no check covers passes, recorded as a would-block note (owner, 2026-11-21).
+// A checks file that is missing or won't load still refuses. The check's module later
 // releases its label, or resolves a hold it placed (POST /v1/checks/:task). A check in observe mode (`mode: observe`, gates.ts)
 // is asked like the others, but a verdict other than ok, or its failure, is only recorded as a would-block: it never moves,
 // holds or refuses the task, and it doesn't count as covering a graded agent's task. A task with an undecided approval card
@@ -118,8 +117,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
 
   /**
    * One POST to the check at `at`. A failure the service may shake off — the container being replaced, so its name resolves to
-   * nothing or its socket refuses — is tagged `unavailable`; any other failure (a status, a malformed body, a timeout, a deny
-   * wrapped in an error) is the check's own answer and is not.
+   * nothing or its socket refuses — is tagged `unavailable` and retried; any other failure (a status, a malformed body, a
+   * timeout) is not retried. Only an explicit deny or reopen verdict, whatever its status, is the check's answer.
    */
   function post(key: string, at: string, body: unknown): Promise<Verdict> {
     return resolver.resolve(at).then((to) => new Promise<Verdict>((resolve, reject) => {
@@ -129,6 +128,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
         res.setEncoding("utf8").on("data", (d) => { if (text.length < 100_000) text += d; }).on("end", () => {
           let v: Verdict;
           try { v = JSON.parse(text); } catch { return reject(new Error(`answered ${res.statusCode} with no JSON`)); }
+          if (v && (v.verdict === "deny" || v.verdict === "reopen") && (res.statusCode ?? 500) < 500) return resolve(v);
           if ((res.statusCode ?? 500) >= 300 || !v || !VERDICTS.includes(v.verdict)) return reject(new Error(`answered ${res.statusCode}${v?.verdict ? ` (${v.verdict})` : ""}`));
           resolve(v);
         });
@@ -140,16 +140,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   }
   /**
    * A check's verdict, retried a few times when its service is unavailable (the address cache is dropped between attempts so a
-   * replaced container is inspected afresh). A check that answered — any status, verdict, body or its 10 s timeout — is never
-   * retried. When the service is still down the error carries `unavailable`, and the finish gate holds the task on it.
+   * replaced container is inspected afresh). Any other failure — a status, a malformed body, its 10 s timeout — is not retried.
+   * Every failure carries `unavailable`, and the finish gate holds the task on it: only an explicit verdict refuses.
    */
   async function ask(id: string, c: Check, body: unknown, at = c.url): Promise<Verdict> {
     const key = secret(c.auth_secret);
-    if (!key) throw fail(503, "check_failed", `the finish check ${id} failed (its key is missing): the task stays as it is`);
+    if (!key) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (its key is missing): the task waits in review`), { unavailable: true, cause: "its key is missing" });
     for (let n = 1; ; n++) {
       try { return await post(key, at, body); }
       catch (e) {
-        if (!isUnavailable(e) || n >= ASK_ATTEMPTS) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (${(e as Error).message}): the task stays as it is; try again`), { unavailable: isUnavailable(e), cause: (e as Error).message });
+        if (!isUnavailable(e) || n >= ASK_ATTEMPTS) throw Object.assign(fail(503, "check_failed", `the finish check ${id} failed (${(e as Error).message}): the task waits in review`), { unavailable: true, cause: (e as Error).message });
         resolver.forget(at);
         await new Promise((r) => setTimeout(r, ASK_BACKOFF_MS));
       }
@@ -198,7 +198,11 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     }));
     if (!mine.length) {
       await watched;
-      if (i.assigneeAgentId && graded(i.assigneeAgentId)) throw fail(503, "check_failed", `the finish gate is unavailable: ${i.identifier ?? i.id}'s assignee is graded and no finish check covers it: the task stays as it is`);
+      if (i.assigneeAgentId && graded(i.assigneeAgentId)) {
+        const note = { gate: "finish", task: i.identifier ?? i.id, verdict: "uncovered", reason: "the assignee is graded and no finish check covers it: passed", via: caller.via };
+        noteFact(facts, { type: "gate.would_block", subject: `task:${note.task}`, version: `e-${randomBytes(8).toString("hex")}`, task: i.id, at: new Date().toISOString(), actor: "kernel", data: note });
+        log("graded task finished with no covering check", note);
+      }
       if (caller.cross) throw refuseCross();
       return { pass: true };
     }
@@ -207,7 +211,6 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => {
       try { return { id, c, v: await ask(id, c, body), down: false }; }
       catch (e) {
-        if (!isUnavailable(e)) throw e;
         const why = String((e as { cause?: unknown }).cause ?? (e as Error).message);
         log("finish check unavailable, holding", { task: i.identifier, check: id, err: why });
         return { id, c, down: true, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
@@ -278,12 +281,27 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    * `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or blocked as the owner. Only
    * the check's own module, and ok/reopen/block only on a task it holds.
    */
-  async function resolve(module: string, ref: string, b: { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown }) {
+  // One resolution at a time per task, so two checks' oks never each see the other's hold and both leave the task in review.
+  const resolving = new Map<string, Promise<unknown>>();
+  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown };
+  /** The module's one finish check and the verdict's target status, or the refusal: asked before any task is looked up. */
+  function pick(module: string, b: Resolve) {
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
     if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
-    const [id, c] = mine[0]!;
     const to = RESOLVES.get(String(b.verdict));
     if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
+    return { id: mine[0]![0], c: mine[0]![1], to };
+  }
+  async function resolve(module: string, ref: string, b: Resolve) {
+    pick(module, b);
+    const task = (await issue(ref)).id;
+    const run = (resolving.get(task) ?? Promise.resolve()).then(() => resolveOne(module, ref, b));
+    const tail = run.catch(() => undefined).then(() => { if (resolving.get(task) === tail) resolving.delete(task); });
+    resolving.set(task, tail);
+    return run;
+  }
+  async function resolveOne(module: string, ref: string, b: Resolve) {
+    const { id, c, to } = pick(module, b);
     const i = await issue(ref);
     if (b.verdict !== "release" && !recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
     // A release hands the task to its delegator: only a task this check holds (its row, or in review under its label). On any
@@ -297,11 +315,20 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // The move first, in one PATCH with the label's removal: the hold goes only once the task has moved, so a failed call leaves
     // it for the module's retry (and a retry never posts its comment twice).
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
-    if (to) {
+    // An ok clears only this check's hold: while another check still holds the task it stays in review.
+    const others = b.verdict === "ok" && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id <> ?").get(i.id, id) !== undefined;
+    if (to && !others) {
       const l = c.label ? await label(i, c.label) : undefined;
       const ids = labelIds(i);
       await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
-    } else await unlabel(i, c);
+    } else {
+      // Another check still holds the task: this one's label goes, and its comment with it, the status stays.
+      const l = c.label ? await label(i, c.label) : undefined;
+      const ids = labelIds(i);
+      const drop = l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {};
+      const say = others ? comment : {};
+      if (Object.keys(drop).length || Object.keys(say).length) await patch(i, { ...drop, ...say });
+    }
     // The hold ends with its verdict's fact; `release` is one too: the check hands the decision to the task's delegator
     // (grading's escalation), so task state reads the task, still in review, as waiting on its delegator.
     // A release with `before` deletes only a hold placed by then: a finish that held the task again meanwhile keeps its hold
