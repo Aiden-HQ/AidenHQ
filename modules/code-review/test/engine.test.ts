@@ -17,7 +17,7 @@ function world(settings = {}) {
   const started = [], posted = [], acks = [], facts = [];
   const results = new Map();
   const outcomes = new Map();
-  const rewritten = new Set(), closed = [];
+  const rewritten = new Set(), closed = [], fails = [];
   const { db: _db, ...rest } = settings;
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
   const engine = createEngine({
@@ -30,7 +30,7 @@ function world(settings = {}) {
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
-      compare: async (_r, base, head) => ({ merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }),
+      compare: async (_r, base, head) => { const f = fails.shift(); if (f) throw Object.assign(new Error(`github-mcp compare: ${f}`), { status: f }); return { merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }; },
       repos: async () => [],
       postable: async (repo) => ({ identity: repo.startsWith("acme/") ? "owner" : null, org: repo.split("/")[0] }), // null: GitHub not connected
     },
@@ -47,7 +47,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { engine, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
+  return { engine, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: () => engine.tick() };
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
@@ -248,4 +248,20 @@ test("a one-off of a merged PR runs and posts on a task of its own, closed once 
   w.outcomes.set("k-1", { state: "posted", url: "https://github.com/x" });
   await w.tick();
   assert.deepEqual(w.closed.map((c) => [c[1], c[3]]), [[7, r.id]]);
+});
+
+test("a run that can't start because GitHub or the kernel can't answer now waits for a later tick; a refusal fails it", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [a] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] });
+  w.fails.push(503);
+  await w.tick();
+  assert.deepEqual([w.engine.run(a.id).run.status, w.started.length], ["queued", 0]);
+  w.later(61_000); await w.tick();
+  assert.deepEqual([w.engine.run(a.id).run.status, w.started.length], ["running", 1]);
+  const [b] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [{ ...CODEX, effort: "low" }] });
+  w.fails.push(404);
+  await w.tick();
+  assert.match(w.engine.run(b.id).run.why, /^couldn't start: github-mcp compare: 404/);
 });
