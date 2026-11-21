@@ -15,14 +15,16 @@ export type Mode = (typeof MODES)[number];
 /**
  * One option. `recommended`: the modes it is ticked by default in (a subset of `modes`). `when`: file globs (the recipe's globRe,
  * over the snapshot's paths); none means always. `run`: a tool's shell command (run in the checkout copy, its stdout is the
- * output), a skill's harness and skill names (space separated: run in order), or an engine's id. `severity: "nit"` caps a tool whose
+ * output) and `exits`, the exit codes of a finished scan (default [0]; a scanner's "found something" code too: any other code is a
+ * failed tool, report or not), a skill's harness and skill names (space separated: run in order), or an engine's id. `runs_code`:
+ * the tool can run the repo's code (a JS config it imports): only a tool, never on a fork's PR, after the others (tools.ts). `severity: "nit"` caps a tool whose
  * output marks everything an error (ruff, fallow); `hidden` options are never offered. `source.version` is the pin: a release tag,
  * package version or commit.
  */
 export interface Option {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: (typeof KINDS)[number];
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string; harness?: string; skill?: string; engine?: string };
+  run: { cmd?: string; exits?: number[]; harness?: string; skill?: string; engine?: string };
   when: string[]; output: (typeof OUTPUTS)[number]; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
 }
 
@@ -49,6 +51,7 @@ export function loadCatalog(source: string): Option[] {
     const run = o.run ?? {};
     if (o.kind === "tool" ? !text(run.cmd, 2000) || o.output === "findings" : o.output !== "findings" || (o.kind === "skill" ? !text(run.harness) || !text(run.skill, 500) : !text(run.engine))) bad(id, `${o.kind} has the run fields (and the output) its kind takes`);
     if (!Array.isArray(o.when) || o.when.some((g: unknown) => !text(g))) bad(id, "when is a list of globs");
+    if (run.exits !== undefined && (o.kind !== "tool" || !Array.isArray(run.exits) || !run.exits.length || run.exits.some((c: unknown) => !Number.isInteger(c) || (c as number) < 0 || (c as number) > 255))) bad(id, "exits is a tool's list of exit codes");
     if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
     if (typeof o.runs_code !== "boolean" || !["free", "low", "high"].includes(o.cost)) bad(id, "runs_code is a boolean and cost is free, low or high");
     if (o.severity !== undefined && o.severity !== "nit") bad(id, "severity is nit or absent");
@@ -64,7 +67,10 @@ export function detect(paths: string[], catalog: Option[], mode: Mode): { availa
 
 /** What a tools check carries per selected tool option (the check's `options` spec field, a JSON object by id): just what the
  * recipe runs, since the catalog file isn't in the box. */
-export type ToolSpec = Record<string, { lens: Lens; cmd: string; output: Exclude<Option["output"], "findings">; severity?: "nit" }>;
+export type ToolSpec = Record<string, { lens: Lens; cmd: string; output: Exclude<Option["output"], "findings">; severity?: "nit"; exits?: number[]; runs_code?: true }>;
 export function toolSpec(options: Option[]): ToolSpec {
-  return Object.fromEntries(options.filter((o) => o.kind === "tool").map((o) => [o.id, { lens: o.lens, cmd: o.run.cmd!, output: o.output as ToolSpec[string]["output"], ...(o.severity ? { severity: o.severity } : {}) }]));
+  return Object.fromEntries(options.filter((o) => o.kind === "tool").map((o) => [o.id, {
+    lens: o.lens, cmd: o.run.cmd!, output: o.output as ToolSpec[string]["output"],
+    ...(o.severity ? { severity: o.severity } : {}), ...(o.run.exits ? { exits: o.run.exits } : {}), ...(o.runs_code ? { runs_code: true as const } : {}),
+  }]));
 }

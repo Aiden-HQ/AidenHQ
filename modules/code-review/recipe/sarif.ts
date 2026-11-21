@@ -1,6 +1,6 @@
 // Tool output to raw findings: one SARIF reader (gitleaks, osv-scanner, govulncheck, zizmor, trivy, ruff, fallow, …) and a small
 // adapter each for the tools with their own format (knip, jscpd, vulture, scc) and for plain `path:line:col: message` lines
-// (oxlint, actionlint, squawk). A raw finding is what review.ts `clean` takes; tools.ts places it, tags its option and lens and caps
+// (oxlint, squawk). A raw finding is what review.ts `clean` takes; tools.ts places it, tags its option and lens and caps
 // it. Every adapter throws on output that isn't its format (that is a failed tool, never a clean one).
 import type { Option } from "./catalog.ts";
 
@@ -18,6 +18,8 @@ export function relPath(p: unknown, root: string) {
   if (s.startsWith(`${r}/`)) s = s.slice(r.length + 1);
   return s.replace(/^\.\//, "");
 }
+/** A line format's findings, or a throw when the text has content but not one line of that format (a crashed tool's message). */
+const some = (text: string, out: Raw[], what: string) => { if (!out.length && text.trim()) throw new Error(`no ${what} in it`); return out; };
 const num = (v: unknown, fallback = 1) => (Number.isInteger(v) && (v as number) >= 1 ? (v as number) : fallback);
 
 /** SARIF 2.1: each result becomes a finding; level error is important, warning and note are nits. `cap: "nit"` (a tool that marks
@@ -80,14 +82,15 @@ export function readJscpd(text: string, root: string): Raw[] {
   });
 }
 
-/** vulture's lines: `path:line: unused function 'name' (60% confidence)`. Empty output is no findings. */
+/** vulture's lines: `path:line: unused function 'name' (60% confidence)`, `, 4 lines` inside the brackets with sort_by_size.
+ * Empty output is no findings; output with no such line isn't vulture's. */
 export function readVulture(text: string): Raw[] {
   const out: Raw[] = [];
   for (const l of text.split("\n")) {
-    const m = /^(.+?):(\d+): (.+) \((\d+)% confidence\)$/.exec(l);
+    const m = /^(.+?):(\d+): (.+) \((\d+)% confidence(?:, \d+ lines?)?\)$/.exec(l);
     if (m) out.push({ severity: "nit", path: m[1]!, line: num(Number(m[2])), title: cut(m[3]!, 120), why: `vulture found ${m[3]} at ${m[4]}% confidence.`, evidence: l, fix_brief: "Delete it, after checking nothing reaches it dynamically (reflection, a framework hook, a public API)." });
   }
-  return out;
+  return some(text, out, "vulture's lines");
 }
 
 /** scc --by-file -f json: [{ Name, Files: [{ Location, Lines, Code, Complexity }] }]. The most complex files, as nits at line 1. */
@@ -103,8 +106,9 @@ export function readScc(text: string): Raw[] {
   }));
 }
 
-/** `path:line:col: message` lines (gcc style; oxlint -f unix, actionlint's format, squawk --reporter gcc). `warning:`, `note:` or
- * a trailing `[Warning/…]` makes a nit; anything else is important. Lines of other shapes are ignored; empty output is no findings. */
+/** `path:line:col: message` lines (gcc style; oxlint -f unix, squawk --reporter gcc). `warning:`, `note:` or
+ * a trailing `[Warning/…]` makes a nit; anything else is important. Lines of other shapes beside them are ignored (a summary, a
+ * message's own lines); empty output is no findings, output with none of these lines isn't the format. */
 export function readLines(text: string): Raw[] {
   const out: Raw[] = [];
   for (const l of text.split("\n")) {
@@ -114,7 +118,7 @@ export function readLines(text: string): Raw[] {
     const nit = /^(warning|note|info)$/i.test(m[4] ?? "") || /\[(warning|advice)\b/i.test(rest);
     out.push({ severity: nit ? "nit" : "important", path: m[1]!, line: num(Number(m[2])), title: cut(first(rest), 120), why: cut(rest, 600), evidence: cut(l, 600), fix_brief: "Fix what the message reports." });
   }
-  return out;
+  return some(text, out, "path:line: lines");
 }
 
 /** A tool's stdout read as its option says. Throws when it isn't that format. */

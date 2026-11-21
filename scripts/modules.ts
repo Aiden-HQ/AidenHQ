@@ -10,6 +10,7 @@ import { validateImages } from "./computers.ts";
 import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
+import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
@@ -1512,8 +1513,7 @@ export function checkEntries(name: string, def: Obj) {
  * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
  * recipe writes a JSON result the receipt binds).
  */
-/** The most a check job may run (minutes) and its model token may spend (USD): a one-off repo review needs the longer time. */
-export const MAX_CHECK_MIN = 180;
+/** The most a check job's model token may spend (USD); its time ceiling is the launcher's (MAX_CHECK_MIN). */
 export const MAX_CHECK_USD = 100;
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name: string, def: Obj, root: string) {

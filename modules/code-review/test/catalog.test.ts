@@ -28,6 +28,8 @@ test("detect: package.json + go.mod -> knip and govulncheck, not vulture; recomm
   assert.ok(!ids.includes("maint.vulture") && !ids.includes("cor.actionlint"));
   assert.ok(recommended.includes("sec.govulncheck") && recommended.includes("maint.knip") && !recommended.includes("sec.deepsec"));
   assert.ok(detect(["x.py"], catalog, "one_off").available.some((o) => o.id === "maint.vulture"));
+  // A monorepo's lockfiles live in its packages.
+  assert.ok(detect(["apps/web/package-lock.json"], catalog, "continuous").available.some((o) => o.id === "sec.osv-scanner"));
   // continuous: only options that run on a change
   assert.ok(!detect(["package.json"], catalog, "continuous").available.some((o) => o.id === "maint.scc"));
 });
@@ -39,7 +41,8 @@ test("hidden options are never offered", () => {
 
 test("toolSpec carries only the tool entries' run fields", () => {
   const spec = toolSpec(catalog);
-  assert.ok(spec["sec.gitleaks"].cmd.startsWith("gitleaks ") && spec["maint.ruff-unused"].severity === "nit");
+  assert.ok(spec["sec.gitleaks"].cmd.includes("gitleaks dir ") && spec["maint.ruff-unused"].severity === "nit");
+  assert.deepEqual([spec["maint.vulture"].exits, spec["maint.knip"].runs_code, spec["sec.gitleaks"].exits], [[0, 3], true, undefined]);
   assert.equal(spec["sec.deepsec"], undefined);
   assert.ok(JSON.stringify(spec).length < 16_000, "fits a json spec field");
 });
