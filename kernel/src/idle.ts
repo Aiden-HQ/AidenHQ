@@ -30,7 +30,7 @@ import type { Facts } from "./facts.ts";
 import type { TaskStateRead } from "./task-state-read.ts";
 import { fail } from "./proxy.ts";
 import type { Wakes } from "./wakes.ts";
-import type { Escalate } from "./escalate.ts";
+import type { AskTo, Escalate } from "./escalate.ts";
 
 export const IDLE_AFTER_MS = 15 * 60_000;
 export const IDLE_CAP = 3;
@@ -361,7 +361,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
-        if (who && escalate) escalate.record(caller.task, who, t);
+        if (who && escalate) escalate.record(caller.task, to as AskTo, t);
         fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
         wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });

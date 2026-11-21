@@ -310,6 +310,17 @@ test("a genuinely unanswered ask is replaced when the same recipient is asked ag
   assert.match(w.asked.notices[1].body, /Which path is current now\?/);
 });
 
+test("a second question routed to a different recipient is refused, not replaced", async (t) => {
+  const w = world(t);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
+  w.tick(MIN);
+  w.issues.t0.status = "done";
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" }), { status: 409 });
+  assert.equal(w.asked.chief.length, 0, "nothing was sent to the new recipient");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
+});
+
 test("a chat awaiting the owner's next message is never swept", async (t) => {
   const w = world(t);
   w.add("task.created", "task:t3", "t3", { parent: null, identifier: "T3", chat: true });

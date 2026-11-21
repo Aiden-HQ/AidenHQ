@@ -94,12 +94,12 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
    * its question, and no answering comment since. A questionless wait (a finish check's release) is not an ask. The state is
    * read only so an unreadable task fails closed. `undefined`: no open ask; `"unknown"`: the state or facts can't be read now.
    */
-  function openAsk(task: string): { who: "owner" | "delegator" } | "unknown" | undefined {
+  function openAsk(task: string): { to: AskTo } | "unknown" | undefined {
     if (!state(task)) return "unknown";
     const marker = db.prepare("SELECT kind, at FROM escalations WHERE key = ?").get(`ask:${task}`) as { kind: string; at: number } | undefined;
     if (!marker) return undefined;
-    const who = marker.kind === "owner" || marker.kind === "delegator" ? marker.kind : undefined;
-    if (!who) { db.prepare("DELETE FROM escalations WHERE key = ?").run(`ask:${task}`); return undefined; }
+    const to = marker.kind === "owner" || marker.kind === "delegator" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
+    if (!to) { db.prepare("DELETE FROM escalations WHERE key = ?").run(`ask:${task}`); return undefined; }
     let w: { seq: number; at: string; actor: string; data: string } | undefined;
     try { w = db.prepare("SELECT seq, at, actor, data FROM facts WHERE type = 'work.waiting' AND subject = ? ORDER BY at DESC, seq DESC LIMIT 1").get(`wait:${task}`) as { seq: number; at: string; actor: string; data: string } | undefined; }
     catch { return "unknown"; }
@@ -114,7 +114,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     catch { return "unknown"; }
     const answered = comments.some((c) => delegated ? c.actor !== "kernel" && c.actor !== w.actor : c.actor.startsWith("account:"));
     if (answered) return undefined;
-    return { who };
+    return { to };
   }
 
   async function toOwner(t: Issue, text: string) {
@@ -134,12 +134,12 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   }
   const api = {
     /** The ask's durable marker, written with the wait fact (one transaction: no awaiting); each recorded ask is a new episode. */
-    record(task: string, who: "owner" | "delegator", at = now()) {
-      db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, who, at);
+    record(task: string, to: AskTo, at = now()) {
+      db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`ask:${task}`, task, to, at);
       // A replacement can come in the same millisecond as the ask it replaces: the episode rows must still be distinct, or the
       // chief of staff's task (keyed by the episode) would be the old one and the new question never filed.
       let n = 0;
-      while (db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${at}${n ? `:${n}` : ""}`, task, who, at).changes === 0) n++;
+      while (db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${at}${n ? `:${n}` : ""}`, task, to, at).changes === 0) n++;
     },
     /**
      * The agent that delegated `t`, as nothing its assignee can change records it: the agent of the job that created it (the
@@ -180,7 +180,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       if (asked && to === "owner") return { sent: "recorded", to };
       const open = openAsk(t.id);
       if (open === "unknown") return { sent: "open" };
-      if (open && open.who !== who) return { sent: "open" };
+      if (open && open.to !== to) return { sent: "open", to: open.to };
       // A looping agent can't fill the chief of staff's list: at most CHIEF_ASKS asks a day per agent, then the call is refused.
       const asker = who === "owner" && to === "chief_of_staff" ? (await agentOf(t))?.key : undefined;
       const kind = `chief-ask:${asker}`;
