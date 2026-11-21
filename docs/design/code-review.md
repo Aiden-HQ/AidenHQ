@@ -122,7 +122,8 @@ model gateway. The service accepts what the recipe runs: each engine's own effor
 The service files a `post` write (Tier 1: the AI reviewer reads the whole rendered review, which is exactly what is posted) or
 a `notice` (Tier 0, fixed words) per run, a `ruling` (Tier 1: the judge's text) per judged dispute and a `status` (Tier 0, fixed
 words) per verdict change; the github module's poster executes it. One GitHub review per head and combo, always a `COMMENT` on the
-commit it reviewed (a PR that moved on since still gets it; its comments show as outdated where lines changed):
+commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
+changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):
 
 - **Every finding gets one thread**: on its lines when they are on the reviewed diff, else on the nearest diff line of its file
   (saying where it really is), else a file comment (a file GitHub shows no patch for). Only a finding in no changed file has no

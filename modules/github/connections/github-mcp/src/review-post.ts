@@ -247,7 +247,7 @@ export class ReviewPoster {
     const r = a.review;
     const ref = { ...split(r.repo), number: r.pr };
     const who = await this.identity();
-    await this.pull(ref, who);
+    const pr = await this.pull(ref, who);
     const threads = await this.threads(ref);
     const earlier = new Map(threads.filter((t) => t.ours && t.finding).map((t) => [t.finding!, t.url]));
     const place = anchors(r.findings, await this.diffLines(ref, r.base, r.head));
@@ -276,8 +276,9 @@ export class ReviewPoster {
     // open threads for findings the review no longer reports are resolved.
     const present = new Set(r.findings.map((f) => f.id));
     const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
+    // The acknowledgement speaks for the PR's current head: a review of an older one leaves it to the newer head's review.
     const c = counts(r.findings);
-    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`);
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ack.object] };
+    const ack = pr.head.sha === r.head ? await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`) : undefined;
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: made.length, listed: first.listed.length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ...(ack ? { ack: ack.url } : {}) }), objects: [...made.map((m) => `${objectRef(ref)}/comment/${m.id}`), ...(ack ? [ack.object] : [])] };
   }
 }

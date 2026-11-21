@@ -159,6 +159,7 @@ describe("posting", () => {
     const moved = world({ headSha: "c".repeat(40) });
     await poster(moved).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])));
     expect(moved.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))!.body).toMatchObject({ commit_id: HEAD });
+    expect(moved.state.ack).toBeUndefined(); // the acknowledgement is the newer head's
 
     const w = world({ threads: [thread("T1", "f_on_line1", "owner1", 41)] });
     const out = JSON.parse((await poster(w).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])))).text);
@@ -175,6 +176,13 @@ describe("posting", () => {
     expect(out.skipped.map((x: { thread: string }) => x.thread).sort()).toEqual(["T_forged"]);
     const r = await p.resolve({ owner: "acme", repo: "payments", number: 12 }, { thread_ids: ["T_person"] });
     expect(r.resolved).toEqual([]);
+  });
+
+  it("a dispute is visible: the author's reply on Aiden's finding thread (both as the owner's login) is a reply on our thread, not a ruling", async () => {
+    const t = thread("T1", "f_disputed", "owner1", 41);
+    t.comments.nodes.push({ databaseId: 42, url: "u2", body: "Disputed, deliberate: the caller holds the lock.", author: { login: "owner1" } });
+    const [got] = await poster(world({ threads: [t] })).threads({ owner: "acme", repo: "payments", number: 12 });
+    expect(got).toMatchObject({ ours: true, finding: "f_disputed", comment: 41, replies: [{ id: 42, author: "owner1", ruling: false }] });
   });
 
   it("a notice is the acknowledgement alone, from fixed words", async () => {

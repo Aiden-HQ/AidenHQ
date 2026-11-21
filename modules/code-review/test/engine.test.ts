@@ -43,8 +43,8 @@ function world(settings = {}) {
       start: async (s) => { started.push(s); return { check: `c-${started.length}` }; },
       result: async (c) => results.get(c) ?? { state: "running" },
     },
-    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? { state: "pending" }, close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); },
-      ruling: async (r) => (rulings.push(r), { state: "pending", write: `r-${rulings.length}` }), status: async (st) => (statuses.push(st), { state: "posted" }) },
+    poster: { post: async (p) => (posted.push(p), { state: "pending", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); },
+      ruling: async (r) => (rulings.push(r), { state: "pending", write: `r-${rulings.length}` }), status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }) },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
     emit: (f) => facts.push(f),
   });
@@ -533,4 +533,16 @@ test("a post refused by a restart (stale) or a failed GitHub call is filed once 
   r.outcomes.set("k-1", { state: "refused", why: "write k-1 rejected" });
   r.later(5 * 60_000); await r.tick({ github: false }); await r.tick({ github: false });
   assert.deepEqual([r.engine.runs({ repo: REPO })[0].status, r.posted.length], ["failed", 1]);
+});
+
+test("on a gated repo, `aiden review stop` (anyone posting as the owner can write it) stops the advice only: mandatory combos still review each push", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST, CLAUDE], on_push: [MUST_PUSH, CLAUDE] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); w.finish(1, NONE); await w.tick();
+  w.pr(2, sha("3")); await w.tick();
+  w.later(1000); w.say(2, "alice", "aiden review stop"); await w.tick();
+  w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started.slice(2).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"]], "the queued mandatory run stays; the advice is dropped");
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("4"), "codex/low"]]);
 });

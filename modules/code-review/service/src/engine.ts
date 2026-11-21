@@ -462,8 +462,10 @@ export function createEngine(d: EngineDeps) {
   /** The repo's trigger for a new PR (`open`) or a push (`push`): a batch of its combos for that moment. */
   function trigger(cfg: Repo, p: PullRequest, which: "open" | "push") {
     const row = prRow(p.repo, p.number)!;
-    if (row.mode === "stop") return;
     let list = which === "open" ? cfg.on_open : cfg.on_push;
+    // `aiden review stop` stops the advice only: a mandatory combo (the merge waits on it) still reviews each head. Anyone who can
+    // post as the owner can write a command, so no command lessens what gates a merge.
+    if (row.mode === "stop") list = list.filter((c) => c.mandatory);
     if (row.mode === "always" && !list.length) list = cfg.on_push.length ? cfg.on_push : cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_push;
     if (!list.length) return;
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
@@ -499,7 +501,7 @@ export function createEngine(d: EngineDeps) {
       case "always":
       case "stop":
         run("UPDATE prs SET mode = ? WHERE repo = ? AND number = ?", cmd.cmd, p.repo, p.number);
-        if (cmd.cmd === "stop") for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued' AND kind = 'auto'", p.repo, p.number)) {
+        if (cmd.cmd === "stop") for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued' AND kind = 'auto' AND mandatory = 0", p.repo, p.number)) {
           run("UPDATE runs SET status = 'skipped', why = 'stopped: aiden review stop', ended = ? WHERE id = ?", iso(), q.id);
           end(runRow(q.id)!);
         }
@@ -658,6 +660,8 @@ export function createEngine(d: EngineDeps) {
   }
   /** Status writes GitHub or the kernel refused, by PR: tried again after STATUS_RETRY or once the verdict changes. */
   const statusFailed = new Map<string, { key: string; at: number }>();
+  /** Status writes filed and not settled yet, by PR: the key is saved only once GitHub has it. */
+  const statusFiled = new Map<string, { key: string; write: string }>();
   const STATUS_RETRY = 5 * 60_000;
   /**
    * Mirrors each gated repo's open PRs' verdict to their head's commit status, written only when it changes (prs.status_key):
@@ -667,14 +671,24 @@ export function createEngine(d: EngineDeps) {
     for (const cfg of d.config().repos) {
       if (!gated(cfg)) continue;
       for (const p of all<{ number: number; head: string; status_key: string | null }>("SELECT number, head, status_key FROM prs WHERE repo = ? AND open = 1 AND draft = 0", cfg.repo)) {
+        const id = `${cfg.repo}#${p.number}`;
+        const saved = (key: string, o: Posted) => {
+          if (o.state === "pending") return void statusFiled.set(id, { key, write: o.write! });
+          statusFiled.delete(id);
+          if (o.state === "refused") return void (statusFailed.set(id, { key, at: now() }), log("review status not set", { repo: cfg.repo, pr: p.number, why: String(o.why ?? "").slice(0, 200) }));
+          statusFailed.delete(id);
+          run("UPDATE prs SET status_key = ? WHERE repo = ? AND number = ?", key, cfg.repo, p.number);
+          p.status_key = key;
+        };
+        const filed = statusFiled.get(id);
+        if (filed) {
+          saved(filed.key, await d.poster.outcome(filed.write).catch(() => ({ state: "pending" as const, write: filed.write })));
+          if (statusFiled.has(id)) continue;
+        }
         const s = mirrored(cfg.repo, p.number, p.head);
-        const key = JSON.stringify(s);
-        const id = `${cfg.repo}#${p.number}`, failed = statusFailed.get(id);
+        const key = JSON.stringify(s), failed = statusFailed.get(id);
         if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
-        const o = await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) }));
-        if (o.state === "refused") { statusFailed.set(id, { key, at: now() }); log("review status not set", { repo: cfg.repo, pr: p.number, why: String(o.why ?? "").slice(0, 200) }); continue; }
-        statusFailed.delete(id);
-        run("UPDATE prs SET status_key = ? WHERE repo = ? AND number = ?", key, cfg.repo, p.number);
+        saved(key, await d.poster.status(s).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) })));
       }
     }
   }
