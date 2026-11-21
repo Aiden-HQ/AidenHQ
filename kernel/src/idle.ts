@@ -165,7 +165,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
    * - no wait → back to where it came from once (`in_progress`; `in_review` for a review task, from the row), and the row goes —
    *   but only when the holder is invokable now: restoring work for an agent the sweep would block straight away is the loop this
    *   fixes, so it stays parked and the pass restores it once it can.
-   * - a `blocked` task with a stale `stranded_assigned_issue` hold → resolved once (resolveStale), re-parked if it still waits.
+   * - a `blocked` task with a stale `stranded_assigned_issue` hold → resolved (resolveStale), re-parked if it still waits; a
+   *   hold that cannot be released yet keeps its row, so the next pass retries it (never a row dropped over a reconciliation
+   *   that did not happen).
    * A park writes its row before its issue and keeps it unless a read confirms the park did not land, so neither a crash nor an
    * unknown answer leaves a parked task with no row; an armed `backlog` task without one (a row lost some other way) is adopted,
    * and a `blocked` task whose own wait is armed is released and re-parked, so every interruption is recovered by the next pass.
@@ -189,11 +191,18 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // it again. With one, the next pass finishes whatever this one started (both paths below drop it only on success).
       const from = p ? p.from_status : adoptedFrom(task);
       if (!p) remember(task, agent, from);
-      if (!(await resolveStale(i, agent))) {
-        // The answer was an error. If the resolve landed anyway the issue is no longer blocked and the row just recorded keeps
-        // it selectable; if it is still blocked, this pass leaves the task to the obsolescence it was already in.
+      if ((await resolveStale(i, agent)) !== "resolved") {
+        // A hold this loop leaves behind keeps its row: the reconciliation has not happened, so the next pass retries it —
+        // and resolveStale makes no call until releasing it is safe (its holder invokable again, or its own wait armed), so
+        // that is a cadence, not a loop. Dropping the row there would leave a task we parked with nothing that owes it a
+        // restore once the board or the holder moves it on. A hold of another cause is not the loop's at all, and neither is
+        // the restore: the board keeps it; the row no longer has a park to guard, so it goes.
+        if (i.activeRecoveryAction?.cause !== "stranded_assigned_issue") forget(task);
+        // The answer was an error: the call may still have landed. If the issue is no longer blocked, the release is done and
+        // the move on from `todo` is the rest of this pass's work; if it is still blocked (or unreadable) it stays for the
+        // next pass, row and all.
         const after = await issue(task).catch(() => undefined);
-        if (!after || after.status === "blocked") { forget(task); return undefined; }
+        if (!after || after.status === "blocked") return undefined;
       }
       if (armed(task)) { await park(task, agent, keyOf(agent), false); return "resolved"; }
       // The resolve lands the issue in `todo`, the one scanned status the route accepts, and a task sitting there files a
@@ -270,13 +279,15 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
    * A `stranded_assigned_issue` hold left by this loop's own blocks, resolved once through the route that exists for it
    * (`recovery-actions/resolve`, restored → todo, one of the statuses it accepts), and only when resolving it does not drop the
    * issue straight back into the sweep: its wait is armed (the pass parks it again at once) or its holder is invokable again.
-   * Any other hold, or a holder still not invokable with no wait to park for, is left to the board: one pass, no retry loop.
+   * Any other hold, or a holder still not invokable with no wait to park for, is left to the board: it makes no call
+   * (`held`), and the caller keeps the park row so a later pass retries once releasing it is safe. A call that failed is
+   * `failed`: the release may still have landed, so the caller reads the issue before deciding.
    */
-  async function resolveStale(i: ParkedIssue, agent: string) {
+  async function resolveStale(i: ParkedIssue, agent: string): Promise<"resolved" | "held" | "failed"> {
     const a = i.activeRecoveryAction;
-    if (!a?.id || a.cause !== "stranded_assigned_issue") return false;
+    if (!a?.id || a.cause !== "stranded_assigned_issue") return "held";
     const rePark = armed(i.id);
-    if (!rePark && !(await invokable(agent, String(i.companyId ?? "")))) return false;
+    if (!rePark && !(await invokable(agent, String(i.companyId ?? "")))) return "held";
     const r = await owner("POST", `/api/issues/${encodeURIComponent(i.id)}/recovery-actions/resolve`, {
       actionId: a.id, outcome: "restored", sourceIssueStatus: "todo",
       resolutionNote: rePark
@@ -285,10 +296,10 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     }).catch((e: Error) => ({ status: 502, json: { error: e.message } }));
     if (r.status >= 300) {
       log("stale recovery hold not resolved", { task: i.id, action: a.id, status: r.status, err: String(r.json?.error ?? "").slice(0, 200) });
-      return false;
+      return "failed";
     }
     log("stale recovery hold resolved", { task: i.id, action: a.id, reparked: rePark });
-    return true;
+    return "resolved";
   }
   /** One reconcile pass over every task with a park row or an armed wait (reconcileOne, each in its own try: one failure never
    *  hides the others). */
