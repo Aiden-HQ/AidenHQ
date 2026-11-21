@@ -24,6 +24,13 @@ SYFT="anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6
 out="${AIDENHQ_DATA_DIR:-$PWD/data}/modules/security/sbom"
 mkdir -p "$out"
 [ -w "$out" ] || { echo "security-sbom: $out isn't writable by $(id -un) (created by Docker?): sudo chown $(id -u):$(id -g) $out" >&2; exit 1; }
+# One pass at a time: two passes unpack two images each into their own .work on the same filesystem, and a timer that fires
+# while a manual run is going would double the bytes written and race the current/ swap. A skipped pass keeps yesterday's
+# batch, which the scanner reads again; it is not a failure.
+exec 9>>"$out/.lock"
+flock -n 9 || { echo "security-sbom: another pass holds $out/.lock; skipping this one"; exit 0; }
+# Names this pass's containers: its own, so a leftover is recognisably this scanner's and never another's.
+pass="$(printf '%s' "$out" | sha256sum | cut -c1-12)-$$"
 next="$out/next"
 work="$out/.work"
 rm -rf "$next" "$work"
@@ -32,6 +39,18 @@ mkdir -p "$next" "$work"
 user="$(id -u):$(id -g)"
 sock_gid="$(stat -c %g /var/run/docker.sock)"
 platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
+# The smallest free space a target may start with, in GB: syft writes a `docker save` archive and unpacks every layer under
+# $work, so one large image needs roughly twice its size. Below this the pass records the target as failed rather than
+# filling the filesystem the rest of the host runs on (2026-11-21: / on md2 hit 81% while two containers wrote ~142 GB).
+# The setting may raise the floor on a roomier disk, never lower it: 30 GB is the least this pass runs with, so a typo, an
+# empty value or a deliberate 0 can't switch the guard off.
+min_free_gb=30
+if [[ "${AIDENHQ_SBOM_MIN_FREE_GB:-}" =~ ^[0-9]+$ ]] && [ "$AIDENHQ_SBOM_MIN_FREE_GB" -gt "$min_free_gb" ]; then
+  min_free_gb="$AIDENHQ_SBOM_MIN_FREE_GB"
+fi
+free_gb() { df -Pk "$out" | awk 'NR == 2 { printf "%d", $4 / 1048576 }'; }
+# A container is this scanner's own only by its label: a name is not proof of ownership, so nothing else's is ever removed.
+scanner_container() { [ "$(docker inspect -f '{{index .Config.Labels "aidenhq.oneoff"}}' "$1" 2>/dev/null || true)" = 1 ]; }
 n=0
 
 # scan <target> <commit> [docker mount args...] -- <syft source> [syft args...]
@@ -41,18 +60,33 @@ scan() {
   while [ "$1" != "--" ]; do mounts+=("$1"); shift; done
   shift
   n=$((n + 1))
-  local f err
+  local f err name avail
   f="$(printf '%03d.json' "$n")"
+  avail="$(free_gb)"
+  if [ "$avail" -lt "$min_free_gb" ]; then
+    # Not started: a scan that runs the disk out takes the host's other services with it, and its own output would be the
+    # thing that never landed. A line with the reason is the batch saying it has no room, never a clean pass.
+    printf '%s\t-\t%s\t%s\n' "$target" "skipped: ${avail} GB free on $out, under the ${min_free_gb} GB floor" "$commit" >> "$next/targets.tsv"
+    return 0
+  fi
   # syft's image has no writable /tmp for a non-root user: image layers unpack into $work (on disk, not RAM).
   # `aidenhq.oneoff`: the scan's own container is running for as long as the batch takes, and containers.prom names none.
-  if err="$(timeout 1800 docker run --rm --label aidenhq.oneoff=1 --network none --user "$user" --group-add "$sock_gid" -e SYFT_CHECK_FOR_APP_UPDATE=false \
+  # A name and a forced removal: `timeout` ends the docker CLI, and a container that ignores the forwarded signal would
+  # otherwise keep unpacking into $work after the next target started, unseen.
+  name="aidenhq-sbom-$pass-$n"
+  scanner_container "$name" && docker rm -f "$name" >/dev/null 2>&1 || true # a leftover of this pass, before `run`
+  if err="$(timeout 1800 docker run --rm --name "$name" --label aidenhq.oneoff=1 --network none --user "$user" --group-add "$sock_gid" -e SYFT_CHECK_FOR_APP_UPDATE=false \
       -e TMPDIR=/work -e XDG_CACHE_HOME=/work -v "$work:/work" -v "$next:/out" "${mounts[@]}" \
       "$SYFT" scan "$@" --source-name "$target" -o "syft-json=/out/$f" 2>&1 >/dev/null)"; then
     printf '%s\t%s\t\t%s\n' "$target" "$f" "$commit" >> "$next/targets.tsv"
   else
+    scanner_container "$name" && docker rm -f "$name" >/dev/null 2>&1 || true
     printf '%s\t-\t%s\t%s\n' "$target" "$(printf '%s' "${err:-failed}" | tr '\t\n' '  ' | tail -c 300)" "$commit" >> "$next/targets.tsv"
   fi
-  rm -rf "${work:?}"/*
+  # Everything the target wrote: stereoscope leaves its `stereoscope-*` and `syft-*` temp dirs behind when a scan fails, and
+  # `*` alone would keep a dotfile (an XDG cache) for the next target to grow. A cleanup that fails is said out loud: the
+  # next target would otherwise start on top of this one's bytes.
+  find "$work" -mindepth 1 -delete 2>/dev/null || echo "security-sbom: could not empty $work after $target" >&2
 }
 
 inst="${AIDENHQ_INSTANCE_DIR:-}"
@@ -99,10 +133,34 @@ while read -r cid image config label; do
   tags[$image]="$config"
 done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' 2>/dev/null)"
 for image in $(printf '%s\n' "${!running[@]}" | sort); do
+  # What one image costs: syft's daemon source runs its own `docker save` and unpacks every layer into $work, and the
+  # archive source does the same over the tar this script saved. Either way the target needs about twice the image's size,
+  # so an image that doesn't fit in half the room above the floor is refused up front rather than as a full disk mid-scan.
+  # A size the daemon won't give is unknown, not zero: an unknown demand can't be judged to fit, so the target is recorded
+  # instead of scanned (a daemon that can't answer says nothing about coverage). Only "No such image" is the store having
+  # collected it, which is left out like the inspect paths below.
+  if ! raw="$(docker image inspect -f '{{.Size}}' "$image" 2>&1)"; then
+    [[ "$raw" == *"No such image"* ]] || fail "image:$image" "docker image inspect: ${raw:-failed}"
+    continue
+  fi
+  # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged.
+  size="$(printf '%s\n' "$raw" | tail -1)"
+  if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+    fail "image:$image" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"
+    continue
+  fi
+  size_gb=$(( (size + 1073741823) / 1073741824 ))
+  room_gb=$(( $(free_gb) - min_free_gb ))
   if [ -n "${tags[$image]:-}" ]; then
-    scan "image:${tags[$image]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${tags[$image]}"
+    if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
+      fail "image:$image" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
+    else
+      scan "image:${tags[$image]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${tags[$image]}"
+    fi
   elif err="$(docker image inspect "$image" 2>&1 >/dev/null)"; then
-    if err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
+    if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
+      fail "image:$image" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
+    elif err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
       # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
       scan "image:$image" "" -- "docker-archive:/work/image.tar"
     elif [[ "$err" != *"No such image"* ]]; then

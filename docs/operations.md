@@ -350,7 +350,13 @@ id the daemon no longer holds is dropped), the product and instance checkouts an
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
 noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
 records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
-`src_meta.ingest_run` row. The scanner matches a new batch within the hour (or daily anyway) and fires Security
+`src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/`, and one image costs about twice
+its size there (syft saves it and unpacks its layers): it empties that dir after every target, keeps 30 GB free before it
+starts a target and refuses an image that needs more than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
+demand can't be judged to fit), and a second pass started while one holds `.lock` skips rather than running two at once. On
+2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%. `AIDENHQ_SBOM_MIN_FREE_GB` can raise
+the floor for a smaller disk, never lower it: 30 GB is the least a pass runs with, and a value under it (or not a number) is
+ignored. The scanner matches a new batch within the hour (or daily anyway) and fires Security
 Watch's webhook when anything changed. On demand:
 `ops/security-sbom.sh`, then `docker compose exec security-scanner node dist/src/main.js once`.
 

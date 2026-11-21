@@ -1,7 +1,7 @@
 // ops/security-sbom.sh with a fake `docker` on PATH: the syft invocations it would run are read back from the fake's
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -28,9 +28,12 @@ async function run(env = {}, {
   containers = [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
   tags = { "aidenhq/board:local": "sha256:1111" },
   manifests = {},
+  sizes = {},
   held = null,
   inspectErrors = [],
   saveErrors = {},
+  sizeErrors = [],
+  sizeJunk = {},
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "security-sbom-"));
   mkdirSync(join(dir, "bin"), { recursive: true });
@@ -39,11 +42,34 @@ async function run(env = {}, {
   const heldFile = join(dir, "held");
   const brokenFile = join(dir, "broken");
   const saveErrorsFile = join(dir, "save-errors");
+  const sizesFile = join(dir, "sizes");
+  const sizeErrorsFile = join(dir, "size-errors");
+  const sizeJunkFile = join(dir, "size-junk");
   writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
+  // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor.
+  writeFileSync(join(dir, "bin/df"), "#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' \"${FAKE_FREE_KB:-400000000}\"\n");
   writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
-# A fake daemon: containers (\`id<TAB>.Image<TAB>.Config.Image<TAB>compose image label\`), the tag table (ref<TAB>
+# A fake daemon: containers (id<TAB>.Image<TAB>.Config.Image<TAB>compose image label\`), the tag table (ref<TAB>
 # top-level id<TAB>platform manifest) and the image ids it holds. Every syft run and save is logged.
 case "$1" in run|save) printf '%s\\n' "$*" >> "$CALLS" ;; esac
+# rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
+[ "$1" = rm ] && exit 0
+# Only a container carrying this scanner's own label may be removed: inspect prints the label, or fails as Docker does.
+if [ "$1" = inspect ] && [ "$2" = -f ] && [[ "$3" == *aidenhq.oneoff* ]]; then
+  grep -qxF -- "$4" "$LABELLED" && printf '1\n' && exit 0
+  echo "Error: No such object: $4" >&2; exit 1
+fi
+if [ "$1" = run ]; then
+  # The work dir the script mounted as /work: what a target leaves must be gone before the next one starts. Junk is made
+  # here, as stereoscope and an XDG cache would (a dotfile included), so the script's own cleanup is what the test reads.
+  w=""
+  for a in "$@"; do case "$a" in *:/work) w="\${a%:/work}" ;; esac; done
+  if [ -n "$w" ] && [ -d "$w" ]; then
+    if [ -n "$(ls -A "$w" 2>/dev/null)" ]; then printf 'dirty\n' >> "$CLEAN"; else printf 'clean\n' >> "$CLEAN"; fi
+    mkdir -p "$w/stereoscope-$$" "$w/.cache/syft"
+    printf 'x' > "$w/stereoscope-$$/layer"
+  fi
+fi
 case "$1" in
   version) printf 'linux/amd64\\n' ;;
   ps) printf '%s\\n' ${containers.map((c) => `'${c.id}'`).join(" ")} ;;
@@ -59,6 +85,18 @@ case "$1" in
     if [ "$1" = inspect ]; then
       shift
       col=2
+      if [ "$1" = -f ] && [ "$2" = '{{.Size}}' ]; then
+        # An image's size on disk, for the room its save and unpack need.
+        shift 2
+        junk="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $2; found = 1 }' "$SIZE_JUNK")"
+        if [ -n "$junk" ]; then printf '%s\\n' "$junk"; exit 0; fi
+        if grep -qxF -- "$1" "$SIZE_ERRORS"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
+        found="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $2; found = 1 }' "$SIZES")"
+        if [ -n "$found" ]; then printf '%s\\n' "$found"; exit 0; fi
+        if grep -qxF -- "$1" "$HELD"; then printf '0\\n'; exit 0; fi
+        if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
+        echo "Error response from daemon: No such image: $1" >&2; exit 1
+      fi
       if [ "$1" = --platform ]; then col=3; shift 2; fi
       [ "$1" = -f ] && shift 2
       if [ "$#" -eq 0 ]; then cut -f"$col" "$TAGS"; exit 0; fi
@@ -83,12 +121,16 @@ case "$1" in
 esac
 exit 0
 `);
-  for (const f of ["stat", "docker"]) chmodSync(join(dir, "bin", f), 0o755);
+  for (const f of ["stat", "docker", "df"]) chmodSync(join(dir, "bin", f), 0o755);
   writeFileSync(containersFile, containers.map((c) => `${c.id}\t${c.image}\t${c.config}\t${c.label ?? ""}`).join("\n") + "\n");
-  writeFileSync(tagsFile, Object.entries(tags).map(([ref, id]) => `${ref}\t${id}\t${manifests[ref] ?? id}`).join("\n") + "\n");
+  writeFileSync(tagsFile, Object.entries(tags).map(([ref, id]) => `${ref}\t${id}\t${manifests[ref] ?? id}\t${sizes[ref] ?? 0}`).join("\n") + "\n");
   writeFileSync(heldFile, (held ?? [...containers.map((c) => c.image), ...Object.values(tags)]).join("\n") + "\n");
   writeFileSync(brokenFile, inspectErrors.join("\n") + "\n");
   writeFileSync(saveErrorsFile, Object.entries(saveErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
+  writeFileSync(sizesFile, Object.entries(sizes).map(([ref, bytes]) => `${ref}\t${bytes}`).join("\n") + "\n");
+  writeFileSync(sizeErrorsFile, sizeErrors.join("\n") + "\n");
+  writeFileSync(sizeJunkFile, Object.entries(sizeJunk).map(([ref, out]) => `${ref}\t${out}`).join("\n") + "\n");
+  writeFileSync(join(dir, "labelled"), ""); // containers this fake daemon reports as this scanner's own
   const calls = join(dir, "calls");
   const data = join(dir, "data");
   const r = await new Promise((resolve) => {
@@ -97,13 +139,17 @@ exit 0
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, BROKEN: brokenFile,
-        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), ...env,
+        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
   const batch = join(data, "modules/security/sbom/current/targets.tsv");
   const targets = existsSync(batch) ? readFileSync(batch, "utf8").split("\n").filter(Boolean).map((l) => l.split("\t")) : [];
-  return { ...r, targets, calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean) : [] };
+  return {
+    ...r, targets,
+    calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean) : [],
+    workStates: existsSync(join(dir, "clean")) ? readFileSync(join(dir, "clean"), "utf8").trim().split("\n").filter(Boolean) : [],
+  };
 }
 
 /** The batch's line for one target (target, file, error, commit), `undefined` when the target is not in it. */
@@ -275,4 +321,169 @@ test("security-sbom: a container configured with an image id is still scanned fr
   assert.equal(status, 0, out);
   assert.match(syft(calls, "image:sha256:6666").line, / docker-archive:\/work\/image\.tar( |$)/);
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("docker:sha256:")), calls.join("\n"));
+});
+
+test("security-sbom: a target starts with the work dir emptied of everything the last one left, dotfiles included", { skip: NOT_LINUX }, async () => {
+  // stereoscope leaves `stereoscope-*` and `syft-*` dirs behind when a scan fails, and an XDG cache under $work is a
+  // dotfile: `rm -rf $work/*` kept both, so each target's bytes stayed on the disk the host runs from.
+  const { status, out, workStates } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:2222", config: "aidenhq/other:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:1111", "aidenhq/other:local": "sha256:2222" },
+  });
+  assert.equal(status, 0, out);
+  // The first target finds the empty dir the pass made; every one after it finds what the one before wrote already gone.
+  assert.ok(workStates.length > 3, `several targets ran:\n${workStates.join(",")}`);
+  assert.deepEqual(workStates.slice(1).filter((s) => s !== "clean"), [], `every target after the first starts clean:\n${workStates.join(",")}`);
+});
+
+test("security-sbom: an image too large for the room above the floor is refused before its save, with the reason", { skip: NOT_LINUX }, async () => {
+  // A 40 GB image needs its archive and its unpacked layers: about twice its size. With 35 GB free and a 30 GB floor the
+  // pass has no room, and discovering that as a full disk mid-save is what took the host down.
+  const { status, out, calls, targets } = await run({ FAKE_FREE_KB: String(35 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/huge:local", label: "sha256:aaaa" }],
+    tags: {},
+    sizes: { "sha256:1111": String(40 * 1024 ** 3) },
+  });
+  assert.equal(status, 0, out);
+  const line = batchLine(targets, "image:sha256:1111");
+  assert.ok(line, `the target keeps a line:\n${targets.join("\n")}`);
+  assert.match(line[2], /skipped: 40 GB image/, JSON.stringify(line));
+  assert.equal(line[1], "-", "no syft ran for it");
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `nothing was saved:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: with the disk under the floor no scan starts and the batch says why", { skip: NOT_LINUX }, async () => {
+  const { status, out, calls, targets } = await run({ FAKE_FREE_KB: String(5 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+  });
+  assert.equal(status, 0, out);
+  assert.ok(!calls.some((c) => c.startsWith("run ")), `no syft run started:\n${calls.join("\n")}`);
+  for (const target of ["host", "image:aidenhq/board:local", "repo:product"]) {
+    const line = batchLine(targets, target);
+    assert.ok(line, `${target} keeps a line:\n${targets.join("\n")}`);
+    assert.match(line[2], /skipped: 5 GB free/, JSON.stringify(line));
+  }
+});
+
+test("security-sbom: a pass that finds the lock held skips instead of doubling the writes", { skip: NOT_LINUX }, async () => {
+  // The timer and a manual run on the same host: two passes unpack two images into the same filesystem at once. A second
+  // pass started while the first holds data/modules/security/sbom/.lock says so and runs no scan.
+  const dir = mkdtempSync(join(tmpdir(), "security-sbom-lock-"));
+  const data = join(dir, "data");
+  const out = join(data, "modules/security/sbom");
+  mkdirSync(out, { recursive: true });
+  // A separate process holds the lock, as a running pass would: a shell that `exec`s into the script hands its own
+  // description over and the script's reopen drops it.
+  const holder = spawn("flock", [join(out, ".lock"), "sleep", "5"], { stdio: "ignore" });
+  await new Promise((r) => setTimeout(r, 200));
+  const r = await new Promise((resolve) => {
+    execFile("bash", [script], {
+      env: { ...process.env, AIDENHQ_DATA_DIR: data, PATH: `/usr/bin:/bin` },
+    }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
+  });
+  holder.kill();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /another pass holds/);
+  assert.equal(existsSync(join(out, "current")), false, "no batch was written");
+});
+
+test("security-sbom: a tag-resolved image over the room it needs is refused too, never scanned from the daemon", { skip: NOT_LINUX }, async () => {
+  // `docker:<tag>` is no cheaper than the archive: syft's daemon source saves the image itself and unpacks its layers.
+  const { status, out, calls, targets } = await run({ FAKE_FREE_KB: String(35 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/huge:local" }],
+    tags: { "aidenhq/huge:local": "sha256:1111" },
+    sizes: { "sha256:1111": String(40 * 1024 ** 3) },
+  });
+  assert.equal(status, 0, out);
+  const line = batchLine(targets, "image:sha256:1111");
+  assert.ok(line, `the target keeps a line:\n${targets.join("|")}\n${out}`);
+  assert.match(line[2], /skipped: 40 GB image/, JSON.stringify(line));
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("docker:aidenhq/huge:local")), `no daemon scan:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a container with a matching name but no scanner label is never removed", { skip: NOT_LINUX }, async () => {
+  // The name is this pass's own (hash and pid), but a name is not proof of ownership: only a container the scanner
+  // labelled aidenhq.oneoff is removed before a run.
+  const { status, out, calls } = await run();
+  assert.equal(status, 0, out);
+  const removed = calls.filter((c) => c.startsWith("rm "));
+  assert.deepEqual(removed, [], `nothing was removed:\n${calls.join("\n")}`);
+  // Every run it started carries the label, so the next pass would recognise its own leftover.
+  const runs = calls.filter((c) => c.startsWith("run "));
+  assert.ok(runs.length > 0, calls.join("\n"));
+  for (const r of runs) assert.match(r, /--label aidenhq\.oneoff=1/, r);
+});
+
+test("security-sbom: an image whose size can't be read is recorded and never scanned, whatever room there is", { skip: NOT_LINUX }, async () => {
+  // Unknown demand is not zero demand: treating a failed size read as 0 slipped past the half-room guard and started a
+  // scan that could fill the disk. Plenty of room here, so only the missing size can stop it.
+  const { status, out, calls, targets } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/nosize:local" }],
+    tags: { "aidenhq/nosize:local": "sha256:1111" },
+    sizeErrors: ["sha256:1111"],
+  });
+  assert.equal(status, 0, out);
+  const line = batchLine(targets, "image:sha256:1111");
+  assert.ok(line, `the target keeps a line:\n${targets.join("\n")}`);
+  assert.match(line[2], /docker image inspect: .*cannot inspect/, JSON.stringify(line));
+  assert.equal(line[1], "-", "no syft ran for it");
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("aidenhq/nosize:local")), `no scan started:\n${calls.join("\n")}`);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `nothing was saved:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a size the daemon answers with junk is recorded, not read as 0 GB", { skip: NOT_LINUX }, async () => {
+  const { status, out, calls, targets } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/junk:local" }],
+    tags: { "aidenhq/junk:local": "sha256:1111" },
+    sizeJunk: { "sha256:1111": "<no value>" },
+  });
+  assert.equal(status, 0, out);
+  const line = batchLine(targets, "image:sha256:1111");
+  assert.ok(line, `the target keeps a line:\n${targets.join("\n")}`);
+  assert.match(line[2], /docker image inspect: no size/, JSON.stringify(line));
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("aidenhq/junk:local")), `no scan started:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an image the store collected before its size read is left out, like the other inspect paths", { skip: NOT_LINUX }, async () => {
+  const { status, out, calls, targets } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/gone:local", label: "sha256:aaaa" }],
+    tags: {},
+    held: [],
+  });
+  assert.equal(status, 0, out);
+  assert.equal(batchLine(targets, "image:sha256:1111"), undefined, `no line for a collected image:\n${targets.join("\n")}`);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("sha256:1111")), calls.join("\n"));
+});
+
+test("security-sbom: the free-space setting can raise the floor but never lower it", { skip: NOT_LINUX }, async () => {
+  // The floor is the safeguard: an env value of 0 (or a typo, or a negative) must not switch it off. 5 GB free is under the
+  // 30 GB minimum, so with each of these values no scan may start.
+  for (const value of ["0", "-100", "", "5", "lots"]) {
+    const { status, out, calls, targets } = await run({ FAKE_FREE_KB: String(5 * 1024 * 1024), AIDENHQ_SBOM_MIN_FREE_GB: value }, {
+      containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+      tags: { "aidenhq/board:local": "sha256:1111" },
+    });
+    assert.equal(status, 0, out);
+    assert.ok(!calls.some((c) => c.startsWith("run ")), `AIDENHQ_SBOM_MIN_FREE_GB=${JSON.stringify(value)} started a scan:\n${calls.join("\n")}`);
+    const line = batchLine(targets, "image:aidenhq/board:local");
+    assert.ok(line, `AIDENHQ_SBOM_MIN_FREE_GB=${JSON.stringify(value)} keeps a line:\n${targets.join("\n")}`);
+    assert.match(line[2], /under the 30 GB floor/, `${JSON.stringify(value)}: ${JSON.stringify(line)}`);
+  }
+});
+
+test("security-sbom: a setting above the minimum raises the floor", { skip: NOT_LINUX }, async () => {
+  // 40 GB free clears the 30 GB default but not a 50 GB floor, so only a setting that is honoured stops this scan.
+  const { status, out, calls, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024), AIDENHQ_SBOM_MIN_FREE_GB: "50" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+  });
+  assert.equal(status, 0, out);
+  assert.ok(!calls.some((c) => c.startsWith("run ")), `the 50 GB floor stopped the scan:\n${calls.join("\n")}`);
+  const line = batchLine(targets, "image:aidenhq/board:local");
+  assert.ok(line, `the target keeps a line:\n${targets.join("\n")}`);
+  assert.match(line[2], /under the 50 GB floor/, JSON.stringify(line));
 });
