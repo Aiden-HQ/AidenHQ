@@ -45,6 +45,12 @@ test("no verdict passes with a note (fail open); past the review target the note
   assert.equal(verdict(0, review([finding("high", "Bug")], { coverage: { unavailable: true } })).block, true);
   assert.equal(verdict(0, review([finding("high", "Bug")]), "", { failure: "", lines: "5230" }).block, true);
   assert.equal(verdict(0, review([]), "", { failure: "", lines: "5230" }).block, false);
+  // Findings a run published still decide when it then failed; a policy refusal (codex config in the PR) always blocks.
+  const late = verdict(1, review([finding("high", "Bug")], { health: { status: "failed" } }), "abcdef123");
+  assert.deepEqual([late.block, late.partial], [true, true]);
+  assert.match(late.body, /no verdict[^]*still decide[^]*Bug/);
+  assert.equal(verdict(1, "", "", { failure: "policy", cause: "The PR changes codex config (.codex/config.toml)" }).block, true);
+  assert.match(verdict(1, "", "abcdef123").body, /See the job log for why\./, "an unknown failure still says where to look");
 });
 
 test("a failed review, a non-zero exit or unreadable output passes without a verdict", () => {
@@ -488,7 +494,7 @@ process.exit(code);
   for (const f of [".codex/config.toml", "web/codex.toml", "AGENTS.override.md"]) {
     g("checkout", "-q", base); writeFileSync(join(dir, "package.json"), "{}\n"); mkdirSync(join(dir, f, ".."), { recursive: true }); writeFileSync(join(dir, f), "x\n".repeat(30)); g("add", "."); g("commit", "-qm", f);
     r = run(g("rev-parse", "HEAD"));
-    assert.deepEqual([r.runs.length, /CODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=The PR changes codex config/.test(r.env)], [0, true], f);
+    assert.deepEqual([r.runs.length, /CODEGENIE_FAILURE=policy\nCODEGENIE_CAUSE=The PR changes codex config/.test(r.env)], [0, true], f);
   }
   // No verdict: one retry; still none passes at the gate with a fixed cause. A gateway refusal (exit 2) is never retried.
   r = run(light, { CODES: "1,0" });

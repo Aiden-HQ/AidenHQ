@@ -228,6 +228,8 @@ jobs:
         # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
         run: |
           set +e
+          # A step that ends before it records an outcome (its setup failed) is a run without a verdict: neutral, with its cause.
+          trap 'grep -qE "^(CODEGENIE_EXIT|CODE_REVIEW_SKIPPED|CODE_REVIEW_DONE)=" "$GITHUB_ENV" || printf "CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=no-verdict\nCODEGENIE_CAUSE=the Review step ended before it recorded a result\n" >> "$GITHUB_ENV"' EXIT
           if [ "${REVIEW_MODE:-}" = reuse ]; then
             echo "::notice::The PR's patch is the same as at its green review of $REVIEW_FROM: that verdict stands, no new review."
             echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
@@ -315,7 +317,12 @@ jobs:
             printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
             exit 0
           }
-          [ -z "$codexcfg" ] || gave_up "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it."
+          # A policy refusal, not a missing verdict: the gate blocks it (a prompt-injection guard).
+          if [ -n "$codexcfg" ]; then
+            echo "::error::The PR changes codex config ($codexcfg)"
+            printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=policy\nCODEGENIE_CAUSE=%s\n' "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it." >> "$GITHUB_ENV"
+            exit 0
+          fi
           # The model key. On AidenHQ's runners (AIDENHQ_GATEWAY_URL, set on the runner container) the review spends through
           # the instance's model gateway: this job's GitHub OIDC token is traded there for a CI token bound to this repo and
           # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger, with zero data

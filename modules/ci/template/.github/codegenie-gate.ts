@@ -39,6 +39,7 @@ const NEXT: Record<string, string> = {
   "no-verdict": "The reviewer gave no verdict (it timed out, or its answer wasn't a review).",
   permanent: "The model gateway refused the review.",
 };
+const FALLBACK = "See the job log for why.";
 // A run without a verdict never blocks (owner, 2026-11-21: fail open rather than stall; this replaces the fail-closed ruling
 // of 2026-11-17). The review target is advisory: past it, in counted changed lines (package-lock.json doesn't count), the
 // comment says the PR is large and suggests stacked PRs. On the 2026-11-16 eval a 1,936-line PR took 17 minutes and a
@@ -78,9 +79,14 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
   // modules/github/service/src/merge-gate.ts codeReviewInfra). partial: it is no baseline for the next push's delta.
   const noVerdict = (why: unknown) => {
     const size = counted > TARGET_LINES ? ` The change is large (${counted.toLocaleString("en-US")} counted changed lines; package-lock.json doesn't count): split it into stacked PRs under ~${TARGET_LINES.toLocaleString("en-US")} each to get a review.` : "";
-    return { block: false, partial: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (not blocking: review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT[failure!] ? `${NEXT[failure!]} ` : ""}${size ? `${size.trim()} ` : ""}A re-run or the next push reviews it.` };
+    return { block: false, partial: true, short: true, body: `${MARKER}\n**Code review: no verdict${at}** (not blocking: review exit ${exitCode}${tries}${why ? `: ${clip(why, 300)}` : ""}). ${NEXT[failure!] ?? FALLBACK} ${size ? `${size.trim()} ` : ""}A re-run or the next push reviews it.` };
   };
-  if (exitCode !== 0 || !readable) {
+  // A policy refusal (the PR changes codex config: a prompt-injection guard, not a review verdict) always blocks.
+  if (failure === "policy") return { block: true, short: true, body: `${MARKER}\n**Code review: refused${at}**: ${clip(cause, 400)}` };
+  // Findings a run published still decide, even when it then failed or exited non-zero; only a run with none is no verdict.
+  const published = Boolean(review) && Array.isArray(review!.findings) && review!.findings!.length + (review!.summaryOnlyFindings?.length ?? 0) > 0;
+  const unfinished = exitCode !== 0 || !readable;
+  if (unfinished && !published) {
     // The review's own cause is the specific one (a provider quota, our spend cap): the workflow's CODEGENIE_CAUSE is only a
     // fixed fallback for a run that never produced a review.
     return noVerdict(review?.cause || cause || review?.health?.diagnostics?.map((d) => d.reason).filter(Boolean).slice(0, 3).join("; "));
@@ -92,14 +98,15 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
   // Owner (2026-11-12): a partial review that still ran and found nothing high/critical passes with a note. A review with no
   // coverage at all is no verdict: it passes unless a finding came out.
   const incomplete = Boolean(review!.coverage?.unavailable);
-  const partial = incomplete || Boolean(review!.coverage?.partial || review!.health?.status === "incomplete");
+  const partial = unfinished || incomplete || Boolean(review!.coverage?.partial || review!.health?.status === "incomplete");
   const questions = review!.needsHumanAttention ?? [];
   const line = (f: Finding) => {
     const where = f.anchor?.line ? `${f.path}:${f.anchor.line}` : f.path;
     return `- **${f.severity}** \`${where}\`: ${clip(f.title, 200)}\n  ${clip(f.finalBody || f.failureMode, 800).replace(/\n+/g, "\n  ")}`;
   };
   const parts = [MARKER];
-  if (partial && !incomplete) parts.push(`**Code review partly done${at}** (passes: nothing high or critical in what it covered). ${clip((review!.coverage?.reasons ?? []).join("; ") || review!.health?.status, 300)}`);
+  if (unfinished) parts.push(`**Code review: no verdict${at}** (review exit ${exitCode}${tries}): it stopped before it finished; the findings it published are below and still decide.`);
+  else if (partial && !incomplete) parts.push(`**Code review partly done${at}** (passes: nothing high or critical in what it covered). ${clip((review!.coverage?.reasons ?? []).join("; ") || review!.health?.status, 300)}`);
   if (incomplete) parts.push(`**Code review: no verdict${at}** (not blocking: it covered none of the change${(review!.coverage?.reasons ?? []).length ? `: ${clip(review!.coverage!.reasons!.join("; "), 300)}` : ""}). A re-run or the next push reviews it.`);
   if (blocking.length) parts.push(`**Code review: ${blocking.length} blocking finding${blocking.length === 1 ? "" : "s"}${at}.** Fix these before merging.`, blocking.map(line).join("\n"));
   if (rest.length) parts.push(`**Not blocking${blocking.length || incomplete ? "" : at}** (for a follow-up change, not this PR):`, rest.map(line).join("\n"));
