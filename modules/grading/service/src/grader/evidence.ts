@@ -34,6 +34,111 @@ const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
+const COMMAND_TIMEOUT_MS = 60_000;
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+const CI_AREAS = ".github/ci/areas.json";
+const SHA40 = /^[0-9a-f]{40}$/;
+
+type CiMap = { everything: string[]; markdown: string[]; suites: any[] };
+
+/** `.github/ci/areas.json` as CI reads it: the suites and the command and directory each one runs. */
+function ciMap(text: string): CiMap | undefined {
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(json?.suites) || !Array.isArray(json?.everything) || !Array.isArray(json?.markdown)) return;
+  return {
+    everything: json.everything.map(String),
+    markdown: json.markdown.map(String),
+    suites: json.suites.filter((s: any) => typeof s?.name === "string" && typeof s?.run === "string" && s.run)
+      .map((s: any) => ({ name: s.name, run: String(s.run), dir: s.name.split("#")[0]! })),
+  };
+}
+
+/** `p`, or undefined after `ms`; a failure — thrown or rejected — is the same as no answer at all. */
+const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | undefined> =>
+  Promise.race([Promise.resolve().then(p).catch(() => null), new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
+
+/**
+ * A suite's pass, as CI itself records it: CI's `post-checks` job (`.github/workflows/ci.yml`, `f61fa8e0`) posts one completed
+ * `success` check per suite a shard ran, named exactly the suite, with `external_id: <run_id>/<job id>/<shard>`. A check alone
+ * proves nothing: GitHub's check API answers any App token, so PR code holding the workflow token could post one. So the fact
+ * also needs the shard's own Actions job record behind that `job id` — its `run_id` is the check's `<run_id>` and its name is
+ * the shard the check names — which a posted check has none of. A re-run may keep an earlier attempt's passing shard (CI's
+ * own `filter=latest` list), so the attempt is not narrowed: every attempt of that run ran the same head. Then the run must
+ * be the repository's own CI on the graded
+ * head: `.github/workflows/ci.yml`, active, `pull_request`, `head_sha` the graded head. The command and directory come from
+ * `areas.json` at the run's own base, byte-identical to the head's: CI reads the map from the base commit, so the two agree
+ * unless main's map moved or the PR edited it, and either way the base can't name a command the graded head doesn't carry.
+ * Only a suite that map names mints a fact. The workflows, the map and the suite runner are the inputs that decide what a
+ * shard ran, so a PR that edits anything under `.github/workflows/` or `.github/ci/` mints nothing at all: what its CI
+ * ran is not provably the repository's. Every read that fails, or any field that doesn't match, mints nothing.
+ */
+async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
+  if (!deps.file || !deps.job || !deps.run) return [];
+  const head = String(pr.headRefOid ?? "");
+  if (!SHA40.test(head)) return [];
+  // The base CI read the workflow and the map from. A pull-request run's own `pull_requests` names it while the PR is open;
+  // GitHub drops that list once the PR merges, so a graded merge falls back to the PR's own base oid — the same main the run
+  // started from, and no branch tip invented for it.
+  const prBase = String(pr.baseRef?.target?.oid ?? "");
+  const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
+  if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
+  // CI's own execution inputs (the workflows, the suite map and the selector and runner that read it): a PR that edits any of
+  // them may have run something else, so nothing it shows counts.
+  if (files.some((f) => f.startsWith(".github/workflows/") || f.startsWith(".github/ci/"))) return [];
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  if (rollup?.pageInfo?.hasNextPage) return [];
+  const checks = (rollup?.nodes ?? []).filter((n: any) => n.__typename === "CheckRun" && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && n.name && n.externalId);
+  if (!checks.length) return [];
+  // One read per job and per run however many suites a shard carried: the same Actions record, not a second opinion.
+  const cache = new Map<string, Promise<unknown>>();
+  const read = (key: string, p: () => Promise<any>) => {
+    if (!cache.has(key)) cache.set(key, withTimeout(p, COMMAND_TIMEOUT_MS));
+    return cache.get(key)!;
+  };
+  const found = await Promise.all(checks.map(async (c: any) => {
+    // `<run_id>/<job id>/<shard>`: CI's own format, with nothing else in it.
+    const m = /^(\d{1,20})\/(\d{1,20})\/(\d{1,6})$/.exec(String(c.externalId ?? ""));
+    if (!m) return undefined;
+    const [, run, jobId, shard] = m as unknown as [string, string, string, string];
+    const j: any = await read(`job/${jobId}`, () => deps.job(repo, jobId));
+    // A made-up or posted check has no such job, or one from another run or another shard: never a fact.
+    if (!j || String(j.run_id ?? "") !== run || j.name !== `packages (${shard})` && j.name !== `modules (${shard})`) return undefined;
+    if (j.state !== "completed" || j.conclusion !== "success") return undefined;
+    const u: any = await read(`run/${run}`, () => deps.run(repo, run));
+    if (!u || u.workflow_path !== CI_WORKFLOW || u.workflow_state !== "active" || u.event !== "pull_request" || u.head_sha !== head) return undefined;
+    // The run's base is where CI read `areas.json` (main as it was when the run started); without one there is no command to name.
+    const base = SHA40.test(String(u.base_sha ?? "")) ? String(u.base_sha) : prBase;
+    if (!SHA40.test(base)) return undefined;
+    return { name: String(c.name), base };
+  }));
+  const green = found.filter(Boolean) as { name: string; base: string }[];
+  if (!green.length) return [];
+  const bases = [...new Set(green.map((g) => g.base))];
+  const reads = await withTimeout(() => Promise.all([head, ...bases].map((ref) => deps.file(repo, CI_AREAS, ref).catch(() => null))), COMMAND_TIMEOUT_MS) ?? [];
+  // The head's own map, so a base map that differs (main moved, or the PR edited it — which the `.github/` guard already
+  // refuses) can never name a command the graded head doesn't carry. Byte for byte, never a merge of the two.
+  const headMap = String(reads[0] ?? "");
+  const maps = new Map<string, CiMap>();
+  for (const [i, b] of bases.entries()) {
+    const at = String(reads[i + 1] ?? "");
+    const map = at === headMap ? ciMap(at) : undefined;
+    // The run's own `areas.json`, the same one the head carries; a base whose map can't be read is no evidence for its suites.
+    if (map) maps.set(b, map);
+  }
+  if (!maps.size) return [];
+  const facts: string[] = [];
+  for (const { name, base } of green) {
+    const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
+    if (suite) facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${suite.dir}/ — passed`);
+  }
+  return [...new Set(facts)];
+}
+
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
 
 /**
@@ -80,7 +185,6 @@ export interface RecordedIds {
   merges: string[];
 }
 
-const SHA40 = /^[0-9a-f]{40}$/;
 const addId = (list: string[], v: unknown, re?: RegExp) => {
   if (typeof v === "string" && v && (!re || re.test(v)) && !list.includes(v)) list.push(v);
 };
@@ -396,6 +500,8 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // The base commit (baseCommitOf): the base ref's commit recorded on the PR, never the base branch's moving tip or the git
     // merge base. "not established" is missing evidence rather than a guess.
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    // The command facts this change adds: one line per green suite job on this head (see `commandFacts`).
+    facts.push(...(await commandFacts(pr, p.repo, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;

@@ -43,6 +43,34 @@ A successful answer a connection's sign-in served is marked `signedIn(result, ac
 clears a full need (`not_connected`, `expired`), and with `account` it clears that account alone. Mark only the account
 that actually served the call: an answer from one account proves nothing about another whose sign-in failed.
 
+## `POST /v1/codehost/<op>` — a module's typed code host operations
+
+Grant: the module's `module.yaml` `codehost:` block, per op. The kernel checks the grant and every field's shape, then
+calls the code host module, which holds the GitHub sign-in: no op returns a token.
+
+```yaml
+codehost:
+  read:     { repos: [ "@product" ] }                 # a PR, issue, diff, job, workflow run, open PRs
+  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json" ] }  # a listed file at a commit, nothing else
+```
+
+`evidence` is narrower than `read` and lists its paths exactly: a `file` read (`{path, ref}`, a listed path at a commit
+sha) and nothing else, so a module reads only the files its grant names. `run`
+answers a workflow run's identity (`workflow_path`, `workflow_state`, `event`, `head_sha`, `run_attempt`, and the run's
+own `base_sha`), which a `job` read does not: a graded job names the workflow it belongs to, and its run says whether
+that workflow is the repository's CI on the head being graded.
+
+A job's log is never evidence: a PR's test output can print any line, so nothing read from a log can carry a fact. A
+command fact comes from a completed `success` check named exactly a suite in `.github/ci/areas.json`, whose
+`external_id` is CI's `<run_id>/<job id>/<shard>` and whose `<job id>` is a real Actions job of that run and shard
+(`packages (<shard>)`/`modules (<shard>)`, conclusion `success`): a posted check has no such job. The run must be
+`.github/workflows/ci.yml`, active, from a `pull_request` whose `head_sha` is the graded head. The fact names the
+suite's `run` and directory from `areas.json` at the run's own base (`base_sha`; a merged PR's run no longer lists its
+PR, so the PR's own base oid stands in) and only when that map is byte-identical to the head's, never the branch tip.
+Because the workflows, the
+suite runner and the map are the inputs that decide what a shard ran, a PR that changes anything under
+`.github/workflows/` or `.github/ci/` mints no command fact at all.
+
 ## `POST /v1/tasks` — file a task
 
 Grant: `kernel.tasks`.

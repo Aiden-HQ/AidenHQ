@@ -44,8 +44,8 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
-      baseRef { target { ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion externalId } ... on StatusContext { context state } } } } } } }
+      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
     }
   }
 }`;
@@ -125,7 +125,21 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     // A permission refusal (the access layer already types rate limits and sign-in problems) stays a 403: the caller may try another repo.
     if (r.status >= 300) throw fail(r.status === 403 ? 403 : 502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
     const j = r.body;
-    return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, url: j.html_url } };
+    return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, run_attempt: j.run_attempt ?? null, url: j.html_url } };
+  }
+  // A workflow run's identity: which workflow, what event, which head, and the base CI read its own inputs from. A 404 is
+  // "no such run", never an error.
+  if (b.kind === "run") {
+    const r = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}`);
+    if (r.status === 404) return { status: 200, json: null };
+    if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/runs/${b.id}: ${r.status}`);
+    const u = r.body;
+    const w = u?.workflow_id ? await ctx.access.rest("GET", `/repos/${s.slug}/actions/workflows/${u.workflow_id}`).then((a) => (a.status < 300 ? a.body : undefined), () => undefined) : undefined;
+    // The run's own base: main as it was when this run started (a PR payload's base.sha goes stale as main moves), and one
+    // value only — two PRs on one run are an ambiguity, never a pick.
+    const bases = new Set((u?.pull_requests ?? []).filter((p: any) => p?.head?.sha === u?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
+    return { status: 200, json: { id: u.id, run_attempt: u.run_attempt ?? null, event: u.event ?? null, head_sha: u.head_sha ?? null, status: u.status ?? null,
+      workflow_id: u.workflow_id ?? null, workflow_path: w?.path ?? null, workflow_state: w?.state ?? null, base_sha: bases.size === 1 ? String([...bases][0]) : null } };
   }
   // prs: every open PR, newest page first up to 500.
   const prs: { number: number; sha: string; base: string; head_repo: string | null }[] = [];
@@ -135,6 +149,14 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (r.length < 100) break;
   }
   return { status: 200, json: prs };
+}
+
+/** A listed file at an exact commit: its text as it is, a parsed JSON body back out as JSON (never "[object Object]"). */
+async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`, undefined, { accept: "application/vnd.github.raw+json" });
+  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${String(b.path)} at ${String(b.ref)}` } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
+  return { status: 200, text: typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null) };
 }
 
 async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
@@ -184,6 +206,7 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   const s = slugOf(b.repo);
   if (op === "fetch") return bundleOf(ctx, s, String(b.ref));
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
+  if (op === "read" && b.kind === "file") return file(ctx, s, b);
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));

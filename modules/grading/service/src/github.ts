@@ -25,5 +25,15 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
       if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with job ${id} is not a readable Actions job`);
       return read(repo, { kind: "job", id: Number(id) });
     },
+    /** A workflow run's identity (path, event, head, attempt); null when the repo has no such run. */
+    async run(repo: string, id: string | number): Promise<Json> {
+      if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with run ${id} is not a readable workflow run`);
+      return read(repo, { kind: "run", id: Number(id) });
+    },
+    /** A listed file at an exact commit (`evidence`): its text; a file GitHub has no answer for throws. */
+    file(repo: string, path: string, ref: string): Promise<string> {
+      if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
+      return text("/v1/codehost/read", { repo, kind: "file", path, ref });
+    },
   };
 }
