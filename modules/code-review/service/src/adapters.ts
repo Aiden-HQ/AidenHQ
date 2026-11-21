@@ -70,7 +70,6 @@ export function reasonOf(why: string | undefined): string | undefined {
   const w = String(why ?? "");
   if (w.startsWith("budget: the instance")) return "budget_instance";
   if (w.startsWith("budget")) return "budget_repo";
-  if (w.startsWith("daily limit")) return "daily_limit";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
 }

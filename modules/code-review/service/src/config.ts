@@ -28,8 +28,6 @@ export type Repo = {
   /** manual: a fork PR is reviewed only when someone with write access asks; auto: like any other. */
   forks: "manual" | "auto";
   month_usd: number; ignore: string[]; max_nits: number;
-  /** Automatic reviews a day (one per moment, however many combos), per PR author and per repo: past either, a PR waits for someone to ask. */
-  per_author_day: number; per_repo_day: number;
 };
 export type Config = { repos: Repo[]; month_usd: number; errors: string[] };
 
@@ -37,7 +35,7 @@ export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
   on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 1 }],
   on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 1 }],
-  drafts: false, forks: "manual", month_usd: 50, ignore: [], max_nits: 5, per_author_day: 10, per_repo_day: 60,
+  drafts: false, forks: "manual", month_usd: 50, ignore: [], max_nits: 5,
 };
 export const INSTANCE_MONTH_USD = 200;
 /** The most combos one moment (or one ask) runs. */
@@ -90,7 +88,7 @@ function repo(raw: unknown): Repo | { error: string } {
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
-  for (const k of ["month_usd", "max_nits", "per_author_day", "per_repo_day"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
+  for (const k of ["month_usd", "max_nits"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };
   return out;
 }

@@ -25,7 +25,7 @@ const routeOf = (): Route => {
 
 const SEVERITIES: [Severity, string][] = [["important", "Important"], ["nit", "Nit"], ["pre_existing", "Pre-existing"]];
 /** A skip's reason ("draft: …", the service's words after the colon) in the page's words. */
-const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", "daily limit": "Daily limit reached, waiting for someone to ask", budget: "Over the repo's monthly cap", "month cap": "Over the monthly cap", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
+const SKIPS: Record<string, string> = { draft: "Draft PR", fork: "Fork PR, waiting for someone with write access to ask", budget: "Over the repo's monthly cap", "month cap": "Over the monthly cap", closed: "PR closed", stopped: "Reviews stopped on this PR", superseded: "A newer push replaced it" };
 const skipWords = (why: string | null) => {
   if (!why) return "Skipped";
   const key = why.split(":")[0]!.trim().toLowerCase();
@@ -679,7 +679,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
   const validRepo = /^[\w.-]+\/[\w.-]+$/.test(repo) && (edit || !watched.has(repo.toLowerCase()));
   const entry = (): RepoConfig => {
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
-    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, month_usd: f.month_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}), ...(edit?.per_author_day !== undefined ? { per_author_day: edit.per_author_day } : {}), ...(edit?.per_repo_day !== undefined ? { per_repo_day: edit.per_repo_day } : {}) };
+    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, month_usd: f.month_usd, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
   };
   const submit = async (value: CodeReview, what: string) => {
     setBusy(true);

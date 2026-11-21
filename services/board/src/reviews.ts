@@ -55,7 +55,7 @@ export interface Run {
   effort: string;
   kind: "auto" | "command" | "oneoff";
   status: RunStatus;
-  /** Why it was skipped or failed: "<reason>: <sentence>" (draft, fork, daily limit, budget, …). */
+  /** Why it was skipped or failed: "<reason>: <sentence>" (draft, fork, budget, …). */
   why: string | null;
   cost_usd: number;
   tokens_in: number;
@@ -139,8 +139,6 @@ export const RepoSchema = z
     month_usd: z.number().positive().max(10_000).optional(),
     ignore: z.array(PLAIN(200).min(1)).max(50).optional(),
     max_nits: z.number().int().min(0).max(50).optional(),
-    per_author_day: z.number().int().min(0).max(1000).optional(),
-    per_repo_day: z.number().int().min(0).max(10_000).optional(),
   })
   .strict();
 export type RepoConfig = z.infer<typeof RepoSchema>;
@@ -162,8 +160,6 @@ export const REPO_DEFAULTS = {
   forks: "manual" as "manual" | "auto",
   month_usd: 50,
   max_nits: 5,
-  per_author_day: 10,
-  per_repo_day: 60,
 };
 /**
  * An instance's setting saved in the old shape (a `reviewers` map, named on_open/on_push, on_risk) read for editing: the repos
