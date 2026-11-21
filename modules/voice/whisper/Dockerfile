@@ -22,6 +22,8 @@ RUN python3 -m venv "$POETRY_VENV" \
  && "$POETRY_VENV/bin/pip" install pip==26.3 setuptools==84.0.0 \
  && "$POETRY_VENV/bin/pip" install poetry==2.1.3
 ENV PATH="${PATH}:${POETRY_VENV}/bin"
+# pyannote-audio 4 sends usage metrics to an external endpoint by default; this service keeps audio and its metadata on the host.
+ENV PYANNOTE_METRICS_ENABLED=false
 
 WORKDIR /app
 ADD --checksum=sha256:fe37ff1a8b2dd6fe308b0c8cd17a9b61a04bc6375a0377046d0f4849c07b8128 https://github.com/ahmetoner/whisper-asr-webservice/archive/da8044cdd11a20068abedf56de9d8f5ba9da26f5.tar.gz /tmp/src.tar.gz
@@ -36,6 +38,8 @@ RUN poetry config virtualenvs.in-project true \
  && poetry install --extras cpu \
  && "$POETRY_VENV/bin/pip" install pillow==13.0.0 certifi==2026.10.23 nltk==3.10.4 \
  && "$POETRY_VENV/bin/pip" install --no-deps av==19.0.2 \
+ && "$POETRY_VENV/bin/pip" install --no-deps -U --index-url=https://download.pytorch.org/whl/cpu "torch==2.10.0" "torchaudio==2.10.0" "torchvision==0.25.0" \
+ && "$POETRY_VENV/bin/pip" install --no-deps -U "whisperx==3.8.6" "torchcodec==0.7.0" "pyannote-audio==4.0.7" "pyannote-core==6.1.0" "pyannote-database==6.1.1" "pyannote-metrics==4.2.0" "pyannote-pipeline==4.1.0" "pyannoteai-sdk==0.4.0" "optuna==5.0.0" "grpcio==1.85.1" "googleapis-common-protos==1.76.0" "opentelemetry-api==1.45.2" "opentelemetry-sdk==1.45.2" "opentelemetry-semantic-conventions==0.66b2" "opentelemetry-proto==1.45.2" "opentelemetry-exporter-otlp==1.45.2" "opentelemetry-exporter-otlp-common==0.66b2" "opentelemetry-exporter-otlp-proto-common==1.45.2" "opentelemetry-exporter-otlp-proto-http==1.45.2" "opentelemetry-exporter-otlp-proto-grpc==1.45.2" "opentelemetry-exporter-http-transport==0.66b2" \
  && "$POETRY_VENV/bin/pip" install --no-deps -U "aiohttp==3.14.5" "black==26.10.1" "urllib3==2.8.0" "lightning==2.6.6" "pytorch-lightning==2.6.6" "yarl==1.25.1" "dulwich==1.2.21" "poetry==2.5.1" "poetry-core==2.5.0" "virtualenv==21.15.5" "pymdown-extensions==12.3" "filelock==4.2.9" "python-discovery==1.9.4" "pbs-installer==2026.10.25" "distlib==0.4.4"
 
 EXPOSE 9000
