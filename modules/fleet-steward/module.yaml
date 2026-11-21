@@ -1,8 +1,10 @@
 name: fleet-steward
-description: "Fleet Steward: watches the fleet (stuck or failing runs, sources and apps down), reviews other agents' outcomes, keeps the notes, the people directory and agents' memory tidy, and files every fix through the usual tiers."
+description: "Fleet Steward: keeps the fleet running and unblocked on its own: settles stuck work (answers waits, accepts finished work, cancels stale tasks, re-routes handbacks), routes every fix to its source, reviews other agents' outcomes, and keeps the notes, the people directory and agents' memory tidy."
 # One agent for fleet upkeep (roster merge 5.3: Fleet Ops, the Agent Coach and the Knowledge Librarian), one skill per
 # routine. It reads every agent's evidence, so it holds no public write: product bugs go to the Maintainer, which files
 # them upstream (owner, 2026-11-18: no single agent both reads every agent's private data and writes public GitHub issues).
+# Internal task actions are a different matter: it settles stuck work itself with the delegator's and the chief of staff's
+# authority (role fleet-settle, owner 2026-11-22: "its only job is to keep the system running without issues and blockers").
 requires: [ grading ] # the detector reads the grader's failed passes
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
@@ -15,6 +17,7 @@ roles:
   requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routines, kernel.routing, kernel.flow-read, apps.read, product-issues ]
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
+    - { id: fleet-settle, description: "Settle stuck work on any agent-made task (kernel cp.ts SETTLE): answer a wait, close finished work, cancel stale tasks, hand a task to the agent that does it (task_route)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
     - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Engineer (tasks bridge, apps-mcp)." }
     - { id: routing-tuner, description: "Read team routing decisions and their outcomes, and propose one change a day to members' repos or routing weights as a reviewed experiment (routing_*)." }
@@ -44,9 +47,10 @@ agents:
       # the report as the owner's prefilled link, for an install where GitHub isn't connected (prompt product-bugs).
       github?: [ github_product_issue_status, github_issue_link ]
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
-      # handbook_list/handbook_read/task_propose_rule through librarian. task_create/task_delegate only to delegate_to below.
+      # handbook_list/handbook_read/task_propose_rule through librarian; task_route, and task_finish/task_cancel on any agent's
+      # task, through fleet-settle. task_create/task_delegate only to delegate_to below. No task_handoff: nothing goes to the owner.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
-                         task_create, task_comment, task_delegate, task_handoff, task_block, task_cancel, task_finish,
+                         task_create, task_comment, task_delegate, task_route, task_block, task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read, task_propose_rule ]
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.
@@ -56,7 +60,7 @@ agents:
     # the Engineer (rules, product and instance changes), an app's owner (app-owners; the
     # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
     delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer? ]
-    roles: [ fleet-read, fleet-audit, librarian, routing-tuner, product-issues ]
+    roles: [ fleet-read, fleet-settle, fleet-audit, librarian, routing-tuner, product-issues ]
 # Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:
   fleet-ops-digest:

@@ -60,6 +60,12 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
   return true;
 }
 
+/** A gate jammed two hours that the Steward didn't clear: a task for the chief of staff, fixed text plus the detector's own keys. */
+async function fileJam(keys: string[], at = new Date()): Promise<void> {
+  const description = `These gates have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card. Settle each one, then fix why the Steward didn't: a fleet-check skill rule through the Engineer, or a product bug. Close this task with one line.`;
+  await kernel.call("POST", "/v1/tasks", { title: "Fleet: gates jammed", description, role: "fleet-admin", source: `fleet-jammed:${at.toISOString().slice(0, 13)}` });
+}
+
 const coach = coachReads({ kernel, kv, apps });
 const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
 let busy = false;
@@ -71,7 +77,7 @@ const run = async () => {
       const ok = await fileCheck(b).then(() => true, (e) => (log("check task not filed", { err: String(e.message ?? e) }), false));
       log("fleet check", { ok, incidents: b.incidents.map((i) => i.key), recovered: b.recovered.map((r) => r.key) });
       return ok;
-    }, notify, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false), gateActivity({ kernel }));
+    }, notify, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false), gateActivity({ kernel }), (keys) => fileJam(keys));
   } catch (err) {
     log("detector failed", { err: String(err) });
   } finally {
