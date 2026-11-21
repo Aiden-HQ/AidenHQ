@@ -78,14 +78,14 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
 
 // The prerequisite-then-pin shape: a PR whose history starts on the commit its prerequisite just merged. The fixture is a
 // prerequisite squash-merged as SHA("2") and a single-commit PR whose parent is that merge, so the base the criterion asks about
-// is named rather than "not established". A check of real PRs showed that shape is what a branch cut after the prerequisite
-// merged looks like; a branch cut before it keeps the older parent, which is why the fact labels the value "parent of the PR's
-// oldest commit" and never claims a cut point.
+// is named rather than "not established". That is the shape of a branch cut after the prerequisite merged; a branch cut before
+// it keeps the older parent, which is why the fact labels the value "parent of the PR's oldest commit" and never claims a cut
+// point.
 test("a PR whose history starts on the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
-  const prerequisite = merged(102, "1", "2"); // squash-merged as SHA("2")
-  const landed = merged(103, "3", "4", "2", { chain: chainOf([{ oid: "3", parents: ["2"] }]) });
-  const ev = await prEvidence([{ repo: REPO, number: 103, url: url(103), heads: ["branch-3"] }], "", depsFor([prerequisite, landed]));
-  const fact = ev.facts.find((f) => f.startsWith(`${url(103)}: merged`));
+  const prerequisite = merged(201, "1", "2"); // squash-merged as SHA("2")
+  const landed = merged(202, "3", "4", "2", { chain: chainOf([{ oid: "3", parents: ["2"] }]) });
+  const ev = await prEvidence([{ repo: REPO, number: 202, url: url(202), heads: ["branch-3"] }], "", depsFor([prerequisite, landed]));
+  const fact = ev.facts.find((f) => f.startsWith(`${url(202)}: merged`));
   assert.ok(fact, "the PR's own fact line is present");
   assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the fact gives the prerequisite's merge commit, not 'not established'");
   assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's squash merge");
