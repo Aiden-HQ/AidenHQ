@@ -156,6 +156,15 @@ describe("deploy engine", () => {
     expect(r.stopped).toBeUndefined();
     expect(r0.store.goodDeploys("demo").find((g) => g.sha === "v1")?.disqualified).toBe(1); // never reused as a target
   });
+  it("a disqualified newest target does not hide an older good rollback target", async () => {
+    const { engine, store } = setup(["v1", "v2", "v3"]);
+    await engine.deploy(app(), { sha: "v1", by: "t" });
+    await engine.deploy(app(), { sha: "v2", by: "t" });
+    await engine.deploy(app(), { sha: "v3", by: "t" });
+    store.disqualify(store.goodDeploys("demo").find((g) => g.sha === "v3")!.id, "found open");
+    const r = await engine.rollback(app(), { by: "t" });
+    expect(r).toMatchObject({ sha: "v2", status: "healthy", previous: "v3" });
+  });
   it("a rollback that could not start reports the teardown failure and keeps no previous revision", async () => {
     const { engine, st, store } = setup(["v1", "v2"]);
     await engine.deploy(app(), { sha: "v1", by: "t" });

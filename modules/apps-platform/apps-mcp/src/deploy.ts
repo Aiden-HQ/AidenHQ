@@ -69,9 +69,9 @@ export function createEngine(d: Deps) {
   const usableGood = (good: Deploy[]): Deploy | undefined => good.find((g) => !g.disqualified);
 
   /**
-   * The previous good deploy a manual rollback returns to. Stopping at the first different commit first keeps the old
-   * choice (a commit redeployed repeatedly does not become its own predecessor); a target found open is skipped only
-   * after that boundary.
+   * The previous good deploy a manual rollback returns to. The boundary of the current commit comes first (a commit
+   * redeployed repeatedly does not become its own predecessor), then targets found open are skipped, so a disqualified
+   * newest row cannot hide every older target.
    */
   const rollbackTarget = (good: Deploy[]): Deploy | undefined => {
     const first = good.findIndex((g) => g.sha !== good[0]?.sha);
