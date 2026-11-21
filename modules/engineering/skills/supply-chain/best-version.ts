@@ -46,8 +46,7 @@ export async function getJson(url: string, headers: Record<string, string> = {})
 // Retries transient failures; a 404 (or another 4xx but 429) fails at once. Never returns a failed response.
 export async function fetchRetry(url: string, init: FetchInit = {}): Promise<Response> {
   const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
-  const auto = url.startsWith("https://api.github.com/") && Boolean(process.env.GITHUB_TOKEN) && !headers.authorization;
-  if (auto) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (url.startsWith("https://api.github.com/") && process.env.GITHUB_TOKEN && !headers.authorization) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   let err: unknown;
   for (let i = 0; i < 4; i++) {
     try {
@@ -55,8 +54,6 @@ export async function fetchRetry(url: string, init: FetchInit = {}): Promise<Res
       const r = await fetch(url, { ...rest, headers, signal: AbortSignal.timeout(timeout) });
       if (r.ok) return r;
       err = Object.assign(new Error(`${r.status} from ${url}`), { status: r.status, response: r });
-      // An org that refuses Actions' token (an IP allow list: aquasecurity's) answers 403 to a public read: read it without the token.
-      if (r.status === 403 && auto && headers.authorization) { delete headers.authorization; continue; }
       if (r.status >= 400 && r.status < 500 && r.status !== 429) break;
     } catch (e) { err = e; }
     await new Promise((res) => setTimeout(res, 500 * 2 ** i));
