@@ -361,7 +361,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
 
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, defaultFindings: combo.skill_findings === "default" })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });
