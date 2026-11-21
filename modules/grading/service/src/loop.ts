@@ -3,7 +3,7 @@
 // a verdict's task move (done, todo + note) is the finish check's own resolve (POST /v1/checks/:task). Its per-task memory
 // (evidence-woken, escalation-told) is rows in the grades database (kernel-loop.ts). Unstarted until the switch.
 // The injected collaborators (the kernel's api client, Paperclip's client, the grade store) and the rows they return are loosely typed.
-import { openCard } from "./grader/evidence.ts";
+import { openCard } from "./grader/cards.ts";
 
 type Json = any;
 export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, isUserInstruction, emit = () => {} }: {
