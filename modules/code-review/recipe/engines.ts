@@ -31,11 +31,15 @@ export const ENGINES: Record<string, { efforts: string[]; asks: boolean }> = {
 const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 
 /** One review run's engine, model and effort (JSON from the spec, with the repo's ignore globs and max_nits). */
-export interface Combo { engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number }
+export interface Combo { engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number;
+  /** TEMPORARY (service config.ts skill_findings): "default" leaves Claude Code's /code-review its own cut, no --max-findings all. */
+  skill_findings?: string }
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
   /** The finder step: an engine with a review of its own runs it, then answers `prompt` from it. */
   own?: boolean;
+  /** TEMPORARY: Claude Code's /code-review without --max-findings all. */
+  defaultFindings?: boolean;
   /** The merge base (trusted): where an engine that reads repo config takes it from. */
   trusted?: string;
 }
@@ -58,6 +62,7 @@ export function comboProblem(c: Combo | null | undefined) {
   if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}`;
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return "model is an OpenRouter model id (e.g. ~deepseek/deepseek-flash-latest)";
   if (!e.efforts.includes(c.effort)) return `effort for ${c.engine} is one of ${e.efforts.join(", ")}`;
+  if (c.skill_findings !== undefined && (c.engine !== "claude-code" || !["all", "default"].includes(c.skill_findings))) return "skill_findings is all or default, for claude-code only";
   return undefined;
 }
 
@@ -115,7 +120,7 @@ const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, 
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
 type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; name?: string; input?: { path?: unknown } }[] } };
 
-async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput): Promise<EngineResult> {
+async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own, defaultFindings }: EngineInput): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
   const home = join(tmp, "home"), cwd = join(tmp, "cwd");
   mkdirSync(home);
@@ -149,7 +154,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   let session: string | undefined;
   if (own) {
     // Claude Code's own review of the change (base..HEAD in the box's history), its findings then restated as our JSON.
-    const first = await turn(`/code-review ${effort} ${base}..HEAD --max-findings all`);
+    const first = await turn(`/code-review ${effort} ${base}..HEAD${defaultFindings ? "" : " --max-findings all"}`);
     if (!first.ok) return { message: "", read: false, calls, cause: stopped(first.r, first.end?.result ?? "") };
     session = first.end?.session_id;
     prompt = `Now restate every finding of that review, and only those, in this shape. Check each one's line in the file at the head with the repo tools first.\n${prompt}`;

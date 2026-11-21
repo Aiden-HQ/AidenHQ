@@ -17,7 +17,9 @@ export type Engine = keyof typeof ENGINES;
 
 /** One review run's reviewer: its engine, model and effort, and the most the run may spend (its model token's hard
  * cap; the engine's default when unset: $5). */
-export type Combo = { engine: Engine; model: string; effort: string; run_usd: number };
+/** skill_findings (TEMPORARY, a backtest of Claude Code's own /code-review: delete with the losing option): "all" (the default)
+ * asks it for every finding (`--max-findings all`, uncertain ones kept); "default" leaves its own verification's cut. claude-code only. */
+export type Combo = { engine: Engine; model: string; effort: string; run_usd: number; skill_findings?: "all" | "default" };
 /** The moments a repo is reviewed at. */
 export const MOMENTS = ["on_open", "on_push"] as const;
 export type Repo = {
@@ -51,7 +53,7 @@ const num = (v: unknown, d: number, min = 0, max = 100_000) => (typeof v === "nu
 export function combo(raw: unknown): Combo | { error: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "a combo is { engine, model, effort }" };
   const c = raw as Record<string, unknown>;
-  const extra = Object.keys(c).filter((k) => !["engine", "model", "effort", "run_usd"].includes(k));
+  const extra = Object.keys(c).filter((k) => !["engine", "model", "effort", "run_usd", "skill_findings"].includes(k));
   if (extra.length) return { error: `unknown field ${extra.join(", ")} (a combo is engine, model, effort and optionally run_usd)` };
   const e = ENGINES[c.engine as Engine];
   if (!e) return { error: `engine is one of ${Object.keys(ENGINES).join(", ")}` };
@@ -59,7 +61,8 @@ export function combo(raw: unknown): Combo | { error: string } {
   if (!(e.efforts as readonly string[]).includes(c.effort as string)) return { error: `effort for ${c.engine} is one of ${e.efforts.join(", ")}` };
   const run_usd = num(c.run_usd, e.run_usd, 0.01, 20);
   if (Number.isNaN(run_usd)) return { error: "run_usd is a number of dollars, 0.01 to 20" };
-  return { engine: c.engine as Engine, model: c.model, effort: c.effort as string, run_usd };
+  if (c.skill_findings !== undefined && (c.engine !== "claude-code" || !["all", "default"].includes(c.skill_findings as string))) return { error: "skill_findings is all or default, for claude-code only" };
+  return { engine: c.engine as Engine, model: c.model, effort: c.effort as string, run_usd, ...(c.skill_findings === "default" ? { skill_findings: "default" as const } : {}) };
 }
 
 /** A list of combos (a moment's, or a one-off's): the combos, or the first reason one isn't. */
