@@ -30,13 +30,12 @@ test("ufw-rules: an inactive or absent ufw changes nothing", () => {
 });
 
 // The host listeners containers use, and only those: the kernel's backplane, the launcher and the model gateway on the
-// compose bridges' gateway, the model gateway on the computers' bridge gateway, and the model gateway's CI listener.
+// compose bridges' gateway, and the model gateway on the computers' bridge gateway.
 const HOST_SERVICES = [
   "allow in on br+ to 10.231.0.1 port 3130 proto tcp comment AidenHQ containers to host services",
   "allow in on br+ to 10.231.0.1 port 8199 proto tcp comment AidenHQ containers to host services",
   "allow in on br+ to 10.231.0.1 port 8201 proto tcp comment AidenHQ containers to host services",
   "allow in on ahq-computers to 10.231.2.1 port 8200 proto tcp comment AidenHQ computers to host",
-  "allow in on ahq-ci to 10.231.4.1 port 8201 proto tcp comment AidenHQ CI runners to the model gateway",
 ];
 
 test("ufw-rules: every mode opens the host listeners containers use, and nothing on the public interface", () => {
@@ -61,7 +60,6 @@ test("ufw-rules: an allow already listed is not added again, matched per line", 
     "10.231.0.1 8199/tcp on br+ DENY IN     Anywhere  # AidenHQ containers to host services",
     "10.231.0.1 8201/tcp on br+ ALLOW IN    Anywhere  # AidenHQ containers to host services",
     "10.231.2.1 8200/tcp on ahq-computers ALLOW IN Anywhere # AidenHQ computers to host",
-    "10.231.4.1 8201/tcp on ahq-ci ALLOW IN Anywhere # AidenHQ CI runners to the model gateway",
   ].join("\n");
   // The DENY line is not an allow, so that rule is added again; the others are skipped.
   assert.deepEqual(run({ mode: "tailscale", status }).calls, ["allow in on br+ to 10.231.0.1 port 8199 proto tcp comment AidenHQ containers to host services"]);

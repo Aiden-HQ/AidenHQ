@@ -8,7 +8,6 @@
 #   10.231.0.1:8199 tcp  the computer launcher
 #   10.231.0.1:8201 tcp  the model gateway
 #   10.231.2.1:8200 tcp  the model gateway from the computers' bridge
-#   10.231.4.1:8201 tcp  the model gateway's CI listener, from the CI runners' bridge (modules/ci)
 # Nothing on the public interface opens: the rules match the Docker bridges and those addresses only. Idempotent: a rule
 # is skipped when ufw already lists an allow for it. An inactive or absent ufw changes nothing.
 #   ops/vm/ufw-rules.sh public     apply for the public exposure
@@ -40,7 +39,6 @@ add 'AidenHQ containers to host services' '10\.231\.0\.1 +3130/tcp +on br\+ +ALL
 add 'AidenHQ containers to host services' '10\.231\.0\.1 +8199/tcp +on br\+ +ALLOW IN' in on 'br+' to 10.231.0.1 port 8199 proto tcp
 add 'AidenHQ containers to host services' '10\.231\.0\.1 +8201/tcp +on br\+ +ALLOW IN' in on 'br+' to 10.231.0.1 port 8201 proto tcp
 add 'AidenHQ computers to host' '10\.231\.2\.1 +8200/tcp +on ahq-computers +ALLOW IN' in on ahq-computers to 10.231.2.1 port 8200 proto tcp
-add 'AidenHQ CI runners to the model gateway' '10\.231\.4\.1 +8201/tcp +on ahq-ci +ALLOW IN' in on ahq-ci to 10.231.4.1 port 8201 proto tcp
 if [ -n "$failed" ] || [ -n "$front_failed" ]; then
   echo "WARNING: ufw is active but AidenHQ's rules could not be added: AidenHQ's containers cannot reach the kernel, and sign-in will fail. Add them by hand:" >&2
   [ -z "$front_failed" ] || for port in 443 8446 8447; do echo "  sudo ufw allow $port/tcp" >&2; done
@@ -49,7 +47,6 @@ if [ -n "$failed" ] || [ -n "$front_failed" ]; then
     echo "  sudo ufw allow in on br+ to 10.231.0.1 port 8199 proto tcp comment 'AidenHQ containers to host services'" >&2
     echo "  sudo ufw allow in on br+ to 10.231.0.1 port 8201 proto tcp comment 'AidenHQ containers to host services'" >&2
     echo "  sudo ufw allow in on ahq-computers to 10.231.2.1 port 8200 proto tcp comment 'AidenHQ computers to host'" >&2
-    echo "  sudo ufw allow in on ahq-ci to 10.231.4.1 port 8201 proto tcp comment 'AidenHQ CI runners to the model gateway'" >&2
   }
 fi
 exit 0
