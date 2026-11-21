@@ -17,7 +17,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Answer } from "./codehost.ts";
 import { BOX_WORKSPACE, createChecks, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
 import { mintToken } from "./gateway/token.ts";
-import { exitStatus, logTail, runAlive, spawnDetached } from "./jobs.ts";
+import { alive, exitStatus, logTail, runAlive, spawnDetached } from "./jobs.ts";
 
 type Call = (route: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 const KEEP = 64 * 1024; // the output's tail the kernel keeps
@@ -60,12 +60,14 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
       }
     },
     async follow({ container, pid, log, deadline }, signal) {
+      // The run is still that run (a reused pid isn't), checked once; then only whether its pid lives (no `ps` each poll).
+      let running = (p: number) => runAlive(p, log);
       for (;;) {
         // An exit status is the run's end, whoever started it; then the box goes.
         const status = exitStatus(`${log}.exit`);
         if (status !== "") return (await release(container), { exit: Number(status), out: logTail(log, KEEP), timedOut: false });
         // Neither ended nor running (a host reboot, killed by hand): gone. A run that wrote its status just now is read next time.
-        if (!runAlive(pid, log)) {
+        if (!running(pid)) {
           if (exitStatus(`${log}.exit`) !== "") continue;
           return (await release(container), "gone");
         }
@@ -75,6 +77,7 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
         }
         // A draining kernel stops following; the box runs on for the next kernel.
         if (signal.aborted) return "detached";
+        running = alive;
         await sleep(pollMs);
       }
     },

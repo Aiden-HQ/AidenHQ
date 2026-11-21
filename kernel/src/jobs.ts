@@ -85,7 +85,7 @@ export function logTail(logPath: string, bytes = 64 * 1024): string {
     return "";
   }
 }
-const alive = (pid: number) => {
+export const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
 /** True while the run's shell is alive and is still that run (a reused pid isn't): for adopting it. */
