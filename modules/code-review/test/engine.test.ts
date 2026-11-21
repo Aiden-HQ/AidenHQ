@@ -296,16 +296,3 @@ test("a review that finishes on a closed PR whose merged state can't be read now
   await w.tick();
   assert.equal(w.posted.length, 1);
 });
-
-test("TEMPORARY skill_findings: a claude-code one-off may ask for the skill's default cut; it rides in the run's combo and is its own ask", async () => {
-  const w = world();
-  await w.tick();
-  w.pr(7, sha("7"), { open: false, merged: true });
-  const cc = { engine: "claude-code", model: "anthropic/claude-haiku-5.5", effort: "medium" };
-  const [a] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [cc] });
-  const [b] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [{ ...cc, skill_findings: "default" }] });
-  assert.notEqual(a.id, b.id);
-  await w.tick();
-  assert.deepEqual(w.started.map((s) => s.combo.skill_findings), [undefined, "default"]);
-  await assert.rejects(w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [{ ...CODEX, skill_findings: "default" }] }), /claude-code only/);
-});

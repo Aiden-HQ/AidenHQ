@@ -34,8 +34,6 @@ export type RunRow = {
   cost_usd: number; important: number; nit: number; pre_existing: number; started: string | null; ended: string | null; check_job: string | null;
   /** When its check job got its box (ISO): a review's wall time runs from here, excluding queueing. */
   box_at: string | null;
-  /** TEMPORARY (config.ts skill_findings): null is "all". */
-  skill_findings: string | null;
   focus: string | null; full: number; incremental_from: string | null; due: number; created: number;
   posted: string | null; author: string; attempts: number;
   /** The trigger it ran for (its combos share it), and whether it rechecks the PR's still-open findings (the batch's first run). */
@@ -101,8 +99,6 @@ export function createEngine(d: EngineDeps) {
   }
   db.exec(DDL);
   if (!(db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "box_at")) db.exec("ALTER TABLE runs ADD COLUMN box_at TEXT");
-  // TEMPORARY (config.ts skill_findings): null is "all".
-  if (!(db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "skill_findings")) db.exec("ALTER TABLE runs ADD COLUMN skill_findings TEXT");
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
@@ -139,13 +135,13 @@ export function createEngine(d: EngineDeps) {
     const batch = `b-${randomBytes(6).toString("hex")}`;
     return list.map((c, i) => {
       if (kind !== "auto") {
-        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND COALESCE(skill_findings, 'all') = ? AND kind = ? AND full = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, c.skill_findings ?? "all", kind, o.full ? 1 : 0);
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
-      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, focus, full, due, created, author, batch, recheck, skill_findings)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, c.run_usd, kind,
-        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === 0 ? 1 : 0, c.skill_findings ?? null);
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, focus, full, due, created, author, batch, recheck)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, c.run_usd, kind,
+        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === 0 ? 1 : 0);
       return runRow(id)!;
     });
   }
@@ -237,7 +233,7 @@ export function createEngine(d: EngineDeps) {
       }
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
       const previous = incremental_from && r.recheck ? stillOpen(r).map((f) => ({ id: f.id, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80) })) : []; // within the spec's 16 KB
-      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: { ...comboOf(r), ...(r.skill_findings ? { skill_findings: r.skill_findings } : {}) }, focus: r.focus,
+      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
         incremental_from, full: incremental_from === null, previous, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
