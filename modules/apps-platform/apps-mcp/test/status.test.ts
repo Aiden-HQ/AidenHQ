@@ -1,8 +1,11 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createPlatform } from "../src/platform.js";
+import { buildServer } from "../src/mcp.js";
 import { previewApp } from "../src/previews.js";
 import type { TlsCheck } from "../src/doors.js";
 import { isSensitive, parseApp } from "../src/registry.js";
@@ -136,5 +139,41 @@ describe("doors", () => {
     await later.status(later.find("notes"));
     await new Promise((r) => setTimeout(r, 0));
     expect(await later.status(later.find("notes"))).toMatchObject({ url: "https://notes.203-0-113-7.sslip.io" });
+  });
+});
+
+// A preview that can't stay up says why: app_status carries the reason a failed preview recorded, and a healthy one
+// carries no reason key at all.
+describe("app_status previews", () => {
+  const make = () => {
+    const dir = mkdtempSync(join(tmpdir(), "previews-status-"));
+    const registryPath = join(dir, "apps.yaml");
+    writeFileSync(registryPath, "apps:\n  - { name: notes, repo: local/notes, owner: a, description: d, port: 8123 }\n");
+    const p = createPlatform(
+      { registryPath, modulesRegistryPath: join(dir, "apps.modules.yaml"), appsData: dir, secretsDir: dir, hostSecretsDir: dir, identityKeyFile: join(dir, "missing.pem"), identityKeysHostFile: join(dir, "keys.json"), dbPath: join(dir, "state.sqlite"), urlBase: "", edgeDir: dir, healthImage: "none", git: { appsData: dir, gitDir: dir } },
+      { warn: () => {}, info: () => {} },
+    );
+    return p;
+  };
+  const callStatus = async (p: ReturnType<typeof createPlatform>) => {
+    const server = buildServer(p, { id: "id", key: "reader", name: "reader", roles: [] }, { dir: "", pushUrl: "" }, async () => {});
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "1" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const r = (await client.callTool({ name: "app_status", arguments: { name: "notes" } })) as { content: { text: string }[] };
+    await client.close();
+    return JSON.parse(r.content[0]!.text) as { previews: Record<string, unknown>[] };
+  };
+
+  it("a failed preview's reason reaches the payload; a healthy one carries no reason key", async () => {
+    const p = make();
+    p.store.putPreview({ name: "notes-pr-4", app: "notes", pr: 4, port: 39100, sha: "a".repeat(40), status: "failed", at: 1, comment_id: 104, reason: "its build failed: exit 1" });
+    p.store.putPreview({ name: "notes-pr-5", app: "notes", pr: 5, port: 39101, sha: "b".repeat(40), status: "healthy", at: 2, comment_id: 105, reason: null });
+    const { previews } = await callStatus(p);
+    expect(previews).toEqual([
+      { pr: 4, sha: "a".repeat(40), state: "failed", url: undefined, reason: "its build failed: exit 1" },
+      { pr: 5, sha: "b".repeat(40), state: "healthy", url: undefined },
+    ]);
+    expect(previews[1]).not.toHaveProperty("reason");
   });
 });
