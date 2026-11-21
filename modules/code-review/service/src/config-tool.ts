@@ -133,7 +133,7 @@ export function configTools(d: {
     {
       name: "code_review_config",
       roles: ["reviewer-manager"],
-      description: "What code review is set to: the watched repos (each moment's combos, caps, today's spend), the engines a combo may name (efforts, offered models), the daily cap across repos, and any problem with the setting.",
+      description: "What code review is set to: the watched repos (each moment's combos and today's spend), the engines a combo may name (efforts, offered models), and any problem with the setting.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async () => ({ setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors, repos: d.repos(), engines: ENGINES }),
     },
@@ -141,7 +141,7 @@ export function configTools(d: {
       name: "code_review_configure",
       roles: ["reviewer-manager"],
       description:
-        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Raising spend, reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine or model; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
+        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Spend is bounded by the install-wide spend limits in Settings, not by code review: the owner changes those there. Reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine or model; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
       inputSchema: {
         type: "object",
         properties: {
