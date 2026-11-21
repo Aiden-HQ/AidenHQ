@@ -1,6 +1,7 @@
 // GitHub as the owner (spec 2026-11-20-github-owner-identity §1, §9): the one client every GitHub call in this process goes
 // through, with the owner's sign-in. One rate limiter (background work waits while REST or GraphQL is below a 20% reserve,
-// every call waits out a rate-limit refusal) and typed needs: a refusal the owner can fix (connect, reconnect, a scope, an
+// every call waits out a rate-limit refusal; content-creating writes also go one at a time, at least a second apart, and wait
+// out GitHub's secondary limit, as GitHub's guidance asks) and typed needs: a refusal the owner can fix (connect, reconnect, a scope, an
 // org's SSO or app restriction) names the cause and the one link, and a tool answers it as needs_owner (vendor/needs.ts), which
 // the kernel routes to the owner or the digest. The token never leaves this process: token() is for git children here only, and
 // no answer carries it.
@@ -95,6 +96,17 @@ const ownerOf = (path: string) => /^\/(?:repos|orgs)\/([^/?#]+)/.exec(path)?.[1]
 type Rate = { remaining: number; limit: number; reset: number };
 type Sleep = (ms: number) => Promise<void>;
 
+/** GitHub: content-creating requests go serially, at least this far apart (its secondary-limit guidance). */
+const WRITE_GAP_MS = 1000;
+/** A secondary-limit refusal without retry-after waits this long, doubling per refusal in a row. */
+const SECONDARY_BASE_MS = 60_000;
+/** A write keeps waiting out rate limits this long, then fails as a transient `rate_limited` need. */
+const WRITE_PATIENCE_MS = 15 * 60_000;
+const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
+/** Whether a request creates content: any non-read method, except a GraphQL query. */
+const createsContent = (method: string, path: string, body: unknown) =>
+  !["GET", "HEAD", "OPTIONS"].includes(method) && (path !== "/graphql" || /^\s*mutation\b/.test(String((body as { query?: unknown } | undefined)?.query ?? "")));
+
 export function createAccess(o: {
   auth: Auth;
   /** The OAuth App's client ID: an org's restriction is lifted on its page (Grant, or Request) in the owner's GitHub settings. */
@@ -114,6 +126,11 @@ export function createAccess(o: {
   const rates = new Map<string, Rate>();
   /** After a rate-limit refusal: no call goes before this (epoch ms). */
   let blockedUntil = 0;
+  /** After a secondary-limit refusal: no content-creating call goes before this (epoch ms); reads are unaffected. */
+  let writeBlockedUntil = 0;
+  let secondaryStreak = 0;
+  let lastWriteEnd = 0;
+  let writeTail: Promise<unknown> = Promise.resolve();
   let granted: string[] | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
@@ -172,6 +189,12 @@ export function createAccess(o: {
       return { cause: "restricted", org, url: `https://github.com/settings/connections/applications/${o.clientId ?? ""}` };
     }
     const retry = Number(res.headers.get("retry-after"));
+    if (res.status === 403 && SECONDARY.test(message)) {
+      const until = now() + (Number.isFinite(retry) && retry > 0 ? retry * 1000 : SECONDARY_BASE_MS * 2 ** Math.min(secondaryStreak, 6));
+      secondaryStreak++;
+      writeBlockedUntil = Math.max(writeBlockedUntil, until);
+      return { cause: "rate_limited", until: new Date(until).toISOString() };
+    }
     if (res.status === 429 || (res.status === 403 && (Number.isFinite(retry) && retry > 0 || res.headers.get("x-ratelimit-remaining") === "0"))) {
       const until = Number.isFinite(retry) && retry > 0 ? now() + retry * 1000 : Number(res.headers.get("x-ratelimit-reset")) * 1000 || now() + 60_000;
       blockedUntil = Math.max(blockedUntil, until);
@@ -184,7 +207,36 @@ export function createAccess(o: {
     return undefined;
   }
 
-  async function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
+    if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
+    // One queue for every writer in this process: one at a time, a gap apart, and the whole queue waits out a refusal.
+    const run = writeTail.then(() => paced(() => attempt(method, path, body, resource, background, accept)));
+    writeTail = run.catch(() => {});
+    return run;
+  }
+
+  async function paced<T>(go: () => Promise<T>): Promise<T> {
+    const started = now();
+    for (;;) {
+      const wait = Math.max(lastWriteEnd + WRITE_GAP_MS, writeBlockedUntil) - now();
+      if (wait > 0) await sleep(wait);
+      try {
+        const r = await go();
+        secondaryStreak = 0;
+        return r;
+      } catch (e) {
+        if (!(e instanceof GitHubNeed) || e.need.cause !== "rate_limited") throw e;
+        // Refused before it created anything: wait out the limit and send the same request again, within the patience.
+        const until = Math.max(Date.parse(e.need.until), blockedUntil, writeBlockedUntil);
+        if (until - started > WRITE_PATIENCE_MS) throw e;
+        await sleep(Math.max(until - now(), 0));
+      } finally {
+        lastWriteEnd = now();
+      }
+    }
+  }
+
+  async function attempt(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     await admit(resource, background);

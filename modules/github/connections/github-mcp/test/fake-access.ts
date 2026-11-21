@@ -15,5 +15,7 @@ export function accessFor(fake: (url: string, init: RequestInit) => Promise<Loos
     if (r instanceof Response) return r;
     return new Response(JSON.stringify(await r.json()), { status: r.status, headers: r.headers ?? {} });
   }) as typeof fetch;
-  return createAccess({ auth: ownerAuth(token), fetchImpl });
+  // A virtual clock: the write queue's pacing and waits cost no real time.
+  let clock = Date.now();
+  return createAccess({ auth: ownerAuth(token), fetchImpl, now: () => clock, sleep: async (ms) => void (clock += ms) });
 }
