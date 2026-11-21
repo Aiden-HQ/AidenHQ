@@ -288,7 +288,10 @@ export function localPullRequest(c: any, checks: { name: string; ok: boolean; pe
       pullRequest: {
         number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
         headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
+        // The local read gives no list of the change's own commits (only its head, its merge base and the default branch), so there is
+        // no oldest commit to read a base from: this adapter carries the chain empty, and the fact says the base was not established.
         commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
+        chain: { pageInfo: { hasNextPage: false }, nodes: [] },
       },
     },
   };
@@ -368,7 +371,21 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    // The base commit: the parent of the PR's oldest commit, known only when exactly one of the PR's commits has a parent that
+    // is not itself one of them. GitHub defines the PR's commits as the head branch's commits not present in the base branch, so
+    // that unique root commit is where this history starts; the fact says exactly that, never that the branch was cut there (a
+    // rebase after opening re-parents it) and never that it is the base branch's tip. A cut-off list (pageInfo.hasNextPage), two
+    // roots, a root with no parent or more than one, or an unreadable commit establish nothing rather than guessing. The base ref's
+    // oid and the git merge base are never substituted.
+    const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit).filter(Boolean);
+    const ownIds = new Set(chain.map((c: any) => c?.oid).filter((id: any) => typeof id === "string"));
+    // A commit starts this list when its first parent is not itself one of them. A merge commit that starts it counts too: it has
+    // more than one parent, so which one is the base is not settled, and counting it is what makes that read "not established"
+    // rather than dropping it and letting a later commit's parent pass as the base.
+    const roots = chain.filter((c: any) => typeof c?.oid === "string" && !ownIds.has(c?.parents?.nodes?.[0]?.oid));
+    const root = roots.length === 1 && roots[0]?.parents?.totalCount === 1 ? roots[0]?.parents?.nodes?.[0]?.oid : undefined;
+    const base = merged && !pr.chain?.pageInfo?.hasNextPage && typeof root === "string" && SHA40.test(root) ? root : "";
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (parent of the PR's oldest commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;

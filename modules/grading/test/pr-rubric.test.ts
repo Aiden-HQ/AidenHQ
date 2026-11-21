@@ -32,3 +32,16 @@ test("the grader prompt says a merged PR's body cannot be edited and names where
   assert.match(system, /never a no for being absent from the PR body/);
   assert.match(system, /Before the merge the body is the PR's own record/);
 });
+
+// The base-commit fact is a graph fact: the parent of the PR's oldest commit. It proves where the PR's current history starts,
+// not where the branch was cut, so the prompt must not let a historical "cut from" or "was on the base" criterion be answered
+// yes from it.
+test("the grader prompt treats the base commit as the start of the PR's history, never as the cut point", () => {
+  const { system } = gradePrompt({ rubric: [], deliverable: { kind: "pr" }, facts: [], data: {} });
+  assert.match(system, /base commit is the parent of the PR's oldest commit/);
+  assert.match(system, /not proof of where the branch was originally cut/);
+  assert.match(system, /never decide that a change is included because this base commit.s id happens to equal another fact.s commit id/);
+  assert.match(system, /stays unknown unless another trusted fact proves that ordering/);
+  assert.match(system, /never answer it yes from the base commit alone/);
+  assert.doesNotMatch(system, /is judged from that base commit[^.]*was cut from a commit a prerequisite produced/);
+});
