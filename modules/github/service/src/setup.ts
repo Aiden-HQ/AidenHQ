@@ -11,6 +11,8 @@ export type SetupArgs = { repo: string; branch: string; expected_tip: string | n
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 const enc = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const SHA = /^[0-9a-f]{40}$/;
+/** The most the files may weigh, serialised: the kernel checks the same (codehost.ts), and an executor request holds 1 MB in all. */
+export const SETUP_BYTES = 800_000;
 
 /** A grant path as a matcher: literal, except `*` is one path segment. */
 export const globs = (allow: string[]) => allow.map((g) => new RegExp(`^${g.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[\\w.-]+")}$`));
@@ -22,6 +24,7 @@ export function check(a: SetupArgs): SetupArgs {
   if (a.expected_tip !== null && !SHA.test(String(a.expected_tip))) throw fail(400, "expected_tip is a commit sha or null");
   const paths = Object.keys(a.files ?? {});
   if (!paths.length || paths.length > 8 || !Array.isArray(a.allow) || !a.allow.length) throw fail(400, "files is 1 to 8 paths, with the grant's allowlist");
+  if (Buffer.byteLength(JSON.stringify(a.files)) > SETUP_BYTES) throw fail(413, `the setup files are at most ${SETUP_BYTES} bytes in all`);
   const ok = globs(a.allow);
   for (const p of paths) if (!/^[\w.][\w./-]{0,499}$/.test(p) || p.split("/").some((x) => /^\.+$/.test(x)) || !ok.some((re) => re.test(p))) throw fail(403, `${p.slice(0, 200)} isn't an allowed setup path`);
   return a;
@@ -35,12 +38,21 @@ async function read(api: Api, a: SetupArgs) {
   const tip = await api("GET", `/repos/${a.repo}/branches/${enc(a.branch)}`).then((b) => String(b.commit?.sha ?? ""), (e: Error) => { if (/ 404\b/.test(e.message)) return null; throw e; });
   if (tip !== a.expected_tip) throw fail(409, `${a.branch} is at ${tip ? tip.slice(0, 12) : "nothing"}, not ${a.expected_tip ? a.expected_tip.slice(0, 12) : "a new branch"}: ask again`);
   const parent = tip ?? head;
+  // What the branch already carries against the default branch: the reviewer reads it whole with the files to add, and the push
+  // refuses any path outside the allowlist; the record binds the tip, so what runs is what was read.
+  const carried: { filename: string; previous_filename?: string; status?: string; patch?: string }[] = [];
+  if (tip) {
+    const cmp = await api("GET", `/repos/${a.repo}/compare/${encodeURIComponent(def)}...${tip}`);
+    const files = (cmp.files ?? []) as typeof carried;
+    if (files.length >= 300) throw fail(409, `${a.branch}'s diff is too large to verify`);
+    carried.push(...files);
+  }
   const missing: string[] = [];
   for (const p of Object.keys(a.files)) {
     const has = await api("GET", `/repos/${a.repo}/contents/${enc(p)}?ref=${parent}`).then(() => true, (e: Error) => { if (/ 404\b/.test(e.message)) return false; throw e; });
     if (!has) missing.push(p);
   }
-  return { def, head, tip, parent, missing };
+  return { def, head, tip, parent, missing, carried };
 }
 
 /** The plan: what the reviewer reads (the files to add, whole) and what the record binds (the branch's tip and the base's head). */
@@ -50,7 +62,10 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
   const bad = leak?.(`${a.title}\n${a.body}`);
   if (bad) throw fail(422, `Not done: the PR title or description mentions "${bad}"; reword it and ask again.`);
   const add = s.missing;
-  const diff = add.map((p) => `--- new file ${p} ---\n${a.files[p]}`).join("\n\n");
+  const diff = [
+    ...s.carried.map((f) => `--- already on ${a.branch}: ${f.filename} (${f.status ?? "changed"}${f.previous_filename ? `, from ${f.previous_filename}` : ""}) ---\n${f.patch ?? "(no text diff)"}`),
+    ...add.map((p) => `--- new file ${p} ---\n${a.files[p]}`),
+  ].join("\n\n");
   return {
     args: a,
     targets: { [`${a.repo} ${a.branch}`]: { repo: a.repo, ref: a.branch, commit: s.tip, base_sha: s.head } },
@@ -70,15 +85,14 @@ export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promi
   const s = await read(api, a);
   const ok = globs(a.allow);
   // The PR's whole diff against the default branch: what the branch already carries plus what this commit adds.
-  const carried: string[] = [];
-  if (s.tip) {
-    const cmp = await api("GET", `/repos/${a.repo}/compare/${encodeURIComponent(s.def)}...${s.tip}`);
-    const files = (cmp.files ?? []) as { filename: string; previous_filename?: string }[];
-    if (files.length >= 300) throw fail(409, `${a.branch}'s diff is too large to verify`);
-    carried.push(...files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean) as string[]));
-  }
+  const carried = s.carried.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean) as string[]);
   const out = [...carried, ...s.missing].find((p) => !ok.some((re) => re.test(p)));
   if (out) return { ok: false, text: `Refused: the pull request would change ${out}, which isn't an allowed setup path.` };
+  // Only a PR into the default branch the plan read is reused; one into another base refuses before anything is pushed.
+  const owner = a.repo.split("/")[0]!;
+  const open = s.tip ? ((await api("GET", `/repos/${a.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`)) as { html_url: string; base?: { ref?: string } }[]) : [];
+  const into = open.find((p) => p.base?.ref === s.def);
+  if (open.length && !into) return { ok: false, text: `Refused: ${a.branch} already has a pull request into ${open[0]!.base?.ref ?? "another branch"}, not ${s.def}: ${open[0]!.html_url}` };
   let tip = s.tip;
   if (s.missing.length) {
     const base = await api("GET", `/repos/${a.repo}/commits/${s.parent}`);
@@ -89,9 +103,7 @@ export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promi
     if (s.tip) await api("PATCH", `/repos/${a.repo}/git/refs/heads/${a.branch}`, { sha: tip });
     else await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${a.branch}`, sha: tip });
   } else if (!tip) return { ok: true, text: JSON.stringify({ pr_url: null, tip: null, nothing_to_add: true }) };
-  const owner = a.repo.split("/")[0]!;
-  const open = (await api("GET", `/repos/${a.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`)) as { html_url: string }[];
-  if (open[0]) return { ok: true, text: JSON.stringify({ pr_url: open[0].html_url, tip }) };
+  if (into) return { ok: true, text: JSON.stringify({ pr_url: into.html_url, tip }) };
   const pr = await api("POST", `/repos/${a.repo}/pulls`, { title: a.title, body: withFooter(a.body, signedAs), head: a.branch, base: s.def });
   return { ok: true, text: JSON.stringify({ pr_url: pr.html_url, tip }), objects: [`github:${a.repo.toLowerCase()}#${Number(pr.number)}`] };
 }

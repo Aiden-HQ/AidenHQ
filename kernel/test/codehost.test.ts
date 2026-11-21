@@ -183,8 +183,8 @@ test("setup passes only the grant's paths, an aidenhq/ branch and the fields it 
   assert.equal((await call("code-review", "setup", { ...body, expected_tip: "main" })).status, 400);
   assert.equal((await call("github", "setup", body)).status, 403, "no setup grant");
   assert.equal((await call("code-review", "setup", { ...body, task: undefined })).status, 400, "the task the approval belongs to");
-  const big = "x".repeat(900_000);
-  assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/a/INFO.md": big, ".deepsec/data/b/INFO.md": big, ".deepsec/data/c/INFO.md": big, ".deepsec/data/d/INFO.md": big } })).status, 413, "3,000,000 characters in all");
+  const big = "x".repeat(450_000);
+  assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/a/INFO.md": big, ".deepsec/data/b/INFO.md": big } })).status, 413, "800,000 bytes in all");
   assert.equal(seen.length, 0);
   assert.equal((await call("code-review", "setup", { ...body, base: "b".repeat(40), junk: 1 })).status, 200);
   assert.deepEqual(seen.at(-1).body, { module: "code-review", repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: body.files, allow: [".deepsec/data/*/INFO.md", ".deepsec/package.json"], title: "Add deepsec", body: "Setup.", task: "T-1" });

@@ -143,10 +143,11 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
     const files: Record<string, string> = {};
     for (const [path, content] of entries) {
       if (!/^[\w.][\w./-]{0,499}$/.test(path) || path.split("/").some((x) => DOTS.test(x)) || !allowed.some((re) => re.test(path))) throw fail(403, `the setup grant doesn't list ${path.slice(0, 200)}`);
-      if (typeof content !== "string" || content.length > 1_000_000) throw fail(400, `${path}: content must be a string of at most 1,000,000 characters`);
+      if (typeof content !== "string") throw fail(400, `${path}: content must be a string`);
       files[path] = content;
     }
-    if (Object.values(files).reduce((n, c) => n + c.length, 0) > 3_000_000) throw fail(413, "the setup files are at most 3,000,000 characters in all");
+    // The code host's executor reads at most 1 MB a request, the record around these args included (github setup.ts SETUP_BYTES).
+    if (Buffer.byteLength(JSON.stringify(files)) > 800_000) throw fail(413, "the setup files are at most 800,000 bytes in all");
     const task = String(b.task ?? "");
     if (!/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "task is the id of the task the setup's approval belongs to");
     return { branch, expected_tip: tip, files, allow: setupPaths, title: text(b.title, "title", 200), body: text(b.body, "body", 20_000), task };
