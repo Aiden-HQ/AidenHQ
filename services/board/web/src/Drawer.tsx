@@ -6,7 +6,7 @@ import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, Snooze
 import { Markdown } from "./markdown";
 import { SkeletonLines } from "./Skeleton";
 import { BUCKETS, BUCKET_NAMES, WEEKDAYS, type Assignee, type Board, type Bucket, type Cadence, type CommentView, type CrewState, type IssueView, type Label, type Models, type Update, type Weekday } from "./types";
-import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, shortName, todayIn, when } from "./util";
+import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, parkBucket, shortName, todayIn, when } from "./util";
 import { StatusDot, type StatusTone } from "./ui";
 
 interface Props {
@@ -163,7 +163,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
             timezone={board.timezone}
             label="Snooze"
             onPick={(date) => {
-              setBucket("backlog");
+              setBucket(parkBucket(todayIn(board.timezone), date));
               void onSnooze(issue.id, date).then(reload);
             }}
           />
