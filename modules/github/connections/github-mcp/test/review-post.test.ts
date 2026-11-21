@@ -97,6 +97,7 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     }
     if (method === "GET" && url.pathname.endsWith("/pulls/12")) return ok({ state: "open", ...opts.pr, head: { sha: opts.headSha ?? HEAD }, base: { sha: BASE } });
     if (method === "GET" && /\/compare\/[0-9a-f]{40}\.\.\.[0-9a-f]{40}$/.test(url.pathname)) return ok({ files: [{ filename: "src/pay.ts", patch: PATCH }, { filename: "logo.png" }] });
+    if (method === "GET" && url.pathname.endsWith("/pulls/12/files")) return ok([{ filename: "src/pay.ts", patch: PATCH }, { filename: "logo.png" }]);
     if (method === "GET" && url.pathname.endsWith("/pulls/12/reviews")) return ok(state.reviews);
     if (method === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(url.pathname)) return ok((state.reviews[0]?.comments ?? []).map((c: { body: string }, i: number) => ({ id: 501 + i, html_url: `https://github.com/acme/payments/pull/12#discussion_r${501 + i}`, body: c.body })));
     if (method === "PUT" && /\/pulls\/12\/reviews\/\d+$/.test(url.pathname)) { state.reviews[0]!.body = body.body; return ok(state.reviews[0]); }
@@ -174,7 +175,7 @@ describe("posting", () => {
     expect(moved.state.ack).toBeUndefined(); // the acknowledgement is the newer head's
 
     const w = world({ threads: [thread("T1", "f_on_line1", "owner1", 41)] });
-    const out = JSON.parse((await poster(w).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)])))).text);
+    const out = JSON.parse((await poster(w).execute("post", postArgs(review([finding("f_on_line1", "src/pay.ts", 2)]), { own: [41] }))).text);
     expect(out).toMatchObject({ inline: 0, earlier: 1 });
   });
 

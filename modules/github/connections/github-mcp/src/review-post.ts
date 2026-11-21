@@ -108,9 +108,18 @@ export class ReviewPoster {
 
   /** Where comments may land on the reviewed commit's diff (its merge base to it, whatever the PR's head is now): each changed
    * file's right-side lines; a file with no patch (binary, too large) has none and takes a file comment. */
-  private async diffLines(ref: Ref, base: string, head: string): Promise<Map<string, Set<number>>> {
-    const c = await this.gh.request<{ files?: { filename: string; patch?: string }[] }>("GET", `${api(ref)}/compare/${base}...${head}`, { query: { per_page: 1 } });
-    return new Map((c.files ?? []).map((f) => [f.filename, f.patch ? rightLines(f.patch) : new Set<number>()]));
+  private async diffLines(ref: Ref, base: string, head: string, current: boolean): Promise<Map<string, Set<number>>> {
+    // The PR's own files (up to 3,000, paged) while it is still at the reviewed commit; after it moved, the compare of the reviewed
+    // commit (GitHub lists at most its first 300 files: a finding past them is listed in the summary, without a thread).
+    const files: { filename: string; patch?: string }[] = [];
+    if (current) {
+      for (let page = 1; page <= 30; page++) {
+        const fs = await this.gh.request<{ filename: string; patch?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/files`, { query: { per_page: 100, page } });
+        files.push(...fs);
+        if (fs.length < 100) break;
+      }
+    } else files.push(...((await this.gh.request<{ files?: { filename: string; patch?: string }[] }>("GET", `${api(ref)}/compare/${base}...${head}`, { query: { per_page: 1 } })).files ?? []));
+    return new Map(files.map((f) => [f.filename, f.patch ? rightLines(f.patch) : new Set<number>()]));
   }
 
   private async pull(ref: Ref, who: Who): Promise<GhPr> {
@@ -247,8 +256,13 @@ export class ReviewPoster {
     const who = await this.identity();
     const pr = await this.pull(ref, who);
     const threads = await this.threads(ref);
-    const earlier = new Map(threads.filter((t) => t.ours && t.finding).map((t) => [t.finding!, t.url]));
-    const place = anchors(r.findings, await this.diffLines(ref, r.base, r.head));
+    // Threads already open for a finding: the service's recorded ones, and this run's own from an earlier attempt (its run marker).
+    const own = new Set(a.own);
+    const earlier = new Map(threads.filter((t) => t.finding && (own.has(t.comment) || (t.run === a.run && norm(t.author) === norm(who.login)))).map((t) => [t.finding!, t.url]));
+    // Only findings whose comment the AI reviewer's card showed get one (the card renders the same choice, without GitHub's view).
+    const shown = new Set(renderReview(r, a.run, { gated: a.gated, card: true }).comments.map((c) => c.id));
+    const anchored = anchors(r.findings, await this.diffLines(ref, r.base, r.head, pr.head.sha === r.head));
+    const place = new Map([...anchored].filter(([id]) => shown.has(id)));
     const first = renderReview(r, a.run, { place, earlier, gated: a.gated });
     let review: { id: number; html_url: string } | undefined;
     for (let page = 1; page <= 10 && !review; page++) {
@@ -277,7 +291,6 @@ export class ReviewPoster {
     // acknowledgement speak for the PR's current head: a review of an older one leaves them to the newer head's review.
     const current = pr.head.sha === r.head;
     const present = new Set(r.findings.map((f) => f.id));
-    const own = new Set(a.own);
     const done = current ? await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) }, (t) => own.has(t.comment)) : { resolved: [], skipped: [] };
     const c = counts(r.findings);
     const ack = current ? await this.ack(ref, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`, a.ack) : undefined;

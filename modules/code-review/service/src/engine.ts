@@ -148,7 +148,9 @@ export function createEngine(d: EngineDeps) {
     if (o?.state === "posted" && o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
   };
   const acking = new Map<string, { repo: string; number: number }>();
-  const ack = (a: Ack) => d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => acked(a.repo, a.number, o)).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
+  // One notice at a time per PR until its acknowledgement's id is known: two in flight would each make a comment. A notice
+  // skipped meanwhile only drops a phase the next one updates.
+  const ack = (a: Ack) => !ackOf(a.repo, a.number) && [...acking.values()].some((t) => t.repo === a.repo && t.number === a.number) ? Promise.resolve() : d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => acked(a.repo, a.number, o)).catch((e) => log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) }));
 
   function upsertPr(p: PullRequest) {
     run(`INSERT INTO prs (repo, number, head, base, updated, author, draft, fork, open, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -480,7 +482,9 @@ export function createEngine(d: EngineDeps) {
 
   /** A posted review is the PR's baseline for the next incremental run; one only filed (or refused) never is. */
   function landed(r: RunRow) {
-    run("UPDATE prs SET last_reviewed_head = ?, last_reviewed_base = ? WHERE repo = ? AND number = ?", r.head, r.base, r.repo, r.number);
+    // A delayed post of an older run never rolls the baseline back past one a newer run set.
+    run(`UPDATE prs SET last_reviewed_head = ?, last_reviewed_base = ? WHERE repo = ? AND number = ?
+      AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.repo = prs.repo AND x.number = prs.number AND x.head = prs.last_reviewed_head AND x.posted = posted AND x.created > ?)`, r.head, r.base, r.repo, r.number, r.created);
   }
   /** A filed post's outcome, once the AI reviewer and the executor are done with it. */
   async function settle(r: RunRow) {
