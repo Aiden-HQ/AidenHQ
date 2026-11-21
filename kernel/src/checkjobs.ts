@@ -256,8 +256,11 @@ function readResult(file: string, cases: string[]): EvalResult {
   try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], cap: "eval-day", broken: true }; }
   const failed: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
   // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list): the judge and the kernel
-  // read one contract. A malformed list is the harness's failure, as any malformed result is.
-  const capped = [...new Set<string>((Array.isArray(r?.capped) ? r.capped : []).filter((f: any) => cases.includes(f)))];
+  // read one contract. A malformed list is the harness's failure, as any malformed result is: a name that isn't one of the cases
+  // (or a value that isn't a list) could hide a capped case and let a run pass. Only an older judge that omits the field reads empty.
+  const named: unknown = r?.capped === undefined ? [] : r.capped;
+  const cappedOk = Array.isArray(named) && named.every((f: unknown) => typeof f === "string" && cases.includes(f));
+  const capped = cappedOk ? [...new Set<string>(named as string[])] : [];
   // Which cap stopped it (the eval names it: "eval-day", "install", or `unknown`): a name, never a path or free text, and
   // `eval-day` when an older judge wrote no scope (its only case then was the eval's own day cap).
   const cap = typeof r?.capScope === "string" && /^[a-z][a-z-]{0,30}$/.test(r.capScope) ? r.capScope : "eval-day";
@@ -265,8 +268,10 @@ function readResult(file: string, cases: string[]): EvalResult {
   // row in `failed` is malformed, never counted twice into the pass rule.
   const failedFiles = failed.map((f) => f.file);
   const notPassed = new Set([...failedFiles, ...capped]);
-  if (new Set(failedFiles).size !== failedFiles.length || r?.total !== cases.length || r?.passed !== cases.length - notPassed.size)
-    return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's counts don't match its ${cases.length} cases` })), capped: [], cap: "eval-day", broken: true };
+  const why = !cappedOk ? "its `capped` list isn't a list of its cases"
+    : new Set(failedFiles).size !== failedFiles.length ? "it lists one failed case twice"
+    : r?.total !== cases.length || r?.passed !== cases.length - notPassed.size ? `its counts don't match its ${cases.length} cases` : "";
+  if (why) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's result is malformed: ${why}` })), capped: [], cap: "eval-day", broken: true };
   return { total: cases.length, passed: r.passed, failed, capped, cap };
 }
 /** A case folder's JSON files, read as small regular files (a link or a special file is a case that can't be read: its text is empty). */

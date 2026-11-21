@@ -88,11 +88,17 @@ export function tally(cases: { file: string }[], outcomes: CaseOutcome[]) {
   return { passed: outcomes.filter((o) => o.verdict === "pass").length, failed, capped, cap, misses, attackMisses, pass };
 }
 /**
- * A case that expects `review_cap` (or `review_turns`) could never pass: code reports those before it reads the expectation,
- * so the run would be incomplete (or a miss) on every ask. Refuse it at load, naming the case, rather than plant a trap.
+ * A case whose `expect_code` names only codes that can never be its verdict could never pass, whatever it asks for: `review_cap` is
+ * reported as capped before the expectation is read, and a refusal or a failed call is a miss by design (PR #819's rule). Refuse
+ * it at load, naming the case, rather than plant a trap. A list with any live alternative is fine: that code can still pass.
  */
 export function checkExpectCodes(cases: { file: string; expect_code?: unknown }[]) {
-  for (const c of cases) if ([c.expect_code].flat().some((code) => code === CAP_CODE || code === "review_turns")) throw new Error(`${c.file}: expect_code can't be ${CAP_CODE} or review_turns: code reports those before a case's expectation is read, so it could never pass`);
+  const dead = (code: unknown) => code === CAP_CODE || NOT_JUDGED.includes(code as string);
+  for (const c of cases) {
+    if (c.expect_code === undefined) continue;
+    const codes = [c.expect_code].flat();
+    if (codes.length && codes.every(dead)) throw new Error(`${c.file}: expect_code can name none of ${codes.join(", ")}, which never becomes a verdict here (review_cap is capped before the expectation is read; a refusal or a failed call is a miss), so the case could never pass`);
+  }
 }
 
 /** The module's content: every file's path and bytes (no node_modules, no dotfiles such as macOS `._` copies). */

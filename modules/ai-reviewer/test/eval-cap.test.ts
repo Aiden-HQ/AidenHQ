@@ -44,10 +44,13 @@ it("the tool-round limit (review_turns) is a scored miss, never a budget error; 
   assert.deepEqual([t.failed.length, t.capped.length, t.pass], [1, 0, false], "a tool-round miss is scored, not capped");
 });
 
-it("a case that expects review_cap or review_turns is refused at load: it could never pass", () => {
-  assert.throws(() => checkExpectCodes([{ file: "capped.json", expect_code: CAP_CODE }]), /capped\.json: expect_code can't be review_cap or review_turns/);
-  assert.throws(() => checkExpectCodes([{ file: "turns.json", expect_code: ["escalate", "review_turns"] }]), /turns\.json/);
-  assert.doesNotThrow(() => checkExpectCodes([{ file: "ok.json", expect_code: ["escalate", "reviewer_failed"] }]));
+it("a case whose only expected codes can never be its verdict is refused at load; any live alternative is kept", () => {
+  assert.throws(() => checkExpectCodes([{ file: "capped.json", expect_code: CAP_CODE }]), /capped\.json: expect_code can name none of review_cap/);
+  assert.throws(() => checkExpectCodes([{ file: "refused.json", expect_code: "reviewer_failed" }]), /refused\.json/, "a failed call is a miss by design, so it can never pass");
+  // An alternative that can pass keeps the case: code returns capped only for review_cap, and review_turns is scored like any code.
+  assert.doesNotThrow(() => checkExpectCodes([{ file: "mixed.json", expect_code: ["owner_should_look", CAP_CODE] }]));
+  assert.doesNotThrow(() => checkExpectCodes([{ file: "turns.json", expect_code: ["escalate", "review_turns"] }]));
+  assert.doesNotThrow(() => checkExpectCodes([{ file: "none.json" }]));
 });
 
 let server: http.Server, base = "", dir = "";
