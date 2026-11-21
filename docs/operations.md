@@ -390,8 +390,9 @@ locked, nothing that needs secrets starts. Recovery without the TPM: [ops/vault/
 
 `aidenhq-kernel` is a systemd user unit; the optional `config/runner.yaml` holds the job tuning it reads. Units start only once the vault is
 mounted and restart on failure. Other units: `aidenhq-computers` (the agent computer launcher, optional; a restart
-never ends a run: boxes stay up, an agent's turn runs detached in its box and the plugin collects its result from the new
-launcher; a new image applies from the next acquire) and
+never ends a run: boxes stay up and the new launcher adopts them, and the old one drains as the kernel does
+(`ops/run-draining.sh`): its model and tool calls in flight finish there while the new one takes new calls; a new image
+applies from the next acquire) and
 `aidenhq-transcripts.path` (meeting transcript watcher). Enable user units to survive logout with
 `loginctl enable-linger <user>`.
 

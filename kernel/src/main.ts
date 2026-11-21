@@ -8,7 +8,7 @@
 // - Jobs (jobs.ts, sandbox.ts): engine runs in the sandbox, detached, so a restart (KillMode=process) leaves them running;
 //   this process adopts them at start and stops following them (offsets saved) on SIGTERM, SIGINT or SIGUSR2. Check jobs'
 //   box runs (checkjobs.ts) are detached the same way: a drain hands them on and the next kernel follows them to their end.
-// - A restart drains (SIGUSR2, sent by kernel/run.sh, the unit's main process, which exits at once so the next kernel starts):
+// - A restart drains (SIGUSR2, sent by ops/run-draining.sh, the unit's main process, which exits at once so the next kernel starts):
 //   this kernel stops its jobs' watchers, timers and listeners at once (the next one binds them as it starts: a gap of its
 //   start-up, which callers retry), lets the model calls in flight finish (at most DRAIN_MS) and exits.
 // - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
@@ -796,7 +796,7 @@ every(() => {
   }
 }, 30_000);
 
-// A restart (kernel/run.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
+// A restart (ops/run-draining.sh): the next kernel is starting. This one stops its jobs' watchers (offsets saved: the next one adopts
 // them), stops following its checks' box runs (the next one follows them from their rows), its timers and its listeners, so
 // the next one can bind them; then it serves only the calls it holds (idle connections
 // closed, so callers reconnect to the next one) and exits when its model calls, the checks still before or after their box run and the job launches it had in

@@ -289,3 +289,21 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
     req.pipe(up);
   });
 }
+
+/** How long a draining launcher keeps serving the calls it holds (the kernel's DRAIN_MS). */
+export const DRAIN_MS = 5 * 60_000;
+
+/**
+ * A restart's drain (SIGUSR2 from ops/run-draining.sh, as the kernel's): the servers stop listening at once, so the next
+ * launcher binds their ports; idle keep-alive connections are closed every second, so callers reconnect to the next one;
+ * the calls in flight (a model stream, a tool call, a checkout) finish here. Resolves once every server has closed, or at `maxMs`.
+ */
+export function drainServers(servers: http.Server[], maxMs = DRAIN_MS) {
+  return new Promise<void>((done) => {
+    let left = servers.length;
+    const idle = setInterval(() => { for (const s of servers) s.closeIdleConnections(); }, 1000);
+    const end = () => { clearInterval(idle); clearTimeout(cap); done(); };
+    const cap = setTimeout(end, maxMs);
+    for (const s of servers) s.close(() => { if (--left === 0) end(); });
+  });
+}
