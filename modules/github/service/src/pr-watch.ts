@@ -385,6 +385,8 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Green, but code review waits on open important findings (nothing running or queued): the author's task fixes them once per
       // head, under the same wake cap and CI breaker as red checks; the merge below follows once the gate passes.
+      // A green head resets the CI breaker, whatever holds its merge.
+      if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.breaker[url]) { delete state.breaker[url]; save(); }
       if (o.reviewGate && pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && !(state.found[url] === pr.headRefOid && state.greened[url] === pr.headRefOid)) {
         const g = await o.reviewGate(repo, pr.number, pr.headRefOid);
         if (g && "findings" in g && g.findings) {
