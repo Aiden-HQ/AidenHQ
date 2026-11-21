@@ -330,7 +330,8 @@ test("checks: a model recipe's token stops at its own cap, apart from the eval d
   // Another run has its own cap; neither counts against the eval day cap (spent past 0.01 here).
   assert.equal((await call(two)).status, 200);
   assert.equal(gw.spentBy(one), 0.06);
-  assert.throws(() => mintToken("job-secret", { kind: "reviewer", capUsd: 1 }), /only a check token/);
+  assert.throws(() => mintToken("job-secret", { kind: "grader", capUsd: 1 }), /only a check or reviewer token/);
+  assert.throws(() => mintToken("job-secret", { kind: "reviewer", capUsd: 0 }), /more than 0/);
 });
 
 test("checks: the compiler takes a model recipe only with a budget field and a bounded max", () => {

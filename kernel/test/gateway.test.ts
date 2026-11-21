@@ -311,3 +311,22 @@ test("gateway: Anthropic format: a check token's call settles at the streamed us
   assert.equal(refused.status, 403);
   assert.equal(seen.length, 1);
 });
+test("gateway: a reviewer token's own cap (REVIEW_USD): calls go ahead while its spend is below the cap, a 402 once it reaches it, nothing filed", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  writeFileSync(join(dir, "gateway.json"), "{}");
+  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => json(res, 200, { id: `gen-${Math.random()}`, model: "m", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.03 } })); });
+  const filed = [];
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, fileRaiseCap: async (b) => void filed.push(b) });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
+  const review = mintToken("job-secret", { kind: "reviewer", component: "AI reviewer", capUsd: 0.05 });
+  const call = async () => { const r = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${review}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) }); return { status: r.status, body: await r.json() }; };
+  assert.equal((await call()).status, 200, "$0 spent of $0.05");
+  assert.equal((await call()).status, 200, "$0.03 spent, still below the cap: it goes ahead");
+  const over = await call();
+  assert.equal(over.status, 402, "$0.06 spent: at the cap");
+  assert.equal(over.body.error.type, "cap_reached");
+  // Another review's token has its own run key, so its own cap.
+  assert.equal((await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("job-secret", { kind: "reviewer", component: "AI reviewer", capUsd: 0.05 })}` }, body: JSON.stringify({ model: "m", max_tokens: 1024, messages: [] }) })).status, 200);
+  assert.deepEqual(filed, [], "a review's cap is never filed for raising: the review escalates to the owner instead");
+});
