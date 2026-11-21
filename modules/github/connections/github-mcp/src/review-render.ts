@@ -99,6 +99,27 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
+/** Marks a ruling's reply on a finding's thread, so the state service never takes Aiden's own answer for a dispute. */
+export const RULING_MARK = "<!-- aidenhq-ruling -->";
+
+/** A dispute's ruling, posted as a reply on the finding's thread: the judge's verdict and its reason (model text, made plain). */
+export const RulingArgsSchema = z.object({
+  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
+  pr: z.number().int().min(1),
+  head: z.string().regex(SHA),
+  /** The judge run: the idempotency key. */
+  run: RUN,
+  finding: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
+  /** The thread's first comment (Aiden's finding), which the reply answers. */
+  comment: z.number().int().min(1),
+  verdict: z.enum(["dismissed", "upheld"]),
+  reason: z.string().min(1).max(1500),
+});
+export type RulingArgs = z.infer<typeof RulingArgsSchema>;
+export function renderRuling(a: RulingArgs): string {
+  const head = a.verdict === "dismissed" ? "**Dismissed** after review of the dispute: this finding no longer holds the merge." : "**Upheld** after review of the dispute: this finding still holds the merge until it is fixed or the owner dismisses it.";
+  return `${RULING_MARK}\n${head}\n\n${plain(a.reason, 1500)}\n\n<sub>Judged at ${code(short(a.head))} (run ${code(a.run)}).</sub>`;
+}
 
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;

@@ -125,6 +125,12 @@ export class CodeReviewReader {
     return { merge_base: (await this.compare(repo, base, head)).merge_base };
   }
 
+  /** A commit's message (its trailers name the AidenHQ agent that wrote it): the judge of a dispute picks another model family. */
+  async commit(repo: string, sha: string): Promise<{ message: string }> {
+    const c = await this.github.request<{ commit?: { message?: string } }>("GET", `/repos/${repo}/commits/${sha}`);
+    return { message: String(c.commit?.message ?? "").slice(0, 20_000) };
+  }
+
   /** The repos the owner's sign-in can read whose name contains `q` (at most 30). */
   async repos(q: string): Promise<{ repo: string; private: boolean; url: string }[]> {
     const out: { repo: string; private: boolean; url: string }[] = [];
@@ -160,6 +166,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
     if (op === "merge-base") return { status: 200, body: await reader.mergeBase(repo, numberArg(q.get("number")), shaArg(q.get("head"))) };
     if (op === "postable") return { status: 200, body: await reader.postable(repo) };
+    if (op === "commit") return { status: 200, body: await reader.commit(repo, shaArg(q.get("sha"))) };
     // A login that isn't one (a bot's, an empty or deleted user's) has no permission: an answer, never an error to retry.
     if (op === "permission") {
       let login: string;

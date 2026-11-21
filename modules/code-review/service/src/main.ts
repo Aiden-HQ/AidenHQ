@@ -30,6 +30,7 @@ const engine = createEngine({
   config: () => config,
   source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token),
   runner: kernelRunner(kernel),
+  agents: async () => Object.values(((await kernel.call("GET", "/v1/agents")) as { agents?: Record<string, { name?: string; model?: string }> }).agents ?? {}),
   poster: kernelPoster(kernel, log),
   emit: (f) => facts.emit(f),
   log,

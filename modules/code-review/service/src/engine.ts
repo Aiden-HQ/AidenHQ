@@ -18,10 +18,13 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner } from "./seams.ts";
+import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult } from "./seams.ts";
+import { EFFORT as JUDGE_EFFORT, judgeModels } from "./aidenhq-sdk/judge.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 3 * 60_000;
+/** What one dispute's judge run may spend (its model token's cap). */
+export const JUDGE_USD = 1;
 /** A run that couldn't run is tried this many times in all, on the same reservation. */
 const ATTEMPTS = 2;
 const WRITERS = new Set(["admin", "maintain", "write"]);
@@ -78,6 +81,9 @@ CREATE TABLE IF NOT EXISTS covered (repo TEXT NOT NULL, number INTEGER NOT NULL,
 CREATE TABLE IF NOT EXISTS dispositions (finding TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, state TEXT NOT NULL,
   reason TEXT NOT NULL, evidence TEXT, by TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, finding);
+CREATE TABLE IF NOT EXISTS judges (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, finding TEXT NOT NULL, comment INTEGER NOT NULL,
+  reply INTEGER NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, head TEXT, model TEXT, status TEXT NOT NULL, check_job TEXT, verdict TEXT, reason TEXT,
+  cost_usd REAL NOT NULL DEFAULT 0, created TEXT NOT NULL, ended TEXT, write_id TEXT);
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
  * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
@@ -86,6 +92,8 @@ export const DATA_VERSION = 1;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
+  /** The instance's agents' names and models (the kernel's directory): a dispute's judge is of another family than the PR author's. */
+  agents: () => Promise<{ name?: string; model?: string }[]>;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -184,7 +192,10 @@ export function createEngine(d: EngineDeps) {
     const where = repo ? " AND repo = ?" : "";
     const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
     const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
-    return ended + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
+    // Disputes' judges count too: ended at their billed cost, running at their spend so far (unknown: their whole cap).
+    const judged = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM judges WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
+    const judging = all<{ id: string }>(`SELECT id FROM judges WHERE status = 'running'${where}`, ...(repo ? [repo] : [])).reduce((n, j) => n + Math.min(live.get(j.id) ?? JUDGE_USD, JUDGE_USD), 0);
+    return ended + judged + judging + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
   }
 
   /**
@@ -558,6 +569,7 @@ export function createEngine(d: EngineDeps) {
     for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
+        if (gated(cfg)) await disputes(cfg);
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
@@ -581,6 +593,89 @@ export function createEngine(d: EngineDeps) {
       const started = admit(r);
       if (started) await startRun(started);
     }
+    for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'running' AND check_job IS NOT NULL")) {
+      const res = await d.runner.result(j.check_job!).catch(() => ({ state: "running" as const }));
+      if (res.state === "running") { if (res.billed_usd !== undefined) live.set(j.id, res.billed_usd); else live.delete(j.id); continue; }
+      await ruled(j, res);
+    }
+    for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'queued' ORDER BY created")) await startJudge(j);
+  }
+
+  // ---- disputes: a reply on a gating finding's thread, judged by a model of another family than the PR author's -------------
+
+  type Judge = { id: string; repo: string; number: number; finding: string; comment: number; reply: number; author: string; body: string; head: string | null; model: string | null;
+    status: string; check_job: string | null; verdict: string | null; reason: string | null; cost_usd: number; created: string; ended: string | null; write_id: string | null };
+  /**
+   * A gated repo's open PRs with open gating findings: each new reply on Aiden's own thread for one of them, from the PR's author
+   * or someone with write access now, starts one judge (a stranger's reply is passed over; the owner can still dismiss on the
+   * board). Aiden's own rulings are never disputes. Each reply is handled once.
+   */
+  async function disputes(cfg: Repo) {
+    for (const p of all<{ number: number; author: string }>("SELECT number, author FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+      const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
+      if (!open.size) continue;
+      for (const t of await d.source.threads(cfg.repo, p.number)) {
+        if (!t.ours || !t.finding || !open.has(t.finding)) continue;
+        for (const r of t.replies) {
+          const key = `reply:${r.id}`;
+          if (r.ruling || one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
+          const who = r.author.toLowerCase();
+          const may = who === p.author || WRITERS.has(await d.source.permission(cfg.repo, r.author));
+          const busy = one("SELECT 1 FROM judges WHERE repo = ? AND number = ? AND finding = ? AND status IN ('queued', 'running')", cfg.repo, p.number, t.finding);
+          if (!may) log("a dispute from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
+          else if (!busy) run("INSERT INTO judges (id, repo, number, finding, comment, reply, author, body, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+            `cj-${randomBytes(6).toString("hex")}`, cfg.repo, p.number, t.finding, t.comment, r.id, r.author.slice(0, 40), r.body.slice(0, 2000), iso());
+          run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
+        }
+      }
+    }
+  }
+
+  /** The judge's model: another family than the model of the agent the head commit's trailer names; unknown author: the checker's. */
+  async function judgeModel(repo: string, head: string) {
+    const name = /^Co-authored-by: AidenHQ (.+?) <noreply@aidenhq\.ai>\s*$/im.exec((await d.source.commit(repo, head)).message)?.[1];
+    const author = name ? (await d.agents()).find((a) => a.name === name)?.model : undefined;
+    return judgeModels(author ?? "")[0]!;
+  }
+
+  async function startJudge(j: Judge) {
+    const f = one<{ path: string; line: number; title: string; why: string | null; evidence: string | null }>("SELECT path, line, title, why, evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", j.repo, j.number, j.finding);
+    const p = prRow(j.repo, j.number);
+    if (!f || !p?.open) return void run("UPDATE judges SET status = 'skipped', ended = ? WHERE id = ?", iso(), j.id);
+    run("UPDATE judges SET status = 'running', head = ? WHERE id = ?", p.head, j.id);
+    try {
+      const model = await judgeModel(j.repo, p.head);
+      const { merge_base } = await d.source.mergeBase(j.repo, j.number, p.head);
+      const { check } = await d.runner.start({ repo: j.repo, number: j.number, base: p.base, head: p.head, merge_base, combo: { engine: "codex", model, effort: JUDGE_EFFORT[model] ?? "high" },
+        focus: null, incremental_from: null, full: true, previous: [], mandatory: true, budget_usd: JUDGE_USD, ignore: [], max_nits: 0,
+        judge: { finding: { id: j.finding, path: f.path, line: f.line, title: f.title, why: f.why ?? "", evidence: f.evidence ?? "" }, reply: { author: j.author, body: j.body } } });
+      run("UPDATE judges SET check_job = ?, model = ? WHERE id = ?", check, model, j.id);
+    } catch (e) {
+      if (!permanent(e)) return void run("UPDATE judges SET status = 'queued' WHERE id = ?", j.id);
+      await ruled({ ...j, head: p.head }, { state: "failed", why: `couldn't start: ${String((e as Error).message).slice(0, 200)}`, billed_usd: 0 });
+    }
+  }
+
+  /** A judge's answer applied: dismissed closes the finding (one transaction, at the head it judged); anything else upholds it. The
+   * ruling is posted on the thread either way. A PR that moved meanwhile is judged again at its new head. */
+  async function ruled(j: Judge, res: RunResult) {
+    live.delete(j.id);
+    const cost = typeof res.billed_usd === "number" && res.billed_usd >= 0 ? Math.min(res.billed_usd, JUDGE_USD) : JUDGE_USD;
+    const p = prRow(j.repo, j.number);
+    if (p?.open && p.head !== j.head) return void run("UPDATE judges SET status = 'queued', check_job = NULL, cost_usd = cost_usd + ? WHERE id = ?", cost, j.id);
+    const a = res.state === "done" ? (res.review as unknown as { verdict?: unknown; reason?: unknown }) : undefined;
+    const verdict = a?.verdict === "dismissed" && typeof a.reason === "string" && a.reason.trim() ? "dismissed" : "upheld";
+    const reason = a && typeof a.reason === "string" && a.reason.trim() ? a.reason.slice(0, 1500) : `The judge reached no verdict (${res.state === "failed" ? res.why.slice(0, 200) : "no usable answer"}), so the finding stands; reply again to ask once more.`;
+    const closed = tx(() => {
+      run("UPDATE judges SET status = 'done', verdict = ?, reason = ?, cost_usd = cost_usd + ?, ended = ? WHERE id = ?", verdict, reason, cost, iso(), j.id);
+      const c = verdict === "dismissed" ? run("UPDATE findings SET outcome = 'dismissed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), j.repo, j.number, j.finding).changes : 0;
+      dispose([j.finding], { repo: j.repo, number: j.number, head: j.head! }, verdict === "dismissed" ? "dismissed" : "open", `${verdict === "dismissed" ? "dismissed" : "upheld"} on a dispute by ${j.author}: ${reason}`, `judge:${j.model ?? "none"}`, j.body);
+      return c;
+    });
+    if (verdict === "dismissed" && !closed) return; // closed meanwhile (fixed, or the owner): nothing to say
+    const posted = await d.poster.ruling({ run: j.id, repo: j.repo, number: j.number, head: j.head!, finding: j.finding, comment: j.comment, verdict, reason }).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) }));
+    if ("write" in posted && posted.write) run("UPDATE judges SET write_id = ? WHERE id = ?", posted.write, j.id);
+    if (posted.state === "refused") log("ruling not posted", { judge: j.id, why: posted.why });
   }
 
   // ---- the merge gate's verdict and the owner's dismissal -----------------------------------------------------------------------
@@ -656,7 +751,10 @@ export function createEngine(d: EngineDeps) {
     verdict,
     dismiss,
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
-    binding(id: string) { const r = runRow(id); return r ? { repo: r.repo, number: r.number, head: r.head } : undefined; },
+    binding(id: string) {
+      const r = runRow(id) ?? one<{ repo: string; number: number; head: string }>("SELECT repo, number, head FROM judges WHERE id = ? AND head IS NOT NULL", id);
+      return r ? { repo: r.repo, number: r.number, head: r.head } : undefined;
+    },
     /** A one-off review of any open or merged PR the instance can read, by each combo asked for (default: the repo's on_open); posted like any other. */
     async oneoff(b: { pr_url?: unknown; combos?: unknown; focus?: unknown; full?: unknown }) {
       if (b.focus !== undefined && (typeof b.focus !== "string" || b.focus.length > 300)) throw new RequestError("focus is a short text");

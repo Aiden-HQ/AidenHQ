@@ -4,11 +4,12 @@
 // ever a COMMENT (no GitHub approval or change request: on a gated repo the merge queue asks code review's verdict itself), and
 // a thread is resolved only when Aiden posted it: its first comment is in AidenHQ's records (the kernel's /v1/objects) and carries our finding marker. Every
 // request goes through github.ts's `guard`.
+import type { z } from "zod";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, ACK_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, counts, renderNotice, renderReview, rightLines,
+  FINDING_MARK, ACK_MARK, RULING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RulingArgsSchema, RUN_MARK, counts, renderNotice, renderReview, renderRuling, rightLines,
   commandsBlock, type Finding, type NoticeArgs, type PostArgs,
 } from "./review-render.js";
 
@@ -27,12 +28,14 @@ export interface Thread {
   line: number | null;
   /** The finding id Aiden's marker names in the first comment, or null (a person's thread). */
   finding: string | null;
+  /** The first comment's id (a ruling replies to it). */
+  comment: number;
   /** The first comment is in AidenHQ's records and carries a finding marker: Aiden's own thread. */
   ours: boolean;
   author: string;
   url: string;
-  /** Replies, oldest first, as data (untrusted text). */
-  replies: { author: string; body: string }[];
+  /** Replies, oldest first, as data (untrusted text); `ruling`: Aiden's own answer to a dispute (its marker, posted as the owner). */
+  replies: { id: number; author: string; body: string; ruling: boolean }[];
 }
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
@@ -70,8 +73,8 @@ export class ReviewPoster {
         const finding = FINDING_MARK.exec(first.body)?.[1] ?? null;
         const author = first.author?.login ?? "";
         out.push({
-          id: n.id, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && (await this.ours(`${objectRef(ref)}/comment/${first.databaseId}`)), author, url: first.url,
-          replies: rest.map((c) => ({ author: c.author?.login ?? "", body: c.body.slice(0, 800) })),
+          id: n.id, comment: first.databaseId, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && (await this.ours(`${objectRef(ref)}/comment/${first.databaseId}`)), author, url: first.url,
+          replies: rest.map((c) => ({ id: c.databaseId, author: c.author?.login ?? "", body: c.body.slice(0, 2000), ruling: c.body.includes(RULING_MARK) && norm(c.author?.login ?? "") === norm(author) })),
         });
       }
       if (!t.pageInfo.hasNextPage) break;
@@ -136,7 +139,19 @@ export class ReviewPoster {
   }
 
   /** What the card shows and the record binds to, from the args alone (no GitHub call: the plan must come out the same each time). */
-  preview(kind: "post" | "notice", args: unknown): { facts: Record<string, string>; targets: Record<string, unknown> } {
+  preview(kind: "post" | "notice" | "ruling", args: unknown): { facts: Record<string, string>; targets: Record<string, unknown> } {
+    if (kind === "ruling") {
+      const a = RulingArgsSchema.parse(args);
+      return {
+        facts: {
+          target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
+          sentence: `Reply on Aiden's finding ${a.finding} on ${a.repo}#${a.pr}: the dispute is ${a.verdict}.`,
+          changes: `One reply on the finding's review thread, as the owner, signed by AidenHQ${a.verdict === "dismissed" ? ", and the thread resolved (Aiden's own only)" : ""}. The reason is the judge's text, made plain.`,
+          details: renderRuling(a),
+        },
+        targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
+      };
+    }
     if (kind === "notice") {
       const n = NoticeArgsSchema.parse(args);
       return {
@@ -174,8 +189,22 @@ export class ReviewPoster {
   }
 
   /** Posts what `preview` showed. Throws (a failed outcome) when the pull request isn't open or its head moved. */
-  async execute(kind: "post" | "notice", args: unknown): Promise<{ ok: boolean; text: string; objects: string[] }> {
+  async execute(kind: "post" | "notice" | "ruling", args: unknown): Promise<{ ok: boolean; text: string; objects: string[] }> {
+    if (kind === "ruling") return this.ruling(RulingArgsSchema.parse(args));
     return kind === "post" ? this.post(target(PostArgsSchema.parse(args))) : this.notice(NoticeArgsSchema.parse(args));
+  }
+
+  /** The ruling, once per run (found again by its run id): a reply on the finding's thread; a dismissal resolves the thread. */
+  private async ruling(a: z.infer<typeof RulingArgsSchema>): Promise<{ ok: boolean; text: string; objects: string[] }> {
+    const ref = { ...split(a.repo), number: a.pr };
+    const who = await this.identity();
+    const t = (await this.threads(ref)).find((x) => x.comment === a.comment && x.finding === a.finding && x.ours);
+    if (!t) throw new GitHubRefused(`no thread of Aiden's for finding ${a.finding} on ${a.repo}#${a.pr}`);
+    const body = renderRuling(a);
+    const had = t.replies.find((r) => r.ruling && r.body.includes(`run \`${a.run}\``));
+    const made = had ? { id: had.id } : await this.gh.request<{ id: number }>("POST", `${api(ref)}/pulls/${a.pr}/comments/${a.comment}/replies`, { body: { body: withFooter(body, AGENT) } });
+    if (a.verdict === "dismissed" && !t.resolved) await this.gh.graphql("resolveThread", { thread: t.id });
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, verdict: a.verdict, resolved: a.verdict === "dismissed" }), objects: [`${objectRef(ref)}/comment/${made.id}`] };
   }
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {

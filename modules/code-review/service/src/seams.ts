@@ -53,7 +53,15 @@ export interface PrSource {
   postable(repo: string): Promise<{ identity: "owner" | null; org: string }>;
   /** Repos the instance's GitHub identity can read whose name holds `q` (the board's repo picker). */
   repos(q: string): Promise<{ repo: string; private: boolean; url?: string }[]>;
+  /** The PR's review threads: `ours` (Aiden opened it), the finding its marker names, its first comment's id and the replies
+   * (strangers' text; `ruling`: Aiden's own answer to a dispute). */
+  threads(repo: string, number: number): Promise<Thread[]>;
+  /** A commit's message (its trailer names the AidenHQ agent that wrote it). */
+  commit(repo: string, sha: string): Promise<{ message: string }>;
 }
+export type Thread = { ours: boolean; finding: string | null; comment: number; replies: { id: number; author: string; body: string; ruling: boolean }[] };
+/** A dispute's ruling, posted as a reply on the finding's thread (the poster's `ruling`). */
+export type Ruling = { run: string; repo: string; number: number; head: string; finding: string; comment: number; verdict: "dismissed" | "upheld"; reason: string };
 
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {
@@ -66,6 +74,8 @@ export type ReviewSpec = {
   previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean }[];
   /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
   mandatory: boolean;
+  /** A dispute's judge (the recipe's judge mode): the finding and the reply disputing it (a stranger's words). */
+  judge?: { finding: { id: string; path: string; line: number; title: string; why: string; evidence: string }; reply: { author: string; body: string } };
   /** The most the run may spend (its run_usd): the cap on its box's model token. */
   budget_usd: number; ignore: string[]; max_nits: number;
 };
@@ -106,6 +116,8 @@ export interface Poster {
   ack(a: Ack): Promise<void>;
   /** A filed post's outcome now (pending until the AI reviewer and the executor are done). */
   outcome(write: string): Promise<Posted>;
+  /** Files a dispute's ruling (a Tier 1 write: the judge's text). */
+  ruling(r: Ruling): Promise<Posted>;
   /** Closes the PR's review task (it only holds its posts' approvals) once the PR is closed or a one-off's post is settled. */
   close(repo: string, number: number, why: string, run?: string): Promise<void>;
 }

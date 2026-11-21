@@ -7,12 +7,13 @@
 //   code-review.notice (Tier 0), which this service executes (executor@1) through github-mcp's /internal/review routes.
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
-import type { Ack, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult } from "./seams.ts";
+import type { Ack, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Thread } from "./seams.ts";
 
 export const RECIPE = "code-review";
 /** This module's write kinds (module.yaml writes), executed by this service through github-mcp's review routes. */
 export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
+export const RULING_KIND = "code-review.ruling";
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 
@@ -33,6 +34,12 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     mergeBase: async (repo, number, head) => (await get("merge-base", { repo, number, head })) as { merge_base: string },
     postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
+    commit: async (repo, sha) => (await get("commit", { repo, sha })) as { message: string },
+    threads: async (repo, number) => {
+      const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/threads`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify({ repo, number }), signal: AbortSignal.timeout(30_000) });
+      if (!r.ok) throw Object.assign(new Error(`github-mcp threads: ${r.status} ${(await r.text()).slice(0, 200)}`), { status: r.status });
+      return ((await r.json()) as { threads: Thread[] }).threads;
+    },
   };
 }
 
@@ -45,7 +52,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
-    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
+    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }), judge: JSON.stringify(s.judge ?? {}),
   };
 }
 
@@ -121,6 +128,11 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },
+    async ruling(g) {
+      const args = { repo: g.repo, pr: g.number, head: g.head, run: g.run, finding: g.finding, comment: g.comment, verdict: g.verdict, reason: g.reason.slice(0, 1500) };
+      const r = (await kernel.call("POST", "/v1/writes", { kind: RULING_KIND, args, task: await taskOf(g.repo, g.number) })) as { id: string; state: string };
+      return { ...settled(r), write: r.id };
+    },
     async outcome(write) {
       return settled((await kernel.call("GET", `/v1/writes/${write}`)) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null });
     },
@@ -145,7 +157,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
  * no other requester can post a review through these kinds.
  */
 export function reviewExecutor(github: (op: "preview" | "execute", body: unknown) => Promise<any>, runOf: (id: string) => { repo: string; number: number; head: string } | undefined): Executor {
-  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : undefined);
+  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === RULING_KIND ? "ruling" : undefined);
   return {
     async plan(req) {
       const kind = kindOf(req.kind);
@@ -153,7 +165,7 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
       if (!kind) throw new Error(`not a code-review kind: ${req.kind}`);
       if (req.requester?.kind !== "module" || req.requester.module !== "code-review") throw new Error("only the code-review service files these");
       const run = a.run ? runOf(a.run) : undefined;
-      if (kind === "post" && (!run || run.repo !== String(a.repo).toLowerCase() || run.number !== a.pr || run.head !== a.head)) throw new Error("the post doesn't match its run");
+      if (kind !== "notice" && (!run || run.repo !== String(a.repo).toLowerCase() || run.number !== a.pr || run.head !== a.head)) throw new Error(`the ${kind} doesn't match its run`);
       const v = (await github("preview", { kind, args: req.args })) as { facts?: Record<string, unknown>; targets?: Record<string, unknown> };
       return { args: req.args, ...(v.facts ? { facts: v.facts } : {}), ...(v.targets ? { targets: v.targets } : {}) };
     },
