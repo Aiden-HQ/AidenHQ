@@ -17,6 +17,9 @@ apps:
     stateful: true
     port: 5433
     expose: false
+    # Its published port speaks PostgreSQL and nothing else: the identity gate's declared basis for letting its deploys
+    # past (docs/design/app-identity.md). Any HTTP door on this app would make the registry refuse the declaration.
+    protocol: postgres
     caps:
       - CHOWN
       - SETUID

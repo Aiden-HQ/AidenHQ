@@ -79,6 +79,31 @@ which drops it. In every other mode (`local`, `public`, `cloudflare`, or tailsca
 app's port are the host's loopback and Docker bridges, so the app requires a signed identity and the deploy's identity
 probe requires it to refuse a token-less request.
 
+**A database app** declares it in its registry entry: `protocol: postgres`, allowed only on an app with no HTTP door
+(not exposed, no `share.host`, no `health.url`, no `api`; the registry refuses it beside one), and a preview never inherits
+it. That declaration is the trusted basis for the exemption — never the inference that a missing field means no HTTP — and
+it is required even when nothing else marks the app as HTTP. It needs the app's published `port`, and it covers only the
+one socket that port maps to in the compose: the service publishing it and its container target. A multi-service app's
+other listeners are not covered, and neither is a published port the compose doesn't map. Its socket is probed the same
+way as any other, and one that answers HTTP is still judged.
+
+A database answers silence to an HTTP request, so such an app's socket is identified positively as PostgreSQL: it must
+decline SSL and then answer a startup message with a complete, well-formed protocol frame — a truncated header, a
+malformed body, an authentication code the protocol does not define or without the payload that code carries
+(AuthenticationOk, cleartext, GSS and SSPI carry none; MD5 a four-byte salt; SASL a non-empty mechanism list, each name
+NUL-terminated and ended by a separate NUL), or an error without its severity, SQLSTATE and message — or with an empty
+value or a SQLSTATE that is not five characters — is not identification.
+
+An SSLRequest reply alone is not enough — a TLS listener offers SSL too, and a multiprotocol listener could serve HTTPS on
+the same port — so a socket that offers SSL stays closed, and a socket identified as PostgreSQL is also sent TLS hellos:
+one per hostname (the app's, and its share host's when distinct), each a valid single-name SNI list, and one with no name.
+A listener that serves HTTPS only for a recognized name answers that name's hello, and a router that serves its default
+route when SNI is absent and closes an unknown name answers the unnamed one. Either answer means the port speaks TLS, so
+it is a web app and stays closed too. The hello offers TLS 1.3 and a key share, so an endpoint that speaks only 1.3 can
+answer it rather than silently dropping an unsupported hello. Only a socket identified as a database alone is skipped,
+with a non-hard finding; silence alone is never enough. On any other app, or for any socket not identified that way, the
+same silence — `closed`, `silent` — fails closed.
+
 ## Agents (app_api, app_view)
 
 apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/identity.ts`) with its own Ed25519 key

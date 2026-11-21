@@ -38,6 +38,8 @@ export function previewApp(app: App, pr: number, port: number): App {
     caps: [],
     connects: app.database ? [app.database] : [],
     api: undefined,
+    // A preview is served as HTTP (its own host or port), never as the parent's database: it may not inherit the declaration.
+    protocol: undefined,
     // Still shared, at its own host: never served on the tailnet, where the gate's access rules don't apply.
     ...(app.share?.host ? { share: { ...app.share, host: previewHost(app.share.host, pr) } } : {}),
     preview: { of: app.name, pr, published: app.port! },
