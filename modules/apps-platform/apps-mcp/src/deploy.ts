@@ -5,7 +5,7 @@ import { pickService, runArgv } from "./run.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { failed, NO_SIGN_IN, probeResult, summary, type Declared, type ProbeResult } from "./checks.js";
 import { PREVIEW_NAME, type App } from "./registry.js";
-import type { Store } from "./store.js";
+import type { Deploy, Store } from "./store.js";
 
 export interface Deps {
   /** `both`: stdout and stderr together. A failure throws with `stdout` and `killed` (timed out) attached. */
