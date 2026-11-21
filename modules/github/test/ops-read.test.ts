@@ -51,11 +51,11 @@ test("a job GitHub has no answer for is null, never an error", async () => {
   assert.equal(a.json, null);
 });
 
-test("the PR query asks for each check's job id and external id, and the base oid", async () => {
+test("the PR query asks for each check's job id and the base oid", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../service/src/ops.ts", import.meta.url), "utf8");
   const query = /const PR_QUERY = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
-  assert.match(query, /CheckRun \{ databaseId name status conclusion externalId \}/, "each CheckRun's databaseId is the Actions job, its externalId names the shard's job");
+  assert.match(query, /CheckRun \{ databaseId name status conclusion externalId \}/, "each CheckRun's databaseId is the Actions job behind it");
   assert.match(query, /contexts\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated check list is refused, not read as complete");
   assert.match(query, /baseRef \{ target \{ oid /, "the base oid is the CI map CI executes");
   assert.match(src, /steps: \(Array\.isArray\(j\.steps\)/, "a job's own steps come back, so the Test step can be required");

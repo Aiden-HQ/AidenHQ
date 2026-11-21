@@ -2,9 +2,7 @@
 // the duplicate-card guard (item 4). Facts here were checked by code and are trusted; anything an agent wrote is returned
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { findPrs, staleHead } from "./text.ts";
-import { suitesFor, shard } from "../ci-select.ts";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
@@ -36,24 +34,9 @@ const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
-const COMMAND_JOBS = 6;
 const COMMAND_TIMEOUT_MS = 90_000;
-const COMMAND_FACTS = 24;
 const CI_WORKFLOW = ".github/workflows/ci.yml";
 const CI_AREAS = ".github/ci/areas.json";
-const CI_SELECT = ".github/ci/select.ts";
-const CI_RUNNER = ".github/ci/run-suites.sh";
-/**
- * The part of CI's selector the grader shares: `suitesFor` and `shard`, from `export interface Suite` to the `reuse` section
- * that follows them. Grading keeps that region byte for byte and nothing else — no CLI, no `process.env`, no token, no git
- * or network — so the drift check compares this region of the base's own `select.ts` to the copy's, never the whole file.
- */
-const pureOf = (text: string): string | undefined => {
-  const from = text.indexOf("export interface Suite"), to = text.indexOf("/** The suites to run again on a rebased head");
-  return from >= 0 && to > from ? text.slice(from, to) : undefined;
-};
-// The copy is that region and nothing else, so it is compared as it stands.
-const SELECT_TEXT = readFileSync(new URL("../ci-select.ts", import.meta.url), "utf8");
 
 type CiMap = { everything: string[]; markdown: string[]; suites: any[] };
 
@@ -76,96 +59,95 @@ function ciMap(text: string | null): CiMap | undefined {
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
   Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
 
-function jobIdOn(pr: any, name: string): string | undefined {
-  const run = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).find((n: any) => n.__typename === "CheckRun" && n.name === name);
-  return run?.databaseId ? String(run.databaseId) : undefined;
+const under = (p: string, d: string) => p === d || p.startsWith(`${d}/`);
+
+/** A diff header's path: git quotes one with special characters (`"a/x y.ts"`); the rest of the line is the path. */
+const diffPath = (v: string): string => {
+  const t = v.trim();
+  const q = /^"(.*)"$/.exec(t);
+  if (!q) return t;
+  return q[1]!.replace(/\\(.)/g, "$1");
+};
+
+/**
+ * The paths this PR removed, as GitHub's own diff records them: `deleted file mode` removes the file, and a `rename from`
+ * removes the old path. `complete` is false when the diff doesn't mention every changed file (a huge one is cut), because a
+ * cut diff could hide a removal: that is no evidence rather than a claimed pass.
+ */
+function removedPaths(diff: string, files: { path: string }[]): { removed: Set<string>; complete: boolean } {
+  const removed = new Set<string>(), seen = new Set<string>();
+  for (const block of diff.split(/\ndiff --git /)) {
+    const a = /^--- (?:a\/)?(.+)$/m.exec(block)?.[1], b = /^\+\+\+ (?:b\/)?(.+)$/m.exec(block)?.[1];
+    const from = /^rename from (.+)$/m.exec(block)?.[1];
+    const old = a === undefined || a.trim() === "/dev/null" ? undefined : diffPath(a);
+    const now = b === undefined || b.trim() === "/dev/null" ? undefined : diffPath(b);
+    if (old) seen.add(old);
+    if (now) seen.add(now);
+    if (/^deleted file mode /m.test(block) && old) removed.add(old);
+    if (from) removed.add(diffPath(from));
+  }
+  return { removed, complete: files.every((f) => seen.has(f.path)) };
 }
 
 /**
- * The `external_id` CI posts beside each suite's own check: the run that ran it, the job's key and its shard,
- * `<run_id>/<GITHUB_JOB>/<matrix.shard>` (the post step in `.github/ci/run-suites.sh` builds it from those three). It names
- * exactly one job instance, so a check of the right name cannot be borrowed from another run or another shard's job.
+ * A fact for a suite comes from a completed `success` check whose name is exactly the suite **and** whose `databaseId` is a
+ * real Actions job. A check alone proves nothing: GitHub's check API answers any App token, so a PR's own code, running in
+ * the job that holds the workflow token, can post a check for any suite on any head. A job record cannot be posted — the
+ * `/actions/jobs/{id}` read answers only for a job the runner ran — so a check with no job behind its `databaseId`, or a job
+ * of another name, is exactly a posted check, and no fact.
+ *
+ * The job must be the repository's own CI on the graded head: `.github/workflows/ci.yml`, active, from a `pull_request` run
+ * whose `head_sha` is that head, and with `ci.yml` byte-identical at the run's head and at the run's base. A PR that rewrote
+ * its workflow ran a workflow that is not the repository's, so a job named for a suite proves nothing there. The command and
+ * directory come from `areas.json` at the run's base — the map CI itself read — and the directory must be present at head.
  */
-const suiteExternalId = (runId: unknown, key: string, shardNo: number) => `${String(runId ?? "")}/${key}/${shardNo}`;
-
-/**
- * Whether GitHub's own record says this suite ran on the graded head: a completed check run named exactly the suite, with a
- * `success` conclusion, whose `external_id` names this shard's own job. CI posts it from the runner's own `.rc` files after
- * every suite finished, so no suite's output and no PR-controlled script can create, suppress or alter one. A suite that did
- * not run on this head — a shard the runner reused, a directory the change deleted (CI posts it `neutral`) — has no such
- * check, and so is never claimed.
- */
-function suitePassed(runs: any[], suite: string, externalId: string): boolean {
-  return runs.some((n: any) => n.__typename === "CheckRun" && n.name === suite && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && String(n.externalId ?? "") === externalId);
-}
-
-function planShards(baseMap: any, headMap: CiMap, files: string[]): Map<string, string[]> {
-  const picked = new Set(suitesFor(baseMap, files).names);
-  const tests = baseMap.suites
-    .filter((s: any) => picked.has(s.name) && !s.main)
-    .map((s: any) => {
-      const own = headMap.suites.find((h) => h.name === s.name) ?? s;
-      return { name: s.name, dir: s.name.split("#")[0]!, run: own.run ?? s.run, secs: s.secs ?? 5, job: own.job };
-    });
-  const out = new Map<string, string[]>();
-  for (const s of shard(tests.filter((t: any) => t.job == null), 1)) out.set(`packages#${s.shard}`, s.entries.map((e: any) => e.name));
-  for (const s of shard(tests.filter((t: any) => t.job === "modules"), 2)) out.set(`modules#${s.shard}`, s.entries.map((e: any) => e.name));
-  return out;
-}
-
-async function commandFacts(pr: any, repo: string, checks: any[], deps: any): Promise<string[]> {
+async function commandFacts(pr: any, repo: string, deps: any, diff: string): Promise<string[]> {
   if (!deps.file || !deps.job) return [];
   const head = String(pr.headRefOid ?? "");
   if (!/^[0-9a-f]{40}$/.test(head)) return [];
-  const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
+  const files = (pr.files?.nodes ?? []).map((f: any) => ({ path: String(f?.path ?? "") })).filter((f) => f.path);
   if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
-  if (files.some((f: string) => f.startsWith(".github/workflows/"))) return [];
-  // GitHub's own per-suite records on this head, the only proof a suite ran: CI posts one check run per suite from the
-  // runner's own exit codes, so a suite's output never becomes a claim (a PR that prints a banner proves nothing). A list
-  // GitHub truncated may be missing the record that would vouch for a suite, so a truncated one is no evidence at all.
+  if (files.some((f) => f.path.startsWith(".github/workflows/"))) return [];
+  // A truncated check list may be missing the job that would vouch for a suite, so it is no evidence at all.
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
   if (rollup?.pageInfo?.hasNextPage) return [];
-  const records = rollup?.nodes ?? [];
-  const green = checks
-    .filter((c: any) => /^(?:packages|modules) \(\d+\)$/.test(c.name) && !c.skipped && c.status === "SUCCESS" && jobIdOn(pr, c.name))
-    .slice(0, COMMAND_JOBS);
-  if (!green.length) return [];
-  const jobs = await Promise.all(green.map(async (c: any) => {
-    const id = jobIdOn(pr, c.name)!;
-    const j = await withTimeout(deps.job(repo, id).catch(() => null), COMMAND_TIMEOUT_MS);
-    const ok = j && j.conclusion === "success" && j.workflow_path === CI_WORKFLOW && j.workflow_state === "active" && j.event === "pull_request" && j.head_sha === head;
-    if (!ok || !/^[0-9a-f]{40}$/.test(String(j.run_base ?? "")) || j.run_id == null) return undefined;
-    return Array.isArray(j.steps) && j.steps.some((s: any) => s.name === "Test" && s.conclusion === "success") ? j : undefined;
+  const candidates = (rollup?.nodes ?? []).filter((n: any) => n.__typename === "CheckRun" && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && n.databaseId && n.name);
+  if (!candidates.length) return [];
+  const found = await Promise.all(candidates.map(async (c: any) => {
+    const j = await withTimeout(deps.job(repo, String(c.databaseId)).catch(() => null), COMMAND_TIMEOUT_MS);
+    // No Actions job behind this check (the 404 a posted check gets), or a job of another name: never a fact.
+    if (!j || j.name !== String(c.name)) return undefined;
+    const ok = j.state === "completed" && j.conclusion === "success" && j.workflow_path === CI_WORKFLOW && j.workflow_state === "active"
+      && j.event === "pull_request" && j.head_sha === head && /^[0-9a-f]{40}$/.test(String(j.run_base ?? "")) && j.run_id != null;
+    return ok ? { name: String(c.name), base: String(j.run_base) } : undefined;
   }));
-  const bases = [...new Set(jobs.filter(Boolean).map((j: any) => String(j.run_base)))];
-  if (!bases.length) return [];
-  const paths = [[CI_AREAS, head], [CI_WORKFLOW, head], [CI_RUNNER, head], ...bases.flatMap((b) => [CI_AREAS, CI_WORKFLOW, CI_SELECT, CI_RUNNER].map((p) => [p, b]))];
+  const green = found.filter(Boolean) as { name: string; base: string }[];
+  if (!green.length) return [];
+  const bases = [...new Set(green.map((g) => g.base))];
+  const paths = [[CI_WORKFLOW, head], ...bases.flatMap((b) => [[CI_AREAS, b], [CI_WORKFLOW, b]])];
   const texts = await withTimeout(Promise.all(paths.map(([p, r]) => deps.file(repo, p!, r!).catch(() => null))), COMMAND_TIMEOUT_MS) ?? [];
-  const headMap = ciMap(texts[0] ?? null), headCi = texts[1], headRun = texts[2];
-  if (!headMap || !headCi || !headRun || !bases.every((_, i) => texts[3 + i * 4])) return [];
-  const runs = new Map<string, { baseMap: CiMap; plan: Map<string, string[]> }>();
+  const headCi = texts[0];
+  const maps = new Map<string, CiMap>();
   for (const [i, b] of bases.entries()) {
-    const [at, ci, sel, run] = texts.slice(3 + i * 4, 7 + i * 4) as (string | null | undefined)[];
-    const baseMap = ciMap(at ?? null);
-    if (!baseMap || !ci || ci !== headCi || !run || run !== headRun || pureOf(String(sel ?? "")) !== SELECT_TEXT) continue;
-    runs.set(b, { baseMap, plan: planShards(baseMap, headMap, files) });
+    const [at, ci] = texts.slice(1 + i * 2, 3 + i * 2) as (string | null | undefined)[];
+    const map = ciMap(at ?? null);
+    // The run's ci.yml against the graded head's, byte for byte: a rewritten workflow is not the repository's.
+    if (!map || !ci || ci !== headCi) continue;
+    maps.set(b, map);
   }
-  if (!runs.size) return [];
+  if (!maps.size) return [];
+  const { removed, complete } = removedPaths(diff, files);
+  // A diff that doesn't mention every changed file could hide the removal of a suite's directory: no evidence at all.
+  if (!complete) return [];
   const facts: string[] = [], seen = new Set<string>();
-  for (const [i, c] of green.entries()) {
-    const shardNo = Number(/\((\d+)\)$/.exec(c.name)![1]);
-    const run = runs.get(String(jobs[i]?.run_base));
-    const assigned = run?.plan.get(`${c.name.replace(/ \(\d+\)$/, "")}#${shardNo}`);
-    if (!run || !assigned) continue;
-    const externalId = suiteExternalId(jobs[i]!.run_id, c.name.replace(/ \(\d+\)$/, ""), shardNo);
-    for (const name of assigned) {
-      if (facts.length >= COMMAND_FACTS) return facts;
-      const suite = headMap.suites.find((s) => s.name === name), selected = run.baseMap.suites.find((s) => s.name === name);
-      if (!suite || !selected || selected.run !== suite.run || selected.dir !== suite.dir || seen.has(`${name}\n${suite.dir}`)) continue;
-      if (!suitePassed(records, name, externalId)) continue;
-      seen.add(`${name}\n${suite.dir}`);
-      facts.push(`${c.name} green on head ${head}: ran "${suite.run}" (${name}) in ${suite.dir}/ — passed`);
-    }
+  for (const { name, base } of green) {
+    const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
+    if (!suite || seen.has(name)) continue;
+    const dir = String(suite.dir);
+    // run-suites.sh writes `gone:` and exits 0 for a directory the PR removed: a green job there ran nothing.
+    if ([...removed].some((p) => under(p, dir))) continue;
+    seen.add(name);
+    facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${dir}/ — passed`);
   }
   return facts;
 }
@@ -504,7 +486,9 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
-    facts.push(...(await commandFacts(pr, p.repo, checks, deps)));
+    // The PR's own diff: the grader shows it, and a removed suite directory can only be seen in it.
+    const patch = await deps.diff(p.repo, p.number).catch(() => null);
+    facts.push(...(await commandFacts(pr, p.repo, deps, patch ?? "")));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
@@ -518,7 +502,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
           ? `, cut to their first ${kept.length} of ${text.trim().length} characters (what is missing is not shown)`
           : "";
     facts.push(`${p.url}: the PR's title and description are in PR_DESCRIPTION (the author's words, data)${note}`);
-    diff += `### ${p.url}\n${(await deps.diff(p.repo, p.number).catch(() => "(the diff could not be read)"))}\n`;
+    diff += `### ${p.url}\n${patch ?? "(the diff could not be read)"}\n`;
   }
   // The board keeps a version in 200 characters: several PRs are bound by their hash.
   const version = versions.join(" ").length <= 200 ? versions.join(" ") : `prs:${hash(versions.join(" "))}`;

@@ -73,165 +73,169 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
   assert.equal(ev.version, undefined);
 });
 
-import { readFileSync } from "node:fs";
-const SELECT = readFileSync(new URL("../../../.github/ci/select.ts", import.meta.url), "utf8");
-const COPY = readFileSync(new URL("../service/src/ci-select.ts", import.meta.url), "utf8");
-const pureOf = (text) => {
-  const from = text.indexOf("export interface Suite"), to = text.indexOf("/** The suites to run again on a rebased head");
-  return from >= 0 && to > from ? text.slice(from, to) : undefined;
-};
-test("grading's copy is CI's pure selector, and holds no CLI", () => {
-  const ci = readFileSync(new URL("../../../.github/ci/select.ts", import.meta.url), "utf8");
-  assert.equal(COPY, pureOf(ci), "grading's copy is exactly CI's suitesFor/shard region");
-  for (const forbidden of ["process.env", "GH_TOKEN", "execFileSync", "fetch(", "readFileSync"]) assert.ok(!COPY.includes(forbidden), `the copy must not carry ${forbidden}`);
-});
 const KERNEL_RUN = "node --disable-warning=ExperimentalWarning --test --test-shard=1/2 test/*.test.ts";
 const KERNEL_RUN_2 = "node --disable-warning=ExperimentalWarning --test --test-shard=2/2 test/*.test.ts";
 const AREAS = JSON.stringify({ everything: [], markdown: [], suites: [
-  { name: "kernel#1", secs: 33, run: KERNEL_RUN, paths: ["kernel"] }, { name: "kernel#2", secs: 33, run: KERNEL_RUN_2, paths: ["kernel"] },
+  { name: "kernel#1", secs: 33, run: KERNEL_RUN, paths: ["kernel"] },
+  { name: "kernel#2", secs: 33, run: KERNEL_RUN_2, paths: ["kernel"] },
   { name: "modules/grading", secs: 4, job: "modules", run: "npm test", paths: ["modules/grading"] },
 ] });
-const withJobs = (n, head, merge, jobs, files = ["kernel/src/x.ts"], suites = []) => ({
+/** A PR head whose check list is `checks` and whose changed files are `files` (each an ADDED path unless given). */
+const withJobs = (n, head, merge, checks, files = ["kernel/src/x.ts"]) => ({
   ...merged(n, head, merge), baseRef: { target: { oid: SHA("f") } },
   files: { pageInfo: { hasNextPage: false }, nodes: files.map((path) => ({ path })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
-    { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" }, ...jobs, ...suites,
+    { __typename: "CheckRun", name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" }, ...checks,
   ] } } } }] },
 });
-const job = (name, id) => ({ __typename: "CheckRun", databaseId: id, name, status: "COMPLETED", conclusion: "SUCCESS" });
-/** A per-suite record CI posts: a completed check named the suite, whose external_id names the job that ran it. */
-const suite = (name, externalId, conclusion = "SUCCESS") => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion, externalId });
-/** The external_id of a suite's check on shard `n` of `job` (packages/modules) in the one run the fixture reports. */
-const ext = (n, key) => `7/${key}/${n}`;
 const PASSED = [{ name: "Test", state: "completed", conclusion: "success" }];
 const WORKFLOW = "name: ci\njobs:\n  packages:\n    steps:\n      - name: Test\n";
-const RUNNER = "#!/usr/bin/env bash\n";
-const commandDeps = (prs, { base = AREAS, head = AREAS, workflow = WORKFLOW, headWorkflow = workflow, baseWorkflow = workflow, select = SELECT, headRunner = RUNNER, baseRunner = RUNNER, steps = {}, jobs = {}, bases = [SHA("f")] } = {}) => ({
-  ...depsFor(prs),
-  // Every read the command facts make goes through `file`; a job's log is not a dependency at all.
-  file: async (_repo, path, ref) => {
-    const own = ref === prs[0].headRefOid, atBase = !own && bases.includes(ref);
-    if (path === ".github/ci/areas.json") return own ? head : atBase ? base : null;
-    if (path === ".github/workflows/ci.yml") return own ? headWorkflow : atBase ? baseWorkflow : null;
-    if (path === ".github/ci/run-suites.sh") return own ? headRunner : atBase ? baseRunner : null;
-    if (path === ".github/ci/select.ts") return atBase ? select : null;
-    return null;
-  },
-  job: async (_repo, id) => ({ id, run_id: 7, state: "completed", conclusion: "success", run_base: SHA("f"), workflow_path: ".github/workflows/ci.yml",
-    workflow_state: "active", event: "pull_request", head_sha: prs[0].headRefOid, steps: steps[id] ?? PASSED, ...jobs[id] }),
-});
+/**
+ * The command facts' dependencies. `job` answers `/actions/jobs/{id}` — null is the 404 a check with no job behind it gets
+ * (a check a PR posted itself); a job is a runner's own record. `file` answers the two evidence paths at the head and at the
+ * run's base. No log read exists at all.
+ */
+const PATCH = (path) => `diff --git a/${path} b/${path}\nnew file mode 100644\n--- a/${path}\n+++ b/${path}\n+x\n`;
+const commandDeps = (prs, { base = AREAS, headWorkflow = WORKFLOW, baseWorkflow = WORKFLOW, jobs = {}, bases = [SHA("f")], patch } = {}) => {
+  const head = prs[0].headRefOid;
+  const diff = patch ?? prs[0].files.nodes.map((f) => PATCH(f.path)).join("");
+  return {
+    ...depsFor(prs),
+    diff: async () => diff,
+    file: async (_repo, path, ref) => {
+      if (path === ".github/ci/areas.json") return ref === head ? base : bases.includes(ref) ? base : null;
+      if (path === ".github/workflows/ci.yml") return ref === head ? headWorkflow : bases.includes(ref) ? baseWorkflow : null;
+      return null;
+    },
+    job: async (_repo, id) => {
+      const j = jobs[id];
+      if (j === null) return null; // the check has no Actions job: a posted check
+      return { id, name: "kernel#1", run_id: 7, state: "completed", conclusion: "success", run_base: SHA("f"),
+        workflow_path: ".github/workflows/ci.yml", workflow_state: "active", event: "pull_request", head_sha: head, ...j };
+    },
+  };
+};
 const graded = (n, deps) => prEvidence([{ repo: REPO, number: n, url: url(n), heads: ["branch-a"] }], "", deps);
-const ran = (facts, shardName, suiteName, run) => facts.some((f) => f.startsWith(`${shardName} green`) && f.includes(`(${suiteName})`) && f.includes(`ran "${run}"`));
+const check = (name, id, conclusion = "SUCCESS") => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion, databaseId: id });
+const fact = (name, run, dir) => `${name} green on head ${SHA("a")}: ran "${run}" in ${dir}/ — passed`;
 
-test("a green shard whose suites CI recorded as passed is a trusted fact naming the commands", async () => {
-  const prs = [withJobs(230, "a", "b", [job("packages (1)", 111), job("packages (2)", 112)], undefined, [suite("kernel#1", ext(1, "packages")), suite("kernel#2", ext(2, "packages"))])];
-  const ev = await graded(230, commandDeps(prs));
-  assert.ok(ev.facts.includes(`packages (1) green on head ${SHA("a")}: ran "${KERNEL_RUN}" (kernel#1) in kernel/ — passed`), ev.facts.join("\n"));
-  assert.ok(ev.facts.includes(`packages (2) green on head ${SHA("a")}: ran "${KERNEL_RUN_2}" (kernel#2) in kernel/ — passed`), ev.facts.join("\n"));
+test("a green per-suite job with its directory present is the trusted fact naming the command", async () => {
+  const prs = [withJobs(230, "a", "b", [check("kernel#1", 111), check("kernel#2", 112)], ["kernel/src/x.ts"])];
+  const ev = await graded(230, commandDeps(prs, { jobs: { 111: {}, 112: { name: "kernel#2" } } }));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+  assert.ok(ev.facts.includes(fact("kernel#2", KERNEL_RUN_2, "kernel")), ev.facts.join("\n"));
 });
 
-test("a suite the selection did not pick is never claimed", async () => {
-  const prs = [withJobs(231, "a", "b", [job("modules (1)", 113)], ["modules/grading/src/x.ts"], [suite("modules/grading", ext(1, "modules"))])];
-  const ev = await graded(231, commandDeps(prs));
-  assert.ok(!ev.facts.some((f) => f.includes(KERNEL_RUN)), "the kernel suite is on no shard of this change");
-  assert.ok(!ev.facts.some((f) => f.includes("kernel#")), "no job is claimed to have run it");
-  assert.ok(ran(ev.facts, "modules (1)", "modules/grading", "npm test"), ev.facts.join("\n"));
-});
-
-test("a check whose external_id names another job is never that job's fact", async () => {
-  // packages (2) is green, and a check named kernel#2 exists, but it names packages (1)'s job.
-  const prs = [withJobs(232, "a", "b", [job("packages (2)", 114)], undefined, [suite("kernel#2", ext(1, "packages"))])];
-  const ev = await graded(232, commandDeps(prs));
-  assert.ok(!ev.facts.some((f) => f.includes("(kernel#2)")), ev.facts.join("\n"));
-  // And one from another run of the same job is no fact either.
-  const other = [withJobs(232, "a", "b", [job("packages (2)", 114)], undefined, [suite("kernel#2", `8/packages/2`)])];
-  const none = await graded(232, commandDeps(other));
-  assert.ok(!none.facts.some((f) => f.includes('ran "')), none.facts.join("\n"));
-});
-
-test("a suite with no check run (the reused shard) is never claimed", async () => {
-  // kernel#1 ran but only kernel#2 has a record: the runner reused kernel#1's result, so nothing vouches for it here.
-  const prs = [withJobs(233, "a", "b", [job("packages (1)", 116)], undefined, [suite("kernel#2", ext(1, "packages"))])];
-  const ev = await graded(233, commandDeps(prs));
+test("a check with no Actions job behind it (a check a PR posted) mints nothing", async () => {
+  const prs = [withJobs(232, "a", "b", [check("kernel#1", 114)], ["kernel/src/x.ts"])];
+  const ev = await graded(232, commandDeps(prs, { jobs: { 114: null } }));
   assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
 });
 
-test("a check named the suite but failed, or a Test step that failed, claims nothing", async () => {
-  const failedCheck = await graded(234, commandDeps([withJobs(234, "a", "b", [job("packages (1)", 117)], undefined, [suite("kernel#1", ext(1, "packages"), "FAILURE")])]));
+test("a job of another name is never that suite's fact", async () => {
+  const prs = [withJobs(233, "a", "b", [check("kernel#1", 115)], ["kernel/src/x.ts"])];
+  const ev = await graded(233, commandDeps(prs, { jobs: { 115: { name: "kernel#2" } } }));
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+});
+
+test("a suite with no check run (one that did not run on this head) is never claimed", async () => {
+  // kernel#2's job is green, but only it has a check: kernel#1 did not run, so nothing vouches for it.
+  const prs = [withJobs(234, "a", "b", [check("kernel#2", 116)], ["kernel/src/x.ts"])];
+  const ev = await graded(234, commandDeps(prs, { jobs: { 116: { name: "kernel#2" } } }));
+  assert.ok(ev.facts.includes(fact("kernel#2", KERNEL_RUN_2, "kernel")), ev.facts.join("\n"));
+  assert.ok(!ev.facts.some((f) => f.includes("(kernel#1)") || f.includes('" (kernel#1)')), "kernel#1 is not claimed");
+  assert.ok(!ev.facts.some((f) => f.includes(`ran "${KERNEL_RUN}"`)), ev.facts.join("\n"));
+});
+
+test("a failed check, or a job that failed, claims nothing", async () => {
+  const failedCheck = await graded(235, commandDeps([withJobs(235, "a", "b", [check("kernel#1", 117, "FAILURE")])]));
   assert.ok(!failedCheck.facts.some((f) => f.includes('ran "')), failedCheck.facts.join("\n"));
-  const failedStep = await graded(234, commandDeps([withJobs(234, "a", "b", [job("packages (1)", 117)], undefined, [suite("kernel#1", ext(1, "packages"))])], { steps: { 117: [{ name: "Test", state: "completed", conclusion: "failure" }] } }));
-  assert.ok(!failedStep.facts.some((f) => f.includes('ran "')), failedStep.facts.join("\n"));
-});
-
-test("an untrusted base map or selector, or a changed workflow, claims nothing", async () => {
-  const suites = [suite("kernel#1", ext(1, "packages"))];
-  // A base whose selector drifts in the shared region (a changed rule) is no fact; a marker outside it is irrelevant.
-  const untrusted = [{ base: null }, { select: SELECT.replace("const under = (f: string, p: string) => f === p", "const under = (f: string, p: string) => p === p") }];
-  for (const opts of untrusted) {
-    const ev = await graded(235, commandDeps([withJobs(235, "a", "b", [job("packages (1)", 118)], undefined, suites)], opts));
-    assert.ok(!ev.facts.some((f) => f.includes('ran "')), JSON.stringify(opts));
-  }
-  const edited = [withJobs(247, "a", "b", [job("packages (1)", 130)], ["kernel/src/x.ts", ".github/workflows/other.yml"], suites)];
-  const ev = await graded(247, commandDeps(edited));
-  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
-});
-
-test("a command only the head changed is not a fact CI ran it", async () => {
-  const head = JSON.stringify({ everything: [], markdown: [], suites: [{ name: "kernel#1", run: "npm run forged", paths: ["kernel"] }] });
-  const ev = await graded(236, commandDeps([withJobs(236, "a", "b", [job("packages (1)", 119)], undefined, [suite("kernel#1", ext(1, "packages"))])], { head }));
-  assert.ok(!ev.facts.some((f) => f.includes('ran "')), "neither the head's command nor the base's is claimed");
-});
-
-test("a suite the head moves to another job is claimed for that job", async () => {
-  const head = JSON.stringify({ everything: [], markdown: [], suites: [
-    { name: "kernel#1", secs: 33, job: "modules", run: KERNEL_RUN, paths: ["kernel"] },
-    { name: "kernel#2", secs: 33, run: KERNEL_RUN_2, paths: ["kernel"] },
-  ] });
-  const prs = [withJobs(245, "a", "b", [job("modules (1)", 128)], undefined, [suite("kernel#1", ext(1, "modules"))])];
-  const ev = await graded(245, commandDeps(prs, { head }));
-  assert.ok(ev.facts.includes(`modules (1) green on head ${SHA("a")}: ran "${KERNEL_RUN}" (kernel#1) in kernel/ — passed`), ev.facts.join("\n"));
-  assert.ok(!ev.facts.some((f) => f.startsWith("packages")), "the head moved it out of packages");
+  const failedJob = await graded(235, commandDeps([withJobs(235, "a", "b", [check("kernel#1", 117)])], { jobs: { 117: { conclusion: "failure" } } }));
+  assert.ok(!failedJob.facts.some((f) => f.includes('ran "')), failedJob.facts.join("\n"));
 });
 
 test("a job from another workflow, state, event or head claims nothing", async () => {
-  const prs = [withJobs(246, "a", "b", [job("packages (1)", 129)], undefined, [suite("kernel#1", ext(1, "packages"))])];
-  const other = [{ workflow_path: ".github/workflows/other.yml" }, { workflow_path: null }, { workflow_state: "disabled_manually" }, { event: "push" }, { head_sha: SHA("d") }];
+  const prs = [withJobs(236, "a", "b", [check("kernel#1", 118)])];
+  const other = [{ workflow_path: ".github/workflows/other.yml" }, { workflow_path: null }, { workflow_state: "disabled_manually" }, { event: "push" }, { head_sha: SHA("d") }, { state: "in_progress" }];
   for (const run of other) {
-    const ev = await graded(246, commandDeps(prs, { jobs: { 129: run } }));
+    const ev = await graded(236, commandDeps(prs, { jobs: { 118: run } }));
     assert.ok(!ev.facts.some((f) => f.includes('ran "')), JSON.stringify(run));
   }
 });
 
-test("the base is the run's own, not main's tip, and a job with none claims nothing", async () => {
-  const prs = [withJobs(248, "a", "b", [job("packages (1)", 131)], undefined, [suite("kernel#1", ext(1, "packages"))])];
+test("a head whose ci.yml differs from the run's base claims nothing", async () => {
+  const prs = [withJobs(237, "a", "b", [check("kernel#1", 119)])];
+  for (const opts of [{ headWorkflow: `${WORKFLOW}  x\n` }, { baseWorkflow: `${WORKFLOW}  y\n` }, { headWorkflow: null }]) {
+    const ev = await graded(237, commandDeps(prs, opts));
+    assert.ok(!ev.facts.some((f) => f.includes('ran "')), JSON.stringify(opts));
+  }
+});
+
+test("a suite whose directory the PR deleted at head mints nothing", async () => {
+  // run-suites.sh exits 0 over a missing directory: a green job there ran nothing.
+  const prs = [withJobs(238, "a", "b", [check("kernel#1", 120)], ["kernel/src/x.ts"])];
+  const patch = "diff --git a/kernel/src/x.ts b/kernel/src/x.ts\ndeleted file mode 100644\n--- a/kernel/src/x.ts\n+++ /dev/null\n-x\n";
+  const ev = await graded(238, commandDeps(prs, { patch }));
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+});
+
+test("a suite whose directory a rename carried away mints nothing", async () => {
+  const prs = [withJobs(243, "a", "b", [check("kernel#1", 126)], ["modules/grading/x.ts"])];
+  const patch = "diff --git a/kernel/src/x.ts b/modules/grading/x.ts\nsimilarity index 100%\nrename from kernel/src/x.ts\nrename to modules/grading/x.ts\n";
+  const ev = await graded(243, commandDeps(prs, { patch }));
+  // kernel#1's directory is `kernel`, and its file moved out of it: the directory is gone at head.
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+});
+
+test("a quoted path in the diff is read as its real name", async () => {
+  const prs = [withJobs(250, "a", "b", [check("kernel#1", 132)], ["kernel/src/x.ts"])];
+  const patch = 'diff --git "a/kernel/src/x y.ts" "b/kernel/src/x y.ts"\ndeleted file mode 100644\n--- "a/kernel/src/x y.ts"\n+++ /dev/null\n-x\n';
+  prs[0].files.nodes = [{ path: "kernel/src/x y.ts" }];
+  const ev = await graded(250, commandDeps(prs, { patch }));
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+});
+
+test("a diff that doesn't mention every changed file claims nothing", async () => {
+  // A cut diff could hide the removal of a suite's directory, so a partial one is no evidence.
+  const prs = [withJobs(249, "a", "b", [check("kernel#1", 127)], ["kernel/src/x.ts", "kernel/src/y.ts"])];
+  const ev = await graded(249, commandDeps(prs, { patch: PATCH("kernel/src/x.ts") }));
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+});
+
+test("the base is the run's own, never the PR's moving base, and a job with none claims nothing", async () => {
+  const prs = [withJobs(239, "a", "b", [check("kernel#1", 121)])];
   prs[0].baseRef = { target: { oid: SHA("c") } };
-  const ev = await graded(248, commandDeps(prs, { bases: [SHA("f")] }));
-  assert.ok(ev.facts.includes(`packages (1) green on head ${SHA("a")}: ran "${KERNEL_RUN}" (kernel#1) in kernel/ — passed`), ev.facts.join("\n"));
-  const none = await graded(248, commandDeps(prs, { jobs: { 131: { run_base: null } } }));
+  const ev = await graded(239, commandDeps(prs, { bases: [SHA("f")] }));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+  const none = await graded(239, commandDeps(prs, { jobs: { 121: { run_base: null } } }));
   assert.ok(!none.facts.some((f) => f.includes('ran "')), none.facts.join("\n"));
 });
 
-test("a check list GitHub truncated claims nothing", async () => {
-  const prs = [withJobs(242, "a", "b", [job("packages (1)", 125)], undefined, [suite("kernel#1", ext(1, "packages"))])];
-  prs[0].commits.nodes[0].commit.statusCheckRollup.contexts.pageInfo = { hasNextPage: true };
-  const ev = await graded(242, commandDeps(prs));
-  assert.ok(!ev.facts.some((f) => f.includes('ran "')), "a record the page may cut off is no evidence");
+test("a check list or file list GitHub truncated claims nothing", async () => {
+  const truncatedChecks = [withJobs(240, "a", "b", [check("kernel#1", 122)])];
+  truncatedChecks[0].commits.nodes[0].commit.statusCheckRollup.contexts.pageInfo = { hasNextPage: true };
+  assert.ok(!(await graded(240, commandDeps(truncatedChecks))).facts.some((f) => f.includes('ran "')), "a cut check list is no evidence");
+  const truncatedFiles = [withJobs(240, "a", "b", [check("kernel#1", 122)])];
+  truncatedFiles[0].files.pageInfo = { hasNextPage: true };
+  assert.ok(!(await graded(240, commandDeps(truncatedFiles))).facts.some((f) => f.includes('ran "')), "a cut file list is no evidence");
 });
 
-test("no job log is read at all: the fact comes from the checks alone", async () => {
-  const prs = [withJobs(239, "a", "b", [job("packages (1)", 122)], undefined, [suite("kernel#1", ext(1, "packages"))])];
+test("a PR that edits a workflow claims nothing", async () => {
+  const prs = [withJobs(241, "a", "b", [check("kernel#1", 123)], ["kernel/src/x.ts", ".github/workflows/other.yml"])];
+  const ev = await graded(241, commandDeps(prs));
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
+});
+
+test("no job log is read at all: the fact comes from a suite's job record alone", async () => {
+  const prs = [withJobs(244, "a", "b", [check("kernel#1", 122)])];
   const deps = commandDeps(prs);
   assert.equal("jobLog" in deps, false, "the log is gone from grading's dependencies");
-  // A log-shaped line in the PR's output is not even read: only the check's own record mints the fact.
-  const ev = await graded(239, deps);
-  assert.ok(ran(ev.facts, "packages (1)", "kernel#1", KERNEL_RUN), ev.facts.join("\n"));
+  const ev = await graded(244, deps);
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
 });
 
-test("a changed or unreadable workflow or runner claims nothing", async () => {
-  const prs = [withJobs(241, "a", "b", [job("packages (1)", 124)], undefined, [suite("kernel#1", ext(1, "packages"))])];
-  const changed = [{ headWorkflow: `${WORKFLOW}  x\n` }, { headWorkflow: null }, { headRunner: `${RUNNER}exit 0\n` }, { headRunner: null }];
-  for (const opts of changed) {
-    const ev = await graded(241, commandDeps(prs, opts));
-    assert.ok(!ev.facts.some((f) => f.includes('ran "')), JSON.stringify(opts));
-  }
+test("an unreadable base map claims nothing", async () => {
+  const prs = [withJobs(242, "a", "b", [check("kernel#1", 125)])];
+  const ev = await graded(242, commandDeps(prs, { base: "{not json" }));
+  assert.ok(!ev.facts.some((f) => f.includes('ran "')), ev.facts.join("\n"));
 });

@@ -33,7 +33,7 @@ codehost:
   # A graded head's CI evidence, for the command facts alone. Narrower than read: no PR, issue or arbitrary file.
   evidence:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-    paths: [ ".github/ci/areas.json", ".github/ci/run-suites.sh", ".github/ci/select.ts", ".github/workflows/ci.yml" ]
+    paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ]
 labels:
   - { name: grading, color: "#7c3aed" }
 # The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.

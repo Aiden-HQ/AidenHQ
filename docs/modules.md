@@ -51,12 +51,15 @@ calls the code host module, which holds the GitHub sign-in: no op returns a toke
 ```yaml
 codehost:
   read:     { repos: [ "@product" ] }                 # a PR, issue, diff, job, open PRs
-  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json", ".github/ci/select.ts", ".github/ci/run-suites.sh", ".github/workflows/ci.yml" ] }
+  evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ] }
 ```
 
-`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a commit sha), and nothing else. A job's log
-is never evidence: a PR's test output can print any line, so the command facts read GitHub's own per-suite check runs
-instead (a completed `success` check named the suite, whose `external_id` names the shard's job).
+`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a commit sha), and nothing else. A job's log is
+never evidence: a PR's test output can print any line. A command fact comes from a completed `success` check named the
+suite **and** the Actions job behind its `databaseId` (`/actions/jobs/{id}`): a job record cannot be posted, so a check a PR
+posted itself — which any step holding the workflow token can — has no job behind it and mints nothing. The job must be
+`.github/workflows/ci.yml` on the graded head, active, from a `pull_request` run whose `ci.yml` is byte-identical at the
+run's head and base, and the suite's directory must still exist at head (CI exits 0 on a missing one).
 
 ## `POST /v1/tasks` — file a task
 
