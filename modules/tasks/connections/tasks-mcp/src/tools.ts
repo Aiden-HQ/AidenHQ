@@ -477,6 +477,22 @@ function refuseParkedPr(description: Json, deliverable: Json) {
   if (!NO_RELEASE.test(text) || !PARK.test(text)) return;
   throw new Error('Refused: this brief has a fallback branch ("if no upstream release meets the floors, record that and park"), so its honest answer may be no change at all. A pr or app deliverable would be graded against a merged PR or a deploy that may never exist: the grade holds, escalates and reopens as a new task. File it as a report (deliverable {kind: "report"}), saying what the parked answer records: the floors and the scan rows that set them, the upstream state with its sources and date, and the reopen signal. Keep pr, and its rubric, for a brief where the change is always available: if a release now carries the fix, name it and drop the fallback branch.');
 }
+// A repo retired from service is a dead end: a brief or rubric graded on a PR there can never pass, and the grade holds and
+// reopens. Checked against this static list at filing time, with no network call, so a delegation stays fast and works offline.
+const RETIRED_REPOS = ["Aiden-HQ/aidenhq-modules"];
+const RETIRED_REPO_ERROR = "retired repo: modules live in Aiden-HQ/AidenHQ under modules/";
+/** The `owner/name` a deliverable ref or a criterion names, lowercased, in any reference shape. */
+const repoOf = (s: Json) => {
+  const m = /^(?:https?:\/\/[^/]+\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/.exec(String(s ?? "").trim());
+  return m ? `${m[1]}/${m[2]}`.toLowerCase() : undefined;
+};
+const namesRepo = (c: Json, repo: string) => new RegExp(`(?:^|[^A-Za-z0-9_.-])${repo.replace(/[.]/g, "\\.")}(?![A-Za-z0-9_.-])`, "i").test(String(c ?? ""));
+/** Refuses a `pr` deliverable or rubric that names a retired repo. */
+function refuseRetiredRepo(deliverable: Json, list: string[]) {
+  if (deliverable?.kind !== "pr") return;
+  const ref = String(deliverable.ref ?? "").trim();
+  if (RETIRED_REPOS.some((r) => repoOf(ref) === r.toLowerCase() || list.some((c) => namesRepo(c, r)))) throw new Error(RETIRED_REPO_ERROR);
+}
 // A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
 // so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
 // is about what the grader does see in facts or pages (errors, warnings, incidents, failing checks, findings, CVEs, overflow).
@@ -538,6 +554,7 @@ function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Js
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   refuseParkedPr(description, deliverable);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
+  refuseRetiredRepo(deliverable, list);
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
   const negative = list.find(unprovable);
   if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
