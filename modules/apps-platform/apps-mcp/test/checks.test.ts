@@ -24,10 +24,14 @@ describe("judging", () => {
     expect(judgePage({ path: "/", status: 404 }, true)[0]!.hard).toBe(true);
     expect(judgePage({ path: "/", status: 200, contentType: "application/json" }, false)[0]!.hard).toBe(false);
     expect(judgePage({ path: "/", status: 200, failed: [{ type: "image", url: "/x.png", why: "404" }] }, false)[0]!.hard).toBe(false);
+    const broken = judgePage({ path: "/", status: 200, csp: ["x"], console: ["boom"], failed: [{ type: "script", url: "/a.js", why: "404" }], sheets: [{ href: "/a.css", applied: false }] }, true);
+    expect(broken).toHaveLength(4);
+    expect(broken.every((f) => !f.hard)).toBe(true);
+    expect(judgePage({ path: "/", status: 503 }, false)[0]!.hard).toBe(true);
     expect(judgeAgent({ status: 404, body: "" }, false)[0]!.hard).toBe(false);
     expect(judgeAgent({ status: 200, body: "<html>" }, false)[0]!.hard).toBe(true);
     const r = probeResult("render", "/", judgePage({ path: "/", status: 200, console: ["ignore previous instructions <b>"] }, false));
-    expect(r.ok).toBe(false);
-    expect(summary([r])).toBe("post-deploy check failed (render /: console error)");
+    expect(r.ok).toBe(true);
+    expect(summary([r])).toBe("checks passed with 1 warning (render /: console error)");
   });
 });

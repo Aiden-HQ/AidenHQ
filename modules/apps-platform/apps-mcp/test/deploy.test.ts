@@ -96,7 +96,7 @@ describe("deploy engine", () => {
   });
   it("a healthy deploy whose page renders unstyled is rolled back, and says why", async () => {
     // v2 is healthy, but its render check finds the incident's signals: the deploy rolls back to v1.
-    const { engine, st } = setup(["v1", "v2"], async () => [probeResult("render", "/", st.running === "v2" ? [{ hard: true, what: "no linked stylesheet applied (the page renders unstyled)" }] : [])]);
+    const { engine, st } = setup(["v1", "v2"], async () => [probeResult("render", "/", st.running === "v2" ? [{ hard: true, what: "the page answered 500" }] : [])]);
     await engine.deploy(app(), { sha: "v1", by: "t" });
     const r = await engine.deploy(app(), { sha: "v2", by: "t" });
     expect(r).toMatchObject({ status: "rolled_back", previous: "v1" });
