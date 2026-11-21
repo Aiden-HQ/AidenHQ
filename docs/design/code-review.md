@@ -18,7 +18,7 @@ Rules that bind (owner and design):
 | Part | What it does |
 |---|---|
 | State service (`service/`, port 8098) | Watches the listed repos' PRs and comments through github-mcp's internal read (as this module, never `/mcp`), decides which head gets which combos, runs each review as a check job, files posts, records flow facts |
-| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's reservation (`check_jobs:` in `module.yaml`, 45 min timeout) |
+| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's `run_usd` (`check_jobs:` in `module.yaml`, 45 min timeout) |
 | Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
 | Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `@aiden` questions on reviews. Holds no code tools and no delegation |
 | Board Reviews page (`services/board/web/src/Reviews.tsx`, `services/board/src/reviews.ts`) | Tabs Reviews, Repos, Insights |
@@ -27,23 +27,22 @@ Rules that bind (owner and design):
 
 ```yaml
 code_review:
-  day_usd: 100                 # instance-wide daily cap across repos (UTC day)
+  day_usd: 200                 # instance-wide daily cap across repos (UTC day)
   repos:
     - repo: acme/payments
       on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 1 }
+        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 5 }
       on_push:                   # only the new changes since the last reviewed head
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 1 }
+        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 5 }
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
-      day_usd: 100
+      day_usd: 200
       ignore: ["**/generated/**"]
       max_nits: 5
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex minimal to xhigh; claude-code and
-codegenie low to max) and `run_usd` (what one run may spend: its reservation and its model token's cap; default codex and
-codegenie $1, claude-code $2), stored whole. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+codegenie low to max) and `run_usd` (what one run may spend: its model token's hard cap, never a reservation; default $5 for each engine), stored whole. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
 price. A deeper review is asked for (Review again, `@aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
@@ -74,8 +73,8 @@ PR state, not config.
 The service polls the watched repos (`code_review_poll_seconds`, default 60). A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 3 minutes (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; only its
-first run rechecks the PR's still-open findings (whichever combo found them). A run is reserved against the
-repo's and the instance's day caps in one transaction before it starts; a run whose PR moved on or closed while it ran is
+first run rechecks the PR's still-open findings (whichever combo found them). A run starts only while the day's real spend is under the
+repo's and the instance's day caps (checked in one transaction); a run whose PR moved on or closed while it ran is
 superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
 silent: draft, fork, budget, closed, stopped, superseded.
 
@@ -128,11 +127,11 @@ bounded by the Tier 2 rules above and PR text is data, never instructions.
 
 Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
-Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is the runs' billed `cost_usd`; a run in flight counts at its `run_usd` reservation until it ends, then its real cost replaces it.
+Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is real money only: finished runs' billed `cost_usd` plus what each running run's check job has spent so far (the kernel's `billed_usd` on `GET /v1/checks/:id`, read each tick). Nothing is reserved; runs in flight may overshoot a cap by at most their own `run_usd` each.
 
 For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 1)
 keeps plain columns: `runs` has each run's `engine`, `model`, `effort`, `cost_usd` (the kernel's billing of its model token,
-never the box's say or the reservation), `tokens_in`, `tokens_cached`, `tokens_out` (the gateway ledger's, stamped on the
+never the box's say), `tokens_in`, `tokens_cached`, `tokens_out` (the gateway ledger's, stamped on the
 result by the kernel), `duration_ms` and its findings counts; `findings` (keyed by run and finding id) has each finding's
 severity, place and title and its later `outcome`: `fixed` (a later run's recheck found it gone), `open_at_merge` or
 `open_at_close` (still open when the PR closed; a closed PR is read once to tell which), else null. A thread an author resolves

@@ -161,7 +161,7 @@ describe("posting", () => {
     const w = world();
     const p = poster(w);
     const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
-    expect(p.preview("notice", n).facts.details).toMatch(/monthly review budget/);
+    expect(p.preview("notice", n).facts.details).toMatch(/daily review budget/);
     await p.execute("notice", n);
     expect(w.state.ack?.body).toMatch(/skipped/);
     expect(w.calls.find((c) => c.path.includes("/statuses/"))?.body.state).toBe("success");

@@ -77,14 +77,13 @@ export interface Run {
   /** Threads Aiden resolved on this head because their finding was gone. */
   resolved?: number;
 }
-/** GET /repos: each watched repo as the service runs it, with today spend (UTC) and what running reviews hold. */
+/** GET /repos: each watched repo as the service runs it, with today's real spend (UTC), running reviews' so far included. */
 export interface RepoRow {
   repo: string;
   on_open: Combo[];
   on_push: Combo[];
   day_usd: number;
   day_spent_usd: number;
-  day_reserved_usd?: number;
   /** Why the service can't watch it (no read access, …); null when fine. */
   error?: string | null;
   /** Who posts there, when the service knows: the owner's sign-in. */

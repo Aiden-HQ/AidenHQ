@@ -3,7 +3,7 @@
 // Every tick: each watched repo's open PRs and new comments are read (PrSource); a new PR is reviewed with each of the repo's
 // on_open combos, a push with each on_push combo (incrementally), and `@aiden review …` from someone with write access now does
 // what it says. One trigger is a batch: one run per combo (engine, model, effort), each posting its own review; only its first run rechecks the PR's still-open findings. Queued runs start when due, each
-// reserving its combo's run_usd against the repo's and the instance's day caps in one transaction; running ones are polled, and
+// starting while the day's real spend is under the repo's and the instance's day caps, in one transaction; running ones are polled, and
 // a finished one is posted (Poster) unless its PR has moved on (superseded). Every run starts and ends with a flow fact on its PR.
 //
 // Each run keeps what an analysis of reviewers needs as plain columns: engine, model, effort, the kernel's billed cost and the
@@ -32,7 +32,7 @@ export type RunRow = {
   id: string; repo: string; number: number; head: string; base: string; engine: string; model: string; effort: string; run_usd: number;
   kind: Kind; status: Status; why: string | null;
   cost_usd: number; important: number; nit: number; pre_existing: number; started: string | null; ended: string | null; check_job: string | null;
-  focus: string | null; full: number; incremental_from: string | null; reserved_usd: number; due: number; created: number;
+  focus: string | null; full: number; incremental_from: string | null; due: number; created: number;
   posted: string | null; author: string; attempts: number;
   /** The trigger it ran for (its combos share it), and whether it rechecks the PR's still-open findings (the batch's first run). */
   batch: string; recheck: number;
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number
   engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, run_usd REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
   cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
   important INTEGER NOT NULL DEFAULT 0, nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
-  focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, reserved_usd REAL NOT NULL DEFAULT 0, due INTEGER NOT NULL, created INTEGER NOT NULL,
+  focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, due INTEGER NOT NULL, created INTEGER NOT NULL,
   posted TEXT, author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT,
   merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT, batch TEXT NOT NULL, recheck INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
@@ -96,8 +96,8 @@ export function createEngine(d: EngineDeps) {
     db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
   db.exec(DDL);
-  // A start a restart cut off (reserved, no check job yet) is queued again: its reservation is given back and taken anew.
-  db.prepare("UPDATE runs SET status = 'queued', reserved_usd = 0, started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
+  // A start a restart cut off (running, no check job yet) is queued again.
+  db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
   const one = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).get(...(a as never[])) as T | undefined;
   const all = <T>(sql: string, ...a: unknown[]) => db.prepare(sql).all(...(a as never[])) as T[];
@@ -155,31 +155,34 @@ export function createEngine(d: EngineDeps) {
     void ack({ repo: p.repo, number: p.number, head: p.head, state: "skipped", run: id, combo: c, why });
   }
 
-  /** Spent today (UTC) (ended runs' cost) plus what running ones hold, for one repo or the whole instance. */
+  /** What each running run's check job has spent so far (the kernel's figure, read each tick), by run id. */
+  const live = new Map<string, number>();
+
+  /** Spent today (UTC), real money only: ended runs' billed cost plus what running ones have spent so far, for one repo or the whole instance. */
   function spent(repo?: string) {
     const m = day(now());
     const where = repo ? " AND repo = ?" : "";
     const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
-    const held = one<{ s: number }>(`SELECT COALESCE(SUM(reserved_usd), 0) s FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []))!.s;
-    return { spent: ended, reserved: held, total: ended + held };
+    const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
+    return ended + running.reduce((n, r) => n + Math.min(r.billed_prior + (live.get(r.id) ?? 0), r.run_usd), 0);
   }
 
   /**
-   * Moves a due queued run to running with its reservation, in one transaction with the cap checks, so two runs can never both
-   * fit under what's left. Undefined when it may not start (and it is then skipped with why).
+   * Moves a due queued run to running while the day's real spend is under the caps, in one transaction with the checks. Nothing is
+   * reserved: runs in flight may overshoot a cap by at most their own run_usd each. Undefined when it may not start (and it is
+   * then skipped with why).
    */
-  function reserve(r: RunRow): RunRow | undefined {
+  function admit(r: RunRow): RunRow | undefined {
     const c = d.config();
-    const want = r.run_usd;
     const why = tx(() => {
       const cfg = repoCfg(r.repo);
       const inst = spent();
-      if (inst.total + want > c.day_usd) return `budget: the instance has $${Math.max(0, c.day_usd - inst.total).toFixed(2)} of its $${c.day_usd} left today; this review may spend $${want.toFixed(2)}`;
+      if (inst >= c.day_usd) return `budget: the instance has spent $${inst.toFixed(2)} of its $${c.day_usd} today`;
       if (cfg) {
         const mine = spent(r.repo);
-        if (mine.total + want > cfg.day_usd) return `budget: ${r.repo} has $${Math.max(0, cfg.day_usd - mine.total).toFixed(2)} of its $${cfg.day_usd} left today; this review may spend $${want.toFixed(2)}`;
+        if (mine >= cfg.day_usd) return `budget: ${r.repo} has spent $${mine.toFixed(2)} of its $${cfg.day_usd} today`;
       }
-      run("UPDATE runs SET status = 'running', reserved_usd = ?, started = ? WHERE id = ? AND status = 'queued'", want, iso(), r.id);
+      run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
       return undefined;
     });
     if (!why) return runRow(r.id);
@@ -224,7 +227,7 @@ export function createEngine(d: EngineDeps) {
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
       const previous = incremental_from && r.recheck ? stillOpen(r).map((f) => ({ id: f.id, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80) })) : []; // within the spec's 16 KB
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
-        incremental_from, full: incremental_from === null, previous, budget_usd: Math.max(0, r.reserved_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed.
@@ -238,13 +241,14 @@ export function createEngine(d: EngineDeps) {
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
 
-  /** What a run is charged: the kernel's billing of its check job, within its reservation; unknown or invalid is the whole of it. */
-  const charge = (r: RunRow, billed: unknown) => (typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? Math.min(r.billed_prior + billed, r.reserved_usd) : r.reserved_usd);
+  /** What a run is charged: the kernel's billing of its check job, within its run_usd; unknown or invalid is the whole of it. */
+  const charge = (r: RunRow, billed: unknown) => (typeof billed === "number" && Number.isFinite(billed) && billed >= 0 ? Math.min(r.billed_prior + billed, r.run_usd) : r.run_usd);
 
   /** A run posts on a task of its own (closed once its post settles) unless its PR is open on a watched repo (the PR's task, closed with the PR). */
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
 
   async function finish(r: RunRow, res: { state: "failed"; why: string; billed_usd?: number } | { state: "done"; review: Review; billed_usd?: number }) {
+    live.delete(r.id);
     // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
     if (res.state === "done") {
       const v = res.review as Partial<Review>;
@@ -252,15 +256,16 @@ export function createEngine(d: EngineDeps) {
         res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
     }
     if (res.state === "failed") {
-      // Once more on what is left of the same reservation, when the kernel says what the failed attempt cost (else it may have
+      // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
       // spent it all) and the result wasn't a wrong one.
-      const left = r.reserved_usd - r.billed_prior - (res.billed_usd ?? Infinity);
+      const left = r.run_usd - r.billed_prior - (res.billed_usd ?? Infinity);
       if (r.attempts < ATTEMPTS && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
-        log("review run failed, trying once more on its reservation", { run: r.id, why: res.why.slice(0, 200) });
+        log("review run failed, trying once more on what is left of its run_usd", { run: r.id, why: res.why.slice(0, 200) });
         run("UPDATE runs SET billed_prior = billed_prior + ? WHERE id = ?", res.billed_usd!, r.id);
+        live.delete(r.id);
         return startRun(runRow(r.id)!);
       }
-      run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, reserved_usd = 0, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
+      run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
       end(runRow(r.id)!);
       if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
@@ -273,7 +278,7 @@ export function createEngine(d: EngineDeps) {
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
-      run("UPDATE runs SET cost_usd = ?, reserved_usd = 0, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ? WHERE id = ?",
+      run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ? WHERE id = ?",
         cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), r.id);
       for (const f of review.findings) run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title);
       // What the recheck found gone at this head: fixed, wherever it was found (and not found again by this run).
@@ -444,10 +449,10 @@ export function createEngine(d: EngineDeps) {
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
-      if (res.state !== "running") await finish(r, res);
+      if (res.state === "running") { if (res.billed_usd !== undefined) live.set(r.id, res.billed_usd); } else await finish(r, res);
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created", now())) {
-      const started = reserve(r);
+      const started = admit(r);
       if (started) await startRun(started);
     }
   }
@@ -498,13 +503,11 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      const inst = spent();
-      return { day_usd: c.day_usd, day_spent_usd: round(inst.spent), day_reserved_usd: round(inst.reserved), errors: c.errors,
+      return { day_usd: c.day_usd, day_spent_usd: round(spent()), errors: c.errors,
         repos: c.repos.map((r) => {
-          const s = spent(r.repo);
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
-          return { ...r, day_spent_usd: round(s.spent), day_reserved_usd: round(s.reserved), error: errors.get(r.repo) ?? null, identity };
+          return { ...r, day_spent_usd: round(spent(r.repo)), error: errors.get(r.repo) ?? null, identity };
         }) };
     },
     /** Repos the GitHub identity can read whose name holds q (the board's picker). */

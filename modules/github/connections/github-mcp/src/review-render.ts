@@ -62,8 +62,8 @@ export type PostArgs = z.infer<typeof PostArgsSchema>;
 export const SKIP_REASONS = {
   draft: "this is a draft pull request",
   fork: "this pull request comes from a fork; a maintainer asks for a review with `@aiden review`",
-  budget_repo: "this repository's monthly review budget is used up",
-  budget_instance: "the monthly review budget for all repositories is used up",
+  budget_repo: "this repository's daily review budget is used up",
+  budget_instance: "the daily review budget for all repositories is used up",
   superseded: "a newer commit arrived",
   stopped: "reviews are stopped on this pull request (`@aiden review always` starts them again)",
   unchanged: "nothing changed since the last review",

@@ -55,10 +55,10 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
       return { check: String(v.id) };
     },
     async result(check): Promise<RunResult> {
-      // billed_usd: the kernel's own billing of the check job's model token; the box's Review says what it spent too, never trusted.
+      // billed_usd: the kernel's own billing of the check job's model token (so far, while it runs); the box's Review says what it spent too, never trusted.
       const v = (await kernel.call("GET", `/v1/checks/${check}`)) as { state: string; receipt: { verdict: string; summary: string } | null; error: string | null; result?: Review; billed_usd?: number };
-      if (v.state === "running") return { state: "running" };
       const billed = typeof v.billed_usd === "number" ? { billed_usd: v.billed_usd } : {};
+      if (v.state === "running") return { state: "running", ...billed };
       if (v.state === "done" && v.receipt?.verdict === "pass" && v.result?.version === 1) return { state: "done", review: v.result, ...billed };
       return { state: "failed", why: (v.error ?? v.receipt?.summary ?? `the check ended ${v.state}`).slice(0, 300), ...billed };
     },

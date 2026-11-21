@@ -3,8 +3,8 @@ description: "Code Review: reviews pull requests on the repos you list, or one P
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
 # internal read (as this module, never /mcp), decides which head gets which combos (triggers, `@aiden review …` from someone with
-# write access now, debounce, supersede, day caps reserved before a run starts), runs each review as the kernel's
-# check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's reservation), hands the
+# write access now, debounce, supersede, a run starts only while the day's real spend is under its caps), runs each review as the kernel's
+# check job `code-review` (kernel.checks: no credentials in the box, a model token capped at the run's run_usd), hands the
 # finished review to the github module's poster (a kernel write record) and records each run as flow facts on its PR.
 requires:
   - github # PR reads (github-mcp) and the poster
@@ -19,8 +19,8 @@ codehost:
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, budget_usd
-# is the run's reservation (its model token's cap), previous the PR's still-open findings to recheck. It reads back GET /v1/checks/:id
-# with `result` (the Review JSON, bound into the receipt, stamped with the ledger's cost_usd and tokens) and `billed_usd`.
+# is the run's run_usd less earlier attempts' spend (its model token's cap), previous the PR's still-open findings to recheck. It reads back GET /v1/checks/:id
+# with `result` (the Review JSON, bound into the receipt, stamped with the ledger's cost_usd and tokens) and `billed_usd` (a running check's spend so far too).
 check_jobs:
   code-review:
     dir: recipe
@@ -28,7 +28,7 @@ check_jobs:
     timeout_min: 45
     title: the code review
     spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
-    model: { max_usd: 20 }
+    model: { max_usd: 25 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
 facts:
@@ -37,11 +37,11 @@ facts:
 stages:
   - { name: review, label: Code review, from: review.started, to: review.ended }
 settings:
-  # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, day_usd: 100, ignore: [globs],
+  # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, day_usd: 200, ignore: [globs],
   # max_nits: 5 }]. A combo is { engine: codex|claude-code|codegenie, model (an OpenRouter
-  # id), effort (the engine's: codex minimal-xhigh, the others low-max), run_usd (what one run may spend: its reservation and its
-  # model token's cap; default codex and codegenie $1, claude-code $2) }; each moment runs every combo it lists (at most 4, each its
-  # own review), [] none. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's. Read by the service
+  # id), effort (the engine's: codex minimal-xhigh, the others low-max), run_usd (what one run may spend: its model token's hard
+  # cap, not a reservation; default $5 for each engine) }; each moment runs every combo it lists (at most 4, each its
+  # own review), [] none. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd). Read by the service
   # (service/src/config.ts).
   code_review:
     type: object
@@ -52,16 +52,16 @@ settings:
     # (what would quietly weaken reviews).
     owner:
       - { path: day_usd, raise: true }
-      - { path: "repos.*.day_usd", raise: true, default: 100 }
+      - { path: "repos.*.day_usd", raise: true, default: 200 }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
       - { path: "repos.*.repo", new: true, before: "/" }
-      - { path: "repos.*.on_open", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 1 } ] }
-      - { path: "repos.*.on_push", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 1 } ] }
+      - { path: "repos.*.on_open", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 5 } ] }
+      - { path: "repos.*.on_push", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 5 } ] }
       - { path: "repos.*.ignore", change: true, default: [] }
     default:
       repos: []
-      day_usd: 100
+      day_usd: 200
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
