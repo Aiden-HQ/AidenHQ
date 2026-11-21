@@ -11,7 +11,7 @@ import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, To
 import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
-import { Banner, Button, LinkButton, Segmented, StatusDot, Switch, Tag } from "./ui";
+import { Banner, Button, LinkButton, Segmented, StatusDot, Switch, Tag, safeHref } from "./ui";
 
 // Settings: categories in a side nav (a selector at phone width), each a page of grouped rows (#/settings/<category>).
 // Instance settings live in git (instance.yaml): a change made here is filed as the owner's task the runner writes, and lands
@@ -485,7 +485,7 @@ function Updates({ u, setting }: { u: UpdatesData; setting?: SettingRow }) {
               ))}
             </ul>
           )}
-          <a href={a.compare} target="_blank" rel="noreferrer">
+          <a href={safeHref(a.compare)} target="_blank" rel="noreferrer">
             Every change since {u.current?.name}
           </a>
         </div>

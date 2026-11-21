@@ -431,6 +431,13 @@ export function createApp(opts: AppOptions): Server {
     try {
       filed = await records.settingsChange(issue.id, changes, credential);
     } catch (e) {
+      if (!(e as { refused?: boolean }).refused) {
+        // A timeout or a server error: the kernel may have filed it, so the task stays open to show whatever it did.
+        const why = String((e as Error).message).slice(0, 300);
+        await pc.addComment(issue.id, `**Outcome unknown:** ${why}. The kernel may still have filed this change.`).catch(() => {});
+        log.warn({ issue: issue.identifier, err: why }, "settings change outcome unknown");
+        throw new HttpError(502, `couldn't tell whether the change was written (${issue.identifier}): ${why}`);
+      }
       await pc.addComment(issue.id, `**Not written:** ${String((e as Error).message).slice(0, 500)}`).catch(() => {});
       await pc.updateIssue(issue.id, { status: "cancelled" }).catch(() => {});
       log.warn({ issue: issue.identifier, err: String((e as Error).message).slice(0, 300) }, "settings change not written");
@@ -862,7 +869,7 @@ export function createApp(opts: AppOptions): Server {
       throw new HttpError(409, `${source.identifier} has ${[...new Set(names)].join(" and ")}'s work on it, which can't move: merge ${target.identifier} into it instead, or dismiss the Engineer first`);
     }
     // Lists truncate descriptions; these come from single reads, so they're whole.
-    const files = await pc.attachments(source.id).catch(() => []);
+    const files = await pc.attachments(source.id);
     for (const f of files) await pc.addAttachment(target.id, f.originalFilename ?? "file", f.contentType, await pc.attachmentContent(f.id));
     await pc.updateIssue(target.id, { description: mergedDescription(target, source) });
     for (const k of kids) if (k.assigneeUserId === ctx.me && !k.assigneeAgentId) await pc.updateIssue(k.id, { parentId: target.id });

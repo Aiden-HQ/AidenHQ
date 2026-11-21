@@ -360,7 +360,10 @@ export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: str
         if (p.state === "pending") return;
         setCode(null);
         setProblem(p.state === "expired" ? "The code expired before it was entered. Get a new one." : `${p.detail ?? "The sign-in stopped."} Get a new code to try again.`);
-      }, () => {});
+      }, (e) => {
+        setCode(null);
+        setProblem(e instanceof SignInRequired ? "Sign in to the board again, then get a new code." : `Couldn't check the sign-in: ${(e as Error).message}. Get a new code to try again.`);
+      });
     }, Math.max(2, code.interval) * 1000);
     return () => clearInterval(t);
   }, [code, c.id]);

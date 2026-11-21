@@ -77,7 +77,7 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
     const before = issue.status;
     await update({ status });
     if (status === "done" || status === "cancelled") {
-      toast(`${issue.identifier} ${status === "done" ? "done" : "cancelled"}`, { label: "Undo", run: () => void api.update(issue.id, { status: before === "in_progress" ? "in_progress" : "todo" }).then(onChanged) });
+      toast(`${issue.identifier} ${status === "done" ? "done" : "cancelled"}`, { label: "Undo", run: () => void api.update(issue.id, { status: before === "in_progress" ? "in_progress" : "todo" }).then(onChanged, (e) => toast(`Couldn't undo: ${(e as Error).message}`)) });
       onClose();
     }
   }

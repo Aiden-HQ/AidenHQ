@@ -129,10 +129,10 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     if (!res.ok) throw new Error(`POST /v1/connections/${module}/ok -> ${res.status}`);
   };
   const settingsChange: Records["settingsChange"] = async (task, changes, credential) => {
-    if (!k) throw new Error("the board has no kernel to write the change");
+    if (!k) throw Object.assign(new Error("the board has no kernel to write the change"), { refused: true });
     const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) });
     const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
-    if (!res.ok) throw new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`));
+    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
   const validate: Records["validate"] = async (module, settings) => {

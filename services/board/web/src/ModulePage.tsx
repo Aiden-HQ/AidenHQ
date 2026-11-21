@@ -236,7 +236,8 @@ function Overview({ d }: { d: ModuleDetail }) {
 function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void; can: Can }) {
   const m = d.module;
   const [conns, setConns] = useState<ConnectionRow[] | null>(null);
-  const loadConns = useCallback((fresh = false) => api.connections(fresh).then((r) => setConns(r.connections.filter((c) => c.module === m.name)), (e) => e instanceof SignInRequired && onSignIn()), [m.name, onSignIn]);
+  const [connsError, setConnsError] = useState("");
+  const loadConns = useCallback((fresh = false) => api.connections(fresh).then((r) => (setConnsError(""), setConns(r.connections.filter((c) => c.module === m.name))), (e) => (e instanceof SignInRequired ? onSignIn() : setConnsError((e as Error).message))), [m.name, onSignIn]);
   useEffect(() => void loadConns(), [loadConns]);
   // A sign-in finished in the tab its Connect opened: ask again, fresh, so the row turns Connected here too.
   useEvents(["connections"], () => loadConns(true));
@@ -245,6 +246,7 @@ function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void;
       <div className="mod-main">
         <Section title="Agents" count={d.agents.length || undefined}><Agents d={d} /></Section>
         <Section title="Connections" count={m.connections.length || undefined}>
+          {connsError && <p className="mod-none">Couldn't read the connections' state: {connsError}</p>}
           {!m.connections.length ? <p className="mod-none">No connections.</p> : (
             <div className="mod-rows">
               {m.connections.map((c) => {
@@ -286,9 +288,11 @@ function Routines({ d }: { d: ModuleDetail }) {
 
 function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
   const [rows, setRows] = useState<SettingRow[] | null>(null);
+  const [error, setError] = useState("");
   useEffect(() => {
-    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name && Object.entries(s.when ?? {}).every(([k, v]) => String(r.settings.find((x) => x.key === k)?.value ?? r.settings.find((x) => x.key === k)?.default) === String(v)))), (e) => e instanceof SignInRequired && onSignIn());
+    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name && Object.entries(s.when ?? {}).every(([k, v]) => String(r.settings.find((x) => x.key === k)?.value ?? r.settings.find((x) => x.key === k)?.default) === String(v)))), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
   }, [m.name, onSignIn]);
+  if (error) return <EmptyState><strong>Couldn't load the settings.</strong> {error}</EmptyState>;
   if (!rows) return <SkeletonLines lines={3} />;
   if (!rows.length) return <EmptyState><strong>Nothing to set.</strong> {m.name} works as it is; it has no settings of its own.</EmptyState>;
   return <Group title="Settings" count={rows.length}>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>;

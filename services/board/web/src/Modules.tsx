@@ -6,6 +6,7 @@ import { Marketplaces } from "./Marketplaces";
 import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded } from "./ModuleParts";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
 import { ChangesScope, IN_FLIGHT } from "./settings-ui";
+import { safeHref } from "./ui";
 import { SetupButton } from "./SetupButton";
 import { SkeletonLines } from "./Skeleton";
 import type { Advisory, BrowseModule, MarketplaceRow, ModuleRow } from "./types";
@@ -118,7 +119,7 @@ function ModulesList({ onSignIn, onMarkets, can }: { onSignIn: () => void; onMar
             <strong>Security advisory for {a.module}</strong> ({a.severity}): {a.summary.replace(/^`|`$/g, "")} The fix is an ordinary update to a newer pin.
           </span>
           {a.url && (
-            <a className="btn" href={a.url} target="_blank" rel="noreferrer noopener">
+            <a className="btn" href={safeHref(a.url)} target="_blank" rel="noreferrer noopener">
               Details
             </a>
           )}
