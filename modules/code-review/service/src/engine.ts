@@ -20,7 +20,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Finding, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
+import type { Ack, ComboRef, Finding, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
@@ -399,7 +399,7 @@ export function createEngine(d: EngineDeps) {
     const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
     for (const id of unsafe) {
       const f = one<Omit<Finding, "fix_brief">>("SELECT id, severity, path, line, title, why, evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, id);
-      if (f && !review.findings.some((x) => x.id === id)) review.findings.push({ ...f, title: `${REOPENED.title}${f.title.replace(REOPENED.title, "")}`.slice(0, 200),
+      if (f && review.findings.length < 200 && !review.findings.some((x) => x.id === id)) review.findings.push({ ...f, title: `${REOPENED.title}${f.title.replace(REOPENED.title, "")}`.slice(0, 200),
         why: `${REOPENED.why}${f.why.replace(REOPENED.why, "")}`.slice(0, 3000), fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." });
     }
     tx(() => {
@@ -638,15 +638,28 @@ export function createEngine(d: EngineDeps) {
    * completed, whatever became of its post; until then (a push before it finished) the newest head gets the first review. A
    * skipped or superseded run never counts, and nothing waits on coverage: a partial review is still a review. */
   const pushed = (_cfg: Repo, p: PullRequest, _was?: unknown) => !!one("SELECT 1 FROM runs JOIN reviews ON reviews.run = runs.id WHERE repo = ? AND number = ? AND moment = 'open' AND kind != 'oneoff' AND complete IS NOT NULL", p.repo, p.number);
-  /** The mandatory reviewers a gated head lacks (any run of that combo at the head counts, whatever its end), for the moment its
-   * latest mandatory run was; none at all: its trigger. Each missing one is queued beside what is there. */
+  /**
+   * The mandatory reviewers a head needs, with the moment each belongs to: each moment's the head has mandatory runs for (a push's
+   * and an `aiden review`'s alike; skipped ones count only when nothing else is there), none yet: on_open. `runs`: the head's
+   * runs but one-offs, newest first. verdict() waits on these and missing() queues the ones without a run.
+   */
+  function needed(cfg: Repo, runs: RunRow[]) {
+    const mand = runs.filter((r) => r.mandatory), live = mand.filter((r) => r.status !== "skipped");
+    const moments = new Set<Moment>((live.length ? live : mand.slice(0, 1)).map((r) => (r.moment === "push" ? "push" : "open")));
+    return (moments.size ? [...moments] : ["open" as Moment]).flatMap((m) => (m === "push" ? cfg.on_push : cfg.on_open).filter((c) => c.mandatory).map((combo) => ({ moment: m, combo })));
+  }
+  const sameCombo = (a: ComboRef, b: ComboRef) => a.engine === b.engine && a.model === b.model && a.effort === b.effort;
+  /** The mandatory reviewers a gated head lacks (any run of that combo at the head counts, whatever its end), each queued beside
+   * what is there for its moment; no mandatory run at all: its trigger. */
   function missing(cfg: Repo, p: PullRequest) {
-    const last = one<{ moment: string | null }>("SELECT moment FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", p.repo, p.number, p.head);
+    const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND kind != 'oneoff' ORDER BY created DESC", p.repo, p.number, p.head);
     // No mandatory run on the PR yet (it was open before its repo was gated): its opening review, whole.
-    if (!last) return trigger(cfg, p, pushed(cfg, p) && one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'", p.repo, p.number) ? "push" : "open");
-    const m: Moment = last.moment === "push" ? "push" : "open";
-    const lack = (m === "open" ? cfg.on_open : cfg.on_push).filter((c) => c.mandatory && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind != 'oneoff' AND mandatory = 1", p.repo, p.number, p.head, c.engine, c.model, c.effort));
-    if (lack.length) queue(p, lack, "auto", { moment: m, keep: true, focus: prRow(p.repo, p.number)?.focus ?? null });
+    if (!runs.some((r) => r.mandatory)) return trigger(cfg, p, pushed(cfg, p) && one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'", p.repo, p.number) ? "push" : "open");
+    const lack = needed(cfg, runs).filter((n, i, list) => list.findIndex((x) => sameCombo(x.combo, n.combo)) === i && !runs.some((r) => r.mandatory && sameCombo(r, n.combo)));
+    for (const m of ["open", "push"] as Moment[]) {
+      const list = lack.filter((n) => n.moment === m).map((n) => n.combo);
+      if (list.length) queue(p, list, "auto", { moment: m, keep: true, focus: prRow(p.repo, p.number)?.focus ?? null });
+    }
   }
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
@@ -866,15 +879,10 @@ export function createEngine(d: EngineDeps) {
     if (!p) return wait({ code: "not_started", text: "the review hasn't started: code review hasn't seen this pull request yet", unblock: "it starts by itself within a minute or two" });
     if (p.head !== head) return wait({ code: "moved", text: `code review sees the pull request at ${p.head.slice(0, 12)}, not ${head.slice(0, 12)}: the newer head is being reviewed`, unblock: "it resumes by itself once the head is reviewed" });
     const reasons: Reason[] = [];
-    // Each mandatory reviewer of every moment the head has mandatory runs for (a push's and an `aiden review`'s alike; skipped
-    // ones count only when nothing else is there; none yet: on_open) has a run at the head that is done (whole or partial: a
-    // partial review is still a review) or failed past its retries; queued or running ones wait. A missing one is queued by the
-    // next poll.
+    // Each mandatory reviewer the head needs (needed()) has a run at the head that is done (whole or partial: a partial review is
+    // still a review) or failed past its retries; queued or running ones wait. A missing one is queued by the next poll.
     const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND kind != 'oneoff' ORDER BY created DESC", repo, n, head);
-    const mand = runs.filter((r) => r.mandatory), live = mand.filter((r) => r.status !== "skipped");
-    const moments = new Set((live.length ? live : mand.slice(0, 1)).map((r) => (r.moment === "push" ? "push" : "open")));
-    const combos = (moments.size ? [...moments] : ["open"]).flatMap((m) => (m === "push" ? cfg.on_push : cfg.on_open).filter((c) => c.mandatory));
-    const latest = combos.map((c) => runs.find((r) => r.mandatory && r.engine === c.engine && r.model === c.model && r.effort === c.effort));
+    const latest = needed(cfg, runs).map(({ combo }) => runs.find((r) => r.mandatory && sameCombo(r, combo)));
     const busy = latest.filter((r) => r && (r.status === "queued" || r.status === "running"));
     if (!runs.some((r) => r.mandatory)) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (busy.length || latest.some((r) => !r)) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r!.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });

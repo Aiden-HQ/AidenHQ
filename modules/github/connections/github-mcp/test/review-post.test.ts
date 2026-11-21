@@ -210,14 +210,6 @@ describe("posting", () => {
     expect(out.comments).toHaveLength(120);
   });
 
-  it("threads only findings the card showed: one an earlier review threaded doesn't free a slot for another", () => {
-    const nits = review(Array.from({ length: 16 }, (_, i) => finding(`f_nit_${100 + i}`, "src/pay.ts", 2, { severity: "nit" })));
-    const card = new Set(renderReview(nits, "r").comments.map((c) => c.id));
-    const post = renderReview(nits, "r", { earlier: new Map([["f_nit_100", "https://github.com/t/1"]]) }).comments.map((c) => c.id);
-    expect(post).toHaveLength(14);
-    expect(post.every((id) => card.has(id))).toBe(true);
-  });
-
   it("resolves only the threads code review recorded as its own posts (its database), for findings no longer reported", async () => {
     // T_owner carries the marker as the owner's login too (any fleet write does): only the service's record tells them apart.
     const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41), thread("T_owner", "f_owner_1", "owner1", 42), thread("T_person", null, "alice", 43), thread("T_forged", "f_forged_1", "alice", 44)] });

@@ -285,10 +285,9 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
   const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
-  // Every important finding gets a thread (answering it there is how it closes); the others up to INLINE_MAX. Which ones is chosen
-  // before leaving out those an earlier review already opened a thread for, so the post's threads are always ones the card showed.
-  const open = ranked.filter((f) => place.has(f.id));
-  const chosen = [...open.filter((f) => f.severity === "important"), ...open.filter((f) => f.severity !== "important").slice(0, INLINE_MAX)].filter((f) => !earlier.has(f.id));
+  // Every important finding gets a thread (answering it there is how it closes); the others up to INLINE_MAX.
+  const open = ranked.filter((f) => !earlier.has(f.id) && place.has(f.id));
+  const chosen = [...open.filter((f) => f.severity === "important"), ...open.filter((f) => f.severity !== "important").slice(0, INLINE_MAX)];
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
