@@ -407,10 +407,17 @@ change under 20 added plus deleted lines with no sensitive path; `package-lock.j
 /v1/codehost/runner_token` with the ci module's `ci_token`; the code host mints it as the owner, whose sign-in needs
 `admin:org`, and answers only that token), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
-the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
-of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
-only the model gateway's CI listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits
-per runner: 4 CPUs, 8 GB.
+the unit then starts the next, at once (`Restart=always`, `RestartSec=1`). A refused token (the sign-in missing
+`admin:org`, GitHub unreachable) backs off in `ops/ci-runner.sh` instead: the wait doubles per refusal from 1 second to 5
+minutes, and the next token that mints clears it, so a persistent refusal retries slowly rather than hot-looping while a
+clean job exit still starts the next runner immediately. The missing permission also reaches the owner: a codehost op's
+`needs_owner` answer is recorded as connection state, so it lands in the owner's digest (the GitHub card's own row comes
+from the sign-in's granted scopes), and `CiRunnerRestartLooping` (`modules/monitoring/prometheus/rules.yml`) alerts on a
+unit that keeps restarting.
+
+Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
+sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI
+listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits per runner: 4 CPUs, 8 GB.
 
 **Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
 (`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
