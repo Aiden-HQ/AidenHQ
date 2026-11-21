@@ -173,8 +173,10 @@ connected, else as a prefilled link (step 3).
    the description, not in a comment added after the fact: the `github_product_issue` card's reviewer reads the delegating
    task's text as the request chain and refuses a write it does not ask for. The issue is public: product evidence only, in
    the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`). Write the
-   body you put in the brief under that rule already: name a listener, container or service by role, and cite a task by its
-   identifier.
+   body you put in the brief under that rule already, its title and evidence fields too: the card's reviewer reads the
+   delegating task's text as the request and holds the post to it, so a literal internal address, uuid or task id there
+   becomes a detail it demands and `github_product_issue` refuses, and the filing loops. Name a listener, container or
+   service by role, and leave a task's id out.
 3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer or GitHub, skip step 2: call
    `github_issue_link` with the fingerprint, title, body and `evidence` (module, version, reproduction, log), send the owner
    the link as "Reporting a product bug" says, and log the same line with `link sent` in place of the task id. A slug whose
