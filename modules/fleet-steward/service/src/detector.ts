@@ -98,7 +98,8 @@ export function failingRoutines(jobs: JobRow[], since: Record<string, string> = 
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
 export interface Incident { key: string; reason: string; critical?: boolean }
-interface Open { reason: string; at: string; fired: boolean; told?: boolean; critical?: boolean }
+/** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: told the gate stayed jammed (open two hours). Each once, apart. */
+interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
 
@@ -161,8 +162,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   }
   // A jammed gate (a PR on code review, an approval card with the AI reviewer, an answered wait that never resumed) stays closed for
   // everyone while it is open, so two hours after it was raised the owner hears one fixed line, whether or not a task carried it.
-  const jammed = !stewardOn ? [] : Object.entries(s.open).filter(([key, o]) => JAMMED.test(key) && !o.told && Date.parse(at) - Date.parse(o.at) > GATE_ESCALATE_MS);
-  if (jammed.length && (await notify("A gate has been jammed for over two hours (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer) and the Fleet Steward has not cleared it. Ask Aiden to look at the fleet detector.").then(() => true, () => false))) for (const [, o] of jammed) o.told = true;
+  const jammed = !stewardOn ? [] : Object.entries(s.open).filter(([key, o]) => JAMMED.test(key) && !o.jammed && Date.parse(at) - Date.parse(o.at) > GATE_ESCALATE_MS);
+  if (jammed.length && (await notify("A gate has been jammed for over two hours (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer) and the Fleet Steward has not cleared it. Ask Aiden to look at the fleet detector.").then(() => true, () => false))) for (const [, o] of jammed) o.jammed = true;
   const incidents = Object.entries(s.open).filter(([, o]) => !o.fired).map(([key, o]) => ({ key, ...(o.critical ? { critical: true } : {}) }));
   const recovered = s.recovered.filter((r) => !r.fired).map(({ key }) => ({ key }));
   const due = incidents.some((i) => i.critical) || !(Date.parse(at) - Date.parse(kv.get("last_filed") ?? "") < quietMs);
