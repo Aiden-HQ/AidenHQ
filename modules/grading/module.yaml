@@ -26,7 +26,7 @@ checks:
     auth: grading_check_key
     label: grading
 # PR and issue evidence: typed reads of the instance's known repositories (agents org, product, github_orgs, maintainer_repos)
-# through the kernel's code host: a PR, its checks and its diff, a job, and (under `evidence`) a file at a commit or a job's log.
+# through the kernel's code host: a PR, its checks and its diff, a job, and (under `evidence`) a file at a commit.
 codehost:
   read:
     repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]

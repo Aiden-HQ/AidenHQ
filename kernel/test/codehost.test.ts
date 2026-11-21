@@ -81,17 +81,12 @@ test("fetch refs are refs/heads/*, a branch or a pull request's head; head and r
   assert.equal(seen.length, 4);
 });
 
-test("a graded head's file and a job's log are read kinds, behind evidence alone", async (t) => {
+test("a graded head's file is a read kind, behind evidence alone", async (t) => {
   const { call, seen } = await setup(t);
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) })).status, 200);
   assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) });
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: "../secrets", ref: "a".repeat(40) })).status, 400);
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "main" })).status, 400);
-  assert.equal((await call("github", "read", { repo: "acme/x", kind: "log", id: 12 })).status, 200);
-  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme/x", kind: "log", id: 12, bytes: 512_000 }, "a log's size is bounded");
-  // A log is read whole up to the cap; a bigger one is cut, and a cut log is no evidence.
-  assert.equal((await call("github", "read", { repo: "acme/x", kind: "log", id: 12, bytes: 30_000_000 })).status, 200);
-  assert.equal((await call("github", "read", { repo: "acme/x", kind: "log", id: 12, bytes: 30_000_001 })).status, 400);
   // The evidence grant is narrower: a file reaches only a path it lists.
   assert.equal((await call("apps-platform", "read", { repo: "acme-agents/x", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) })).status, 403);
   assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: "apps.yaml", ref: "a".repeat(40) })).status, 403);

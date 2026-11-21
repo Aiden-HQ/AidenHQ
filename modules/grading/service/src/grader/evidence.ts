@@ -37,10 +37,8 @@ const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
 const COMMAND_JOBS = 6;
-const COMMAND_LOG_BYTES = 30_000_000;
 const COMMAND_TIMEOUT_MS = 90_000;
 const COMMAND_FACTS = 24;
-const LOG_CUT = "[cut: ";
 const CI_WORKFLOW = ".github/workflows/ci.yml";
 const CI_AREAS = ".github/ci/areas.json";
 const CI_SELECT = ".github/ci/select.ts";
@@ -65,33 +63,30 @@ function ciMap(text: string | null): CiMap | undefined {
   };
 }
 
-function logSays(log: string): { suites: Map<number, Set<string>>; conflicting: Set<number>; gone: Set<string>; stray: boolean } {
-  const seen = new Map<number, Set<string>[]>();
-  for (const m of log.matchAll(/(?:^|\s)Shard (\d+): +(.*)$/gm)) {
-    const n = Number(m[1]);
-    seen.set(n, [...(seen.get(n) ?? []), new Set(String(m[2]).trim().split(/\s+/).filter(Boolean))]);
-  }
-  const suites = new Map<number, Set<string>>(), conflicting = new Set<number>();
-  for (const [n, lists] of seen) {
-    const first = [...lists[0]!].sort().join(" ");
-    if (lists.every((l) => [...l].sort().join(" ") === first)) suites.set(n, lists[0]!);
-    else conflicting.add(n);
-  }
-  let depth = 0, stray = false;
-  for (const line of log.split("\n")) {
-    if (/##\[group\]/.test(line)) depth++;
-    else if (/##\[endgroup\]/.test(line)) { if (depth === 0) stray = true; else depth--; }
-  }
-  const gone = new Set([...log.matchAll(/(?:^|\s)gone: +(.+)$/gm)].map((m) => String(m[1]).trim()));
-  return { suites, conflicting, gone, stray };
-}
-
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
   Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
 
 function jobIdOn(pr: any, name: string): string | undefined {
   const run = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).find((n: any) => n.__typename === "CheckRun" && n.name === name);
   return run?.databaseId ? String(run.databaseId) : undefined;
+}
+
+/**
+ * The `external_id` CI posts beside each suite's own check: the run that ran it, the job's key and its shard,
+ * `<run_id>/<GITHUB_JOB>/<matrix.shard>` (the post step in `.github/ci/run-suites.sh` builds it from those three). It names
+ * exactly one job instance, so a check of the right name cannot be borrowed from another run or another shard's job.
+ */
+const suiteExternalId = (runId: unknown, key: string, shardNo: number) => `${String(runId ?? "")}/${key}/${shardNo}`;
+
+/**
+ * Whether GitHub's own record says this suite ran on the graded head: a completed check run named exactly the suite, with a
+ * `success` conclusion, whose `external_id` names this shard's own job. CI posts it from the runner's own `.rc` files after
+ * every suite finished, so no suite's output and no PR-controlled script can create, suppress or alter one. A suite that did
+ * not run on this head — a shard the runner reused, a directory the change deleted (CI posts it `neutral`) — has no such
+ * check, and so is never claimed.
+ */
+function suitePassed(runs: any[], suite: string, externalId: string): boolean {
+  return runs.some((n: any) => n.__typename === "CheckRun" && n.name === suite && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && String(n.externalId ?? "") === externalId);
 }
 
 function planShards(baseMap: any, headMap: CiMap, files: string[]): Map<string, string[]> {
@@ -109,12 +104,18 @@ function planShards(baseMap: any, headMap: CiMap, files: string[]): Map<string, 
 }
 
 async function commandFacts(pr: any, repo: string, checks: any[], deps: any): Promise<string[]> {
-  if (!deps.file || !deps.jobLog || !deps.job) return [];
+  if (!deps.file || !deps.job) return [];
   const head = String(pr.headRefOid ?? "");
   if (!/^[0-9a-f]{40}$/.test(head)) return [];
   const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
   if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
   if (files.some((f: string) => f.startsWith(".github/workflows/"))) return [];
+  // GitHub's own per-suite records on this head, the only proof a suite ran: CI posts one check run per suite from the
+  // runner's own exit codes, so a suite's output never becomes a claim (a PR that prints a banner proves nothing). A list
+  // GitHub truncated may be missing the record that would vouch for a suite, so a truncated one is no evidence at all.
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  if (rollup?.pageInfo?.hasNextPage) return [];
+  const records = rollup?.nodes ?? [];
   const green = checks
     .filter((c: any) => /^(?:packages|modules) \(\d+\)$/.test(c.name) && !c.skipped && c.status === "SUCCESS" && jobIdOn(pr, c.name))
     .slice(0, COMMAND_JOBS);
@@ -123,7 +124,7 @@ async function commandFacts(pr: any, repo: string, checks: any[], deps: any): Pr
     const id = jobIdOn(pr, c.name)!;
     const j = await withTimeout(deps.job(repo, id).catch(() => null), COMMAND_TIMEOUT_MS);
     const ok = j && j.conclusion === "success" && j.workflow_path === CI_WORKFLOW && j.workflow_state === "active" && j.event === "pull_request" && j.head_sha === head;
-    if (!ok || !/^[0-9a-f]{40}$/.test(String(j.run_base ?? ""))) return undefined;
+    if (!ok || !/^[0-9a-f]{40}$/.test(String(j.run_base ?? "")) || j.run_id == null) return undefined;
     return Array.isArray(j.steps) && j.steps.some((s: any) => s.name === "Test" && s.conclusion === "success") ? j : undefined;
   }));
   const bases = [...new Set(jobs.filter(Boolean).map((j: any) => String(j.run_base)))];
@@ -140,24 +141,18 @@ async function commandFacts(pr: any, repo: string, checks: any[], deps: any): Pr
     runs.set(b, { baseMap, plan: planShards(baseMap, headMap, files) });
   }
   if (!runs.size) return [];
-  const records = await Promise.all(jobs.map(async (j: any, i: number) => {
-    if (!j || !runs.get(String(j.run_base))) return undefined;
-    const log = await withTimeout(deps.jobLog(repo, jobIdOn(pr, green[i].name)!, COMMAND_LOG_BYTES).catch(() => null), COMMAND_TIMEOUT_MS);
-    return log && !log.includes(LOG_CUT) ? logSays(log) : undefined;
-  }));
   const facts: string[] = [], seen = new Set<string>();
   for (const [i, c] of green.entries()) {
     const shardNo = Number(/\((\d+)\)$/.exec(c.name)![1]);
     const run = runs.get(String(jobs[i]?.run_base));
     const assigned = run?.plan.get(`${c.name.replace(/ \(\d+\)$/, "")}#${shardNo}`);
-    const ran = records[i];
-    if (!run || !assigned || !ran || ran.stray || ran.conflicting.has(shardNo)) continue;
-    const logged = ran.suites.get(shardNo);
-    if (!logged || [...logged].sort().join(" ") !== [...assigned].sort().join(" ")) continue;
+    if (!run || !assigned) continue;
+    const externalId = suiteExternalId(jobs[i]!.run_id, c.name.replace(/ \(\d+\)$/, ""), shardNo);
     for (const name of assigned) {
       if (facts.length >= COMMAND_FACTS) return facts;
       const suite = headMap.suites.find((s) => s.name === name), selected = run.baseMap.suites.find((s) => s.name === name);
-      if (!suite || !selected || selected.run !== suite.run || selected.dir !== suite.dir || ran.gone.has(suite.dir) || seen.has(`${name}\n${suite.dir}`)) continue;
+      if (!suite || !selected || selected.run !== suite.run || selected.dir !== suite.dir || seen.has(`${name}\n${suite.dir}`)) continue;
+      if (!suitePassed(records, name, externalId)) continue;
       seen.add(`${name}\n${suite.dir}`);
       facts.push(`${c.name} green on head ${head}: ran "${suite.run}" (${name}) in ${suite.dir}/ — passed`);
     }

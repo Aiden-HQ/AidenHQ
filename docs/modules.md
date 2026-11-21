@@ -54,8 +54,9 @@ codehost:
   evidence: { repos: [ "@product" ], paths: [ ".github/ci/areas.json", ".github/ci/select.ts", ".github/ci/run-suites.sh", ".github/workflows/ci.yml" ] }
 ```
 
-`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a commit sha) and `log` (`{id, bytes}`, only a
-`ci.yml` `pull_request` job, else 404; ZIP unpacked, bounded, marked `[cut: …]` if truncated).
+`evidence` is narrower than `read`: `file` (`{path, ref}`, a listed path at a commit sha), and nothing else. A job's log
+is never evidence: a PR's test output can print any line, so the command facts read GitHub's own per-suite check runs
+instead (a completed `success` check named the suite, whose `external_id` names the shard's job).
 
 ## `POST /v1/tasks` — file a task
 

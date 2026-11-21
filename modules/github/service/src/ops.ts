@@ -3,7 +3,6 @@
 // grant and the shape of every field; the owner's token never leaves this process, so no answer, header or error carries it
 // (errors are scrubbed of it as a last guard). snapshot, clone and bundle stay in service.ts.
 import { createReadStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { inflateRawSync } from "node:zlib";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { once } from "node:events";
 import type { Readable } from "node:stream";
@@ -24,7 +23,6 @@ export type OpsContext = {
   initBare: (dir: string) => Promise<void>;
   /** Whether the kernel's records name this GitHub object (a ref like `github:o/r#1/comment/2`) as made by AidenHQ. */
   ours: (ref: string) => Promise<boolean>;
-  fetch?: typeof fetch;
 };
 type Body = Record<string, any>;
 type Answer = { status: number; json?: unknown; text?: string; stream?: Readable };
@@ -37,49 +35,6 @@ const slugOf = (repo: unknown) => {
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
 
-const LOG_MAX = 30_000_000;
-const ZIP_ENTRIES = 200;
-const ZIP_OUT = 4_000_000;
-
-function zipText(buf: Buffer): string | undefined {
-  if (buf.length < 22 || buf.readUInt32LE(0) !== 0x04034b50) return undefined;
-  let eocd = -1;
-  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65_557); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
-  if (eocd < 0) return undefined;
-  const count = buf.readUInt16LE(eocd + 10), parts: string[] = [];
-  let at = buf.readUInt32LE(eocd + 16), out = 0, cut = count > ZIP_ENTRIES;
-  for (let n = 0; n < Math.min(count, ZIP_ENTRIES) && at + 46 <= buf.length; n++) {
-    if (buf.readUInt32LE(at) !== 0x02014b50) break;
-    const method = buf.readUInt16LE(at + 10), size = buf.readUInt32LE(at + 20), nameLen = buf.readUInt16LE(at + 28), extraLen = buf.readUInt16LE(at + 30), commentLen = buf.readUInt16LE(at + 32);
-    const local = buf.readUInt32LE(at + 42), start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
-    at += 46 + nameLen + extraLen + commentLen;
-    if (local + 30 > buf.length || buf.readUInt32LE(local) !== 0x04034b50 || start + size > buf.length) continue;
-    let entry: Buffer;
-    try { entry = method === 0 ? buf.subarray(start, start + size) : method === 8 ? inflateRawSync(buf.subarray(start, start + size), { maxOutputLength: ZIP_OUT - out }) : Buffer.alloc(0); }
-    catch { cut = true; continue; }
-    if (!entry.length) continue;
-    out += entry.length; parts.push(entry.toString("utf8"));
-    if (out >= ZIP_OUT) { cut = true; break; }
-  }
-  if (!parts.length) return undefined;
-  return cut ? `${parts.join("\n")}\n[cut: log unpacked only to ${ZIP_OUT} bytes]` : parts.join("\n");
-}
-
-const LOG_HOSTS = [/(^|\.)actions\.githubusercontent\.com$/, /^productionresultssa\d*\.blob\.core\.windows\.net$/];
-function logHostAllowed(to: string): boolean {
-  try {
-    const u = new URL(to);
-    return u.protocol === "https:" && LOG_HOSTS.some((h) => h.test(u.hostname));
-  } catch {
-    return false;
-  }
-}
-function bounded(text: string, bytes: number): string {
-  if (text.length <= bytes) return text;
-  const head = Math.floor(bytes / 4);
-  return `${text.slice(0, head)}\n[cut: ${text.length - bytes} bytes not shown]\n${text.slice(-(bytes - head))}`;
-}
-
 // A PR and an issue as the grader reads them.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -87,8 +42,8 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       number title body url state headRefOid headRefName baseRefName mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { databaseId name status conclusion } ... on StatusContext { context state } } } } } } }
-      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion externalId } ... on StatusContext { context state } } } } } } }
+      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion externalId } ... on StatusContext { context state } } } } } } }
     }
   }
 }`;
@@ -196,36 +151,6 @@ async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   return { status: 200, text: typeof r.body === "string" ? r.body : String(r.body ?? "") };
 }
 
-async function jobLog(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body, bytes: number): Promise<Answer> {
-  // Only ci.yml's own pull_request runs are evidence.
-  const notEvidence = (): Answer => ({ status: 404, json: { error: `${s.slug} job ${b.id} is not a ci.yml pull request job` } });
-  const job = (await ctx.access.rest("GET", `/repos/${s.slug}/actions/jobs/${b.id}`)).body;
-  const run = job?.run_id ? (await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${job.run_id}`)).body : undefined;
-  if (!job?.run_id || run?.path !== ".github/workflows/ci.yml" || run?.event !== "pull_request") return notEvidence();
-  const url = new URL(`/repos/${s.slug}/actions/jobs/${b.id}/logs`, "https://api.github.com");
-  const doFetch = ctx.fetch ?? fetch;
-  const headers = { authorization: `Bearer ${await ctx.access.token()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq-codehost" };
-  const res = await doFetch(url, { method: "GET", redirect: "manual", headers, signal: AbortSignal.timeout(30_000) });
-  if (res.status === 404) return { status: 404, json: { error: `GitHub has no job ${b.id} in ${s.slug}` } };
-  if (res.status !== 302) throw fail(502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}/logs: ${res.status}`);
-  const to = res.headers.get("location") ?? "";
-  if (!logHostAllowed(to)) throw fail(502, `GitHub job ${b.id} log points somewhere other than GitHub's log hosts`);
-  const dl = await doFetch(to, { redirect: "error", signal: AbortSignal.timeout(30_000) });
-  if (!dl.ok) throw fail(502, `the job ${b.id} log download answered ${dl.status}`);
-  if (Number(dl.headers.get("content-length") ?? 0) > LOG_MAX) throw fail(502, `GitHub job ${b.id} log is over ${LOG_MAX} bytes`);
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for (const reader = dl.body!.getReader();;) {
-    const part = await reader.read();
-    if (part.done) break;
-    total += part.value.length;
-    if (total > LOG_MAX) { await reader.cancel(); throw fail(502, `GitHub job ${b.id} log is over ${LOG_MAX} bytes`); }
-    chunks.push(Buffer.from(part.value));
-  }
-  const raw = Buffer.concat(chunks);
-  return { status: 200, text: bounded(zipText(raw) ?? raw.toString("utf8"), bytes) };
-}
-
 async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
   const tip = String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(b.branch)}`)).body?.commit?.sha ?? "");
   if (tip !== b.parent) throw fail(409, `${s.slug} \`${b.branch}\` is at ${tip.slice(0, 12)}, not ${String(b.parent).slice(0, 12)}`);
@@ -251,7 +176,6 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   if (op === "fetch") return bundleOf(ctx, s, String(b.ref));
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
   if (op === "read" && b.kind === "file") return file(ctx, s, b);
-  if (op === "read" && b.kind === "log") return jobLog(ctx, s, b, Math.min(30_000_000, Math.max(1_000, Number(b.bytes) || 512_000)));
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));

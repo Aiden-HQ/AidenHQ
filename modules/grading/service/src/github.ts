@@ -28,14 +28,11 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
         throw e;
       });
     },
-    async jobLog(repo: string, id: string | number, bytes = 512_000): Promise<string | null> {
-      if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with job ${id} is not a readable Actions job`);
-      return text("/v1/codehost/read", { repo, kind: "log", id: Number(id), bytes }).catch((e) => {
-        if (/\b404\b/.test(String(e?.message ?? ""))) return null;
-        throw e;
-      });
-    },
-    /** One Actions job by id in `repo`, as a report cites it: state, conclusion and name; null when the repo has no such job. */
+    /**
+     * One Actions job by id in `repo`, as the command facts read it: its state and conclusion, its steps, the run that owns
+     * it (`run_id`, `run_base`, `event`, `head_sha`) and that run's workflow (`workflow_path`, `workflow_state`); null when
+     * the repo has no such job.
+     */
     async job(repo: string, id: string | number): Promise<Json> {
       if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with job ${id} is not a readable Actions job`);
       return read(repo, { kind: "job", id: Number(id) });

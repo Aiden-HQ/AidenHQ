@@ -9,7 +9,7 @@
 //                fetches it itself, so host git never runs in a workspace a box can write
 //   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
 //   head         {repo, ref: <branch>} → {sha}
-//   read         {repo, kind: pr | issue | diff | job | prs | file | log, ...} → that object; file/log are `evidence`
+//   read         {repo, kind: pr | issue | diff | job | prs | file, ...} → that object; file is `evidence`
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
@@ -100,9 +100,8 @@ const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "evide
   snapshot: "snapshot", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", runner_token: "runner",
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
-const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "log"];
-export const LOG_MAX = 30_000_000;
-const EVIDENCE_KINDS = ["file", "log"];
+const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file"];
+const EVIDENCE_KINDS = ["file"];
 const int = (v: unknown, what: string) => {
   const n = Number(v);
   if (!Number.isSafeInteger(n) || n < 1) throw fail(400, `${what} must be a positive integer`);
@@ -134,11 +133,6 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
       if (!/^[\w./-]{1,500}$/.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw fail(400, `${path.slice(0, 100)} is not a path in the repository`);
       if (!/^[0-9a-f]{40}$/.test(ref)) throw fail(400, "ref is a full commit sha");
       return { kind, path, ref };
-    }
-    if (kind === "log") {
-      const bytes = b.bytes == null ? 512_000 : int(b.bytes, "bytes");
-      if (bytes < 1_000 || bytes > LOG_MAX) throw fail(400, `bytes must be 1,000 to ${LOG_MAX}`);
-      return { kind, id: int(b.id, "id"), bytes };
     }
     return { kind, number: int(b.number, "number") };
   }

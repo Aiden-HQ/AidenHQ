@@ -79,7 +79,7 @@
         "repos",
         "paths"
       ],
-      "description": "A graded head's own CI evidence: a file at an exact commit (only the paths listed) and an Actions job's log. Narrower than read: it reaches no PR, issue or arbitrary file.",
+      "description": "A graded head's own CI evidence: a file at an exact commit (only the paths listed). Narrower than read: it reaches no PR, issue or arbitrary file.",
       "properties": {
         "repos": {
           "type": "array",
