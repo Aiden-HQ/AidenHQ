@@ -3,7 +3,7 @@
 // for every engine. An engine runs in the check box: no credentials but the run's capped model token (OPENROUTER_API_KEY, through
 // the gateway at OPENROUTER_BASE_URL), no shell, its only view of the repo the read-only repo tools (review-tools.ts: the head
 // tree and the box's own history; nothing runs or connects), and nothing of the PR loaded as its config. The exception is
-// codex-native, whose shell runs under codex's read-only sandbox (below).
+// codex-native, whose shell has full access inside the box (below).
 //
 // codex: the CI reviewer's own runner and config (code-review.ts, synced from the CI template): shell, hooks, plugins, apps,
 //   memories and web search off, an empty cwd, project docs off. Every task is our prompt.
@@ -18,7 +18,9 @@
 //   the same model.
 // codex-native: OpenAI's built-in reviewer, `codex exec review --base <base>` (its own prompt; the brief as its developer
 //   instructions), in the box's checkout (review.ts history: base, head), through the gateway like codex. It reads the change with
-//   git through its shell, which runs under codex's read-only sandbox (no writes, no network), with no inherited environment
+//   git through its shell, which has full access inside the box (owner, 2026-11-21: review boxes may have a full shell and
+//   networking; they hold nothing but the run's capped, time-limited token; codex's own sandbox can't start under gVisor), with
+//   no inherited environment
 //   but PATH (never the run's token; a command that reads it from the process tree anyway is scrubbed: review.ts scrub); project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project
 //   never trusted (so none of the PR's .codex config loads). Its review (the rollout's ExitedReviewMode) is mapped to ours; it
 //   doesn't use our repo tools, so which parts of the change it read isn't tracked (said as incomplete). Recheck goes to codex.
@@ -238,14 +240,14 @@ export function nativeFindings(v: NativeReview, roots: string[]) {
   });
 }
 
-/** The codex config for its built-in review: the model through the gateway, the shell under the read-only sandbox, nothing of the repo loaded. */
+/** The codex config for its built-in review: the model through the gateway, the shell with full access in the box, nothing of the repo loaded. */
 export function nativeConfig({ model, effort, url, instructions }: { model: string; effort: string; url: string; instructions: string }) {
   const q = (s: unknown) => JSON.stringify(String(s)); // a TOML basic string is a JSON string
   return `model = ${q(model)}
 model_provider = "review"
 model_reasoning_effort = ${q(effort)}
 model_context_window = 262144
-sandbox_mode = "read-only"
+sandbox_mode = "danger-full-access"
 approval_policy = "never"
 web_search = "disabled"
 check_for_update_on_startup = false
@@ -290,7 +292,7 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
     cwd: root, minutes, env: { PATH: String(process.env.PATH), HOME: home, CODEX_HOME: home, CI_REVIEW_KEY: String(process.env.OPENROUTER_API_KEY ?? "") },
   });
   const events: NativeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  // It read the change: a command it ran (inside the sandbox) printed a diff. Not its exit code: codex chains commands.
+  // It read the change: a command it ran printed a diff. Not its exit code: codex chains commands.
   const read = events.some((e) => e.type === "item.completed" && e.item?.type === "command_execution" && /^diff --git /m.test(String(e.item.aggregated_output ?? "")));
   let rollouts: string[] = [];
   try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
