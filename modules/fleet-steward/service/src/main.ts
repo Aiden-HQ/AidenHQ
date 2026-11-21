@@ -72,8 +72,8 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
   return true;
 }
 
-/** A gate jammed two hours that the Steward didn't clear: the detector's own keys name each task or card. */
-const fileJam = (keys: string[]) => toChief(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${new Date().toISOString().slice(0, 13)}`);
+/** A gate jammed two hours that the Steward didn't clear: the detector's own keys name each task or card; one task per batch of keys. */
+const fileJam = (keys: string[]) => toChief(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${hashOf([...keys].sort().join(","))}`);
 
 const coach = coachReads({ kernel, kv, apps });
 const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, gradeFailures, log });

@@ -183,6 +183,15 @@ test("a task waiting over an hour on its delegator's call or an agent's task han
   assert.match(found[1].reason, /WOR-G has sat handed back to the owner for 120 min \(handback\)/);
 });
 
+test("handbacks past one pass's 20 reads are reached by the next pass: each task's creator is read once and kept", async () => {
+  const items = Array.from({ length: 25 }, (_, n) => ({ task: `h${n}`, identifier: `WOR-H${n}`, reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: `task:h${n}` }] }));
+  let reads = 0;
+  const c = checks({ kernel: { read: async () => (reads++, { createdByAgentId: "rm" }), call: async () => ({ tasks: items }) }, apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
+  assert.equal((await c.judgement()).length, 20);
+  assert.equal((await c.judgement()).length, 25);
+  assert.equal(reads, 25, "each creator read once");
+});
+
 test("a failed task lookup still raises the incident with the raw id, and is not remembered: the next run reads it again", async () => {
   const records = [7, 8, 9, 10, 11].map((h) => ({ task: "t9", identifier: null, judged: true, targets: ["acme/app|b"], decided_at: ago(h) }));
   let down = true;
@@ -422,7 +431,7 @@ test("a routine whose last 3 jobs failed is paused once and the chief of staff t
   const status = { v: "active" };
   const w = world({ a1: [...bad, job("j0", "a1", "done", 50)], a2: [job("k1", "a2", "done", 5, null)] }, status);
   assert.deepEqual((await w.c.routine()).map((i) => i.key), ["r1"]);
-  assert.deepEqual([w.paused, w.sent], [["r1"], [["Routine paused: Daily brief failed 3 runs in a row. Resume it once its cause is fixed.", "routine-paused:r1"]]]);
+  assert.deepEqual([w.paused, w.sent], [["r1"], [["Routine paused: routine r1 failed 3 runs in a row (fleet_status names it). Resume it once its cause is fixed.", "routine-paused:r1"]]]);
   assert.match((await w.c.routine())[0].reason, /paused after repeated failures/);
   assert.equal(w.paused.length, 1, "paused once");
   status.v = "active"; // resumed: only newer failures count
