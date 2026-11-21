@@ -28,7 +28,8 @@ export interface ToolsSpec { repo?: string; head: string; base: string; options:
 export type Failed = { id: string; why: string };
 const TAIL = 600;
 const MAX_OUTPUT = 64 << 20;
-const redact = (t: unknown) => scrub({ message: String(t ?? ""), read: true }).message;
+// Key-shaped text out of everything a tool wrote (it lands in a report). No known secret: the box holds none (scrub's default is the model key, unset here).
+const redact = (t: unknown) => scrub({ message: String(t ?? ""), read: true }, []).message;
 
 /** The environment a tool gets: the allowlist below plus writable caches under HOME. Never the model token (OPENROUTER_*), the
  * spec, the result file or anything else the box's process holds. */

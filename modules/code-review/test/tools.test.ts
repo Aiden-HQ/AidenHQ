@@ -59,6 +59,9 @@ test("tool env has no OPENROUTER_API_KEY, spec or result path, and a tool really
   const { ws, out } = checkout({ "a.txt": "x\n" });
   const r = await runTools({ ws, out, env: { PATH: process.env.PATH, HOME: out, OPENROUTER_API_KEY: "sk-or-secret-secret" }, spec: spec({ "x.env": { lens: "security", cmd: "echo \"a.txt:1: key=${OPENROUTER_API_KEY:-absent} (60% confidence)\"", output: "vulture" } }) });
   assert.match(r.findings[0].title, /key=absent/);
+  // The word "undefined" survives (scrub's default secret is the unset model key), a key-shaped string doesn't.
+  const k = await runTools({ ws, out, spec: spec({ "x.k": { lens: "security", cmd: "echo \"a.txt:1: undefined variable sk-abcdefghijklmnopqrstuvwx (60% confidence)\"", output: "vulture" } }) });
+  assert.equal(k.findings[0].title, "undefined variable [redacted]");
 });
 
 test("adapters read the real output of knip, jscpd, vulture, scc and the line tools", () => {
