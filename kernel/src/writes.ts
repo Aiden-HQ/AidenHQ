@@ -395,8 +395,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
         // The same executor (module, address and code revision) and the same kind declaration (policy), or the record is stale
         // (A9). A kind that declares `binds` is head-bound: it may be redeployed while the head it posts on stands, so its code
-        // revision is not compared (the kind's declaration still is: a raised floor or a new panel requirement holds it). An
-        // executor that refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.
+        // revision is not compared. Its declaration still is: `policy` hashes the whole kind (floor, panel, `binds`), so a raised
+        // floor, a new panel requirement or a changed binding holds a record approved under the old one, and the record's own
+        // targets are then compared with the fields it was filed under. An executor that refuses the plan now (a 4xx) makes it
+        // stale; one that can't answer now is tried again.
         const binds = k?.binds?.length ? k.binds : undefined;
         const same = k && k.module === pre.executor.module && k.executor?.url === pre.executor.url
           && policy(k) === pre.policy && (binds ? true : k.executor?.rev === pre.executor.rev);

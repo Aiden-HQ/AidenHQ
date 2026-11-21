@@ -273,6 +273,15 @@ test("a head-bound kind keeps its approval requirements, and a plan that names n
   await until(() => k.records.get(raised.approval).state === "stale");
   assert.equal(k.records.get(raised.approval).state, "stale");
   assert.equal(fx.executes.filter((e) => e.id === raised.approval).length, 0);
+  // A changed binding declaration (a different set of fields, though the head still stands) is the same: the record was approved
+  // for the fields it was filed under, so a narrower one must not let it run on what it was never approved to bind to.
+  writeFileSync(join(k.dir, "writes.json"), JSON.stringify({ ...kinds, "twin.head": { ...kinds["twin.head"], binds: ["commit"] } }));
+  const rebound = await pending(await tool("head_post"));
+  writeFileSync(join(k.dir, "writes.json"), JSON.stringify({ ...kinds, "twin.head": { ...kinds["twin.head"], binds: ["repo", "commit"] } }));
+  await review(rebound.approval, verdict);
+  await until(() => k.records.get(rebound.approval).state === "stale");
+  assert.equal(k.records.get(rebound.approval).state, "stale");
+  assert.equal(fx.executes.filter((e) => e.id === rebound.approval).length, 0);
   // The redeploy alone (the code revision) still does not stale it once the stricter kind is back to the record's policy.
   writeFileSync(join(k.dir, "writes.json"), JSON.stringify(kinds));
   const bound = await pending(await tool("head_post"));

@@ -19,8 +19,9 @@ a change too large to read) goes back to the agent, never to the owner.
   record as stale and it is filed again. A kind that declares `binds` (a head-bound write, such as a review post of one
   pull request at one commit) is judged on those target fields alone: a redeployed executor, a moved base or other text on
   the pull request never stales it while the head it acts on stands. Its kind declaration is still compared (the `policy`
-  hash: a raised floor or a new panel requirement holds a record approved under the old one), and a plan that names no
-  bound target is refused at filing rather than carded. Every other kind keeps the full revalidation (executor revision,
+  hash covers the whole kind, `binds` included: a raised floor, a new panel requirement or a changed binding holds a record
+  approved under the old one), and the record's own targets are compared under the fields it was filed with. A plan that
+  names no bound target is refused at filing rather than carded. Every other kind keeps the full revalidation (executor revision,
   policy, args and targets).
 - **The reviewer can only escalate.** It may approve or reject a Tier 1 card, add the second reviewer (`second_review`), or
   hand it to the owner. It never lowers a tier, never removes code's panel flag and never decides Tier 2 on its merits.

@@ -40,6 +40,24 @@ test("a refused post's notice carries the fixed reason, and its run's reason is 
   assert.deepEqual([notice.kind, notice.args.phase, notice.args.reason, notice.args.run], ["code-review.notice", "failed", "post_refused", "cr-1"]);
 });
 
+test("a reason goes only on the phase its words belong to: a failed run on budget keeps the generic failed notice", async () => {
+  const calls = [];
+  const kernel = { call: async (m, path, body) => (calls.push([path, body]), path === "/v1/tasks" ? { id: "t-1" } : { id: "k-1", state: "review" }) };
+  const poster = kernelPoster(kernel);
+  // A commanded run that fails with a budget-tier check error classifies as a skip reason, but its phase is failed: sending it
+  // would be refused by the notice schema's phase/reason pairing, losing the notice. The generic failed notice is filed instead.
+  await poster.ack({ repo: "acme/x", number: 3, head, state: "failed", run: "cr-2", why: "budget: the repo's daily budget is used up" });
+  const notice = calls.find(([p]) => p === "/v1/writes")[1];
+  assert.deepEqual([notice.args.phase, notice.args.reason, notice.args.run], ["failed", undefined, "cr-2"]);
+  // The refusal's reason still rides its failed phase, and a skip's its skipped one.
+  calls.length = 0;
+  await poster.ack({ repo: "acme/x", number: 3, head, state: "failed", run: "cr-3", why: "not posted: write k-1 stale" });
+  assert.equal(calls.find(([p]) => p === "/v1/writes")[1].args.reason, "post_refused");
+  calls.length = 0;
+  await poster.ack({ repo: "acme/x", number: 3, head, state: "skipped", run: "cr-4", why: "budget: the repo's daily budget is used up" });
+  assert.equal(calls.find(([p]) => p === "/v1/writes")[1].args.reason, "budget_repo");
+});
+
 test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it, rechecking the open findings", async () => {
   const { checkSpec } = await import("../service/src/adapters.ts");
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
