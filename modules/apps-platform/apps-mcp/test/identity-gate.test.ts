@@ -248,12 +248,17 @@ describe("identity gate", () => {
   // classified by its first message: an HTTP GET or TLS hello is hung up on, an SSLRequest gets "N", a startup message gets R.
   // SSLRequest is an 8-byte frame whose length is 8 and whose protocol code is 80877103 (0x04d2162f).
   const PG = `(s) => {
+    let got = Buffer.alloc(0);
     s.on("data", (d) => {
-      if (d[0] === 0x47) return s.destroy();
-      if (d[0] === 0x16) return s.destroy(); // a TLS hello: not a startup packet, so Postgres hangs up
-      if (d.length >= 8 && d.readUInt32BE(0) === 8 && d.readUInt32BE(4) === 80877103) return s.end("N");
-      const len = d.readUInt32BE(0), proto = d.readUInt32BE(4);
-      if (len !== d.length || proto !== 196608) return s.destroy();
+      got = Buffer.concat([got, d]);
+      if (got[0] === 0x47) return s.destroy();
+      if (got[0] === 0x16) return s.destroy(); // a TLS hello: not a startup packet, so Postgres hangs up
+      if (got.length < 4) return; // the length has not all arrived
+      const len = got.readUInt32BE(0);
+      if (got.length < len) return; // the frame has not all arrived
+      if (len === 8 && got.readUInt32BE(4) === 80877103) return s.end("N"); // SSLRequest
+      const proto = got.readUInt32BE(4);
+      if (len !== got.length || proto !== 196608) return s.destroy();
       s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
     });
   }`;
@@ -331,7 +336,7 @@ describe("identity gate", () => {
     // The factory stands in for net.connect: connection 1 answers the SSLRequest with "N" and trailing bytes; connection 2
     // (the startup message) hangs up without an answer, so the port is not identified. The reply is emitted after the probe
     // has attached its listeners, so its "end" is seen.
-    const controlled = (firstData: string, secondData: string | null, gap = 0) => `(() => {
+    const controlled = (firstData: string, secondData: string | null) => `(() => {
       const { EventEmitter } = require("events");
       let n = 0;
       return (host, port) => {
@@ -378,6 +383,12 @@ describe("identity gate", () => {
       expect(r.ok).toBe(false);
       expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
     }
+    // The strongest case: the refusal chunk carries trailing bytes and the second connection answers the startup message
+    // with a valid frame. The refusal is still not one byte, so the port stays hard however good the second reply is.
+    const trailingWithReply = controlled(`[Buffer.concat([Buffer.from("N"), ${frame}])]`, frame);
+    const r = await scan(db, [silent], { pg: trailingWithReply });
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
     // A server that refuses SSL on one connection and answers the startup message on a fresh one is identified: the frame
     // arrives only after this probe sent a startup message, so it is a real PostgreSQL reply, not trailing bytes.
     const answers = controlled(`[Buffer.from("N")]`, frame);
