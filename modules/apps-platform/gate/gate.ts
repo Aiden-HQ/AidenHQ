@@ -920,7 +920,16 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       for (const k of HOP) delete h[k];
       delete h["set-auth-token"]; // Better Auth's bearer header: the session token never leaves through the gate
       // An app can't set (or overwrite) any auth cookie; the auth listener's must be host-only (no Domain).
-      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (cfg.previews || cfg.login === "header-jwt" || a.site.door) ? hostOnly(c) : c));
+      let cur = cfg;
+      if (h["set-cookie"]) {
+        try {
+          cur = config(); // cookie isolation follows the policy as of now; unreadable refuses just this response (outside serve()'s .catch)
+        } catch {
+          r.destroy();
+          return plain(res, 503, "unavailable: the gate can't read its config right now");
+        }
+      }
+      const kept = [h["set-cookie"] ?? []].flat().filter((c) => !AUTH_COOKIE.test(cookieName(c)) || (a.auth && !/;\s*domain\s*=/i.test(c))).map((c) => (a.site && (cur.previews || cur.login === "header-jwt" || a.site.door) ? hostOnly(c) : c));
       if (kept.length) h["set-cookie"] = kept;
       else delete h["set-cookie"];
       if (a.auth && (/json/i.test(String(h["content-type"] ?? "")) || a.path.startsWith(`${AUTH_PATH}api/`))) return void tokenless(r, res, h);
@@ -951,11 +960,11 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     }
     const cfg = config(); // read again after the sign-in checks and kept for this upgrade: the callbacks below never read it
     const up = httpRequest({ host: "127.0.0.1", port: a.site.port, method: req.method, path: req.url, headers: upstreamHeaders(req, a.token!, { upgrade: true, strip: cfg.identity?.header, proto: cfg.origin?.scheme }) });
-    const raw = (status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
+    const raw = (cur: GateConfig, status: number | undefined, message: string | undefined, rawHeaders: string[]) => {
       let s = `HTTP/1.1 ${status} ${message}\r\n`;
       for (let i = 0; i < rawHeaders.length; i += 2) {
         if (rawHeaders[i]!.toLowerCase() === "set-cookie" && AUTH_COOKIE.test(cookieName(rawHeaders[i + 1]!))) continue; // as for responses
-        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (cfg.previews || cfg.login === "header-jwt" || a.site!.door) ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
+        s += `${rawHeaders[i]}: ${rawHeaders[i]!.toLowerCase() === "set-cookie" && (cur.previews || cur.login === "header-jwt" || a.site!.door) ? hostOnly(rawHeaders[i + 1]!) : rawHeaders[i + 1]}\r\n`;
       }
       return `${s}\r\n`;
     };
@@ -963,7 +972,16 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       usock.on("error", () => socket.destroy());
       usock.on("close", () => socket.destroy());
       socket.on("close", () => usock.destroy());
-      socket.write(raw(r.statusCode, r.statusMessage, r.rawHeaders));
+      let cur = cfg;
+      if (r.rawHeaders.some((x, i) => i % 2 === 0 && x.toLowerCase() === "set-cookie")) {
+        try {
+          cur = config();
+        } catch {
+          usock.destroy();
+          return void socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        }
+      }
+      socket.write(raw(cur, r.statusCode, r.statusMessage, r.rawHeaders));
       if (uhead.length) socket.write(uhead);
       if (head.length) usock.write(head);
       usock.pipe(socket).pipe(usock);
