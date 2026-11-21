@@ -76,6 +76,7 @@ export function judgePage(f: PageFacts, declared: boolean): Finding[] {
   if (status >= 500) return [{ hard: true, what: `the page answered ${status}` }];
   if (status >= 400) return strict(`the page answered ${status}`), out;
   if (f.contentType && !/text\/html|application\/xhtml/i.test(f.contentType)) return strict("not an HTML page", f.contentType.split(";")[0]), out;
+  if (f.timedOut && !status) return [{ hard: true, what: `the page never answered within ${PAGE_TIMEOUT_MS / 1000} s` }];
   if (f.timedOut) out.push({ hard: false, what: `didn't finish loading within ${PAGE_TIMEOUT_MS / 1000} s (checked what had loaded)` });
   for (const c of f.csp ?? []) out.push({ hard: false, what: "Content Security Policy blocked part of the page", untrusted_page_text: sample(c) });
   for (const r of f.failed ?? []) {

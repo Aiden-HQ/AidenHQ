@@ -27,6 +27,8 @@ describe("judging", () => {
     const broken = judgePage({ path: "/", status: 200, csp: ["x"], console: ["boom"], failed: [{ type: "script", url: "/a.js", why: "404" }], sheets: [{ href: "/a.css", applied: false }] }, true);
     expect(broken).toHaveLength(4);
     expect(broken.every((f) => !f.hard)).toBe(true);
+    expect(judgePage({ path: "/", timedOut: true }, false)[0]!.hard).toBe(true);
+    expect(judgePage({ path: "/", status: 200, timedOut: true }, false)[0]!.hard).toBe(false);
     expect(judgePage({ path: "/", status: 503 }, false)[0]!.hard).toBe(true);
     expect(judgeAgent({ status: 404, body: "" }, false)[0]!.hard).toBe(false);
     expect(judgeAgent({ status: 200, body: "<html>" }, false)[0]!.hard).toBe(true);

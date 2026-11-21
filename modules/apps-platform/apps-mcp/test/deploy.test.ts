@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createEngine, type Deps, STOPPED_OPEN } from "../src/deploy.js";
-import { NO_SIGN_IN, probeResult } from "../src/checks.js";
+import { NO_SIGN_IN, judgePage, probeResult } from "../src/checks.js";
 import { parseApp } from "../src/registry.js";
 import { openStore } from "../src/store.js";
 
@@ -94,7 +94,7 @@ describe("deploy engine", () => {
     expect(r).toMatchObject({ sha: "v1", status: "failed", stopped: STOPPED_OPEN });
     await expect(r0.engine.rollback(app(), { by: "t" })).rejects.toThrow(/no previous good deploy/);
   });
-  it("a healthy deploy whose page renders unstyled is rolled back, and says why", async () => {
+  it("a healthy deploy whose page answers 500 is rolled back, and says why", async () => {
     // v2 is healthy, but its render check finds the incident's signals: the deploy rolls back to v1.
     const { engine, st } = setup(["v1", "v2"], async () => [probeResult("render", "/", st.running === "v2" ? [{ hard: true, what: "the page answered 500" }] : [])]);
     await engine.deploy(app(), { sha: "v1", by: "t" });
@@ -102,6 +102,15 @@ describe("deploy engine", () => {
     expect(r).toMatchObject({ status: "rolled_back", previous: "v1" });
     expect(r.checks?.find((c) => c.probe === "render")?.ok).toBe(false);
     expect(st.running).toBe("v1");
+  });
+  it("a healthy deploy whose page renders unstyled or logs a console error stays up with warnings, first deploy included", async () => {
+    const facts = { path: "/", status: 200, console: ["boom"], sheets: [{ href: "/a.css", applied: false }] };
+    const { engine, st } = setup(["v1", "v2"], async () => [probeResult("render", "/", judgePage(facts, true))]);
+    expect(await engine.deploy(app(), { sha: "v1", by: "t" })).toMatchObject({ status: "healthy" });
+    const r = await engine.deploy(app(), { sha: "v2", by: "t" });
+    expect(r.status).toBe("healthy");
+    expect(r.checks?.find((c) => c.probe === "render")?.findings).toHaveLength(2);
+    expect(st.running).toBe("v2");
   });
   it("a first deploy that never gets healthy is stopped, not looped", async () => {
     const { engine } = setup([]);
