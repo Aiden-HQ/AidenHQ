@@ -304,10 +304,16 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     } else await unlabel(i, c);
     // The hold ends with its verdict's fact; `release` is one too: the check hands the decision to the task's delegator
     // (grading's escalation), so task state reads the task, still in review, as waiting on its delegator.
-    inTx(db, "finish_resolved", () => {
+    // A release with `before` deletes only a hold placed by then: a finish that held the task again meanwhile keeps its hold
+    // (the row is what the grader resolves; the label the release took is only the view), and nothing is recorded.
+    const cutoff = b.verdict === "release" && typeof b.before === "string" ? b.before : undefined;
+    const ended = inTx(db, "finish_resolved", () => {
+      if (cutoff && heldAt(id, i) > cutoff) return false;
       db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
       strict(verdictFact(i.id, id, String(b.verdict)));
+      return true;
     });
+    if (!ended) return { ok: true, held: false };
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     // Released with nobody to decide it: the chief of staff gets it. A failure is logged loudly; the release itself stands.
     if (b.verdict === "release") await released(i.id, id).catch((e: Error) => log("released hold reached nobody: the chief of staff wasn't told", { task: i.identifier, check: id, err: String(e.message).slice(0, 300) }));
