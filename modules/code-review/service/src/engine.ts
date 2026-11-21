@@ -452,9 +452,9 @@ export function createEngine(d: EngineDeps) {
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
   const CLOSE_MS = 10_000;
-  /** Closes the review tasks of closed PRs, side by side and each bounded; one that fails or hangs is tried again next tick. */
-  async function closeTasks() {
-    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").map(async (g) => {
+  /** Closes the review tasks of PRs a poll just found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */
+  async function closeTasks(polled: Set<string>) {
+    await Promise.all(all<{ repo: string; number: number }>("SELECT repo, number FROM prs WHERE open = 0 AND close_due = 1").filter((g) => polled.has(g.repo)).map(async (g) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([d.poster.close(g.repo, g.number, "The pull request is closed."), new Promise((_, no) => { timer = setTimeout(() => no(new Error("close timed out")), CLOSE_MS); })]);
@@ -470,9 +470,18 @@ export function createEngine(d: EngineDeps) {
 
   const errors = new Map<string, string>();
   async function tick() {
+    const polled = new Set<string>();
+    try {
+      await tickWork(polled);
+    } finally {
+      await closeTasks(polled);
+    }
+  }
+  async function tickWork(polled: Set<string>) {
     for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
+        polled.add(cfg.repo);
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
@@ -496,7 +505,6 @@ export function createEngine(d: EngineDeps) {
       const started = admit(r);
       if (started) await startRun(started);
     }
-    await closeTasks();
   }
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------

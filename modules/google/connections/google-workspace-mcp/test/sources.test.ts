@@ -73,6 +73,6 @@ it("src_docs: a transient failure (a 5xx, a rate limit 403) skips that doc unsta
       return { text: "text", truncated: false };
     },
   };
-  expect(await summariseDocs(store, drive, async () => "S", "m")).toBe(1);
+  await expect(summariseDocs(store, drive, async () => "S", "m")).rejects.toThrow(/503/); // the pass finished, then reported
   expect(writes.map((w) => w.row.doc_id)).toEqual(["d3"]);
 });
