@@ -92,8 +92,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           version = (await pc.comments(issue.id)).filter((c: Json) => (isUserInstruction(c) || (issue.createdByAgentId && c.authorAgentId === issue.createdByAgentId)) && c.createdAt > g.updatedAt).at(-1)?.id ?? "";
         } else {
           const ev = await gather(g.deliverable, gradeDeps(issue));
-          if (ev.awaiting) continue; // still moving (checks, merges, a card): the mark stays, the next look decides
-          version = ev.version ?? "";
+          // Still moving (checks, merges, a card): the mark stays and the next look decides, for a day. Then it is no new version:
+          // the row stays escalated and its hold goes back to the delegator (server.ts tick).
+          if (ev.awaiting && Date.now() - Date.parse(g.resubmittedAt) < GRADE_WAIT_MS) continue;
+          version = ev.awaiting ? "" : ev.version ?? "";
         }
         await api.post(`/internal/grades/${encodeURIComponent(g.issueId)}/resubmit`, { version });
       } catch (err: Json) {

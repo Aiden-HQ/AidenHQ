@@ -72,7 +72,7 @@ const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
 export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, facts, log }: {
-  /** Flow's fact log (facts.ts): job.queued and wake.bound at admission, job.held when it is refused or deferred. */
+  /** Flow's fact log (facts.ts): job.queued and wake.bound once an admitted job launched (or couldn't), job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
@@ -99,7 +99,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   launch: (job: Admitted) => Promise<void>;
   log: (msg: string, fields?: Record<string, unknown>) => void;
 }) {
-  // Strict: each fact is written in the admission's transaction, which fails with it.
+  // Strict: each fact is written in the transaction of the change it describes, which fails with it.
   const fact = facts ? strictFact(facts) : () => {};
   /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
   const launching = new Set<string>();
@@ -161,6 +161,13 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
+    let queuedAt = 0, wakeAt = 0;
+    // The job's queue and its wake's binding, as of its admission: written once the launch has an outcome (it started, or it
+    // couldn't), so a job deferred for want of a computer leaves no job.queued that nothing ends (its wake reads as held).
+    const queued = () => {
+      fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(queuedAt), actor: `agent:${keyOf(agent)}`, task, data: { wake: b.wake, wake_at: iso(wakeAt), agent: keyOf(agent) } });
+      fact({ type: "wake.bound", subject: `wake:${b.wake}`, version: `bound:${id}`, at: iso(queuedAt), actor: "kernel", task, data: { job: id } });
+    };
     db.exec("BEGIN IMMEDIATE");
     try {
       const w = wakes.claimed(module, b.wake);
@@ -191,9 +198,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
         .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
       wakes.bind(b.wake, id);
-      const at = Date.now();
-      fact({ type: "job.queued", subject: `job:${id}`, version: "queued", at: iso(at), actor: `agent:${keyOf(agent)}`, task, data: { wake: b.wake, wake_at: iso(w.at ?? at), agent: keyOf(agent) } });
-      fact({ type: "wake.bound", subject: `wake:${b.wake}`, version: `bound:${id}`, at: iso(at), actor: "kernel", task, data: { job: id } });
+      queuedAt = Date.now();
+      wakeAt = w.at ?? queuedAt;
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };
     } catch (e) {
@@ -214,8 +220,10 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
         // until the next kernel's recover() gives its wake back.
         try {
           inTx(db, "job_unstarted", () => {
-            if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes)
+            if (db.prepare("UPDATE jobs SET state = 'failed', final = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(why, Date.now(), id).changes) {
+              queued();
               fact({ type: "job.ended", subject: `job:${id}`, version: "ended", at: iso(Date.now()), actor: `agent:${keyOf(agent)}`, task, data: { state: "failed", exit: null, why, model: "", cost_usd: 0, input: 0, cached: 0, output: 0, acted: false } });
+            }
           });
         } catch (fe) {
           log("a job that couldn't start isn't recorded as ended", { job: id, task, err: (fe as Error).message });
@@ -230,6 +238,11 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       return { ...v, state: "deferred" };
     }
     launching.delete(id);
+    try {
+      inTx(db, "job_queued", queued);
+    } catch (e) {
+      log("a started job's queue facts aren't recorded", { job: id, task, err: (e as Error).message });
+    }
     nextTurn.taken(task);
     // The job is running: its waits and their facts end together, and a failure here never fails the admission.
     try {

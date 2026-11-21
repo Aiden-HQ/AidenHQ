@@ -20,7 +20,8 @@ type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?
 export type Kernel = {
   issue: (ref: string) => Promise<Issue>;
   repos: () => Promise<KnownRepos>;
-  release: (task: string) => Promise<void>;
+  /** True when the kernel held the task and released it to its delegator (false: nothing held it). */
+  release: (task: string) => Promise<boolean>;
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 /** Tools that hand a task to an agent and file its rubric: task_delegate, task_create with an assignee. */
@@ -176,7 +177,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     throw new HttpError(404, "no such route");
   }
 
-  /** Every five minutes: rows whose task closed before the grader settled them, and escalated rows with no saved delegators. */
+  /**
+   * Every five minutes: rows whose task closed before the grader settled them, escalated rows with no saved delegators, and the
+   * holds on escalated rows. An escalated grade is its delegator's: the finish gate holds the task again when its assignee finishes
+   * it again (completionGate), and once the runner has checked that finish for a new version and the row stayed escalated, the hold
+   * goes back to the delegator here; so does one an earlier release didn't reach. Releasing a task nothing holds changes nothing.
+   */
   async function tick() {
     try {
       const settled = await settleClosedGrades(grades, (id) => kernel.issue(id));
@@ -185,6 +191,13 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       if (filled.length) log("escalated grades given their creator as delegator", { tasks: filled.map((g) => g.issueId) });
     } catch (err) {
       log("settling closed grades failed", { err: String((err as Error).message ?? err) });
+    }
+    for (const g of grades.escalatedUnmarked()) {
+      try {
+        if (await kernel.release(g.issueId)) log("escalated grade's hold released to its delegator", { task: g.issueId });
+      } catch (err) {
+        log("escalated grade's hold not released", { task: g.issueId, err: String((err as Error).message ?? err).slice(0, 200) });
+      }
     }
   }
 

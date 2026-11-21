@@ -134,6 +134,8 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     if (reopened) log("wake reopened", { key, task });
   };
   const dropped = (w: { key: string; task: string }, why: string) => fact({ type: "wake.dropped", subject: `wake:${w.key}`, version: "dropped", at: iso(now()), actor: "kernel", task: w.task, data: { why: why.slice(0, 200) } });
+  /** A comment a job consumed (its prompt, or its live input, carried it): bound to that job, as admission binds a starter. */
+  const covered = (w: { key: string; task: string }, job: string) => fact({ type: "wake.bound", subject: `wake:${w.key}`, version: `bound:${job}`, at: iso(now()), actor: "kernel", task: w.task, data: { job } });
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
 
   /**
@@ -622,7 +624,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       try {
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
         const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
-        const set = (w: Wake, state: string, why: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); if (state === "dropped") dropped(w, why); };
+        // Every end has its fact: dropped, or done by the job that consumed it (else task state reads the wake as still pending or held).
+        const set = (w: Wake, state: "done" | "dropped", why: string, job?: string) => { q("UPDATE wakes SET state = ?, until = NULL WHERE key = ?").run(state, w.key); log(`wake ${state}`, { key: w.key, why }); if (state === "dropped") dropped(w, why); else covered(w, job!); };
         const take = { run: (module: string, until: number, key: string) => q("UPDATE wakes SET state = 'claimed', claimed_by = ?, until = ?, claimed_at = ? WHERE key = ?").run(module, until, t, key) };
         const out: (Wake & { live_job?: string })[] = [];
         const started = new Set<string>();
@@ -634,12 +637,12 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           if (live) {
             // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open).
             if (!comment) continue;
-            if (w.at < live.at) set(w, "done", `before the live job ${live.id} was claimed`);
+            if (w.at < live.at) set(w, "done", `before the live job ${live.id} was claimed`, live.id);
             else { take.run(module, t + LEASE_MS, w.key); out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS, live_job: live.id }); }
             continue;
           }
           const last = lastJob(w.task);
-          if (last && w.at < last.at) { set(w, comment ? "done" : "dropped", `before the job ${last.id} was claimed`); continue; }
+          if (last && w.at < last.at) { set(w, comment ? "done" : "dropped", `before the job ${last.id} was claimed`, last.id); continue; }
           // One starter per task: a pending one (claimed, no job yet, still leased) or the first here.
           const pending = q("SELECT key FROM wakes WHERE task = ? AND state = 'claimed' AND job IS NULL AND until > ? AND key != ?").get(w.task, t, w.key) as { key: string } | undefined;
           // Others stay open: the job the starter brings consumes them (older than its claim); a starter dropped without a job doesn't.
@@ -704,7 +707,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     },
     /** A claimed comment delivered into its live job (the input's ack). */
     delivered(module: string, key: string) {
-      return q("UPDATE wakes SET state = 'delivered', until = NULL WHERE key = ? AND state = 'claimed' AND claimed_by = ?").run(key, module).changes > 0;
+      return inTx(db, "wake_delivered", () => {
+        const w = q("SELECT key, task FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ?").get(key, module) as { key: string; task: string } | undefined;
+        const live = w && liveJob(w.task);
+        if (!w || !q("UPDATE wakes SET state = 'delivered', until = NULL WHERE key = ?").run(key).changes) return false;
+        if (live) covered(w, live.id);
+        return true;
+      });
     },
     get: (key: string) => q("SELECT * FROM wakes WHERE key = ?").get(key) as unknown as Wake | undefined,
     /** Whether a dispatcher that has joined runs this agent's wakes. */

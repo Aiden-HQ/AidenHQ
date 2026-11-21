@@ -42,13 +42,17 @@ test("backfillLocal twice records once, and never repeats a live fact", () => {
   const other = records.file(filing({ task: "t2" }));
   records.db.prepare("DELETE FROM facts WHERE subject = ?").run(`record:${other.id}`);
   // The columns it reads of jobs and wakes (jobs.ts, wakes.ts).
-  records.db.exec("CREATE TABLE jobs (id TEXT, agent TEXT, task TEXT, state TEXT, exit INTEGER, why TEXT, at INTEGER, ended INTEGER); CREATE TABLE wakes (key TEXT, task TEXT, cause TEXT, at INTEGER)");
+  records.db.exec("CREATE TABLE jobs (id TEXT, agent TEXT, task TEXT, state TEXT, exit INTEGER, why TEXT, at INTEGER, ended INTEGER); CREATE TABLE wakes (key TEXT, task TEXT, cause TEXT, at INTEGER, state TEXT)");
   const t0 = Date.parse("2026-11-18T10:00:00.000Z");
   records.db.prepare("INSERT INTO jobs VALUES ('j-1', 'ag-ada', 't1', 'done', 0, '{}', ?, ?), ('j-2', 'ag-ada', 't1', 'admitted', NULL, '{}', ?, NULL)").run(t0, t0 + 60_000, t0);
-  records.db.prepare("INSERT INTO wakes VALUES ('assigned:t1', 't1', 'assigned', ?)").run(t0 - 5_000);
-  assert.equal(backfillLocal(records.db, facts, { agentKey: (id) => (id === "ag-ada" ? "ada" : undefined) }), 4, "the lost record, j-1 started and ended, the wake");
+  records.db.prepare("INSERT INTO wakes VALUES ('assigned:t1', 't1', 'assigned', ?, 'done'), ('comment:c1', 't1', 'comment', ?, 'done')").run(t0 - 5_000, t0 - 2_000);
+  // Ends the kernel didn't write: a job deferred (its row gone, its queue never ended) and a comment a job consumed.
+  for (const [type, subject, version, data] of [["job.queued", "job:j-0", "queued", {}], ["wake.bound", "wake:assigned:t1", "bound:j-1", { job: "j-1" }]]) facts.record({ type, subject, version, task: "t1", at: new Date(t0 - 4_000).toISOString(), actor: "kernel", data });
+  assert.equal(backfillLocal(records.db, facts, { agentKey: (id) => (id === "ag-ada" ? "ada" : undefined) }), 7, "the lost record, j-1 started and ended, two wakes opened, j-0's end, c1 bound to j-1");
+  assert.equal(facts.forTask("t1").find((f) => f.subject === "job:j-0" && f.type === "job.ended").data.state, "deferred");
+  assert.deepEqual(facts.forTask("t1").filter((f) => f.type === "wake.bound").map((f) => [f.subject, f.data.job]), [["wake:assigned:t1", "j-1"], ["wake:comment:c1", "j-1"]]);
   assert.equal(backfillLocal(records.db, facts), 0);
-  const ended = facts.forTask("t1").find((f) => f.type === "job.ended");
+  const ended = facts.forTask("t1").find((f) => f.type === "job.ended" && f.subject === "job:j-1");
   assert.deepEqual([ended.subject, ended.actor, ended.at, ended.source, ended.data.state], ["job:j-1", "agent:ada", "2026-11-18T10:01:00.000Z", "backfill", "done"]);
 });
 
