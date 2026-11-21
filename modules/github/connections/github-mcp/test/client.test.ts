@@ -73,3 +73,70 @@ it("status lines say what works and the one fix", () => {
     ["Projects boards", "needs permission", "Reconnect"],
   ]);
 });
+
+it("content-creating writes go one at a time, a second apart; reads are not paced", async () => {
+  let clock = 1_000_000;
+  const sent: { at: number; method: string }[] = [];
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (_u, init) => {
+      sent.push({ at: clock, method: String(init?.method) });
+      clock += 50;
+      return answer(201, {});
+    },
+  });
+  await Promise.all([
+    access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" }),
+    access.rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "b" }),
+    access.graphql("mutation { x }", {}),
+    access.rest("GET", "/repos/acme/api"),
+  ]);
+  const writes = sent.filter((s) => s.method === "POST");
+  expect(writes).toHaveLength(3);
+  expect(writes[1]!.at - (writes[0]!.at + 50)).toBeGreaterThanOrEqual(1000);
+  expect(writes[2]!.at - (writes[1]!.at + 50)).toBeGreaterThanOrEqual(1000);
+  // The read went out without waiting for the write queue's gaps.
+  expect(sent.find((s) => s.method === "GET")!.at).toBeLessThan(writes[1]!.at);
+});
+
+it("a secondary-limit 403 pauses the queue (reads keep working), then retries the write", async () => {
+  let clock = 1_000_000;
+  const sent: { at: number; method: string }[] = [];
+  let refused = 0;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (_u, init) => {
+      sent.push({ at: clock, method: String(init?.method) });
+      if (init?.method === "POST" && refused++ < 2) {
+        return answer(403, { message: "You have exceeded a secondary rate limit and have been temporarily blocked from content creation." }, refused === 1 ? {} : { "retry-after": "10" });
+      }
+      return answer(200, {});
+    },
+  });
+  const start = clock;
+  const r = await access.rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "x" });
+  expect(r.status).toBe(200);
+  const posts = sent.filter((s) => s.method === "POST");
+  expect(posts).toHaveLength(3);
+  expect(posts[1]!.at - start).toBeGreaterThanOrEqual(60_000);
+  expect(posts[2]!.at - posts[1]!.at).toBeGreaterThanOrEqual(10_000);
+  // A read during a block is not refused.
+  await access.rest("GET", "/repos/acme/api");
+});
+
+it("a write that stays refused past the patience fails as a transient rate_limited need", async () => {
+  let clock = 1_000_000;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async () => answer(403, { message: "secondary rate limit" }, { "retry-after": "400" }),
+  });
+  const err = await access.rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need.cause).toBe("rate_limited");
+});
