@@ -43,7 +43,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
 const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
@@ -123,9 +123,10 @@ const pr = (link) => {
 const cloneOf = (repo) => {
   const [org, name] = repo.split("/");
   const want = repo.toLowerCase();
+  // git config exits 1 for no origin; any other failure (an unreadable clone) names no repository.
   const names = (d) => {
-    let o = "";
-    try { o = execFileSync("git", ["-C", d, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch {}
+    let o;
+    try { o = execFileSync("git", ["-C", d, "config", "--get", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, ""); } catch (e) { return e.status === 1; }
     return !o || o.endsWith(`/${want}`) || o.endsWith(`:${want}`);
   };
   const there = [name, `${org}--${name}`].map((d) => join(workspace, d)).filter((d) => existsSync(join(d, ".git")));
@@ -223,7 +224,7 @@ if (command === "publish" || command === "review") {
   if (words.length !== 1) fail("usage: aidenhq create-repo [<org>/]<name>", 2);
   lines.push(`${words[0]}: ${(await write("codehost.create_repo", { repo: words[0] }))}`);
 } else if (command === "clone") {
-  if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone <org/name>", 2);
+  if (words.length !== 1 || !/^[\w.-]+\/[\w.-]+$/.test(words[0])) fail("usage: aidenhq clone [--keep] <org/name>", 2);
   const [org, name] = words[0].split("/");
   // The clone already here (as the job's start made it) is refreshed; else a new one at <name>. A clone of another
   // repository (another org's <name>) is never fetched into.

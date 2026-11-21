@@ -149,13 +149,15 @@ async function imageNamed(name: unknown) {
 }
 /** A free slot for a new box: the least recently used idle box goes (never a leased job's); all busy → wait up to 45 s. */
 async function makeRoom() {
+  const stuck = new Set<string>(); // idle boxes Docker didn't remove this time: the next one is tried
   for (let waited = 0; ; waited += 1000) {
     const max = maxBoxes();
-    const evict = admit(boxes, max, held);
+    const evict = admit(boxes, max, (n) => held(n) || stuck.has(n));
     if (evict === null) return;
     if (evict !== "wait") {
       if (await destroy(evict, "evicted (computers full)")) return;
-      throw fail(503, `couldn't free a computer (${evict} wasn't removed); try again shortly`);
+      stuck.add(evict);
+      continue;
     }
     if (waited >= 45_000) throw fail(503, `all ${max} computers are busy; try again shortly`);
     await new Promise((r) => setTimeout(r, 1000));
