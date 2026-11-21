@@ -25,7 +25,7 @@
 //   tick only as a backstop. A hold the loop left is released once, when that is safe.
 import type { Api } from "./channels.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { inTx, iso, strictFact, type Log } from "./factlog.ts";
+import { inTx, iso, type Log } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import type { TaskStateRead } from "./task-state-read.ts";
 import { fail } from "./proxy.ts";
@@ -81,7 +81,6 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   keyOf?: (agent: string) => string;
   now?: () => number; log?: Log;
 }) {
-  const fact = facts ? strictFact(facts) : () => {};
   db.exec(PARK_DDL);
   const q = (sql: string) => db.prepare(sql);
   /** Whether a task's own wait is armed: an open `wait:` wake (a new wait replaces the last; a bound, dropped or replaced one
@@ -353,16 +352,24 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
       // on them as before.
       const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked) : undefined;
-      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task isn't waiting. Decide with your handbook, brief and advisor, and note the assumption in your result.");
-      // One open ask per task, for one recipient: a question for the same recipient replaces the recorded ask (escalate.ask).
-      // Another recipient, or a state that can't be read now, fails the call instead of reporting a wait nothing recorded.
+      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task's wait is unchanged. Decide with your handbook, brief and advisor, and note the assumption in your result.");
+      // One open ask per task: a different question while the recorded one is unanswered fails the call, actionably (escalate.ask
+      // answers only a retry of the same question). A state that can't be read now fails the call too.
       if (r?.sent === "open" && r.to) throw fail(409, "conflict", `This task's earlier question is still open with ${r.to}: tell that recipient to answer it, or finish the work that asks, then ask again. Nothing was sent and this task's wait is unchanged.`);
-      if (r?.sent === "open") throw fail(503, "unavailable", "This task's ask state can't be read now, so nothing was sent and this task isn't waiting. Try again.");
+      if (r?.sent === "open") throw fail(503, "unavailable", "This task's ask state can't be read now, so nothing was sent and this task's wait is unchanged. Try again.");
       if (r?.sent === "ambiguous") throw fail(409, "conflict", "This task's earlier question is still open, but its recipient can't be told apart from the record (it was asked before the kernel recorded the exact destination), so nothing was sent: have that question answered with a comment on the task, then ask again.");
+      // A retry of the question already open reuses that wait: nothing is sent, nothing recorded, and its own deadline stands.
+      if (r?.sent === "same") {
+        const at = state.read({ ids: [caller.task] }).tasks[0]?.wait_until;
+        return { waiting: true, until: at ?? iso(until), to: r.to as AskTo, asked: true };
+      }
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
+      // A marker only for a question the kernel actually asked: a handoff, or an ask that found the task gone, records none, so
+      // it can't later block a real question as "still open" with a recipient nobody wrote to.
+      const askedOf = r && (r.sent === "asked" || r.sent === "recorded") ? (r.to as AskTo) : undefined;
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
-        if (who && escalate) escalate.record(caller.task, to as AskTo, t);
+        if (askedOf) escalate!.record(caller.task, askedOf, t);
         // A replacement can arrive in the same millisecond as the wait it replaces: give its fact and wake their own id, or
         // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
         let n = 0;
