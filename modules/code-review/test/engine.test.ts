@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readConfig } from "../service/src/config.ts";
 import { createEngine, DEBOUNCE } from "../service/src/engine.ts";
 import { parseCommand } from "../service/src/commands.ts";
+import { reasonOf } from "../service/src/adapters.ts";
 
 const sha = (c) => c.repeat(40);
 const REPO = "acme/payments";
@@ -224,6 +225,34 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   for (const p of w.posted) assert.deepEqual(p.target, { repo: REPO, number: 1, head: sha("1"), once: false });
   assert.equal(w.posted.find((p) => p.review.engine === "codex").review.cost_usd, 0.7);
   await assert.rejects(w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/1`, combos: [{ ...CLAUDE, effort: "minimal" }] }), /effort for claude-code/);
+});
+
+test("a refused post is not silent: the run keeps the reason and the pull request is told, in fixed words, that its head's review was not posted", async () => {
+  const w = world();
+  await w.tick();
+  w.later(1000);
+  w.pr(2, sha("2"));
+  await w.tick();
+  w.finish(0); // the review ran and the post was filed
+  w.later(5000);
+  await w.tick();
+  assert.equal(w.posted.length, 1);
+  // The kernel refuses the post: stale (its approval changed under it), rejected by the reviewer, or failed in the executor.
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale: what it acts on changed since it was approved" });
+  await w.tick();
+  const [run] = w.engine.runs({ repo: REPO });
+  assert.deepEqual([run.status, run.why], ["failed", "not posted: write k-1 stale: what it acts on changed since it was approved"]);
+  // The notice is on the pull request, as the failed phase with the refused-post reason (the PR's task is quiet, not loud).
+  const refused = w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:"));
+  assert.equal(refused.length, 1);
+  assert.deepEqual([refused[0].number, refused[0].head, refused[0].run], [2, sha("2"), run.id]);
+  // Whichever way the kernel refused it, the notice is the run's own failed phase; the poster files that as the fixed
+  // refused-post reason (adapters.ts reasonOf). A rejection's words stay on the run row, never on the pull request.
+  assert.equal(reasonOf(refused[0].why), "post_refused");
+  assert.equal(reasonOf("not posted: write k-1 rejected: the review widens what it posts"), "post_refused");
+  // Filed once: a later tick settles nothing new (posted is set, so the pending scan leaves it).
+  await w.tick();
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
 });
 
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {

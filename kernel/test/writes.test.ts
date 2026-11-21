@@ -9,7 +9,7 @@ import { reviewInput, requestChain } from "../src/review-loop.ts";
 import { CONN_TOOL_ARGS_MAX } from "../src/writes.ts";
 import { carryTarget } from "../src/successor.ts";
 import { kernel, moduleServer, readBody, serve } from "./helpers.ts";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -22,33 +22,36 @@ import { createRouting } from "../src/routing-tune.ts";
 const jwt = (run, who) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ run_id: run, who })).toString("base64url")}.sig`;
 const ADA = jwt("run-1", "ada"), BO = jwt("run-2", "bo");
 const agents = { [ADA]: { id: "ag-ada", name: "Ada" }, [BO]: { id: "ag-bo", name: "Bo" } };
-const TOOLS = ["note_read", "post_note", "ping", "note_write", "note_drop"];
+const TOOLS = ["note_read", "post_note", "ping", "note_write", "note_drop", "head_post"];
 const grants = { "ag-ada": { key: "ada", roles: [], tools: { twin: TOOLS } }, "ag-bo": { key: "bo", roles: [], tools: { twin: ["note_read"] } } };
 const secrets = { twin_service_key: "twin-key", other_service_key: "other-key" };
 const until = async (fn) => { for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
 const text = async (r) => (await r.json()).result.content[0].text;
 
-async function twin(t, { satisfied, settings, onControl, issues, agents: who = agents } = {}) {
-  const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
+async function twin(t, { satisfied, settings, onControl, issues, agents: who = agents, binds } = {}) {
+  const fx = { plans: [], executes: [], target: "c1", base: "b1", satisfied: false, ...(satisfied ? { satisfied } : {}), headTargets: { "acme/x#1": { repo: "acme/x", ref: "pull/1", commit: "h1", base_sha: "b1" } } };
   let handler = () => false;
   const ex = await serve(async (req, res) => { if (fx.down && req.url.endsWith("/plan")) return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"starting"}'); if (!(await handler(req, res))) res.writeHead(404).end(); });
   t.after(() => ex.s.close());
   const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
+  const kinds = {
+    "twin.post": { module: "twin", floor: 1, tools: ["twin.post_note"], card: { sentence: "Post {{note}}.", details: "note: {{note}}\ntarget: {{target}}" }, executor,
+      args: { type: "object", additionalProperties: false, required: ["note"], properties: { note: { type: "string", maxLength: 100 } } } },
+    // A head-bound kind (a review post is one): only its target's repo, ref and commit decide whether it is still valid.
+    "twin.head": { module: "twin", floor: 1, tools: ["twin.head_post"], ...(binds ? { binds } : {}), executor },
+    "twin.ping": { module: "twin", floor: 0, tools: ["twin.ping"], executor },
+  };
   const verdicts = [];
   const k = await kernel(t, {
     agents: who, grants, secrets, settings, onControl, issues, reviewer: () => verdicts.shift(),
     // A kernel job of ag-bo on TASK-7 whose frozen authority names the write kinds after its id's "jw:" (a comma list).
     job: (id) => (id.startsWith("jw:") ? { agent: "ag-bo", task: "TASK-7", state: "running", identifier: "TASK-7", authority: { tools: {}, jobcaps: [], writes: id.slice(3).split(",").filter(Boolean), roles: [] } } : undefined), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" },
     connections: {
-      twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write"], destructive: ["note_drop"] } },
+      twin: { url: `${mod.url}/mcp`, auth_secret: "twin_service_key", module: "twin", returns: "untrusted", tools: { read: ["note_read"], write: ["post_note", "ping", "note_write", "head_post"], destructive: ["note_drop"] } },
       other: { url: `${mod.url}/mcp`, auth_secret: "other_service_key", module: "other", returns: "untrusted", tools: { read: [], write: [], destructive: [] } },
     },
-    writes: {
-      "twin.post": { module: "twin", floor: 1, tools: ["twin.post_note"], card: { sentence: "Post {{note}}.", details: "note: {{note}}\ntarget: {{target}}" }, executor,
-        args: { type: "object", additionalProperties: false, required: ["note"], properties: { note: { type: "string", maxLength: 100 } } } },
-      "twin.ping": { module: "twin", floor: 0, tools: ["twin.ping"], executor },
-    },
+    writes: kinds,
   });
   handler = serveExecutor({
     plan: async (req) => {
@@ -56,7 +59,8 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
       if (fx.refuse) throw Object.assign(new Error(fx.refuse.message), fx.refuse.code ? { code: fx.refuse.code } : {});
       if (fx.satisfied) return { args: { note: String(req.args.note) }, satisfied: { evidence: fx.satisfied } };
       if (req.kind === "twin.ping") return { args: {} };
-      return { args: { note: String(req.args.note ?? "") }, targets: { commit: fx.target }, card: { target: fx.target } };
+      if (req.kind === "twin.head") return { args: {}, targets: fx.headTargets, card: { target: String(fx.headTargets["acme/x#1"]?.commit ?? "none") } };
+      return { args: { note: String(req.args.note ?? "") }, targets: { commit: fx.target, base_sha: fx.base }, card: { target: fx.target } };
     },
     execute: async (rec) => (fx.executes.push(rec), { ok: true, text: `posted ${rec.args.note ?? "ping"}` }),
   }, { key: "twin-key", kernelUrl: k.url });
@@ -67,7 +71,9 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
     if (v) verdicts.push(v);
     try { return { status: 200, json: await k.writes.review(id, { input: { model: "~acme/model-a", ...input }, request: { card: {} } }) }; } catch (e) { return { status: e.status ?? 500, json: { error: e.message } }; }
   };
-  return { k, fx, mod, tool, pending, review, moduleCalls: () => mod.seen.filter((s) => s.method === "tools/call").map((s) => s.name) };
+  /** The compiled kinds file rewritten (a redeployed executor's new revision): the kernel's watcher reads it on its next look. */
+  const redeploy = (rev) => writeFileSync(join(k.dir, "writes.json"), JSON.stringify(Object.fromEntries(Object.entries(kinds).map(([id, w]) => [id, w.executor ? { ...w, executor: { ...w.executor, rev } } : w]))));
+  return { k, fx, mod, tool, pending, review, redeploy, moduleCalls: () => mod.seen.filter((s) => s.method === "tools/call").map((s) => s.name) };
 }
 
 test("the executor sees nothing before approval; approved, it runs once and the task hears the outcome", async (t) => {
@@ -199,6 +205,60 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   assert.equal((await k.v1("GET", "/v1/writes?state=owner")).json.records.find((r) => r.id === merit.id)?.merit, 2);
   const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, review_first: "final", state: "review" });
   assert.equal((await review(capped.id, { decision: "reject", reason: "no", model: "~acme/model-a" })).json.record.state, "rejected");
+});
+
+test("a head-bound kind stays valid when its executor revision or base moves; every other kind still goes stale", async (t) => {
+  const { k, fx, tool, pending, review, redeploy } = await twin(t, { binds: ["repo", "ref", "commit"] });
+  const verdict = { decision: "approve", reason: "ok", model: "~acme/model-a" };
+  // Filed for head h1 of acme/x#1, then the module is redeployed (a new code revision) and the pull request's base moves before
+  // the reviewer's yes runs it: neither is what this post acts on, so it runs and posts at h1.
+  const bound = await pending(await tool("head_post"));
+  redeploy("r-next");
+  fx.headTargets["acme/x#1"].base_sha = "b2";
+  assert.equal((await review(bound.approval, verdict)).json.record.state, "approved");
+  await until(() => k.records.get(bound.approval).state === "done");
+  assert.equal(fx.executes.filter((e) => e.id === bound.approval).length, 1);
+  // It was planned again before running (the stale check is still a re-plan), and only repo, ref and commit were compared.
+  assert.equal(fx.plans.filter((p) => p.kind === "twin.head" && p.revalidate).length, 1);
+
+  // The head it is of moving is what stales it.
+  const moved = await pending(await tool("head_post"));
+  fx.headTargets["acme/x#1"].commit = "h2";
+  await review(moved.approval, verdict);
+  await until(() => k.records.get(moved.approval).state === "stale");
+  assert.equal(k.records.get(moved.approval).state, "stale");
+  assert.equal(fx.executes.filter((e) => e.id === moved.approval).length, 0);
+
+  // A re-plan that no longer names what it acts on (an empty target, a missing commit) is stale: a head-bound record never runs
+  // on a plan that can't say which head it is of.
+  const unnamed = await pending(await tool("head_post"));
+  fx.headTargets["acme/x#1"].commit = "";
+  await review(unnamed.approval, verdict);
+  await until(() => k.records.get(unnamed.approval).state === "stale");
+  assert.equal(k.records.get(unnamed.approval).state, "stale");
+  // Nor does one whose plan names no target at all: two blank plans are not "the same".
+  fx.headTargets = {};
+  const blank = await pending(await tool("head_post"));
+  await review(blank.approval, verdict);
+  await until(() => k.records.get(blank.approval).state === "stale");
+  assert.equal(k.records.get(blank.approval).state, "stale");
+  fx.headTargets = { "acme/x#1": { repo: "acme/x", ref: "pull/1", commit: "h1", base_sha: "b2" } };
+
+  // Every other kind keeps today's full revalidation. A redeployed executor stales it...
+  fx.headTargets["acme/x#1"].commit = "h1";
+  const revised = await pending(await tool("post_note", { note: "n" }));
+  redeploy("r-later");
+  await review(revised.approval, verdict);
+  await until(() => k.records.get(revised.approval).state === "stale");
+  assert.equal(k.records.get(revised.approval).state, "stale");
+  assert.equal(fx.executes.filter((e) => e.id === revised.approval).length, 0);
+  // ...and so does a base that moved under it.
+  const based = await pending(await tool("post_note", { note: "m" }));
+  fx.base = "b2";
+  await review(based.approval, verdict);
+  await until(() => k.records.get(based.approval).state === "stale");
+  assert.equal(k.records.get(based.approval).state, "stale");
+  assert.equal(fx.executes.filter((e) => e.id === based.approval).length, 0);
 });
 
 test("a module write on a task under a routine's run task gets that routine's autonomy cap, as the runner's kinds do", async (t) => {

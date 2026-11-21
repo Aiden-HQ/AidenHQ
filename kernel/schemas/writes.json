@@ -13,6 +13,13 @@
       "floor": { "enum": [0, 1, 2], "description": "the lowest tier; the instance may raise it (writes.<kind>.floor), plan may raise a request" },
       "panel": { "type": "boolean", "description": "a second reviewer of another model family must approve too" },
       "paths": { "const": true, "description": "a repository write: its plan returns `paths` ([{ repo, files: [{ path, from? }] }], read from git) and the path inventory raises its tier (kernel/src/paths.ts); without them it is the owner's" },
+      "binds": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "description": "a head-bound write (a review post on one commit): the target fields it acts on (repo, ref, commit). Staleness is judged on these alone, so a redeployed executor, a moved base or other text on the pull request never stales a post whose head stands; every other kind keeps full revalidation.",
+        "items": { "enum": ["repo", "ref", "commit"] }
+      },
       "card": {
         "type": "object",
         "additionalProperties": false,

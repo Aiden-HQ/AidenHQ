@@ -128,7 +128,10 @@ asks the service itself (a status is forgeable by any writer and per commit, not
 Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
 finding is gone on the next run are resolved, only when Aiden posted them (first comment by the posting identity with our
 finding marker). The acknowledgement comment is one per PR: with several combos it shows the latest run to finish (each review
-names its own combo).
+names its own combo). A post the kernel refused (stale, rejected, or failed in the executor) is never silent: the run row keeps
+the reason, and the acknowledgement says, in fixed words, that the review of that head was not posted and to ask again with
+`@aiden review` (a per-push run has no author to tell, so the pull request is where it is said). A post is bound to its head
+alone (the kind declares `binds`): redeploying this module or the base moving never stales a review of a standing head.
 
 Identity: the owner's own GitHub sign-in, COMMENT reviews only, each text ending with the AidenHQ footer (each post still a
 Tier 1 write); "ours" is a thread whose first comment is in AidenHQ's records (`/v1/objects`) and carries the finding marker.

@@ -78,6 +78,9 @@ export function reasonOf(why: string | undefined): string | undefined {
   const w = String(why ?? "");
   if (w.startsWith("budget: the instance")) return "budget_instance";
   if (w.startsWith("budget")) return "budget_repo";
+  // A post the kernel refused after its review ran (refused, stale, rejected): the run row keeps the reason, the PR's notice
+  // says in fixed words that this head's review was not posted.
+  if (/^not posted:/.test(w)) return "post_refused";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
 }

@@ -26,8 +26,14 @@ import { gateMode } from "./gates.ts";
 import { REVIEW_TRIES, afterReview, requestHash, capText, codeVerdict, computeTier, failedVerdict, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
-/** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
-export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
+/** The target fields a head-bound kind can bind to: what it acts on, per target, instead of its whole plan. */
+export type Bind = "repo" | "ref" | "commit";
+/**
+ * One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`.
+ * `binds`: a head-bound write (a review post on one commit): staleness is judged on these target fields alone, not on the
+ * executor's code revision, the kind's declaration, its args or its other targets (writes.ts `boundOf`).
+ */
+export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; binds?: Bind[]; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
 /**
  * A plan (executor@1's, or the kernel's own planner's). `review_first` with a Tier 2 raise: how the reviewer's verdict on it
  * stands ("final": its reject is final, its approve goes on to the owner; "owner", the default: both go on to the owner).
@@ -185,6 +191,25 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (hit) return hit[0];
     const c = conn(connection);
     return c && (c.tools.write.includes(tool) || c.tools.destructive.includes(tool)) ? CONN_TOOL : undefined;
+  }
+
+  /**
+   * What a head-bound kind (`binds`) acts on, from its plan's targets: each target's named fields, keyed as the plan keys it.
+   * Undefined when a target isn't an object or lacks a bound field: a plan that names nothing it binds to is stale, never valid.
+   */
+  function boundOf(targets: Record<string, unknown>, fields: readonly string[]): string | undefined {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [key, t] of Object.entries(targets)) {
+      if (!t || typeof t !== "object" || Array.isArray(t)) return undefined;
+      const pick: Record<string, unknown> = {};
+      for (const f of fields) {
+        const v = (t as Record<string, unknown>)[f];
+        if (v === undefined || v === null || v === "") return undefined;
+        pick[f] = v;
+      }
+      out[key] = pick;
+    }
+    return Object.keys(out).length ? canonical(out) : undefined;
   }
 
   /**
@@ -364,11 +389,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (!(await revalidate(pre))) return void runRetries.delete(id);
       open = !pre.task || (await onTask.open(pre.task));
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
-        // The same executor (module, address and code revision) and policy, or the record is stale (A9). An executor that
-        // refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.
-        const same = k && k.module === pre.executor.module && k.executor?.url === pre.executor.url && k.executor?.rev === pre.executor.rev && policy(k) === pre.policy;
+        // The same executor (module, address and code revision) and policy, or the record is stale (A9). A kind that declares
+        // `binds` is head-bound: only its target fields decide (the executor may be redeployed, its card or the base may move
+        // while the head it posts on stands). An executor that refuses the plan now (a 4xx) makes it stale; one that can't
+        // answer now is tried again.
+        const binds = k?.binds?.length ? k.binds : undefined;
+        const same = k && k.module === pre.executor.module && k.executor?.url === pre.executor.url
+          && (binds ? true : k.executor?.rev === pre.executor.rev && policy(k) === pre.policy);
         again = same ? await call(k, "plan", { kind: pre.kind, args: pre.args, requester: pre.requester, task: pre.task, revalidate: true }).catch((e) => { if (transient(e)) throw e; return undefined; }) : undefined;
-        stale = !again || digestOf({ ...pre, args: again.args, targets: again.targets ?? {} }) !== pre.digest;
+        // A head-bound record compares only what it binds to, and a plan that can't name it at all (either side) is stale.
+        const was = binds ? boundOf(pre.targets, binds) : undefined;
+        const now = binds ? boundOf(again?.targets ?? {}, binds) : undefined;
+        stale = !again || (binds ? !was || !now || was !== now : digestOf({ ...pre, args: again.args, targets: again.targets ?? {} }) !== pre.digest);
       }
     } catch (e) {
       const n = (runRetries.get(id)?.n ?? 0) + 1;

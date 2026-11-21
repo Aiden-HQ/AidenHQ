@@ -382,8 +382,17 @@ export function createEngine(d: EngineDeps) {
       posted = { state: "refused", why: String((e as Error).message).slice(0, 200) };
     }
     if (posted.write) run("UPDATE runs SET write_id = ? WHERE id = ?", posted.write, r.id);
-    done(posted.state === "refused" ? "failed" : "done", posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
+    const why = posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null;
+    done(posted.state === "refused" ? "failed" : "done", why, posted.state);
+    if (posted.state === "refused") refused(r, why!);
     if (posted.state !== "pending") settled(runRow(r.id)!, posted);
+  }
+
+  /** A refused post is never silent: the run row keeps the reason, and the PR's notice says (in fixed words) that this head's
+   * review was not posted. The PR's task is quiet, so it is not where an author would see it; a per-push run has no author to
+   * tell, so the pull request is the place. */
+  function refused(r: RunRow, why: string) {
+    void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why });
   }
 
   /** Records why findings changed state: their ids, the head, the reason and who decided (a run, the judge, the owner). */
@@ -419,7 +428,9 @@ export function createEngine(d: EngineDeps) {
   async function settle(r: RunRow) {
     const o = await d.poster.outcome(r.write_id!).catch(() => ({ state: "pending" as const }));
     if (o.state === "pending") return;
-    run("UPDATE runs SET posted = ?, status = ?, why = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? r.why : `not posted: ${o.why ?? "refused"}`, r.id);
+    const why = o.state === "posted" ? r.why : `not posted: ${o.why ?? "refused"}`;
+    run("UPDATE runs SET posted = ?, status = ?, why = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", why, r.id);
+    if (o.state === "refused") refused(r, why);
     settled(r, o);
   }
 

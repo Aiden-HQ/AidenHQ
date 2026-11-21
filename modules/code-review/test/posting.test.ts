@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kernelPoster, reviewExecutor } from "../service/src/adapters.ts";
+import { kernelPoster, reasonOf, reviewExecutor } from "../service/src/adapters.ts";
 
 const head = "a".repeat(40);
 const me = { kind: "module", module: "code-review" };
@@ -24,6 +24,20 @@ test("the executor posts only this service's own record for its run; the poster 
   assert.deepEqual([w.kind, w.task, w.args.repo, w.args.pr, w.args.head, w.args.review.repo, w.args.review.pr], ["code-review.post", "t-1", "acme/x", 3, head, "acme/x", 3]);
   await poster.ack({ repo: "acme/x", number: 3, head, state: "skipped", why: "budget: the instance has $0.00 of its $200 left" });
   assert.deepEqual(calls.at(-1)[1].args, { repo: "acme/x", pr: 3, head, phase: "skipped", reason: "budget_instance" });
+});
+
+test("a refused post's notice carries the fixed reason, and its run's reason is kept", async () => {
+  // A post the kernel refused after the review ran: the notice's reason is fixed words, never the kernel's text.
+  assert.equal(reasonOf("not posted: write k-1 stale: what it acts on changed since it was approved"), "post_refused");
+  assert.equal(reasonOf("not posted: write k-1 rejected"), "post_refused");
+  assert.equal(reasonOf("not posted: write k-1: github-mcp review execute: 403 head moved"), "post_refused");
+  const calls = [];
+  const kernel = { call: async (m, path, body) => (calls.push([path, body]), path === "/v1/tasks" ? { id: "t-1" } : { id: "k-1", state: "review" }) };
+  const poster = kernelPoster(kernel);
+  await poster.ack({ repo: "acme/x", number: 3, head, state: "failed", run: "cr-1", why: "not posted: write k-1 stale: what it acts on changed since it was approved" });
+  const notice = calls.find(([p]) => p === "/v1/writes")[1];
+  // The run row keeps the kernel's reason in full (engine.ts settle); this is the fixed-words copy that reaches the PR.
+  assert.deepEqual([notice.kind, notice.args.phase, notice.args.reason, notice.args.run], ["code-review.notice", "failed", "post_refused", "cr-1"]);
 });
 
 test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it, rechecking the open findings", async () => {
