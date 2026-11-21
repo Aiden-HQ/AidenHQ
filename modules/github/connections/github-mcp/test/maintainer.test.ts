@@ -549,7 +549,7 @@ it("a comment on a maintained repo keeps that repo's own org, while other owner 
   expect(await m.commentBody(OTHER, 1, "fixed by https://github.com/acme/widgets/pull/7 on internal.example-host")).toBe("fixed by https://github.com/acme/widgets/pull/7 on [redacted]");
 });
 
-it("the triage read hands over new unlabelled reports once, never the fleet's own filings, PRs or labelled ones, nor the backlog", async () => {
+it("the triage read hands over new unlabelled reports once, the fleet's own included filings, PRs or labelled ones, nor the backlog", async () => {
   const at = (h: number) => `2026-01-01T${String(h).padStart(2, "0")}:00:00Z`;
   const f = fake({
     issues: [
@@ -561,15 +561,15 @@ it("the triage read hands over new unlabelled reports once, never the fleet's ow
       { number: 6, updated_at: at(7), created_at: at(7), labels: [] },
     ],
   });
-  const m = maintainer(f, [], [{ repo: PRODUCT }], [3]); // #3 is the fleet's own filing (in AidenHQ's records)
+  const m = maintainer(f, [], [{ repo: PRODUCT }], [3]); // #3 is the fleet's own filing (a product bug): triaged like any
   const first = await m.untriaged(PRODUCT);
   expect(first.untriaged).toEqual([]);
   expect(Date.parse(first.triage_cursor)).toBeGreaterThan(Date.now() - 60_000);
   const out = await m.untriaged(PRODUCT, at(2));
-  expect(out).toEqual({ untriaged: [{ number: 2, created_at: at(3), author: "someone" }, { number: 6, created_at: at(7), author: "someone" }], triage_cursor: at(7) });
+  expect(out).toEqual({ untriaged: [{ number: 2, created_at: at(3), author: "someone" }, { number: 3, created_at: at(4), author: "owner1" }, { number: 6, created_at: at(7), author: "someone" }], triage_cursor: at(7) });
   expect((await m.untriaged(PRODUCT, at(7))).untriaged).toEqual([]);
   const both = await m.issuesSince({}, { [PRODUCT]: at(2) });
-  expect(both.repos[0]).toMatchObject({ repo: PRODUCT, untriaged: [{ number: 2 }, { number: 6 }] });
+  expect(both.repos[0]).toMatchObject({ repo: PRODUCT, untriaged: [{ number: 2 }, { number: 3 }, { number: 6 }] });
   expect((await m.issuesSince({})).repos[0]).not.toHaveProperty("untriaged");
 });
 
