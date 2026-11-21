@@ -564,9 +564,9 @@ test("a PR held for code review over 90 minutes with no job fires; an answered w
 
   // A bounded pass reaches every eligible wait over successive runs.
   const many = Array.from({ length: 25 }, (_, n) => wait(`t${n}`, "owner_wait"));
-  const c = mk(many, Object.fromEntries(many.map((r) => [r.task, task(r.task)])), { t24: [owner], t3: [owner] }, ["unresumed:t3", "unresumed:t7"]);
-  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t3"], "an incident open for a task this pass did not reach (t7 is past the 20) stays open; t3 is found");
-  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t24", "t3"], "the next pass starts after the first batch, so t24 is reached");
+  const c = mk(many, Object.fromEntries(many.map((r) => [r.task, task(r.task)])), { t24: [owner], t3: [owner] }, ["unresumed:t3", "unresumed:t22"]);
+  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t3", "t22"], "t3 is found; t22 is past the first 20 and open, so it stays open unscanned");
+  assert.deepEqual((await c.unresumed()).map((i) => i.key), ["t24", "t3"], "the next pass starts after the first batch, so t24 is reached; t22 is scanned, unanswered, and recovers");
 });
 
 test("a jammed gate's flag open over two hours tells the owner once, in one fixed line, and not while the Steward is off", async () => {
@@ -575,11 +575,12 @@ test("a jammed gate's flag open over two hours tells the owner once, in one fixe
   const at = (h, on = true) => tick(kv, groups, async () => true, async (t) => void told.push(t), new Date(NOW + h * 3600_000), 0, on);
   await at(-3);
   assert.equal(told.length, 0, "just raised");
-  await at(-1, false);
   await at(-1);
-  assert.equal(told.length, 0, "open 2 h at most, or the Steward is off");
+  assert.equal(told.length, 0, "open 2 h exactly: not yet");
+  await at(0, false);
+  assert.equal(told.length, 0, "past 2 h but the Steward is off");
   await at(0);
-  assert.equal(told.length, 1);
+  assert.equal(told.length, 1, "on again: told once");
   assert.match(told[0], /A gate has been jammed for over two hours/);
   await at(1);
   assert.equal(told.length, 1, "once per flag");
