@@ -14,12 +14,18 @@ const ctx = (): OpsContext => ({
 
 const read = (c: OpsContext, body: Record<string, unknown>) => answerOp("read", { module: "grading", repo: "acme/app", ...body }, c);
 
-test("a file at an exact commit is its text, or 404", async () => {
+test("a file at an exact commit is its text — a parsed JSON body goes back out as JSON, never [object Object]", async () => {
   const c = ctx();
-  const present = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) }, {
-    ...c, access: { ...c.access, rest: async () => ({ status: 200, body: "{\"suites\":[]}", headers: new Headers() }) } as unknown as OpsContext["access"],
+  // The client parses a JSON file into an object: that body must still come out as its JSON text, or the map is unusable.
+  const parsed = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) }, {
+    ...c, access: { ...c.access, rest: async () => ({ status: 200, body: { suites: [] }, headers: new Headers() }) } as unknown as OpsContext["access"],
   });
-  assert.equal(present.text, "{\"suites\":[]}");
+  assert.equal(parsed.text, "{\"suites\":[]}", "a parsed JSON file is serialized back, not stringified as an object");
+  assert.doesNotMatch(parsed.text, /object Object/);
+  const raw = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/workflows/ci.yml", ref: "a".repeat(40) }, {
+    ...c, access: { ...c.access, rest: async () => ({ status: 200, body: "name: ci\njobs: {}\n", headers: new Headers() }) } as unknown as OpsContext["access"],
+  });
+  assert.equal(raw.text, "name: ci\njobs: {}\n", "a non-JSON file (ci.yml is YAML) stays its own text");
   const absent = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: "a".repeat(40) }, c);
   assert.equal(absent.status, 404);
 });

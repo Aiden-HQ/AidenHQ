@@ -148,7 +148,9 @@ async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`, undefined, { accept: "application/vnd.github.raw+json" });
   if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${String(b.path)} at ${String(b.ref)}` } };
   if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
-  return { status: 200, text: typeof r.body === "string" ? r.body : String(r.body ?? "") };
+  // A non-JSON file (a script, a plain text file) stays text. A JSON one (areas.json) is parsed by the client, so it goes back
+  // out as JSON: `String(obj)` would be "[object Object]", which the grader's ciMap can never parse.
+  return { status: 200, text: typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null) };
 }
 
 /**
