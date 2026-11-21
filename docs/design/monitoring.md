@@ -85,8 +85,10 @@ The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only s
 project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, one going
 job to job, or one whose fleet is draining, doesn't; a runner backing off at the cap fires `CiRunnerBackoff`, and a first
 refusal, a runner with no backoff and a drain do not). The `checks` job of `.github/workflows/ci.yml` runs `promtool check rules
-rules.yml` and `promtool test rules rules.test.yml` on every pull request head and push to main, in the image
-`modules/monitoring/prometheus/Dockerfile` pins (the job reads the `FROM` line, so the workflow holds no version of its own).
+rules.yml` and `promtool test rules rules.test.yml` on every pull request head and push to main, with the image
+`modules/monitoring/prometheus/Dockerfile` pins at the commit the change is based on (a PR's base, main for a merge train,
+main's own tree on a push to main), never the head's: the step runs the image's code, so a PR that could choose the image
+could point `promtool` at something that exits 0. It must be digest-pinned, and the workflow holds no version of its own.
 Locally it is the same image:
 `docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 check rules rules.yml`
 (and `test rules rules.test.yml`).

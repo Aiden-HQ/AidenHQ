@@ -1,7 +1,8 @@
 # The alert rules' behaviour (docs/design/monitoring.md, "Alerts and routing"):
 #   promtool test rules modules/monitoring/prometheus/rules.test.yml
 # The `checks` job of .github/workflows/ci.yml runs `promtool check rules` and `promtool test rules` on every pull request head
-# and push to main, with the prom/prometheus image modules/monitoring/prometheus/Dockerfile pins (docs/design/monitoring.md).
+# and push to main, with the prom/prometheus image modules/monitoring/prometheus/Dockerfile pins at the base commit (never the
+# head's, which a PR controls; docs/design/monitoring.md).
 # Prometheus's own rule test: synthetic series in, alerts out at each eval time.
 rule_files:
   - rules.yml
