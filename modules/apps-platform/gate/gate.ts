@@ -446,18 +446,7 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
  * fromTunnel: this server listens on cloudflared's socket (main.ts), so CF-Connecting-IP names the visitor.
  */
-export function createGate({ config: readConfig, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
-  let lastConfig: GateConfig | undefined;
-  /** The latest config; a torn gate.json keeps the last good one (the first read has none, so it throws at start). */
-  const config = (): GateConfig => {
-    try {
-      return (lastConfig = readConfig());
-    } catch (e) {
-      if (!lastConfig) throw e;
-      log({ msg: "config unreadable, keeping the last good one", err: String(e) });
-      return lastConfig;
-    }
-  };
+export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
   const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
   const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
   const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)
@@ -897,7 +886,7 @@ export function createGate({ config: readConfig, fetch: fetchImpl = fetch, now =
     }
   }
 
-  const server = createServer(async (req, res) => {
+  const serve = async (req: IncomingMessage, res: ServerResponse) => {
     // Caddy's on-demand TLS asks here (on loopback) before ordering a certificate: only for a door that serves an app.
     const cfg0 = config();
     if (cfg0.doors && hostOf(req) === "127.0.0.1" && req.method === "GET" && String(req.url).startsWith("/.aidenhq/door-ask?")) {
@@ -941,9 +930,17 @@ export function createGate({ config: readConfig, fetch: fetchImpl = fetch, now =
     up.on("error", () => (res.headersSent ? res.destroy() : res.writeHead(502, { "content-type": "text/plain" }).end("bad gateway\n")));
     res.on("close", () => up.destroy());
     req.pipe(up);
+  };
+  // An unreadable gate.json (a torn write) or any other throw refuses the request: the gate never serves from a stale policy.
+  const server = createServer((req, res) => {
+    serve(req, res).catch((e) => {
+      log({ msg: "request failed", err: String(e) });
+      if (res.headersSent) res.destroy();
+      else plain(res, 503, "unavailable: the gate can't read its config right now");
+    });
   });
 
-  server.on("upgrade", async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+  const upgrade = async (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const a = await authorize(req, { upgrade: true });
     // An upgrade is refused or proxied: authorize() returns no other kind for one.
@@ -975,6 +972,12 @@ export function createGate({ config: readConfig, fetch: fetchImpl = fetch, now =
     });
     up.on("error", () => socket.destroy());
     up.end();
+  };
+  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    upgrade(req, socket, head).catch((e) => {
+      log({ msg: "upgrade failed", err: String(e) });
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    });
   });
   return server;
 }

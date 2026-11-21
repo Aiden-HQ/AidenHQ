@@ -390,6 +390,8 @@ const gatewayServer = http.createServer(async (req, res) => {
 // ------------------------------------------------------------------ boxes from before a restart, and idle reaping
 
 const existing = await docker(["ps", "-a", "--filter", "label=aidenhq.computer=1", "--format", "{{.Names}}"]);
+// A failed scan is not an empty one: starting would prune every saved lease, so fail and let the supervisor restart us.
+if (existing.exitCode !== 0) throw new Error(`docker ps failed: ${existing.stderr.trim() || existing.signal}`);
 const orphans = [];
 for (const name of existing.stdout.trim().split("\n").filter(Boolean)) {
   if (!ours(name)) continue;
