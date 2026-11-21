@@ -48,6 +48,8 @@ const RETRY_MS = 2 * 60_000;
 const MAX_RETRY_MS = 30 * 60_000;
 // A run that ran costs model spend: one that keeps ending unfinished is retried this many times, then its notice goes out and it is dropped.
 const MAX_RAN_TRIES = 6;
+// Busy is a load condition that clears: a handed-back wake waits at most this long.
+const MAX_DEFER_MS = 5 * 60_000;
 const retryIn = (tries: number) => Math.min(RETRY_MS * 2 ** (tries - 1), MAX_RETRY_MS);
 /** A job the kernel couldn't start: it ended failed with no exit code (admission.ts); a run that ran always has one. */
 const neverStarted = (j: { state: string; exit: number | null }) => j.state === "failed" && j.exit == null;
@@ -226,13 +228,13 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
         if (!stopped && unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
-          let tries = 0;
-          for (const j of runs) { if (!unfinished(j)) break; tries++; }
+          let tries = 0, ran = 0;
+          for (const j of runs) { if (!unfinished(j)) break; tries++; if (!neverStarted(j)) ran++; }
           // A run that ran is retried only on a task still in its agent's hands (todo or in progress, an agent assigned): one it
           // left blocked or handed back to the owner waits on them, not on a retry.
           const t = await kernel.task(v.task);
           const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
-          if (open && (neverStarted(v) || tries < MAX_RAN_TRIES)) {
+          if (open && (neverStarted(v) || ran < MAX_RAN_TRIES)) {
             await kernel.schedule({ task: v.task, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` });
             await kernel.ack(v.id);
             log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
@@ -387,8 +389,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     // Busy (429), or admitted but deferred for want of a computer (the kernel handed the wake back): nothing ran, so nothing is seen.
     if ("busy" in r || r.job.state === "deferred") {
       const tries = (deferred.get(w.key)?.tries ?? 0) + 1;
-      deferred.set(w.key, { tries, next: now() + retryIn(tries) });
-      return log("busy: the wake comes back later", { task: task.identifier, wake: w.key, tries, retry_in_s: retryIn(tries) / 1000 });
+      deferred.set(w.key, { tries, next: now() + Math.min(retryIn(tries), MAX_DEFER_MS) });
+      return log("busy: the wake comes back later", { task: task.identifier, wake: w.key, tries, retry_in_s: Math.min(retryIn(tries), MAX_DEFER_MS) / 1000 });
     }
     deferred.delete(w.key);
     q("INSERT INTO seen (task, comment) VALUES (?, ?) ON CONFLICT DO UPDATE SET comment = excluded.comment").run(w.task, comments.at(-1)?.id ?? "");

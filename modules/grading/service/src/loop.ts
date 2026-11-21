@@ -54,9 +54,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // and send the row back to waiting so the next pass grades what is there now.
           const now = await pc.issue(task);
           // An empty recorded version (no deliverable then) is stale once one appears.
-          const found = now.status === "done" || now.status !== s.status ? "" : (await gather(s.deliverable, gradeDeps(now), s.rubric)).version ?? "";
+          const seen = now.status === "done" || now.status !== s.status ? undefined : await gather(s.deliverable, gradeDeps(now), s.rubric);
+          const found = seen?.version ?? "";
           // A versionless close also waits out work that has started since: an open sub-task or a card on the task.
-          const active = !s.version && now.status !== "done" && ((await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome)));
+          const active = !s.version && now.status !== "done" && (Boolean(seen?.busy) || (await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some((a: Json) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome)));
           if (now.status !== "done" && (now.status !== s.status || active || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
