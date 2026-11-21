@@ -328,7 +328,9 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
     // A target that is parked now (this rejection parks it, or it was refused as parked): nothing re-reviews a closed record,
     // so the requester is told when to file it again, when a panel reviews it.
     // A post-park panel that rejected for the PANEL_TRIES-th time sends the next filing to the owner instead (tier.ts priorPart).
-    const toOwner = judged && Boolean(prior) && parkPanel && prior!.panels + 1 >= PANEL_TRIES;
+    // Counted exactly as tier.ts counts a panel: a panel record filed once the park's cooldown ended (parkedUntil).
+    const counts = parkPanel && Boolean(records.get(r.id)?.panel) && Date.parse(r.created_at) >= (prior?.parkedUntil ?? Infinity);
+    const toOwner = judged && Boolean(prior) && counts && prior!.panels + 1 >= PANEL_TRIES;
     const refile = toOwner ? undefined : judged && prior && prior.rejects + 1 >= MAX_REJECTS ? Date.now() + REVIEW_COOLDOWN_MS : input.rule === "retries-exhausted" ? prior?.parkedUntil : undefined;
     await rejected(out.record, out.posted, refile, toOwner).catch((e: Error) => log("reject note failed", { record: r.id, err: e.message.slice(0, 200) }));
     // The rejection that reaches MAX_REJECTS parks the target for the cooldown (tier.ts priorPart): whoever delegated the task
@@ -386,10 +388,15 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
       const now = Date.now();
       // One review at a time per task and content (inFlight holds it across sweeps): two cards of the same content never both
       // take its one fresh review; the second waits for the first's verdict.
-      const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200).filter((r) => {
+      // At most 200 selected a sweep, counted after the reservations, so queued duplicates never crowd out other work.
+      const due: Rec[] = [];
+      for (const r of records.list(["review"], null).filter((x) => !inFlight.has(x.id) && !((writes.retryAt(x.id) ?? 0) > now)).reverse()) {
+        if (due.length >= 200) break;
         const key = contentOf(r);
-        return !key || (!inFlight.has(key) && (inFlight.add(key), true));
-      });
+        if (key && inFlight.has(key)) continue;
+        if (key) inFlight.add(key);
+        due.push(r);
+      }
       if (!due.length) return Promise.resolve();
       for (const r of due) inFlight.add(r.id);
       const digest = decisions().catch((e: Error) => void log("decisions unread", { err: String(e.message ?? e).slice(0, 200) }));
