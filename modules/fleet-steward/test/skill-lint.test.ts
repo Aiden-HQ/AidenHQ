@@ -77,6 +77,28 @@ function filingAskProblems(text) {
 const filingAskMessage = (file, section) => `${file}: the product-bug step "${section}" must tell the Steward to open the Maintainer task with an explicit 'File one GitHub issue on the product repository' ask — the filing card is refused without it.`;
 
 /**
+ * Every product-bug step that hands the Maintainer a body to file must say that the body written into the brief is
+ * already neutral: the card's reviewer reads the delegating task's text as the request, so a literal host or uuid there
+ * becomes a detail it demands and `github_product_issue` refuses it, and the filing loops. The rule covers both the brief
+ * and the finished issue, so "The issue is public" stays.
+ */
+function briefNeutralityProblems(text) {
+  return sections(text)
+    .filter((section) => /A product bug/.test(section) && /task_create/.test(section) && /maintainer/.test(section))
+    .flatMap((section) => {
+      const first = section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section";
+      const missing = [];
+      if (!/The issue is public/.test(section)) missing.push("the \"The issue is public\" sentence");
+      if (!/the body you put in the brief/i.test(section)) missing.push("the brief-body sentence (`the body you put in the brief`)");
+      if (!/refuses/.test(section)) missing.push("why a literal value loops (the card refuses it)");
+      if (!/by role/.test(section) || !/task by its identifier/.test(section)) missing.push("the general rule (name a thing by role, cite a task by its identifier)");
+      return missing.length ? [{ section: first, missing }] : [];
+    });
+}
+
+const briefNeutralityMessage = (file, p) => `${file}: the product-bug step "${p.section}" must say the body written into the brief is already neutral, beside the existing "The issue is public" sentence: the github_product_issue card reads the delegating task's text as the request, so a literal internal address or uuid there becomes a detail it demands and refuses, and the filing loops — name a thing by role and cite a task by its identifier. Missing: ${p.missing.join("; ")}.`;
+
+/**
  * Every memory-proposal step that asks for a `task_propose_rule` without naming the instance repository: the Engineer job
  * clones only the repositories its task names, so the proposal closes with the memory file untouched.
  */
@@ -154,6 +176,11 @@ test("a fleet skill's product-bug step must ask for the issue to be filed", () =
   assert.deepEqual(problems, []);
 });
 
+test("a fleet skill's product-bug step must say the brief body is already neutral", () => {
+  const problems = briefNeutralityProblems(fleetCheck).map((p) => briefNeutralityMessage("fleet-check/SKILL.md", p));
+  assert.deepEqual(problems, []);
+});
+
 test("a fleet skill's memory-proposal step must name the instance repository", () => {
   const daily = readFileSync(new URL("knowledge-daily/SKILL.md", skills), "utf8");
   const problems = memoryProposalProblems(daily).map((s) => memoryProposalMessage("knowledge-daily/SKILL.md", s));
@@ -184,5 +211,26 @@ test("the filing-ask lint bites: the step without the ask fails with the fix", (
   const every = readdirSync(skills, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .flatMap((d) => filingAskProblems(readFileSync(new URL(`${d.name}/SKILL.md`, skills), "utf8")).map((s) => filingAskMessage(`${d.name}/SKILL.md`, s)));
+  assert.deepEqual(every, []);
+});
+
+test("the brief-neutrality lint bites: a step with only the issue sentence fails, and the replacement passes", () => {
+  const old = "- **A product bug**: `task_create` with `assignee: maintainer` and the evidence.\n> File one GitHub issue on the product repository `Aiden-HQ/AidenHQ`: nothing else is asked for.\n  The issue is public: a host or uuid becomes a neutral word (`<host>`).\n";
+  const problems = briefNeutralityProblems(old);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].missing.join(), /the body you put in the brief/);
+  assert.match(problems[0].missing.join(), /why a literal value loops/);
+  assert.match(briefNeutralityMessage("old", problems[0]), /must say the body written into the brief is already neutral/);
+  const replacement = old.replace(
+    "  The issue is public: a host or uuid becomes a neutral word (`<host>`).\n",
+    "  The issue is public: a host or uuid becomes a neutral word (`<host>`). Write the body you put in the brief under\n  that rule already: the card's reviewer reads the delegating task's text as the request, so a literal address there\n  becomes a detail it demands and `github_product_issue` refuses, and the filing loops — name a listener by role and\n  cite a task by its identifier.\n",
+  );
+  assert.deepEqual(briefNeutralityProblems(replacement), []);
+  // A step that does not hand a product bug to the Maintainer is out of scope.
+  assert.deepEqual(briefNeutralityProblems("- **A product bug**: routed to the owner, no task.\n"), []);
+  // Every fleet skill with a product-bug step is checked, not only this one.
+  const every = readdirSync(skills, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .flatMap((d) => briefNeutralityProblems(readFileSync(new URL(`${d.name}/SKILL.md`, skills), "utf8")).map((p) => briefNeutralityMessage(`${d.name}/SKILL.md`, p)));
   assert.deepEqual(every, []);
 });

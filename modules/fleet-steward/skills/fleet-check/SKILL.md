@@ -65,7 +65,10 @@ request open over an hour without merging) or something recovered.
      comes first in the description, not in a comment added after the fact: the `github_product_issue` card's reviewer reads
      the delegating task's text as the request chain and refuses a write it does not ask for. The issue is public: product
      evidence only, in the product's own words; a name, email, host, IP, uuid, account or chat id becomes a neutral word
-     (`<host>`).
+     (`<host>`). Write the body you put in the brief under that rule already: the card's reviewer reads the delegating
+     task's text as the request and holds the post to it, so a literal internal address or uuid there becomes a detail it
+     demands and `github_product_issue` refuses, and the filing loops — name a listener, container or service by role,
+     and cite a task by its identifier.
 
   3. Log `log · <time> · product-bug · <slug> · <task id>`. Without the Maintainer or GitHub, skip step 2: call
      `github_issue_link` with the fingerprint, title, body and `evidence` (module, version, reproduction, log), send the
