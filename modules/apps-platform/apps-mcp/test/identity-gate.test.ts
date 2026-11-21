@@ -22,6 +22,14 @@ const shared = parseApp({ ...tailnet, share: { host: "demo.example.com" } });
 const children: ChildProcess[] = [];
 afterAll(() => children.forEach((c) => c.kill()));
 
+/** The vault's identity files for the mock starters: a real key pair and the public keys.json the middleware reads. */
+function identityKeys(): { privatePem: string; keys: string } {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const x = publicKey.export({ format: "jwk" }).x!;
+  const kid = createHash("sha256").update(Buffer.from(x, "base64url")).digest("base64url").slice(0, 16);
+  return { privatePem: privateKey.export({ type: "pkcs8", format: "pem" }) as string, keys: JSON.stringify({ keys: [{ kty: "OKP", crv: "Ed25519", x, kid, iss: "aidenhq-apps" }] }) };
+}
+
 const freePort = () => new Promise<number>((ok) => { const s = createServer().listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => ok(p)); }); });
 
 /** The starter's server.mjs on a free port, with the env the platform gives an app (policy.ts withSecrets). */
@@ -37,8 +45,8 @@ async function starter(env: Record<string, string>, code?: string, host = "127.0
 }
 
 /** `node`: the apps' tailnet node is the instance's door (tailnet.ts tailnetNode); false on a local, tunnel or public install. */
-async function gate(app: typeof tailnet, base: string, node = true) {
-  const forged = forgedIdentity(app.name, noKey);
+async function gate(app: typeof tailnet, base: string, node = true, sign?: ReturnType<typeof agentSigner>) {
+  const forged = forgedIdentity(app.name, sign ?? noKey);
   const answers = [];
   for (const probe of identityProbes(app, node, "/api/health")) {
     const r = await fetch(base + probe.path, { method: probe.method, headers: probe.forged ? { [IDENTITY_HEADER]: forged } : {}, redirect: "manual" });
@@ -115,7 +123,17 @@ const hello2 = parseApp({ name: "hello2", repo: "example-org/x", owner: "a", des
 describe("identity gate", () => {
   it("passes the starter, shared and tailnet-only", async () => {
     expect(await gate(shared, await starter({ AIDENHQ_APP: "demo" }))).toMatchObject({ ok: true });
-    expect(await gate(tailnet, await starter({ AIDENHQ_APP: "demo", AIDENHQ_ANONYMOUS: "tailnet" }))).toMatchObject({ ok: true });
+    const dir = mkdtempSync(`${tmpdir()}/keys-`);
+    const k = identityKeys();
+    writeFileSync(`${dir}/apps.pem`, k.privatePem);
+    writeFileSync(`${dir}/keys.json`, k.keys);
+    // The starter reads /run/secrets/AIDENHQ_IDENTITY_KEYS by default (not writable here): run the same middleware with
+    // this fixture's keys file, so the forged-token path is a real 401 rather than a missing-keys 503.
+    const code = `import { createServer } from "node:http";
+      import { createIdentity } from ${JSON.stringify(MIDDLEWARE)};
+      const protect = createIdentity({ app: "demo", anonymous: true, keysFile: ${JSON.stringify(`${dir}/keys.json`)} }).protect;
+      createServer(protect((req, res) => res.end("ok"), { health: "/api/health" })).listen(Number(process.env.PORT), "127.0.0.1");`;
+    expect(await gate(tailnet, await starter({ AIDENHQ_APP: "demo", AIDENHQ_ANONYMOUS: "tailnet" }, code), true, agentSigner(`${dir}/apps.pem`))).toMatchObject({ ok: true });
   });
 
   it("without the apps' tailnet node, refuses an exposed app that lets token-less callers in", async () => {
@@ -143,6 +161,15 @@ describe("identity gate", () => {
     const r = await gate(shared, naive);
     expect(r.ok).toBe(false);
     expect(r.findings[0]!.what).toMatch(/with a forged identity answered 200/);
+  });
+
+  it("does not pass an app that answers 503 to every identity probe", async () => {
+    const unavailable = await starter({}, `import { createServer } from "node:http";
+      createServer((req, res) => { if (req.method === "GET" && req.url === "/api/health") return res.end("ok"); res.writeHead(503); res.end(); }).listen(Number(process.env.PORT), "127.0.0.1");`);
+    const r = await gate(shared, unavailable);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]!.what).toMatch(/couldn't confirm/);
+    expect(r.findings[0]!.what).not.toContain(NO_SIGN_IN);
   });
 
   it("knocks on the doors people and agents use, and on none of an app without HTTP", () => {
