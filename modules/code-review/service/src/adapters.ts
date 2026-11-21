@@ -34,7 +34,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     mergeBase: async (repo, number, head) => (await get("merge-base", { repo, number, head })) as { merge_base: string },
     postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
-    commit: async (repo, sha) => (await get("commit", { repo, sha })) as { message: string },
+    messages: async (repo, number) => ((await get("messages", { repo, number })) as { messages: string[] }).messages,
     threads: async (repo, number) => {
       const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/threads`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify({ repo, number }), signal: AbortSignal.timeout(30_000) });
       if (!r.ok) throw Object.assign(new Error(`github-mcp threads: ${r.status} ${(await r.text()).slice(0, 200)}`), { status: r.status });

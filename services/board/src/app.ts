@@ -1672,6 +1672,8 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     { method: "POST", path: /^\/api\/reviews$/, handle: async (_m, body) => reviewsCall((r) => r.run(parse(OneOffSchema, body))) },
+    // The owner's dismissal of an open finding (signed in: every admin is an owner); recorded as theirs, with their reason.
+    { method: "POST", path: /^\/api\/reviews\/dismiss$/, handle: async (_m, body) => reviewsCall((r) => r.dismiss({ ...parse(DismissSchema, body), by: "owner (board)" })) },
     {
       // The whole code_review value the page edited, checked here for the owner's feedback, then the normal settings change.
       method: "POST",
@@ -2469,3 +2471,4 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
 const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
 const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();
+const DismissSchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), number: z.number().int().min(1), id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), reason: z.string().trim().min(1).max(1000) }).strict();

@@ -125,10 +125,15 @@ export class CodeReviewReader {
     return { merge_base: (await this.compare(repo, base, head)).merge_base };
   }
 
-  /** A commit's message (its trailers name the AidenHQ agent that wrote it): the judge of a dispute picks another model family. */
-  async commit(repo: string, sha: string): Promise<{ message: string }> {
-    const c = await this.github.request<{ commit?: { message?: string } }>("GET", `/repos/${repo}/commits/${sha}`);
-    return { message: String(c.commit?.message ?? "").slice(0, 20_000) };
+  /** The PR's commit messages (their trailers name the AidenHQ agents that wrote them): a dispute's judge is of none of their families. */
+  async messages(repo: string, number: number): Promise<{ messages: string[] }> {
+    const out: string[] = [];
+    for (let page = 1; page <= 3; page++) {
+      const rows = await this.github.request<{ commit?: { message?: string } }[]>("GET", `/repos/${repo}/pulls/${number}/commits`, { query: { per_page: 100, page } });
+      out.push(...rows.map((c) => String(c.commit?.message ?? "").slice(0, 20_000)));
+      if (rows.length < 100) break;
+    }
+    return { messages: out };
   }
 
   /** The repos the owner's sign-in can read whose name contains `q` (at most 30). */
@@ -166,7 +171,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
     if (op === "merge-base") return { status: 200, body: await reader.mergeBase(repo, numberArg(q.get("number")), shaArg(q.get("head"))) };
     if (op === "postable") return { status: 200, body: await reader.postable(repo) };
-    if (op === "commit") return { status: 200, body: await reader.commit(repo, shaArg(q.get("sha"))) };
+    if (op === "messages") return { status: 200, body: await reader.messages(repo, numberArg(q.get("number"))) };
     // A login that isn't one (a bot's, an empty or deleted user's) has no permission: an answer, never an error to retry.
     if (op === "permission") {
       let login: string;

@@ -1,5 +1,5 @@
 // The board's client of the code-review module's state service (types and the page's checks: reviews.ts).
-import type { Combo, EngineCatalog, FindingRow, ReposView, Review, Run } from "./reviews.js";
+import type { Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, Run } from "./reviews.js";
 
 export class ReviewsUnavailable extends Error {}
 export class ReviewsRefused extends Error {
@@ -10,7 +10,9 @@ export class ReviewsRefused extends Error {
 
 export interface Reviews {
   list(q: { repo?: string; status?: string; limit?: number }): Promise<{ runs: Run[] }>;
-  get(id: string): Promise<{ run: Run; review: Review | null; findings: FindingRow[] }>;
+  get(id: string): Promise<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null }>;
+  /** The owner dismisses an open finding (it no longer holds the PR's merge). */
+  dismiss(body: { repo: string; number: number; id: string; reason: string; by: string }): Promise<{ dismissed: string }>;
   /** One run per combo (the repo's on_open combos when none are given). */
   run(body: { pr_url: string; combos?: Combo[]; focus?: string; full?: boolean }): Promise<{ runs: Run[] }>;
   repos(): Promise<ReposView>;
@@ -49,6 +51,7 @@ export function createReviews({ kernel, fetchFn = fetch }: { kernel?: { url: str
     list: (q) => call("GET", `/reviews${qs(q)}`),
     get: (id) => call("GET", `/reviews/${encodeURIComponent(id)}`),
     run: (body) => call("POST", "/reviews", body),
+    dismiss: (body) => call("POST", "/findings/dismiss", body),
     repos: () => call("GET", "/repos"),
     engines: () => call("GET", "/engines"),
     available: (q) => call("GET", `/github/repos${qs({ q })}`),

@@ -3,7 +3,7 @@ import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, As
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
-import type { CodeReview, Combo, EngineCatalog, FindingRow, ReposView, Review, ReviewInsights, Run } from "../../src/reviews";
+import type { CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run } from "../../src/reviews";
 import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -261,7 +261,8 @@ export const api = {
   /** The Reviews page (Reviews.tsx): the code-review module's setup, runs, repos and the owner's settings change. */
   reviewsSetup: () => call<ReviewsSetup>("GET", "/api/reviews/setup"),
   reviews: (q: { repo?: string; status?: string; limit?: number } = {}) => call<{ runs: Run[] }>("GET", `/api/reviews?${new URLSearchParams(Object.entries(q).flatMap(([k, v]) => (v === undefined || v === "" ? [] : [[k, String(v)]])))}`),
-  review: (id: string) => call<{ run: Run; review: Review | null; findings: FindingRow[] }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
+  review: (id: string) => call<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
+  dismissFinding: (b: { repo: string; number: number; id: string; reason: string }) => call<{ dismissed: string }>("POST", "/api/reviews/dismiss", b),
   reviewRepos: () => call<ReposView>("GET", "/api/reviews/repos"),
   reviewEngines: () => call<{ engines: EngineCatalog }>("GET", "/api/reviews/engines"),
   reviewAvailable: (q: string) => call<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>("GET", `/api/reviews/available?q=${encodeURIComponent(q)}`),

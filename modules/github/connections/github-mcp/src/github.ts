@@ -36,6 +36,8 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   // A review's own line comments (review-post.ts records their ids).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}/comments$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
+  // A PR's commits (code-review-read.ts messages: the agents its trailers name).
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/commits$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/status$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/commits/[0-9a-f]{40}/check-runs$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/labels$`) },

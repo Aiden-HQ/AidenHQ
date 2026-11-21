@@ -19,7 +19,7 @@ import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
 import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult } from "./seams.ts";
-import { EFFORT as JUDGE_EFFORT, judgeModels } from "./aidenhq-sdk/judge.ts";
+import { EFFORT as JUDGE_EFFORT, judgeModels, LUNA, secondModels } from "./aidenhq-sdk/judge.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 3 * 60_000;
@@ -621,7 +621,9 @@ export function createEngine(d: EngineDeps) {
           if (r.ruling || one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
           const who = r.author.toLowerCase();
           const may = who === p.author || WRITERS.has(await d.source.permission(cfg.repo, r.author));
-          const busy = one("SELECT 1 FROM judges WHERE repo = ? AND number = ? AND finding = ? AND status IN ('queued', 'running')", cfg.repo, p.number, t.finding);
+          // One judge per finding per head: once ruled at this head, a new dispute needs a new head (or the owner's Dismiss).
+          const head = prRow(cfg.repo, p.number)?.head;
+          const busy = one("SELECT 1 FROM judges WHERE repo = ? AND number = ? AND finding = ? AND (status IN ('queued', 'running') OR (status = 'done' AND head = ?))", cfg.repo, p.number, t.finding, head);
           if (!may) log("a dispute from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
           else if (!busy) run("INSERT INTO judges (id, repo, number, finding, comment, reply, author, body, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
             `cj-${randomBytes(6).toString("hex")}`, cfg.repo, p.number, t.finding, t.comment, r.id, r.author.slice(0, 40), r.body.slice(0, 2000), iso());
@@ -631,11 +633,15 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
-  /** The judge's model: another family than the model of the agent the head commit's trailer names; unknown author: the checker's. */
-  async function judgeModel(repo: string, head: string) {
-    const name = /^Co-authored-by: AidenHQ (.+?) <noreply@aidenhq\.ai>\s*$/im.exec((await d.source.commit(repo, head)).message)?.[1];
-    const author = name ? (await d.agents()).find((a) => a.name === name)?.model : undefined;
-    return judgeModels(author ?? "")[0]!;
+  /**
+   * The judge's model: of no family of any agent an `AidenHQ` trailer on any of the PR's commits names (a writer can forge a
+   * trailer, so every name counts); none named: the checker's model. Undefined: every judge family is excluded.
+   */
+  async function judgeModel(repo: string, n: number) {
+    const names = new Set((await d.source.messages(repo, n)).flatMap((m) => [...m.matchAll(/^Co-authored-by: AidenHQ (.+?) <noreply@aidenhq\.ai>\s*$/gim)].map((x) => x[1]!)));
+    if (!names.size) return LUNA;
+    const models = (await d.agents()).filter((a) => a.name && names.has(a.name)).map((a) => a.model ?? "").join(" ");
+    return [...judgeModels(models), ...secondModels(models)][0];
   }
 
   async function startJudge(j: Judge) {
@@ -644,7 +650,8 @@ export function createEngine(d: EngineDeps) {
     if (!f || !p?.open) return void run("UPDATE judges SET status = 'skipped', ended = ? WHERE id = ?", iso(), j.id);
     run("UPDATE judges SET status = 'running', head = ? WHERE id = ?", p.head, j.id);
     try {
-      const model = await judgeModel(j.repo, p.head);
+      const model = await judgeModel(j.repo, j.number);
+      if (!model) return void (await ruled({ ...j, head: p.head }, { state: "failed", why: "every judge model is of a family the PR's authors use" }));
       const { merge_base } = await d.source.mergeBase(j.repo, j.number, p.head);
       const { check } = await d.runner.start({ repo: j.repo, number: j.number, base: p.base, head: p.head, merge_base, combo: { engine: "codex", model, effort: JUDGE_EFFORT[model] ?? "high" },
         focus: null, incremental_from: null, full: true, previous: [], mandatory: true, budget_usd: JUDGE_USD, ignore: [], max_nits: 0,
@@ -665,7 +672,7 @@ export function createEngine(d: EngineDeps) {
     if (p?.open && p.head !== j.head) return void run("UPDATE judges SET status = 'queued', check_job = NULL, cost_usd = cost_usd + ? WHERE id = ?", cost, j.id);
     const a = res.state === "done" ? (res.review as unknown as { verdict?: unknown; reason?: unknown }) : undefined;
     const verdict = a?.verdict === "dismissed" && typeof a.reason === "string" && a.reason.trim() ? "dismissed" : "upheld";
-    const reason = a && typeof a.reason === "string" && a.reason.trim() ? a.reason.slice(0, 1500) : `The judge reached no verdict (${res.state === "failed" ? res.why.slice(0, 200) : "no usable answer"}), so the finding stands; reply again to ask once more.`;
+    const reason = a && typeof a.reason === "string" && a.reason.trim() ? a.reason.slice(0, 1500) : `The judge reached no verdict (${res.state === "failed" ? res.why.slice(0, 200) : "no usable answer"}), so the finding stands at this head; a dispute after the next push is judged again, or the owner may dismiss it.`;
     const closed = tx(() => {
       run("UPDATE judges SET status = 'done', verdict = ?, reason = ?, cost_usd = cost_usd + ?, ended = ? WHERE id = ?", verdict, reason, cost, iso(), j.id);
       const c = verdict === "dismissed" ? run("UPDATE findings SET outcome = 'dismissed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), j.repo, j.number, j.finding).changes : 0;

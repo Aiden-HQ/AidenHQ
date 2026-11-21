@@ -56,8 +56,8 @@ export interface PrSource {
   /** The PR's review threads: `ours` (Aiden opened it), the finding its marker names, its first comment's id and the replies
    * (strangers' text; `ruling`: Aiden's own answer to a dispute). */
   threads(repo: string, number: number): Promise<Thread[]>;
-  /** A commit's message (its trailer names the AidenHQ agent that wrote it). */
-  commit(repo: string, sha: string): Promise<{ message: string }>;
+  /** The PR's commit messages (their trailers name the AidenHQ agents that wrote them). */
+  messages(repo: string, number: number): Promise<string[]>;
 }
 export type Thread = { ours: boolean; finding: string | null; comment: number; replies: { id: number; author: string; body: string; ruling: boolean }[] };
 /** A dispute's ruling, posted as a reply on the finding's thread (the poster's `ruling`). */
