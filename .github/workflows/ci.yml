@@ -214,13 +214,20 @@ jobs:
             const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(TESTED_SHA)}`, { headers });
             if (res.status === 404) dirs.set(dir, false);
             else if (!res.ok) throw new Error(`GET contents/${dir} failed: ${res.status}`);
-            else dirs.set(dir, true);
+            else dirs.set(dir, Array.isArray(await res.json())); // a directory lists as an array, a file as an object (run-suites.sh tests -d)
             return dirs.get(dir);
           };
           const post = async (body) => {
             const res = await fetch(`${base}/repos/${REPO}/check-runs`, { method: "POST", headers, body: JSON.stringify(body) });
             if (!res.ok) throw new Error(`POST check-runs failed: ${res.status} ${await res.text()}`);
           };
+          // Check runs already on the head, so a failed-job re-run (which sees the same passing shard jobs again) posts nothing twice.
+          const have = new Set();
+          for (let page = 1; ; page++) {
+            const data = await get(`/repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}`);
+            for (const c of data.check_runs ?? []) have.add(`${c.name}\t${c.external_id}`);
+            if (have.size >= (data.total_count ?? 0) || (data.check_runs ?? []).length === 0) break;
+          }
           let posted = 0;
           try {
           for (const [prefix, plan] of [["packages", PACKAGES], ["modules", MODULES]]) {
@@ -231,6 +238,7 @@ jobs:
               const job = matches[0];
               if (job.conclusion !== "success" || job.head_sha !== HEAD_SHA) { console.log(`${name} did not conclude success on the head: posting nothing for this shard`); continue; }
               for (const entry of shard.entries) {
+                if (have.has(`${entry.name}\t${RUN_ID}/${job.id}/${shard.shard}`)) continue;
                 if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is gone in the tested tree: posting no check`); continue; }
                 await post({
                   name: entry.name,
