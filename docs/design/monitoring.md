@@ -79,8 +79,8 @@ pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `Ap
 The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only spike fires nothing, an `app-*` match carries its
 project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, or one going
 job to job, doesn't). No CI job runs it: it is promtool's alone, and the file's own header used to claim a `rules` job that
-doesn't exist. A workflow change is the platform line's, so wiring a `Prometheus rules` step into `checks` is filed on its own
-task. Until then it is run by hand, with the module's own image:
+doesn't exist. A workflow change is the platform line's, so wiring a `Prometheus rules` step into `checks` is a change of
+its own. Until then it is run by hand, with the module's own image:
 `docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 check rules rules.yml`
 (and `test rules rules.test.yml`).
 

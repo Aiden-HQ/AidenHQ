@@ -1,6 +1,6 @@
 # The alert rules' behaviour (docs/design/monitoring.md, "Alerts and routing"):
 #   promtool test rules modules/monitoring/prometheus/rules.test.yml
-# CI does not run it yet (no workflow step does; see docs/design/monitoring.md for the change that adds one).
+# No CI job runs it (none does today): run it by hand, or with the module's image (docs/design/monitoring.md).
 # Prometheus's own rule test: synthetic series in, alerts out at each eval time.
 rule_files:
   - rules.yml
