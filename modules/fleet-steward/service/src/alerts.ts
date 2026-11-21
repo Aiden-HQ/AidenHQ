@@ -49,7 +49,7 @@ export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) =>
   // tried again on the next webhook or tick, so a slow kernel can't hold the chain.
   const run = serial.then(() => {
     const until = Date.now() + NOTICE_MS;
-    const bounded = (text: string) => Promise.race([notify(text), new Promise<void>((_, no) => setTimeout(() => no(new Error("notice timed out")), Math.max(0, until - Date.now())).unref())]);
+    const bounded = (text: string) => until <= Date.now() ? Promise.reject(new Error("notice budget spent")) : Promise.race([notify(text), new Promise<void>((_, no) => setTimeout(() => no(new Error("notice timed out")), Math.max(0, until - Date.now())).unref())]);
     return applyAlerts(kv, alerts, bounded, now);
   });
   serial = run.catch(() => {});
