@@ -129,10 +129,17 @@ const jobState = async (name: string) => {
 const ours = (name: unknown): name is string => typeof name === "string" && name.startsWith(CFG.prefix) && /^[a-z0-9-]+$/.test(name);
 const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
-// A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping.
+// A box Docker didn't remove keeps its records: its lease (the kernel's release retries) or, lapsed, its idle reaping. While it
+// is being removed it counts as busy, so no other admission picks it to evict.
 async function destroy(name: string, why: string) {
+  const b = boxes.get(name);
+  if (b) b.busy++;
   const r = await docker(["rm", "-f", name]);
-  if (r.exitCode !== 0 && (await jobState(name)) !== "missing") { log("couldn't destroy", name, why, r.stderr.trim()); return false; }
+  if (r.exitCode !== 0 && (await jobState(name)) !== "missing") {
+    if (b) b.busy--;
+    log("couldn't destroy", name, why, r.stderr.trim());
+    return false;
+  }
   boxes.delete(name);
   if (jobs.delete(name)) saveJobs();
   rmSync(path.join(jobEnvDir, `${name}.env`), { force: true });
