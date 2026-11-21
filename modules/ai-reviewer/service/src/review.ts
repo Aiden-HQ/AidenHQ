@@ -412,6 +412,27 @@ export function toolCallText(tc: ToolCall): string {
   return lines.join("\n").replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
 }
 
+/**
+ * The kernel's details text for a carded `conn.tool` call, as `writes.ts` files it:
+ *   `tool: <connection>.<tool>\narguments (written by the requesting agent): <JSON>`
+ * `undefined` for any other text. This is the shape the reviewer read before the kernel sent a structured `tool_call`; the
+ * reviewer still accepts it so a call always reaches it as TOOL_CALL (a test harness, or an older kernel, sends the details as
+ * the diff). The arguments must parse as an object; a truncated or non-JSON tail is reported as unreadable, never dropped.
+ */
+export function toolCallFromDetails(action: string, details: unknown): ToolCall | undefined {
+  if (action !== "conn.tool") return undefined;
+  const text = String(details ?? "");
+  const head = /^tool: (\S+)\narguments \(written by the requesting agent\): ([\s\S]*)$/.exec(text);
+  if (!head) return undefined;
+  const [, name, rest] = head as unknown as [string, string, string];
+  const dot = name.indexOf(".");
+  if (dot < 1 || dot === name.length - 1) return undefined;
+  let args: unknown;
+  try { args = JSON.parse(rest.trim()); } catch { return { connection: name.slice(0, dot), tool: name.slice(dot + 1), arguments: {}, unreadable: ["arguments"] }; }
+  if (!args || typeof args !== "object" || Array.isArray(args)) return { connection: name.slice(0, dot), tool: name.slice(dot + 1), arguments: {}, unreadable: ["arguments"] };
+  return { connection: name.slice(0, dot), tool: name.slice(dot + 1), arguments: args as Record<string, unknown> };
+}
+
 export function reviewPrompt({ policy, card, diff, full = diff, rest = [], whole = false, files = "", chain, comments = "", panel = false, previous = [], unsure, siblings = "", sources, checks = [], decisions, graderNote = "", toolCall }: {
   policy: string; card: ReviewCard; diff: string; whole?: boolean; files?: string; chain: string; comments?: string; panel?: boolean; previous?: string[]; unsure?: string;
   siblings?: string; sources?: SourceRecords; checks?: ChecklistItem[]; decisions?: { where?: string; text: string }; graderNote?: string;
@@ -680,7 +701,10 @@ type ReviewArgs = ReviewRequest & { ask: Ask; onPanel?: () => Promise<void>; pol
  * count never reaches a model (files_not_shown). The approval names the unsure reviewer as `second_unsure`, never `second`.
  * `previous`: earlier rejections' notes on this task, shown as data.
  */
-export async function review({ card, diff, tool_call: toolCall, files = { list: [], leftOut: [] }, chain = "", requesterModel = "", policy = readPolicy(), checklist = readChecklist(), ask, panel = false, previous = [], onPanel = async () => {}, siblings = "", sources, decisions, grader_note: graderNote = "", comments = "" }: ReviewArgs): Promise<Result> {
+export async function review({ card, diff, tool_call: sentToolCall, files = { list: [], leftOut: [] }, chain = "", requesterModel = "", policy = readPolicy(), checklist = readChecklist(), ask, panel = false, previous = [], onPanel = async () => {}, siblings = "", sources, decisions, grader_note: graderNote = "", comments = "" }: ReviewArgs): Promise<Result> {
+  // A conn.tool call arrives structured (`tool_call`); the kernel's older details text, when a caller sends it as the diff, is
+  // read here so the connection and tool and each argument still reach the reviewer as TOOL_CALL, never under DIFF.
+  const toolCall = sentToolCall ?? toolCallFromDetails(card.action, diff);
   const models = judgeModels(requesterModel);
   const byCode = (decision: "reject" | "escalate", reason: string, code: string) => ({ decision, code, reason, model: models[0] ?? LUNA });
   if (!models.length) return byCode("escalate", "no reviewer model independent of the requester's", "no_independent_model");

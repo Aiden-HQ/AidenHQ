@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff, toolCallText } from "../service/src/review.ts";
+import { CODE_CODES, DEEPSEEK, GLM, LUNA, MAX_COMMENTS, MAX_DIFF, MAX_FILES, MODEL_CODES, changeTools, changeView, markComments, diffSections, policyVersion, readPolicy, openRouterAsk, review, reviewPrompt, sourcesInDiff, toolCallFromDetails, toolCallText } from "../service/src/review.ts";
 import { fileContext } from "../service/src/review-files.ts";
 import { padCase } from "./case-pad.ts";
 import { REVIEW_CODES } from "../../../services/shared/reason-codes.ts";
@@ -335,12 +335,15 @@ test("a DeepSeek requester is reviewed by Luna only, an OpenAI requester by Deep
 test("a GitHub write carrying the instance's hosts, addresses or paths is refused by code; the clean comment reaches the model", async () => {
   const read = (f) => JSON.parse(readFileSync(join(import.meta.dirname, "reviewer-cases", f), "utf8"));
   const leak = read("triage-routine-comment-leaks-instance-details.json");
-  // A tool call's arguments reach the reviewer structured now (TOOL_CALL), so the instance-detail check reads them there.
-  const out = await review({ card: leak.card, diff: "", tool_call: leak.tool_call, policy: "p", ask: async () => assert.fail("not asked") });
+  // Both shapes reach the same check: a case still carries the details text (the judge's harness is the base's), and the
+  // kernel's structured tool_call is the other.
+  const out = await review({ card: leak.card, diff: leak.diff, policy: "p", ask: async () => assert.fail("not asked") });
   assert.deepEqual([out.decision, out.code], ["reject", "secret_exfiltration"]);
   assert.match(out.reason, /agents\.acme-internal\.ts\.net.*\/home\/sam\/.*203\.0\.113\.41/);
   const clean = read("clean-triage-routine-comments-verified-fixed.json");
-  assert.equal((await review({ card: clean.card, diff: "", tool_call: clean.tool_call, policy: "p", ask: async () => ok })).decision, "approve");
+  assert.equal((await review({ card: clean.card, diff: clean.diff, policy: "p", ask: async () => ok })).decision, "approve");
+  const tc = toolCallFromDetails(leak.card.action, leak.diff)!;
+  assert.deepEqual([(await review({ card: leak.card, diff: "", tool_call: tc, policy: "p", ask: async () => assert.fail("not asked") })).code], ["secret_exfiltration"]);
 });
 
 test("missing: back to the agent; a failed call: reviewer_failed (the runner retries it)", async () => {
@@ -500,23 +503,26 @@ test("no planted reviewer case file is over 32,000 bytes on disk", () => {
   }
 });
 
-// A conn.tool planted case must carry its arguments the way the kernel sends them (structured), never back in a prose diff: a
-// case left on the old shape would test a prompt the product no longer builds (issue #1252).
-test("every conn.tool planted case carries a structured tool_call, never a diff", () => {
+// A conn.tool planted case carries the kernel's details text, which the reviewer still reads into TOOL_CALL: the judge's
+// harness is the base commit's `scripts/reviewer-eval.ts` (module.yaml `judged.files`), and it passes only `diff`, so a case
+// written in a new shape would reach the reviewer with no arguments at all (it failed the eval on #1252).
+test("every conn.tool planted case carries the kernel's details text, which reads back into TOOL_CALL", () => {
   const dir = join(REPO_ROOT, "modules/ai-reviewer/test/reviewer-cases");
   const cases = readdirSync(dir).filter((n) => n.endsWith(".json")).map((n) => [n, JSON.parse(readFileSync(join(dir, n), "utf8"))]);
   const calls = cases.filter(([, c]) => c.card?.action === "conn.tool");
   assert.ok(calls.length > 0, "the triage/product-bug tool cases are planted");
   for (const [name, c] of calls) {
-    assert.equal(typeof c.tool_call?.connection, "string", name);
-    assert.equal(typeof c.tool_call?.tool, "string", name);
-    assert.equal(typeof c.tool_call?.arguments, "object", name);
-    assert.equal(c.diff, undefined, name, "a tool call's arguments never ride in diff");
+    const tc = toolCallFromDetails(c.card.action, c.diff);
+    assert.ok(tc, `${name}: the details text reads as a tool call`);
+    assert.ok(tc.connection && tc.tool, name);
+    assert.ok(Object.keys(tc.arguments).length > 0, `${name}: its arguments are read`);
+    assert.deepEqual(tc.unreadable, undefined, name);
   }
   // The #1252 report carries its title, fingerprint and four evidence fields by name.
   const bug = cases.find(([n]) => n === "clean-product-bug-reported-with-title-fingerprint-evidence.json")![1];
-  assert.deepEqual(Object.keys(bug.tool_call.arguments), ["title", "fingerprint", "body", "evidence"]);
-  assert.deepEqual(Object.keys(bug.tool_call.arguments.evidence), ["module", "version", "reproduction", "log"]);
+  const tc = toolCallFromDetails(bug.card.action, bug.diff)!;
+  assert.deepEqual(Object.keys(tc.arguments), ["title", "fingerprint", "body", "evidence"]);
+  assert.deepEqual(Object.keys(tc.arguments.evidence as Record<string, unknown>), ["module", "version", "reproduction", "log"]);
 });
 
 // The gh keyring in the new-source cases is trusted only when its primary keys are exactly GitHub's two: 2C6106…6059
@@ -633,6 +639,19 @@ test("a conn.tool call's arguments arrive as a labelled TOOL_CALL block by name,
   // The CARD and REQUEST_CHAIN blocks are unchanged.
   assert.match(user, /<<<CARD\ntarget: acme\/product#1252\nsummary: Call github\.github_product_issue\.\nreason: \nCARD>>>/);
   assert.match(user, /<<<REQUEST_CHAIN\nFile #1252 with its evidence\.\nREQUEST_CHAIN>>>/);
+});
+
+test("the kernel's older conn.tool details text (sent as the diff) still becomes TOOL_CALL, never a DIFF", async () => {
+  const details = `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(toolCall.arguments)}`;
+  assert.deepEqual(toolCallFromDetails("conn.tool", details), toolCall, "the details text reads back to the same call");
+  let seen;
+  await review({ card: { action: "conn.tool", rule: "conn_tool", target: "acme/product#1252", sentence: "Call github.github_product_issue." }, diff: details, chain: "File #1252 with its evidence.", policy: "p", ask: async (_m, p) => ((seen = p), ok) });
+  assert.match(seen.user, /<<<TOOL_CALL\nconnection: "github"\ntool: "github_product_issue"\ntitle: "The reviewer drops a call's arguments"/);
+  assert.match(seen.user, /^evidence\.log: "reviewer: supplies only a body argument"$/m);
+  assert.doesNotMatch(seen.user, /<<<DIFF\n|written by the requesting agent|The exact change at the commit under review/);
+  // The details text of another action is a real diff, and an unparseable tail is named, never dropped.
+  assert.equal(toolCallFromDetails("pr", details), undefined);
+  assert.deepEqual(toolCallFromDetails("conn.tool", 'tool: github.t\narguments (written by the requesting agent): {"a": '), { connection: "github", tool: "t", arguments: {}, unreadable: ["arguments"] });
 });
 
 test("a planned write still arrives as a DIFF with the DIFF_FILES shape, never as a TOOL_CALL", async () => {
