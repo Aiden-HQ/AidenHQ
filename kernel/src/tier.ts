@@ -332,8 +332,13 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // The busiest target (the latest rejected on a tie); its rejections are in decision order.
   const busiest = targets?.targets.length ? [...onTarget.values()].reduce<Prior[]>((a, b) => (b.length > a.length || (b.length === a.length && String(b.at(-1)?.decidedAt) > String(a.at(-1)?.decidedAt)) ? b : a), []) : open;
   const rejects = busiest.length;
-  const lastAt = Date.parse(String(busiest.at(-1)?.decidedAt ?? ""));
-  const parkedUntil = rejects >= MAX_REJECTS && Number.isFinite(lastAt) ? lastAt + cooldown : undefined;
+  // The park, walked in decision order: it starts at the MAX_REJECTS-th rejection; a later rejection counts as a panel's
+  // (`panels`) only when it came after the cooldown since the park started or the last panel's, so rejections of requests
+  // reviewed side by side before the park was recorded never stand in for a panel.
+  const at = (r: Prior | undefined) => Date.parse(String(r?.decidedAt ?? ""));
+  let parkAt = rejects >= MAX_REJECTS ? at(busiest[MAX_REJECTS - 1]) : NaN, panels = 0;
+  for (const r of busiest.slice(MAX_REJECTS)) if (at(r) >= parkAt + cooldown) { panels++; parkAt = at(r); }
+  const parkedUntil = Number.isFinite(parkAt) ? parkAt + cooldown : undefined;
   // Content is judged task-wide: this is about what was written, not where it was aimed. One rejection of it gets one fresh
   // review once the reviewer's inputs changed (`chain` now, `requestChain` then; the requester may edit the chain and the
   // comments, so this lifts once per content: a second rejection of it is final) or after the cooldown.
@@ -347,7 +352,7 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   // (null) fail closed: any owner rejection of the action on the task makes it theirs.
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && (patches === null || (sameContent(r) && !mine.some((y) => byOwner(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt)))));
   const avoid = fresh ? rejector(only) : rejects >= MAX_REJECTS ? rejector(busiest.at(-1)) : undefined;
-  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, ...(parkedUntil !== undefined ? { parkedUntil } : {}), ...(avoid ? { avoid } : {}), findings: open.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
+  return { ownerVeto: lastOwner?.state === "rejected" || ownerNo, same: sameOne ? sameOne.review || "no note" : undefined, rejects, panels, ...(parkedUntil !== undefined ? { parkedUntil } : {}), ...(avoid ? { avoid } : {}), findings: open.map((r) => r.review).filter(Boolean) as string[], ...(targets?.targets.length ? { scope: targets.label } : {}) };
 }
 
 /**
@@ -361,7 +366,7 @@ export function priorPart(p: ReturnType<typeof priorDecisions> | undefined, now 
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
   if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer rejected exactly this request on this task and it isn't reviewed again unchanged now (its note: ${String(p.same).slice(0, 400)}). One rejection gets one fresh review once the request, the task's comments or the reviewer's inputs change, or ${REVIEW_COOLDOWN_MS / 60_000} minutes after it; a second is final. Change what it found and file the changed request, or report back to whoever asked why it can't change`);
   const scope = p.scope ?? "this task";
-  if (p.rejects >= MAX_REJECTS + PANEL_TRIES) return T(2, "retries-owner", `the AI reviewer rejected this action ${p.rejects} times on ${scope}, the last ${PANEL_TRIES} as a panel after a cooldown, so the owner decides`);
+  if (p.panels >= PANEL_TRIES) return T(2, "retries-owner", `the AI reviewer rejected this action ${p.rejects} times on ${scope}, ${PANEL_TRIES} of them as a panel after a cooldown, so the owner decides`);
   if (p.rejects >= MAX_REJECTS && (p.parkedUntil ?? 0) > now) return REJECT("retries-exhausted", `parked until ${new Date(p.parkedUntil!).toISOString().slice(0, 16)}Z: the AI reviewer rejected this action ${p.rejects} times on ${scope}. After that a panel of two reviewers reviews it again, and a decision on the task by whoever delegated it or the chief of staff lifts it now. A different branch, PR or tool target of the task is reviewed on its own; report what it found to whoever asked for this work`);
   if (p.rejects >= MAX_REJECTS) return { tier: 1, rule: "retries-panel", reason: `the AI reviewer rejected this action ${p.rejects} times on ${scope}: a panel reviews it again`, panel: true };
   return undefined;
@@ -392,12 +397,13 @@ export const failedVerdict = (input: ReviewInput, v: Verdict, n: number): Verdic
  * No reviewer model independent of the requester's and the reviewers' (the reviewer's no_independent_model): a Tier 1 write
  * fails open, approved by code with the reviewers' notes; a card that is the owner's on its merits keeps going to the owner
  * (owner, 2026-11-21: "the AI I'm using is not the threat vector"). A review-first card's approve still goes on to the owner
- * (afterReview).
+ * (afterReview). A panel card (authority-expanding: two families must approve it, records.ts) is a failed review instead,
+ * retried later (REVIEW_TRIES), then back to the agent: never approved by code, never the owner's.
  */
-export const failOpen = (input: ReviewInput, v: Verdict): Verdict =>
-  v.decision === "escalate" && v.code === "no_independent_model" && !input.byMerit
-    ? { decision: "approve", code: "no_independent_model", model: "kernel/code", reason: `Approved by code: no reviewer independent of the requester and the reviewers was left, and a Tier 1 write fails open. ${v.reason}`.slice(0, 1990) }
-    : v;
+export const failOpen = (input: ReviewInput, v: Verdict, panel = false): Verdict =>
+  v.decision !== "escalate" || v.code !== "no_independent_model" || input.byMerit ? v
+    : panel || input.panel ? { ...v, code: "reviewer_failed", reason: `no second reviewer family was left for a panel card (${v.reason})` }
+    : { decision: "approve", code: "no_independent_model", model: "kernel/code", reason: `Approved by code: no reviewer independent of the requester and the reviewers was left, and a Tier 1 write fails open. ${v.reason}`.slice(0, 1990) }
 /** autonomy tier0: the reviewer only comments, so its approve or reject goes to the owner as a note; off keeps a reject final. */
 export const shadowed = (v: Verdict, mode: Autonomy): Verdict =>
   mode === "full" || v.decision === "escalate" || (mode === "off" && v.decision === "reject") ? v : { ...v, decision: "escalate", code: "shadow", reason: `Shadow (autonomy: tier0): the reviewer would ${v.decision} this. ${v.reason}` };

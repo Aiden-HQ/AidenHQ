@@ -28,6 +28,10 @@ test("a parked branch waits out the cooldown, gets a panel on another family, an
   const owner = priorPart(priorOf(more, t0 + 600 * 60_000));
   assert.deepEqual([owner?.tier, owner?.rule, owner?.reject], [2, "retries-owner", undefined]);
   assert.equal(meritOwner(owner).byMerit, true);
+  // Rejections of requests reviewed side by side, before the park was recorded, are never a panel's.
+  const burst = [...five, ...[5, 6].map((i) => rejected(String(i).repeat(40), at(4)))];
+  const b = priorOf(burst, t0 + 10 * 60_000);
+  assert.deepEqual([b.rejects, b.panels, priorPart(b, t0 + 10 * 60_000)?.rule], [7, 0, "retries-exhausted"]);
 });
 
 test("no reviewer model independent of the requester's approves a Tier 1 write; the owner's own cards still go to the owner", () => {
@@ -36,6 +40,7 @@ test("no reviewer model independent of the requester's approves a Tier 1 write; 
   const theirs = meritOwner({ tier: 2, rule: "owner-veto", reason: "the owner rejected this action" });
   assert.equal(afterReview(theirs, failOpen(theirs, v)).decision, "escalate");
   assert.equal(failOpen({ tier: 1 }, { ...v, code: "reviewer_refused" }).decision, "escalate", "only no_independent_model fails open");
+  assert.deepEqual([failOpen({ tier: 1 }, v, true).decision, failOpen({ tier: 1 }, v, true).code], ["escalate", "reviewer_failed"], "a panel card is retried, never approved by code alone");
 });
 
 test("a reviewer approval on a card that is the owner's on its merits still goes to the owner", () => {

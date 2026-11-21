@@ -14,7 +14,7 @@
 // a decision on the task: answered), the instance's decisions digest from the instance repo's main, and the fleet's current
 // model settings (modelSettings, from the grants table). Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import type { Rec, Records, State } from "./records.ts";
-import { CODE_REJECTS, MAX_REJECTS, REVIEW_COOLDOWN_MS, afterReview, codeVerdict, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, REVIEW_COOLDOWN_MS, afterReview, codeVerdict, failOpen, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
@@ -213,13 +213,13 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const authored = comments.flatMap((c) => { const a = authorOf(c, { owner, requester: r.requester.agent, delegator: delegator === r.requester.agent ? undefined : delegator, agent: task.agent }); return a ? [{ c, a }] : []; });
   const said = taskComments(authored);
   // What the reviewer read: the request, the task's comments and its own inputs (the decisions digest, the pin).
-  const chainHash = requestHash(chain, `${said}\n\n${pin}\n\n${decisions?.text ?? ""}`);
+  const chainHash = requestHash(chain, `${said}\n\n${pin}\n\n${decisions?.text ?? ""}\n\n${settings}`);
   // A run's own request (tier.ts Target.own) reads only its own run's reviewer rejections: a sibling run's rejected post, answered
   // or not, is another review's finding. The owner's decisions on the task all stay (their veto is the task's).
   const aimed = requestTargets(action, r.args, !r.requester.agent);
   const own = aimed?.targets.every((t) => t.own) ?? false;
   const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args, !x.requester.agent)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
-  const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id && sameRun(x)).map(asPrior), authored.slice(-COMMENTS));
+  const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id && sameRun(x)).map(asPrior), authored);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
   const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed, now);
   const veto = priorPart(prior, now);
@@ -280,6 +280,9 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const inFlight = new Set<string>();
+  // The pin, read at most once a minute (a precheck asks on every call).
+  let pinned: { at: number; value: Promise<string> } | undefined;
+  const pinNow = () => (pinned && Date.now() - pinned.at < 60_000 ? pinned : (pinned = { at: Date.now(), value: pin().catch(() => "") })).value;
   // A grade that can't be read leaves the note out (the reviewer then judges against the whole request), never the review.
   const noteOf = async (id: string) => {
     try {
@@ -345,10 +348,10 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
      * and decided as writes.review decides (code first, then `ask`, the bound reviewer). Nothing moves and nothing is posted.
      */
     async precheck(r: Rec, ask: (request: Record<string, unknown>) => Promise<Verdict>): Promise<Verdict> {
-      const [digest, at] = await Promise.all([decisions().catch(() => undefined), pin().catch(() => "")]);
+      const [digest, at] = await Promise.all([decisions().catch(() => undefined), pinNow()]);
       const { input, request } = await reviewInput(r, { records, task, decisions: digest, product: product(), pin: at, settings: settings() });
       const held = heldInput({ ...input, cap: r.cap ?? null }, r.review_first);
-      return codeVerdict(held, "kernel/code") ?? afterReview(held, await ask(request));
+      return codeVerdict(held, "kernel/code") ?? afterReview(held, failOpen(held, await ask(request), r.panel));
     },
     /**
      * One sweep: the oldest 200 records in review not already being reviewed nor waiting out a failed review's backoff, so a
@@ -360,7 +363,7 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
       if (!due.length) return Promise.resolve();
       for (const r of due) inFlight.add(r.id);
       const digest = decisions().catch((e: Error) => void log("decisions unread", { err: String(e.message ?? e).slice(0, 200) }));
-      const at = pin().catch(() => "");
+      const at = pinNow();
       return Promise.all(due.map(async (r) => {
         try {
           await reviewOne(r, (await digest) ?? undefined, await at);
