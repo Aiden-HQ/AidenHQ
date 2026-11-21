@@ -546,10 +546,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       const spec = checkSpec(run, recipe, b.spec);
       const hash = specHash(spec, recipe);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
-      // A check that couldn't run (error, lost) runs again when asked again. A model recipe's, at most twice in all; a result
-      // recipe that ended without its result gets that one retry only after a provider error or crash (not a timeout).
+      // A check that couldn't run (error, lost) runs again when asked again; a result recipe that ended without its result runs
+      // again only after a provider error or crash (not a timeout): spend is the gateway's limits', never a tries count.
       // A check restarts have lost MAX_LOST times runs no more (each lost run may have spent).
-      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && (!recipe.model || had.tries < 2) && had.lost < MAX_LOST;
+      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && had.lost < MAX_LOST;
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.

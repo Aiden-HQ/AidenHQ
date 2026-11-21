@@ -95,6 +95,11 @@ const MESSAGE_FIELDS = new Set(["model", "messages", "system", "tools", "tool_ch
 /** The anthropic-beta values passed upstream (Claude Code's; none changes the price); any other is dropped. */
 const ANTHROPIC_BETAS = new Set(["interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "mid-conversation-tool-changes-2026-07-01", "thinking-token-count-2026-05-13", "effort-2025-11-24", "thinking-display-updates-2026-08-18"]);
 const DAY_MS = 864e5;
+/** The limits' defaults (kernel/settings.json), for a config/gateway.json that lacks one. */
+const SPEND_DEFAULTS = (() => {
+  const k = JSON.parse(readFileSync(new URL("../../settings.json", import.meta.url), "utf8")) as Record<string, { default: number }>;
+  return { day: k.spend_day_usd!.default, month: k.spend_month_usd!.default, task: k.task_usd!.default };
+})();
 // The fewest output tokens a call is cut to near a limit (below it a call always goes ahead).
 const MIN_OUTPUT = 1024;
 // CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day.
@@ -290,9 +295,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const prices = createPrices({ url: modelsUrl, now, log, ...(priceRetryMs ? { retryMs: priceRetryMs } : {}) });
   // CI code review (compile writes it from the ci module's settings): { orgs, models, review } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
-  // The install's limits (settings.spend_day_usd, spend_month_usd; compile always writes both). One unset: that limit is none.
-  const usd = (v: unknown) => (Number(v) > 0 ? Number(v) : 0);
-  const limitsSet = watched(settingsFile, (j) => ({ day: usd(j.install_day_usd), month: usd(j.install_month_usd), task: usd(j.task_usd) }), { day: 0, month: 0, task: 0 });
+  // The limits (settings.spend_day_usd, spend_month_usd, task_usd; compile writes all three). One missing or unreadable is its
+  // kernel default (kernel/settings.json), never no limit.
+  const usd = (v: unknown, d: number) => (Number(v) > 0 ? Number(v) : d);
+  const limitsSet = watched(settingsFile, (j) => ({ day: usd(j.install_day_usd, SPEND_DEFAULTS.day), month: usd(j.install_month_usd, SPEND_DEFAULTS.month), task: usd(j.task_usd, SPEND_DEFAULTS.task) }), SPEND_DEFAULTS);
   const keyFor = githubKeys(githubJwksUrl, now);
   const q = {
     run: db.prepare("SELECT * FROM runs WHERE run_key = ?"),
@@ -307,6 +313,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ?"),
     spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
+    unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
     since: db.prepare("SELECT * FROM calls WHERE at >= ? AND status != 'reserved' ORDER BY at LIMIT 20000"),
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
@@ -526,14 +533,16 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * Tells the owner once per limit, period and value (a restart included), or a task's delegator once per task and value; a
    * failed notice never fails the refusal.
    */
-  async function tell(who: Caller, over: Limit) {
+  async function tell(who: { agentId: string | null; issueId: string | null }, over: Limit) {
     const task = over.scope === "task";
     const to = task ? (tellDelegator && who.issueId ? (text: string) => tellDelegator(who.issueId!, text) : undefined) : notifyOwner;
-    if (!to || !q.file.run(over.scope, task ? who.agentId! : "install", over.subject, over.cap, new Date(now()).toISOString()).changes) return;
+    const key = [over.scope, task ? who.agentId! : "install", over.subject, over.cap] as const;
+    if (!to || !q.file.run(...key, new Date(now()).toISOString()).changes) return;
     try {
       if (task) await to(`Task spend cap reached: this task's calls have spent $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)} (settings.task_usd), so its agent stops here. Split what is left into new tasks, or the owner can raise task_usd in Settings.`);
       else await to(`AidenHQ reached its ${over.scope === "day" ? "daily" : "monthly"} spend limit ($${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}, settings.spend_${over.scope}_usd), so every model call is refused until the ${over.scope === "day" ? "next UTC day" : "next month (UTC)"}. Raise it in Settings to carry on now.`);
     } catch (e) {
+      q.unfile.run(...key); // the next refusal tells again
       log("spend limit notice failed", { err: String((e as Error).message).slice(0, 300) });
     }
   }
@@ -585,7 +594,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const r = reserve(who, t0, id, body.model, (Math.ceil(Buffer.byteLength(raw) / 3) * price.in) / 1e6, price.out / 1e6, Math.min(price.max_output, ...asked));
     if ("over" in r) {
       const over = r.over;
-      await tell(who, over);
+      void tell(who, over); // the 402 never waits on the notice
       // One ledger row per run, limit and period: a refused turn arrives several times (Codex retries a 402 five times).
       record(who, { key: `cap:${who.runKey}:${over.scope}:${over.subject}:${over.cap}`, model: body.model, status: "cap_reached", t: t0, ms: 0 });
       // No date or time in it: Paperclip reads one as a retry time (worded to match none of its retry/quota patterns).
@@ -737,8 +746,15 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     }
   }
 
-  /** The limits a new job of this agent on this task would start over (admission.ts): its task's cap, the install's day and month. */
-  const exhausted = (agentId: string, task: string) => limits({ agentId, issueId: task, perpetual: false }, now()).filter((o) => o.spent >= o.cap);
+  /**
+   * The limits a new job of this agent on this task would start over (admission.ts): its task's cap, the install's day and
+   * month. Each is told as a refused call's is (once), so a limit a last call crossed is never silent.
+   */
+  const exhausted = (agentId: string, task: string) => {
+    const over = limits({ agentId, issueId: task, perpetual: false }, now()).filter((o) => o.spent >= o.cap);
+    for (const o of over) void tell({ agentId, issueId: task }, o);
+    return over;
+  };
   /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
   const spentByKey = (runKey: string) => (q.spentRun.get(runKey) as Sum).s;
   const spentBy = (cred: string) => spentByKey(sha256(cred));

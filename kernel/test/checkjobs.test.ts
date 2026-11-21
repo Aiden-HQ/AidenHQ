@@ -316,7 +316,7 @@ test("checks: the compiler takes a model recipe as model: true, and names the re
   assert.throws(() => compileCheckJobs("code-review", def({ result: "yes" }), root), /result/);
 });
 
-test("checks: a result recipe gets one retry after a crash; none after a timeout or a second failure", async () => {
+test("checks: a result recipe runs again when asked after a crash, any number of times; never after a timeout", async () => {
   const review = { module: "code-review", argv: ["node", "r.mjs"], timeout_min: 30, title: "the review", spec: { base: "sha" }, files: {}, model: true, result: true };
   let box = { exit: 1, timedOut: false };
   const { checks, runs, done } = setup({ [A]: {}, [B]: {} }, undefined, { "code-review": review }, () => ({ ...box, out: "" }));
@@ -326,14 +326,14 @@ test("checks: a result recipe gets one retry after a crash; none after a timeout
   const second = await ask();
   assert.equal(second.id, first.id);
   assert.equal(second.billed_usd, 0.0246);
-  // A second failure: no third run.
-  assert.equal((await ask()).version, second.version);
-  assert.equal(runs.length, 2);
+  // Asked again after a second crash: it runs again (spend is bounded by the gateway's limits, not a tries count).
+  await ask();
+  assert.equal(runs.length, 3);
   // A timeout: no retry at all.
   box = { exit: null, timedOut: true };
   await ask(A);
   await ask(A);
-  assert.equal(runs.length, 3);
+  assert.equal(runs.length, 4);
 });
 
 test("checks: check.ended carries the task it was asked for", async () => {

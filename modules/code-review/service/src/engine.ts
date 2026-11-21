@@ -263,9 +263,10 @@ export function createEngine(d: EngineDeps) {
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
 
-  /** What the kernel billed a check job (0 when it says nothing valid), and a run's cost: earlier attempts' plus this one's. */
+  /** What the kernel billed a check job (0 when it says nothing valid), and a run's cost: the kernel's figure covers every
+   *  attempt of a reused check, so it never drops below what earlier attempts were charged. */
   const billed = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
-  const charge = (r: RunRow, v: unknown) => r.cost_usd + billed(v);
+  const charge = (r: RunRow, v: unknown) => Math.max(r.cost_usd, billed(v));
 
   /** A run posts on a task of its own (closed once its post settles) unless its PR is open on a watched repo (the PR's task, closed with the PR). */
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;

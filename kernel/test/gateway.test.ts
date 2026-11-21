@@ -225,6 +225,9 @@ test("gateway: the install's day and month limits count every call, every caller
   now = Date.parse("2026-11-19T10:00:00Z");
   writeFileSync(settingsFile, JSON.stringify({ install_day_usd: 1, install_month_usd: 0.2 }));
   for (let i = 0; i < 5; i++) assert.equal((await call(reviewer())).status, 200, `$${(0.06 + i * 0.03).toFixed(2)} spent this month`);
+  // The last call crossed it: admission's check tells the owner already, before any call is refused (and only once).
+  assert.deepEqual(gw.exhausted("ag1", "iss1").map((o) => o.scope), ["month"]);
+  assert.equal(told.length, 2);
   const month = await call(reviewer());
   assert.equal(month.status, 402);
   assert.match(month.body.error.message, /^spend cap reached: the install's monthly limit, \$0\.21 of \$0\.20 \(settings\.spend_month_usd\);/);
@@ -234,9 +237,11 @@ test("gateway: the install's day and month limits count every call, every caller
   // A new month starts over.
   now = Date.parse("2026-12-01T00:10:00Z");
   assert.equal((await call(reviewer())).status, 200);
-  // Unset, no limit.
+  // Unset or unreadable: the kernel's defaults, never no limit.
   writeFileSync(settingsFile, "{}");
-  assert.deepEqual((await spend()).install, { day: { spent: 0.03, cap: 0 }, month: { spent: 0.03, cap: 0 } });
+  assert.deepEqual((await spend()).install, { day: { spent: 0.03, cap: 50 }, month: { spent: 0.03, cap: 1000 } });
+  writeFileSync(settingsFile, "not json");
+  assert.equal((await spend()).install.day.cap, 50);
 });
 
 test("gateway: a control plane blip never settles a chat run as capped for life, and a stalled stream is cut and settled", async (t) => {
