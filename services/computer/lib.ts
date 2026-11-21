@@ -46,16 +46,13 @@ export const CODEX_CONFIG_SCRUB = [
 export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /**
- * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). The launch
- * waits for exactly that tag, never another one, and fails if it is still missing after five minutes.
+ * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). Until it
+ * exists the launch is refused with a 503: the kernel defers a launch the launcher can't answer and retries on its next tick.
  */
-export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}, waitMs = 300_000) {
-  for (let waited = 0; ; waited += 2000) {
-    if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
-    if (waited >= waitMs) throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 500 });
-    if (!waited) log("image", tag, "not built yet; waiting for it");
-    await new Promise((r) => setTimeout(r, 2000));
-  }
+export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}) {
+  if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
+  log("image", tag, "not built yet; launch deferred");
+  throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 503 });
 }
 
 /** `docker run` arguments: image, limits, network and mounts all come from the launcher's own config. */
