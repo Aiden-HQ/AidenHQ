@@ -94,9 +94,9 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 
 Work delegated to the Engineer, the DevOps Engineer and the UI/UX Designer is graded, however you hand it
 on (`task_delegate`, or `task_create` with an `assignee`; an Engineer sub-task is graded on its PRs): it closes only once
-the grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria. After 3 tries, or when the
-grader can't judge it, it escalates to you. A criterion the grader can't verify comes to you as one question; closing the
-task settles it.
+the grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria. After 3 rejected versions it
+escalates to you. A grader that is down, can't judge it or can't verify a criterion closes the task done, with an
+"ungraded: <reason>" note.
 
 - **Deliverable:** `pr` (the repo or PR link), `app` (the app name), `apply` or `file`. `report` (read-only work: a
   diagnosis, research) and `none` (a question) are not graded: read the answer and close the task. A brief whose honest

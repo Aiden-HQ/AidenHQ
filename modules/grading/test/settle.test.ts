@@ -38,7 +38,7 @@ async function harness(tasks, t) {
   };
 }
 
-const escalated = (h, id, version, delegators) => h.grades.record(id, { version, outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), delegators);
+const escalated = (h, id, version, delegators) => [1, 2].map(() => h.grades.record(id, { version, outcome: "needs_revision", model: "glm", criteria: [] }, Date.now(), delegators)).at(-1);
 
 test("a delegator who is also the task's assignee settles an escalated grade, and a later deploy does not reopen it", async (t) => {
   // WOR-4555's shape: the agent delegated the task to itself, so the escalations went to the task's own assignee.
@@ -162,7 +162,7 @@ test("an assignee cannot settle its own escalated grade by waiting: after a day 
   assert.deepEqual(h.grades.resubmitted(), []);
   assert.deepEqual(h.grades.due().map((g) => g.issueId), ["t9"]);
   // Only the delegator accepts.
-  h.grades.record("t9", { version: "sha1", outcome: "cannot_judge", model: "glm", criteria: [] }, Date.now(), ["watch"]);
+  escalated(h, "t9", "sha1", ["watch"]);
   assert.deepEqual(await h.finish("WOR-9", { agent: "watch", via: "task_finish" }), { verdict: "ok", unlabel: true, accepts: true });
   assert.equal(h.grades.get("t9").verdicts.at(-1).by, "watch");
 });

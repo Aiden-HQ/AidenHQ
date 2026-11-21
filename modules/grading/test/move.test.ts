@@ -16,7 +16,7 @@ test("the board's rows and resubmission marks move once; a second run moves noth
   old.file("held", ["merged into main", "checks green", "page shows it"], { kind: "pr", ref: "" });
   completionGate(old, "held", "task_finish");
   old.file("esc", [], { kind: "file", ref: "" });
-  old.record("esc", { version: "v", outcome: "cannot_judge", model: "m", criteria: [] }, Date.now(), ["cos"]);
+  for (let i = 0; i < 2; i++) old.record("esc", { version: "v", outcome: "needs_revision", model: "m", criteria: [] }, Date.now(), ["cos"]);
   old.markResubmitted("esc");
   board.close();
   assert.equal(moveGrades(data), "moved 2");

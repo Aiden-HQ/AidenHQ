@@ -156,9 +156,9 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (issue.status === "cancelled") return grades.settle(issue.id, "the task was cancelled before the grader settled it");
     const g = grades.record(issue.id, v, Date.now(), [issue.createdByAgentId, parent?.assigneeAgentId].filter((x): x is string => Boolean(x)));
     // The hold stays while the grade loop still needs it: its grader token, and the resolve that closes, reopens or blocks the
-    // task (satisfied, needs_revision, grading_failed and its escalation). Only another escalation, the delegator's to decide,
+    // task (satisfied, needs_revision, grading_failed). Only an escalation, the delegator's to decide,
     // takes the label off here. The verdict stands if the kernel can't (it restarts on applies).
-    if (g.state === "escalated" && v.outcome !== "grading_failed") await kernel.release(issue.id).catch((err: Error) => log("grading label not released", { task: issue.identifier, err: String(err.message).slice(0, 200) }));
+    if (g.state === "escalated") await kernel.release(issue.id).catch((err: Error) => log("grading label not released", { task: issue.identifier, err: String(err.message).slice(0, 200) }));
     if (v.outcome === "grading_failed" && v.reason) grades.noteFailure(issue.id, v.reason);
     else if (v.outcome !== "awaiting_evidence") grades.clearFailure(issue.id);
     log("grade recorded", { task: issue.identifier, outcome: v.outcome, version: v.version.slice(0, 60), state: g.state, attempts: g.attempts, failures: g.failures });

@@ -375,8 +375,6 @@ export async function grade({ rubric, deliverable, facts, data, request, images 
   return { outcome: "grading_failed", model: failure!.model, criteria: [], reason: failure!.reason };
 }
 
-/** Criteria met or unverified, at least one unverified and none shown unmet: the board escalates it (grades.ts unverifiedOnly). */
-export const unverifiedOnly = (criteria: { met: string }[] = []) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
 
 /**
  * The premise an escalation for missing evidence states: built from what the task's record shows *now* (`facts`, from
@@ -412,10 +410,8 @@ export function gradeNote(g: any, rubric: string[], outcome: string, { version, 
         ? "**Graded: needs revision.** Fix the criteria below, then finish the task again; the grader checks the new version."
         : outcome === "grading_failed"
           ? `**Grading failed; retrying.** (${reason ?? g.reason ?? "the grader failed or returned no usable criteria"}). No rubric verdict yet: the grader runs again shortly.`
-          : outcome === "escalated" && g.outcome === "grading_failed"
-            ? `**Grading failed; the task is blocked.** The grader failed 5 times in a row${g.reason ? ` (last: ${g.reason})` : ""} and no rubric criterion was assessed. Its delegator was told: unblocking it sends it back to the grader once its assignee finishes again.`
-            : outcome === "escalated" && unverifiedOnly(g.criteria)
-              ? "**Graded: unverified, so it is the delegator's call.** Nothing was shown unmet, but the evidence the grader is given doesn't show the criteria marked not shown. The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader."
-              : `**Graded: escalated to the delegator** (${reason ?? (g.outcome === "cannot_judge" ? "the grader couldn't judge it" : "too many rejected versions")}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;
+          : outcome === "ungraded"
+            ? `**Done, ungraded: ${reason}.** No rubric criterion was shown unmet, so the task is closed as done rather than held.`
+            : `**Graded: escalated to the delegator** (${reason ?? "too many rejected versions"}). The delegator decides: closing the task accepts it; reopening it with what to change sends a new version to the grader.`;
   return [head, lines.join("\n"), `_Grader: ${g.model || "none"}; version ${String(version ?? "").slice(0, 80) || "(none)"}. The grader's words, not the owner's._`, GRADER_MARKER].filter(Boolean).join("\n\n");
 }
