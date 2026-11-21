@@ -2276,7 +2276,7 @@ export function createApp(opts: AppOptions): Server {
   const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
   /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */
   const sessions = new WeakMap<IncomingMessage, { session: BoardSession; credential: SettingsCredential }>();
-  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupOpen: async () => (await setupFlows?.open()) ?? [] });
+  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupStates: async () => (await setupFlows?.states()) ?? [] });
 
   /** /mcp and its discovery document: bearer only (never a cookie), before the board's own request checks. */
   async function handleMcp(req: IncomingMessage, res: ServerResponse, url: URL) {
