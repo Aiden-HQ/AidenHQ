@@ -4,8 +4,8 @@ type Json = any;
 
 /** The UI Reviewer's design review: advisory in the named checks (the merge gate reads it on its own). */
 export const DESIGN_REVIEW_CHECK = "design-review";
-/** Code review's old commit status (no longer written: the merge queue asks code review's verdict itself): left on old heads,
- * it never becomes a second gate. */
+/** Code review's commit status: a mirror of its merge verdict for people and `gh pr checks`. The merge queue asks code review's
+ * verdict itself, so the status never becomes a second gate here. */
 export const CODE_REVIEW_STATUS = "aidenhq/review";
 /** The aggregate check a repository's CI may end with (the product's ci.yml `ci-required`). */
 export const GATE_CHECK = "ci-required";

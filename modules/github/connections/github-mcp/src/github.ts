@@ -58,21 +58,31 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "DELETE", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/${NUM}/assignees$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
-  // Code review's posting (review-post.ts): the acknowledgement comment edited in place, and a ruling's reply on a finding's thread.
+  // Code review's posting (review-post.ts): the acknowledgement comment edited in place, a review's summary updated with its
+  // threads' links, a file comment for a finding on a file without diff lines, and the one commit status it mirrors its verdict to.
   { method: "PATCH", path: new RegExp(`^/repos/${NAME}/${NAME}/issues/comments/${NUM}$`) },
+  { method: "PUT", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}$`) },
+  // An agent's reply on a review thread (github_pr_thread_reply): how a finding is answered (fixed / disputed …).
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}/replies$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments$`) },
+  { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/statuses/[0-9a-f]{40}$`) },
   { method: "POST", path: new RegExp(`^/repos/${NAME}/${NAME}/actions/runs/${RUN}/rerun-failed-jobs$`) },
 ];
 
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
 /** Body fields each write may carry: an issue edit can only change its state, a review only its verdict and text. */
 const BODY_FIELDS: { path: RegExp; method: Method; fields: string[] }[] = [
   { method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },
   { method: "POST", path: /\/pulls\/[0-9]+\/reviews$/, fields: ["event", "body", "commit_id", "comments"] },
   { method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },
+  { method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },
   { method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },
+  { method: "POST", path: /\/pulls\/[0-9]+\/comments$/, fields: ["commit_id", "path", "subject_type", "body"] },
+  { method: "POST", path: /\/statuses\/[0-9a-f]{40}$/, fields: ["state", "context", "description", "target_url"] },
 ];
+/** The one commit status context the token may set (code review's verdict mirror, review-post.ts). */
+const STATUS = "aidenhq/review";
 const COMMENT_FIELDS = ["path", "line", "side", "start_line", "start_side", "body"];
 
 /** The only GraphQL the token may send: read an organization project, add an issue to it, set its status. */
@@ -96,6 +106,9 @@ export function guard(method: string, path: string, body?: unknown): void {
   if (limit && Object.keys((body as object | undefined) ?? {}).some((k) => !limit.fields.includes(k))) throw new GitHubRefused(`refused a GitHub request with fields that aren't allowed: ${method} ${path}`);
   // A comment review only: an approval (or a change request) as the owner would count as the owner's own review.
   if (method === "POST" && /\/reviews$/.test(path) && (body as { event?: unknown } | undefined)?.event !== "COMMENT") throw new GitHubRefused("refused a review that isn't a comment: agents post COMMENT reviews only");
+  // A standalone review comment is a file comment only (code review's thread for a finding on a file without diff lines).
+  if (method === "POST" && /\/pulls\/[0-9]+\/comments$/.test(path) && (body as { subject_type?: unknown } | undefined)?.subject_type !== "file") throw new GitHubRefused("refused a pull request comment that isn't a file comment");
+  if (method === "POST" && /\/statuses\//.test(path) && (body as { context?: unknown } | undefined)?.context !== STATUS) throw new GitHubRefused(`refused a commit status that isn't ${STATUS}`);
   // Inline comments are advice: only on a plain comment review, each with only the fields of a line comment.
   const comments = (body as { comments?: unknown } | undefined)?.comments;
   if (method === "POST" && /\/reviews$/.test(path) && comments !== undefined) {
@@ -405,6 +418,13 @@ export class GitHub {
     // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than reviewing unseen commits.
     const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event: "COMMENT", commit_id: pr.head.sha, body: withFooter(body, agent), ...(comments?.length ? { comments } : {}) } });
     return { url: r.html_url, id: r.id, state: r.state };
+  }
+
+  /** A reply on a pull request's review thread (its first comment's id), signed by the agent. */
+  async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
+    if (!body.trim()) throw new GitHubRefused("a reply needs text");
+    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${comment}/replies`, { body: { body: withFooter(body, agent) } });
+    return { url: r.html_url, id: r.id };
   }
 
   /**

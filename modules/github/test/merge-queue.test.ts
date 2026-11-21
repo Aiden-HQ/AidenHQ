@@ -371,7 +371,7 @@ test("merge queue waits while disconnected", async (t) => {
   assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
 });
 
-test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
+test("a repo code review gates merges only on its pass for the bound head; a wait keeps the merge queued with no time limit; unreachable over 10 minutes lets it go, recorded; other repos never ask", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/other": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   const asked = [];
@@ -382,11 +382,12 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
     return new Response(JSON.stringify(answer.body), { status: answer.status });
   };
   const clock = { t: Date.now() };
-  const logs = [];
+  const logs = [], bypassed = [];
   const merges = createMerges({
     dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
     evalGate: async () => undefined, report: async () => {}, log: (msg, f) => logs.push([msg, f]),
-    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn }),
+    flow: { reviewBypassed: (...a) => bypassed.push(a), checksCompleted: () => {}, waiting: () => {}, resumed: () => {}, merged: () => {} },
+    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn, now: () => clock.t }),
   });
   void merges.enqueue("k-00000000000000g1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
   void merges.enqueue("k-00000000000000g2", { prs: [{ repo: "acme-agents/other", number: 2, head: HEAD }] });
@@ -394,11 +395,16 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   assert.deepEqual(asked, [[`http://code-review:8098/v1/verdict?repo=acme-agents%2Fwidget&pr=1&head=${HEAD}`, "Bearer github-module-token"]], "only the gated repo asks");
   assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/other/pulls/2/merge"]);
   assert.match(logs.find(([m]) => m === "merge waits for code review")[1].why, /1 important finding open: t \(a\.ts:3\) \(fix and push\)/);
-  clock.t += 7 * 24 * 3600_000; // a week of waiting, and the service down: still waiting
-  answer = "down";
+  clock.t += 7 * 24 * 3600_000; // a week of waiting on findings: still waiting
   await merges.step();
   assert.equal(merges.status("k-00000000000000g1").state, "running");
-  answer = { status: 200, body: { verdict: "pass", reasons: [] } };
+  answer = "down"; // the service goes down: a wait, until it has been down over 10 minutes
+  await merges.step();
+  clock.t += 9 * 60_000;
+  await merges.step();
+  assert.equal(github.merges().length, 1);
+  clock.t += 2 * 60_000;
   await merges.step();
   assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge", HEAD], ["/repos/acme-agents/widget/pulls/1/merge", HEAD]]);
+  assert.deepEqual(bypassed.map(([repo, n, head]) => [repo, n, head]), [["acme-agents/widget", 1, HEAD]], "recorded as pr.review_bypassed");
 });

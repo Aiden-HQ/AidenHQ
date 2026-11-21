@@ -257,7 +257,7 @@ const escalateIssue = async (id: string) => {
   return (await r.json()) as never;
 };
 const escalate = createEscalate({
-  db: records.db, log,
+  db: records.db, log, reachable: (id) => wakes.polls(id),
   issue: escalateIssue,
   state: (id) => taskStates.read({ ids: [id] }).tasks[0],
   // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.

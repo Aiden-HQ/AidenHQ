@@ -416,7 +416,7 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
       />
       {error && <Banner tone="danger">{error}</Banner>}
       {run.status === "skipped" && <Banner tone="warn">Skipped: {skipWords(run.why)}. A skip is said on the PR too, in the review's acknowledgement comment.</Banner>}
-      {run.status === "failed" && <Banner tone="danger">The review didn't finish{run.why ? `: ${run.why}` : ""}. Nothing was posted. Ask again with “Review again”, or comment “@aiden review” on the PR.</Banner>}
+      {run.status === "failed" && <Banner tone="danger">The review didn't finish{run.why ? `: ${run.why}` : ""}. Nothing was posted. Ask again with “Review again”, or comment “aiden review” on the PR.</Banner>}
       {review?.coverage.incomplete && <Banner tone="warn">Partial review: {review.coverage.incomplete}. Files outside the reviewed set weren't checked, so fewer findings here doesn't mean clean.</Banner>}
       <div className="ui-split">
         <div>
@@ -439,7 +439,7 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
             <Facts
               items={[
                 ["Reviewed by", comboLabel(run, engines ?? undefined)],
-                ["Asked by", run.kind === "auto" ? "Repo trigger" : run.kind === "command" ? "@aiden review on GitHub" : "One-off"],
+                ["Asked by", run.kind === "auto" ? "Repo trigger" : run.kind === "command" ? "aiden review on GitHub" : "One-off"],
                 ["Head", <a key="h" className="rv-mono" href={`https://github.com/${run.repo}/commit/${run.head}`} target="_blank" rel="noreferrer noopener">{short(run.head)}</a>],
                 review ? ["Scope", review.full || !review.incremental_from ? "Whole PR" : <span key="s">Changes since <span className="rv-mono">{short(review.incremental_from)}</span></span>] : null,
                 review ? ["Files", `${review.coverage.reviewed.length} reviewed${review.coverage.excluded.length ? `, ${review.coverage.excluded.length} excluded` : ""}`] : null,
@@ -811,7 +811,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
           )}
         </Field>
         <Field label="Draft PRs">{() => <span className="rv-switch"><Switch on={f.drafts} label="Review draft PRs" onChange={(on) => setF({ ...f, drafts: on })} />{f.drafts ? "Reviewed" : "Skipped"}</span>}</Field>
-        <Field label="PRs from forks" help={f.forks === "manual" ? "Someone with write access comments @aiden review" : "Reviewed like any PR"}>
+        <Field label="PRs from forks" help={f.forks === "manual" ? "Someone with write access comments aiden review" : "Reviewed like any PR"}>
           {(id) => <Select id={id} value={f.forks} options={[["manual", "When asked"], ["auto", "Automatically"]]} onChange={(v) => setF({ ...f, forks: v })} />}
         </Field>
       </div>

@@ -1,7 +1,7 @@
 // The kernel drives every record's review (reviewer@1, spec §3.3.3): each sweep, every record waiting for the AI reviewer
 // gets one review, at most one at a time, built here from the record and its task and sent through writes.review (which
 // asks the bound reviewer module with a single-use token, holds the verdict to the record's review-first, waits out a
-// failed review's backoff, REVIEW_TRIES, and moves the record once). A first reviewer's approve that needs a second one
+// failed review's backoff, capped at 15 minutes, and moves the record once). A first reviewer's approve that needs a second one
 // leaves the record in review, marked panel: the next sweep asks again as a panel. A reviewer's reject is posted on the task;
 // the panel's approve + reject split goes back up to three times on a target, the fourth to the owner (tier.ts splitToOwner).
 // Tokens live in memory (reviews.ts): after a restart a review in progress is lost (its late verdict opens nothing) and
@@ -267,7 +267,7 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
       // Who lifted which rejections (a park, the same content refused): the owner, or the delegator or chief of staff by key.
       if (lifted.length) log("rejections answered", { record: r.id, task: r.task, by: lifted });
     } catch (e) {
-      // The task couldn't be read: no verdict, tried again (REVIEW_TRIES) as a failed review is.
+      // The task couldn't be read: no verdict, tried again as a failed review is.
       [input, request] = [{ tier: 1, error: String((e as Error).message ?? e).slice(0, 300) }, {}];
     }
     const out = await writes.review(r.id, { input: { ...input, model: "kernel/code" } as never, request });
