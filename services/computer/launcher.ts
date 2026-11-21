@@ -33,7 +33,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync 
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale } from "./lib.ts";
+import { forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 
 type Failure = Error & { status?: number };
@@ -100,8 +100,10 @@ const boxes = new Map<string, Box>(); // container → { agentId, lastUsed, busy
 const jobs = new Jobs();
 const jobsFile = path.join(stateDir, "jobs.json");
 try { jobs.load(readJson(jobsFile)); } catch {}
+// A restart drains this launcher beside the next one (SIGUSR2, below): from then on the next one owns the jobs file.
+let draining = false;
 // Written whole then renamed, so a crash never leaves a half file.
-const saveJobs = () => { try { writeFileSync(`${jobsFile}.tmp`, JSON.stringify(jobs.dump()), { mode: 0o600 }); renameSync(`${jobsFile}.tmp`, jobsFile); } catch (e) { log("couldn't save jobs:", (e as Error).message); } };
+const saveJobs = () => { if (draining) return; try { writeFileSync(`${jobsFile}.tmp`, JSON.stringify(jobs.dump()), { mode: 0o600 }); renameSync(`${jobsFile}.tmp`, jobsFile); } catch (e) { log("couldn't save jobs:", (e as Error).message); } };
 const held = (name: string) => jobs.leased(name);
 const jobEnvDir = path.join(stateDir, "jobs");
 mkdirSync(jobEnvDir, { recursive: true, mode: 0o700 });
@@ -186,7 +188,9 @@ const jobControl = {
     const codexHome = state;
     // Two executions never share a workspace: the task's last box must be gone first (the kernel releases it).
     const before = jobs.byIssue(issueId);
-    if (before) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
+    // A record whose box is gone (a draining launcher gave it back) holds nothing: it goes.
+    if (before && (await jobState(before.container)) === "missing") await destroy(before.container, "gone before the task's next box");
+    else if (before) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
@@ -202,6 +206,8 @@ const jobControl = {
       const r = await docker(dockerRunArgs({ name, image, agentId, network: CFG.network, limits: CFG.limits, mounts, user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
       writeFileSync(envFile, jobEnvFile({ token, mcp, gatewayUrl: GATEWAY_URL, identity }), { mode: 0o600 });
+      // A launcher draining for its successor hands out no box the successor may not know: it goes back, and the kernel asks again.
+      if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
       await destroy(name, "job box failed to start");
       throw e;
@@ -248,6 +254,7 @@ const jobControl = {
       const mounts = checkMounts({ resolvConf, workspace: ws, out: o, readOnly: readOnly === true, supplyChain: path.join(repo, "scripts/supply-chain") });
       const r = await docker(dockerRunArgs({ name, image, agentId: "check", network: CFG.network, limits: CFG.limits, mounts, user: JOB_USER, labels: [`aidenhq.check=${check}`], home: "/aidenhq-out/home" }));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
+      if (draining) throw fail(503, "the launcher is restarting; ask the next one");
     } catch (e) {
       await destroy(name, "check box failed to start");
       throw e;
@@ -402,17 +409,28 @@ const listen = async (server: http.Server, { host, port }: { host: string; port:
       await new Promise<void>((ok, fail) => { server.once("error", fail); server.listen(port, host, () => { server.off("error", fail); ok(); }); });
       return log(`${what} on ${host}:${port}`);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EADDRNOTAVAIL") throw e;
-      if (!waited) log(`${host} isn't up yet; waiting for it (${what})`);
+      // EADDRINUSE: the last launcher, draining, hasn't closed its listener yet.
+      if (!["EADDRNOTAVAIL", "EADDRINUSE"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
+      if (!waited) log(`${host}:${port} isn't free yet; waiting for it (${what})`);
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
 };
 await Promise.all([listen(controlServer, CFG.control, "launcher"), listen(gatewayServer, CFG.gateway, "gateway")]);
 // Idle boxes go; a leased job's never does. A lapsed lease (the kernel gone 15 minutes) takes its box.
-setInterval(() => {
+const reaper = setInterval(() => {
   const lapsed = reapLapsed(jobs);
   if (lapsed.length) saveJobs();
   for (const n of lapsed) destroy(n, "lease lapsed");
   for (const n of stale(boxes, CFG.idleMs, Date.now(), held)) destroy(n, "idle");
 }, 60_000).unref();
+// A restart (ops/run-draining.sh): the next launcher is starting. This one stops reaping and saving (the next one adopts the
+// boxes from jobs.json) and closes its listeners so the next one can bind them; it serves only the calls it holds (a box's model
+// stream, tool call or checkout; a /job in flight gives its box back) and exits when they have finished, or at DRAIN_MS.
+process.on("SIGUSR2", () => {
+  if (draining) return;
+  draining = true;
+  clearInterval(reaper);
+  log("draining: the next launcher takes new calls; calls in flight finish here");
+  void drainServers([controlServer, gatewayServer]).then(() => { log("drained: exiting"); process.exit(0); });
+});

@@ -11,7 +11,11 @@ EnvironmentFile=-%h/.config/aidenhq-checkout.env
 # quietly (no start timeout) instead of failing and restarting every 15 s.
 TimeoutStartSec=infinity
 ExecStartPre=/bin/sh -c 'until /usr/bin/mountpoint -q "%h/.config/aidenhq" && /usr/bin/docker network inspect aidenhq-computers >/dev/null 2>&1; do sleep 5; done'
-ExecStart=/usr/bin/env node ${AIDENHQ_DIR}/services/computer/launcher.ts
+# ops/run-draining.sh starts the launcher and, on a stop or restart, has it drain (as the kernel does): the model and tool calls
+# in flight finish in the old launcher while the next one takes new calls. Boxes keep running and the next launcher adopts them
+# (jobs.json).
+ExecStart=/bin/sh ${AIDENHQ_DIR}/ops/run-draining.sh ${AIDENHQ_DIR}/services/computer/launcher.ts
+KillMode=process
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=15
