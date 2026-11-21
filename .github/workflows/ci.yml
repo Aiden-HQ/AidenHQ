@@ -224,7 +224,7 @@ jobs:
           // Check runs already on the head, so a failed-job re-run (which sees the same passing shard jobs again) posts nothing twice.
           const have = new Set();
           for (let page = 1; ; page++) {
-            const data = await get(`/repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}`);
+            const data = await get(`/repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100&page=${page}`);
             for (const c of data.check_runs ?? []) have.add(`${c.name}\t${c.external_id}`);
             if (have.size >= (data.total_count ?? 0) || (data.check_runs ?? []).length === 0) break;
           }
