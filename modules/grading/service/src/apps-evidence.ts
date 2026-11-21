@@ -20,6 +20,6 @@ export function appsEvidence(apps: AppsCall) {
     },
     // Every deploy of one exact commit, over apps-mcp's whole deploy table (the status row's list is bounded).
     deployHistory: async (name: string, sha: string) => (await apps("GET", `/internal/deploys/${name}/${sha}`)).deploys ?? [],
-    view: (name: string, path: string) => apps("POST", "/internal/view", { name, path }),
+    view: (name: string, path: string, cap?: number) => apps("POST", "/internal/view", { name, path, ...(cap ? { cap } : {}) }),
   };
 }

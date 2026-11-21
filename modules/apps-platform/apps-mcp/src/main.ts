@@ -219,7 +219,7 @@ const http = createServer(async (req, res) => {
       const refused = await reader(req);
       if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
       const b = await readBody(req);
-      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
+      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width, cap: b?.cap }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
