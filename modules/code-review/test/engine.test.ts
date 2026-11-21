@@ -572,3 +572,15 @@ test("a repo no longer gated retires its status once: a pending write is settled
   assert.equal(w.statuses.length, 1);
   assert.equal(g.db.prepare("SELECT status_key FROM prs WHERE number = 2").get().status_key, "retired");
 });
+
+test("a combo mandatory at both moments is two reviewers at a head: an `aiden review` done never stands in for the push review still running", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.later(1000); w.say(2, "alice", "aiden review"); await w.tick();
+  w.finish(2, NONE); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
+  w.finish(1, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+});
