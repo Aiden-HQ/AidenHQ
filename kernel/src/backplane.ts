@@ -122,8 +122,9 @@ import type { ConnectionState } from "./connection-state.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
-/** Directory fields a module may read; everything else in the grants table (tools, models, caps, images) stays here. */
-const DIRECTORY = ["key", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "private_reads"];
+/** Directory fields a module may read (name and model: code review's judge picks a model family other than a PR author's);
+ * everything else in the grants table (tools, model lists, caps, images) stays here. */
+const DIRECTORY = ["key", "name", "model", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "private_reads"];
 
 /** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
 const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];

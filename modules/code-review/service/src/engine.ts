@@ -17,11 +17,14 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
-import { combos as parseCombos, ENGINES, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner } from "./seams.ts";
+import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
+import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult } from "./seams.ts";
+import { EFFORT as JUDGE_EFFORT, judgeModels, LUNA, secondModels } from "./aidenhq-sdk/judge.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 3 * 60_000;
+/** What one dispute's judge run may spend (its model token's cap). */
+export const JUDGE_USD = 1;
 /** A run that couldn't run is tried this many times in all, on the same reservation. */
 const ATTEMPTS = 2;
 const WRITERS = new Set(["admin", "maintain", "write"]);
@@ -36,8 +39,13 @@ export type RunRow = {
   box_at: string | null;
   focus: string | null; full: number; incremental_from: string | null; due: number; created: number;
   posted: string | null; author: string; attempts: number;
-  /** The trigger it ran for (its combos share it), and whether it rechecks the PR's still-open findings (the batch's first run). */
+  /** The trigger it ran for (its combos share it), and whether it rechecks the PR's still-open findings (the batch's first
+   * mandatory run, else its first). */
   batch: string; recheck: number;
+  /** Its combo was mandatory when queued: its review counts toward the head's coverage and its important findings gate merges. */
+  mandatory: number;
+  /** 1 once its review is stored whole (no important finding withheld); what coverage reads, never its post's fate. */
+  complete: number | null;
   /** The ledger's tokens for its model token (the kernel's figure), and how long it ran. */
   tokens_in: number | null; tokens_cached: number | null; tokens_out: number | null; duration_ms: number | null;
   /** What earlier attempts of this run were billed (the kernel's figure): the retry gets only what's left. */
@@ -69,6 +77,13 @@ CREATE TABLE IF NOT EXISTS findings (run TEXT NOT NULL, id TEXT NOT NULL, repo T
   path TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, outcome TEXT, outcome_at TEXT, PRIMARY KEY (run, id));
 CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
 CREATE TABLE IF NOT EXISTS seen (repo TEXT NOT NULL, comment TEXT NOT NULL, PRIMARY KEY (repo, comment));
+CREATE TABLE IF NOT EXISTS covered (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (repo, number, head));
+CREATE TABLE IF NOT EXISTS dispositions (finding TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, state TEXT NOT NULL,
+  reason TEXT NOT NULL, evidence TEXT, by TEXT NOT NULL, at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, finding);
+CREATE TABLE IF NOT EXISTS judges (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, finding TEXT NOT NULL, comment INTEGER NOT NULL,
+  reply INTEGER NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, head TEXT, model TEXT, status TEXT NOT NULL, check_job TEXT, verdict TEXT, reason TEXT,
+  cost_usd REAL NOT NULL DEFAULT 0, created TEXT NOT NULL, ended TEXT, write_id TEXT);
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
  * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
@@ -77,6 +92,8 @@ export const DATA_VERSION = 1;
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
+  /** The instance's agents' names and models (the kernel's directory): a dispute's judge is of another family than the PR author's. */
+  agents: () => Promise<{ name?: string; model?: string }[]>;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -98,8 +115,9 @@ export function createEngine(d: EngineDeps) {
     db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
   db.exec(DDL);
-  if (!(db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "box_at")) db.exec("ALTER TABLE runs ADD COLUMN box_at TEXT");
-  if (!(db.prepare("PRAGMA table_info(prs)").all() as { name: string }[]).some((c) => c.name === "close_due")) db.exec("ALTER TABLE prs ADD COLUMN close_due INTEGER NOT NULL DEFAULT 0");
+  // Columns added after data_version 1, kept on the data there is.
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"]] as const)
+    if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
@@ -134,15 +152,18 @@ export function createEngine(d: EngineDeps) {
     const due = o.due ?? now();
     if (kind === "auto") run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
     const batch = `b-${randomBytes(6).toString("hex")}`;
+    // A one-off never gates; the recheck runs in the first mandatory run (whose verdict counts), else the first.
+    const mand = (c: Combo) => kind !== "oneoff" && c.mandatory;
+    const checker = Math.max(0, list.findIndex(mand));
     return list.map((c, i) => {
       if (kind !== "auto") {
         const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
-      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, focus, full, due, created, author, batch, recheck)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, c.run_usd, kind,
-        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === 0 ? 1 : 0);
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, focus, full, due, created, author, batch, recheck, mandatory)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, c.run_usd, kind,
+        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0);
       return runRow(id)!;
     });
   }
@@ -171,7 +192,10 @@ export function createEngine(d: EngineDeps) {
     const where = repo ? " AND repo = ?" : "";
     const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
     const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
-    return ended + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
+    // Disputes' judges count too: ended at their billed cost, running at their spend so far (unknown: their whole cap).
+    const judged = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM judges WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
+    const judging = all<{ id: string }>(`SELECT id FROM judges WHERE status = 'running'${where}`, ...(repo ? [repo] : [])).reduce((n, j) => n + Math.min(live.get(j.id) ?? JUDGE_USD, JUDGE_USD), 0);
+    return ended + judged + judging + running.reduce((n, r) => n + (live.has(r.id) ? Math.min(r.billed_prior + live.get(r.id)!, r.run_usd) : r.run_usd), 0);
   }
 
   /**
@@ -184,6 +208,8 @@ export function createEngine(d: EngineDeps) {
     const c = d.config();
     const why = tx(() => {
       const cfg = repoCfg(r.repo);
+      // A mandatory run is never skipped for budget (its repo's merges wait on it); its spend still counts and shows.
+      if (r.mandatory) return void run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
       const inst = spent();
       if (inst >= c.day_usd) return `budget: the instance has spent $${inst.toFixed(2)} of its $${c.day_usd} today`;
       if (cfg) {
@@ -201,18 +227,40 @@ export function createEngine(d: EngineDeps) {
     return undefined;
   }
 
-  /** The baseline a run reviews from: the last reviewed head on the same base, unless it is full. A retarget resets it. */
+  /** The baseline a run reviews from, unless it is full: on a gated repo the last covered head (so every incremental range starts
+   * at a covered head), elsewhere the last reviewed one; on the same base (a retarget resets it). */
   function baseline(r: RunRow): string | null {
     if (r.full || r.kind === "oneoff") return null;
+    const cfg = repoCfg(r.repo);
+    if (cfg && gated(cfg)) return one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND base = ? AND head != ? ORDER BY at DESC LIMIT 1", r.repo, r.number, r.base, r.head)?.head ?? null;
     const p = prRow(r.repo, r.number);
     return p?.last_reviewed_head && p.last_reviewed_base === r.base && p.last_reviewed_head !== r.head ? p.last_reviewed_head : null;
   }
+  const isCovered = (repo: string, n: number, head: string) => !!one("SELECT 1 FROM covered WHERE repo = ? AND number = ? AND head = ?", repo, n, head);
 
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
-  /** The PR's findings still open (no outcome yet), whichever combo found them: what a batch's first run rechecks. */
-  const stillOpen = (r: { repo: string; number: number }) => all<{ id: string; path: string; line: number; title: string }>(
-    "SELECT id, path, line, title FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL GROUP BY id ORDER BY MAX(rowid) DESC LIMIT 50", r.repo, r.number);
+  type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; run: string };
+  /** The PR's findings still open (no outcome yet), whichever combo found them; `gating`: an important one a mandatory run found. */
+  const stillOpen = (repo: string, n: number) => all<Omit<Open, "severity"> & { rank: number }>(
+    `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1) gating, MAX(f.run) run
+     FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
+  /** The open findings that gate the PR's merge (openImportant). */
+  const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
+  /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
+   * shrink before a gating finding is left out; one that can't fit even bare stays open (never marked fixed unseen). */
+  function recheckList(repo: string, n: number) {
+    const open = stillOpen(repo, n);
+    const gating = open.filter((f) => f.gating), other = open.filter((f) => !f.gating).slice(0, 50);
+    const size = (v: unknown) => JSON.stringify({ findings: v }).length;
+    const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
+      ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
+    let out: ReturnType<typeof entry>[] = [];
+    for (const text of [400, 150, 0]) if (size((out = gating.map((f) => entry(f, text)))) <= 15_000) break;
+    while (out.length && size(out) > 15_000) out.pop();
+    for (const f of other) { const e = entry(f, 0); if (size([...out, e]) > 15_000) break; out.push(e); }
+    return out;
+  }
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
 
   async function startRun(r: RunRow) {
@@ -233,9 +281,9 @@ export function createEngine(d: EngineDeps) {
         if (a?.status !== "ahead") incremental_from = null;
       }
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
-      const previous = incremental_from && r.recheck ? stillOpen(r).map((f) => ({ id: f.id, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80) })) : []; // within the spec's 16 KB
+      const previous = r.recheck ? recheckList(r.repo, r.number) : [];
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
-        incremental_from, full: incremental_from === null, previous, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)
@@ -289,23 +337,36 @@ export function createEngine(d: EngineDeps) {
     const review: Review = { ...rest, repo: r.repo, pr: r.number, head: r.head, base: r.merge_base!, ...comboOf(r), cost_usd: cost };
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
+    // A result for a head the PR has moved on from is kept for analysis, never applied: its findings and fixes belong to an old head.
+    const pr = prRow(r.repo, r.number);
+    const stale = !!pr && pr.open && pr.head !== r.head;
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
-      run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ? WHERE id = ?",
-        cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), r.id);
-      for (const f of review.findings) run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title);
-      // What the recheck found gone at this head: fixed, wherever it was found (and not found again by this run).
+      run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ? WHERE id = ?",
+        cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), stale ? null : review.withheld.important === 0 && !review.coverage?.incomplete ? 1 : 0, r.id);
+      if (stale) return;
+      for (const f of review.findings) {
+        // Reported again: a fixed or dismissed finding opens again.
+        if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
+          dispose([f.id], r, "open", "reported again", `run:${r.id}`);
+        run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500));
+      }
+      // What the recheck confirmed gone at this head: fixed, wherever it was found (and not found again by this run). A gating
+      // finding is closed only by a mandatory run's recheck.
       const again = new Set(review.findings.map((f) => f.id));
-      for (const id of (review.fixed ?? []).filter((x) => typeof x === "string" && !again.has(x))) run("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
+      const gate = new Set(openGating(r.repo, r.number).map((f) => f.id));
+      const fixed = (review.fixed ?? []).filter((x) => typeof x === "string" && !again.has(x) && (r.mandatory || !gate.has(x)));
+      for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
+      dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
     });
-    const pr = prRow(r.repo, r.number);
+    if (!stale) cover(r);
     const done = (status: Status, why: string | null, posted?: string) => {
       run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, posted ?? null, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
       end(runRow(r.id)!);
     };
     // A run whose PR moved on (a push) while it ran is superseded: it never posts over the newer head. One closed unmerged is
     // dropped; a merged one is still reviewed and posted (a review of merged code is useful, and was paid for).
-    if (pr && pr.open && pr.head !== r.head) return done("skipped", "superseded: a newer head is being reviewed");
+    if (stale) return done("skipped", "superseded: a newer head is being reviewed");
     if (pr && !pr.open) {
       // Merged or closed unmerged: GitHub says which. When it can't say now, the run stays running and the next tick finishes it
       // again (its review is kept; the writes above are idempotent), never dropped as closed on a failed read.
@@ -323,6 +384,22 @@ export function createEngine(d: EngineDeps) {
     if (posted.write) run("UPDATE runs SET write_id = ? WHERE id = ?", posted.write, r.id);
     done(posted.state === "refused" ? "failed" : "done", posted.state === "refused" ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
     if (posted.state !== "pending") settled(runRow(r.id)!, posted);
+  }
+
+  /** Records why findings changed state: their ids, the head, the reason and who decided (a run, the judge, the owner). */
+  function dispose(ids: string[], at: { repo: string; number: number; head: string }, state: string, reason: string, by: string, evidence: string | null = null) {
+    for (const id of ids) run("INSERT INTO dispositions (finding, repo, number, head, state, reason, evidence, by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", id, at.repo, at.number, at.head, state, reason.slice(0, 2000), evidence?.slice(0, 2000) ?? null, by, iso());
+  }
+
+  /**
+   * A head is covered once a batch that reviewed it has every mandatory run's review stored whole, each over a range that starts
+   * at the merge base (a full review) or at a covered head. Which moment's batch it was doesn't matter: on_open covers a PR's
+   * first head, on_push each push after it, `@aiden review` any head. A one-off never counts (its runs are never mandatory).
+   */
+  function cover(r: RunRow) {
+    const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? AND mandatory = 1", r.batch);
+    if (!runs.length || !runs.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from)))) return;
+    run("INSERT OR IGNORE INTO covered (repo, number, head, base, at) VALUES (?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso());
   }
 
   /** A post's outcome is in: a posted one is the PR's baseline and keeps its link; a one-off's task is done either way. */
@@ -356,7 +433,12 @@ export function createEngine(d: EngineDeps) {
     if (row.mode === "always" && !list.length) list = cfg.on_push.length ? cfg.on_push : cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_push;
     if (!list.length) return;
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
-    if (p.fork && cfg.forks === "manual") return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`@aiden review`)");
+    if (p.fork && cfg.forks === "manual") {
+      // A gated repo's mandatory combos review a fork's PR by themselves (its merge waits on them); the others wait to be asked.
+      const must = list.filter((c) => c.mandatory);
+      if (!must.length) return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`@aiden review`)");
+      list = must;
+    }
     queue(p, list, "auto", { due: which === "push" ? now() + DEBOUNCE : now(), focus: row.focus });
   }
 
@@ -413,9 +495,12 @@ export function createEngine(d: EngineDeps) {
       const was = prRow(p.repo, p.number);
       upsertPr(p);
       if (!was) trigger(cfg, p, "open");
-      else if (was.head !== p.head) trigger(cfg, p, was.last_reviewed_head || runsOn(p) ? "push" : "open");
+      else if (was.head !== p.head) trigger(cfg, p, pushed(cfg, p, was) ? "push" : "open");
       else if (was.draft && !p.draft && !runsOn(p)) trigger(cfg, p, "open");
       else if (!p.draft && !anyRun(p)) trigger(cfg, p, "open");
+      // A gated repo's open head with no mandatory review at all (a PR open when the repo became gated) gets one; a failed one
+      // waits for `@aiden review`.
+      else if (!p.draft && gated(cfg) && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1", p.repo, p.number, p.head)) trigger(cfg, p, pushed(cfg, p, was) ? "push" : "open");
     }
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
@@ -450,6 +535,10 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE cursors SET comments = ? WHERE repo = ?", got.cursor, cfg.repo);
   }
   const anyRun = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ?", p.repo, p.number);
+  /** A new head is a push (on_push, from the baseline) once an earlier head was reviewed; on a gated repo once one was covered,
+   * so a PR pushed to before its first review finished gets its first review (on_open) at the newest head. */
+  const pushed = (cfg: Repo, p: PullRequest, was: { last_reviewed_head: string | null }) =>
+    gated(cfg) ? !!one("SELECT 1 FROM covered WHERE repo = ? AND number = ?", p.repo, p.number) : !!was.last_reviewed_head || runsOn(p);
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
 
   const CLOSE_MS = 10_000;
@@ -483,6 +572,7 @@ export function createEngine(d: EngineDeps) {
     for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
+        if (gated(cfg)) await disputes(cfg);
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
@@ -506,6 +596,148 @@ export function createEngine(d: EngineDeps) {
       const started = admit(r);
       if (started) await startRun(started);
     }
+    for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'running' AND check_job IS NOT NULL")) {
+      const res = await d.runner.result(j.check_job!).catch(() => ({ state: "running" as const }));
+      if (res.state === "running") { if (res.billed_usd !== undefined) live.set(j.id, res.billed_usd); else live.delete(j.id); continue; }
+      await ruled(j, res);
+    }
+    for (const j of all<Judge>("SELECT * FROM judges WHERE status = 'queued' ORDER BY created")) await startJudge(j);
+  }
+
+  // ---- disputes: a reply on a gating finding's thread, judged by a model of another family than the PR author's -------------
+
+  type Judge = { id: string; repo: string; number: number; finding: string; comment: number; reply: number; author: string; body: string; head: string | null; model: string | null;
+    status: string; check_job: string | null; verdict: string | null; reason: string | null; cost_usd: number; created: string; ended: string | null; write_id: string | null };
+  /**
+   * A gated repo's open PRs with open gating findings: each new reply on Aiden's own thread for one of them, from the PR's author
+   * (not a fork's: an outsider) or someone with write access now, starts one judge (a stranger's reply is passed over; the owner can still dismiss on the
+   * board). Aiden's own rulings are never disputes. Each reply is handled once.
+   */
+  async function disputes(cfg: Repo) {
+    for (const p of all<{ number: number; author: string; fork: number }>("SELECT number, author, fork FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+      const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
+      if (!open.size) continue;
+      for (const t of await d.source.threads(cfg.repo, p.number)) {
+        if (!t.ours || !t.finding || !open.has(t.finding)) continue;
+        for (const r of t.replies) {
+          const key = `reply:${r.id}`;
+          if (r.ruling || one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
+          const who = r.author.toLowerCase();
+          const may = (who === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author));
+          // One judge per finding per head: once ruled at this head, a new dispute needs a new head (or the owner's Dismiss).
+          const head = prRow(cfg.repo, p.number)?.head;
+          const busy = one("SELECT 1 FROM judges WHERE repo = ? AND number = ? AND finding = ? AND (status IN ('queued', 'running') OR (status = 'done' AND head = ?))", cfg.repo, p.number, t.finding, head);
+          if (!may) log("a dispute from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
+          else if (!busy) run("INSERT INTO judges (id, repo, number, finding, comment, reply, author, body, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+            `cj-${randomBytes(6).toString("hex")}`, cfg.repo, p.number, t.finding, t.comment, r.id, r.author.slice(0, 40), r.body.slice(0, 2000), iso());
+          run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
+        }
+      }
+    }
+  }
+
+  /**
+   * The judge's model: of no family of any agent an `AidenHQ` trailer on any of the PR's commits names (a writer can forge a
+   * trailer, so every name counts); none named: the checker's model. Undefined: every judge family is excluded.
+   */
+  async function judgeModel(repo: string, n: number) {
+    const names = new Set((await d.source.messages(repo, n)).flatMap((m) => [...m.matchAll(/^Co-authored-by: AidenHQ (.+?) <noreply@aidenhq\.ai>\s*$/gim)].map((x) => x[1]!)));
+    if (!names.size) return LUNA;
+    const models = (await d.agents()).filter((a) => a.name && names.has(a.name)).map((a) => a.model ?? "").join(" ");
+    return [...judgeModels(models), ...secondModels(models)][0];
+  }
+
+  async function startJudge(j: Judge) {
+    const f = one<{ path: string; line: number; title: string; why: string | null; evidence: string | null }>("SELECT path, line, title, why, evidence FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", j.repo, j.number, j.finding);
+    const p = prRow(j.repo, j.number);
+    if (!f || !p?.open) return void run("UPDATE judges SET status = 'skipped', ended = ? WHERE id = ?", iso(), j.id);
+    run("UPDATE judges SET status = 'running', head = ? WHERE id = ?", p.head, j.id);
+    try {
+      const model = await judgeModel(j.repo, j.number);
+      if (!model) return void (await ruled({ ...j, head: p.head }, { state: "failed", why: "every judge model is of a family the PR's authors use" }));
+      const { merge_base } = await d.source.mergeBase(j.repo, j.number, p.head);
+      const { check } = await d.runner.start({ repo: j.repo, number: j.number, base: p.base, head: p.head, merge_base, combo: { engine: "codex", model, effort: JUDGE_EFFORT[model] ?? "high" },
+        focus: null, incremental_from: null, full: true, previous: [], mandatory: true, budget_usd: JUDGE_USD, ignore: [], max_nits: 0,
+        judge: { finding: { id: j.finding, path: f.path, line: f.line, title: f.title, why: f.why ?? "", evidence: f.evidence ?? "" }, reply: { author: j.author, body: j.body } } });
+      run("UPDATE judges SET check_job = ?, model = ? WHERE id = ?", check, model, j.id);
+    } catch (e) {
+      if (!permanent(e)) return void run("UPDATE judges SET status = 'queued' WHERE id = ?", j.id);
+      await ruled({ ...j, head: p.head }, { state: "failed", why: `couldn't start: ${String((e as Error).message).slice(0, 200)}`, billed_usd: 0 });
+    }
+  }
+
+  /** A judge's answer applied: dismissed closes the finding (one transaction, at the head it judged); anything else upholds it. The
+   * ruling is posted on the thread either way. A PR that moved meanwhile is judged again at its new head. */
+  async function ruled(j: Judge, res: RunResult) {
+    live.delete(j.id);
+    const cost = typeof res.billed_usd === "number" && res.billed_usd >= 0 ? Math.min(res.billed_usd, JUDGE_USD) : JUDGE_USD;
+    const p = prRow(j.repo, j.number);
+    if (p?.open && p.head !== j.head) return void run("UPDATE judges SET status = 'queued', check_job = NULL, cost_usd = cost_usd + ? WHERE id = ?", cost, j.id);
+    const a = res.state === "done" ? (res.review as unknown as { verdict?: unknown; reason?: unknown }) : undefined;
+    const verdict = a?.verdict === "dismissed" && typeof a.reason === "string" && a.reason.trim() ? "dismissed" : "upheld";
+    const reason = a && typeof a.reason === "string" && a.reason.trim() ? a.reason.slice(0, 1500) : `The judge reached no verdict (${res.state === "failed" ? res.why.slice(0, 200) : "no usable answer"}), so the finding stands at this head; a dispute after the next push is judged again, or the owner may dismiss it.`;
+    const closed = tx(() => {
+      run("UPDATE judges SET status = 'done', verdict = ?, reason = ?, cost_usd = cost_usd + ?, ended = ? WHERE id = ?", verdict, reason, cost, iso(), j.id);
+      const c = verdict === "dismissed" ? run("UPDATE findings SET outcome = 'dismissed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), j.repo, j.number, j.finding).changes : 0;
+      dispose([j.finding], { repo: j.repo, number: j.number, head: j.head! }, verdict === "dismissed" ? "dismissed" : "open", `${verdict === "dismissed" ? "dismissed" : "upheld"} on a dispute by ${j.author}: ${reason}`, `judge:${j.model ?? "none"}`, j.body);
+      return c;
+    });
+    if (verdict === "dismissed" && !closed) return; // closed meanwhile (fixed, or the owner): nothing to say
+    const posted = await d.poster.ruling({ run: j.id, repo: j.repo, number: j.number, head: j.head!, finding: j.finding, comment: j.comment, verdict, reason }).catch((e) => ({ state: "refused" as const, why: String((e as Error).message).slice(0, 200) }));
+    if ("write" in posted && posted.write) run("UPDATE judges SET write_id = ? WHERE id = ?", posted.write, j.id);
+    if (posted.state === "refused") log("ruling not posted", { judge: j.id, why: posted.why });
+  }
+
+  // ---- the merge gate's verdict and the owner's dismissal -----------------------------------------------------------------------
+
+  type Reason = { code: string; text: string; unblock?: string };
+  /**
+   * Whether a gated repo's PR may merge at `head`: pass once the head is covered and no important finding a mandatory run made
+   * is open on the PR; else wait, with each reason in plain words and how it unblocks. There is no fail: the merge queue asks
+   * again until it passes, the PR moves or it closes.
+   */
+  function verdict(repo: string, n: number, head: string): { verdict: "pass" | "wait"; reasons: Reason[] } {
+    const wait = (...reasons: Reason[]) => ({ verdict: "wait" as const, reasons });
+    const cfg = repoCfg(repo);
+    if (!cfg || !gated(cfg)) return wait({ code: "config", text: `${repo} has no mandatory code review in its code_review setting${d.config().errors.length ? ` (the setting has errors: ${d.config().errors.join("; ").slice(0, 300)})` : ""}`, unblock: "fix settings.code_review" });
+    const p = prRow(repo, n);
+    if (!p) return wait({ code: "not_started", text: "the review hasn't started: code review hasn't seen this pull request yet", unblock: "it starts by itself within a minute or two" });
+    if (p.head !== head) return wait({ code: "moved", text: `code review sees the pull request at ${p.head.slice(0, 12)}, not ${head.slice(0, 12)}: the newer head is being reviewed`, unblock: "it resumes by itself once the head is reviewed" });
+    const reasons: Reason[] = [];
+    if (!isCovered(repo, n, head)) {
+      const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 ORDER BY created DESC", repo, n, head);
+      const live = runs.filter((r) => r.status === "queued" || r.status === "running");
+      const lost = runs.find((r) => r.status === "failed" && r.complete === null);
+      const partial = runs.find((r) => r.complete === 0);
+      if (live.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${live.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
+      else if (lost) reasons.push({ code: "failed", text: `the mandatory review of ${head.slice(0, 7)} failed (${String(lost.why ?? "").slice(0, 200)})`, unblock: "say `@aiden review` on the pull request to run it again" });
+      else if (partial) {
+        const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", partial.id);
+        const why = v ? (JSON.parse(v.json) as Review).coverage?.incomplete : null;
+        reasons.push({ code: "incomplete", text: `the mandatory review of ${head.slice(0, 7)} covered only part of the pull request: ${why ? why.slice(0, 300) : "it withheld important findings"}`, unblock: "say `@aiden review full` on the pull request to run it again (a file it can't review, such as a generated one, goes in the repo's ignore globs)" });
+      }
+      else reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer${runs[0]?.why ? ` (last: ${runs[0].why.slice(0, 200)})` : ""}`, unblock: "say `@aiden review` on the pull request" });
+    }
+    const open = openGating(repo, n);
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
+      unblock: `fix and push (the next review rechecks each), reply on a finding's thread to dispute it, or the owner dismisses it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+    return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
+  }
+
+  /** The owner's dismissal of an open finding (the board, in the owner's signed-in session). */
+  function dismiss(b: { repo?: unknown; number?: unknown; id?: unknown; reason?: unknown; by?: unknown }) {
+    const repo = String(b.repo ?? "").toLowerCase(), n = Number(b.number), id = String(b.id ?? "");
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(n) || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new RequestError("give repo, number and the finding's id");
+    if (typeof b.reason !== "string" || !b.reason.trim() || b.reason.length > 1000) throw new RequestError("say why in reason (at most 1000 characters)");
+    const p = prRow(repo, n);
+    if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
+    const changed = tx(() => {
+      const c = run("UPDATE findings SET outcome = 'dismissed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), repo, n, id).changes;
+      if (c) dispose([id], p, "dismissed", b.reason as string, String(b.by ?? "owner").slice(0, 100));
+      return c;
+    });
+    if (!changed) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
+    return { dismissed: id };
   }
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------
@@ -526,8 +758,13 @@ export function createEngine(d: EngineDeps) {
 
   return {
     tick,
+    verdict,
+    dismiss,
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
-    binding(id: string) { const r = runRow(id); return r ? { repo: r.repo, number: r.number, head: r.head } : undefined; },
+    binding(id: string) {
+      const r = runRow(id) ?? one<{ repo: string; number: number; head: string }>("SELECT repo, number, head FROM judges WHERE id = ? AND head IS NOT NULL", id);
+      return r ? { repo: r.repo, number: r.number, head: r.head } : undefined;
+    },
     /** A one-off review of any open or merged PR the instance can read, by each combo asked for (default: the repo's on_open); posted like any other. */
     async oneoff(b: { pr_url?: unknown; combos?: unknown; focus?: unknown; full?: unknown }) {
       if (b.focus !== undefined && (typeof b.focus !== "string" || b.focus.length > 300)) throw new RequestError("focus is a short text");
@@ -550,7 +787,10 @@ export function createEngine(d: EngineDeps) {
       if (!r) return undefined;
       const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id);
       const findings = all<{ id: string; severity: string; path: string; line: number; title: string; outcome: string | null }>("SELECT id, severity, path, line, title, outcome FROM findings WHERE run = ? ORDER BY rowid", id).map((f) => ({ ...f }));
-      return { run: view({ ...r, title: prRow(r.repo, r.number)?.title ?? null }, waiting.has(r.id)), review: v ? (JSON.parse(v.json) as Review) : null, findings };
+      // On a gated repo, the PR's merge verdict at its current head and its open gating findings (what the owner may dismiss).
+      const cfg = repoCfg(r.repo), p = prRow(r.repo, r.number);
+      const gate = cfg && gated(cfg) && p?.open ? { ...verdict(r.repo, r.number, p.head), head: p.head, open: openGating(r.repo, r.number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title })) } : null;
+      return { run: view({ ...r, title: p?.title ?? null }, waiting.has(r.id)), review: v ? (JSON.parse(v.json) as Review) : null, findings, gate };
     },
     repos() {
       const c = d.config();

@@ -87,6 +87,9 @@ describe("the Reviews page's routes", () => {
   });
 });
 
-it("a combo may leave run_usd to the engine's default, and a repo may be mandatory (the module's shape)", () => {
-  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "medium" }], on_push: [], mandatory: true }] })).toEqual([]);
+it("a combo may leave run_usd to the engine's default and may be mandatory, at both moments (the module's shape)", () => {
+  const c = { engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "medium" };
+  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [{ ...c, mandatory: true }] }] })).toEqual([]);
+  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual(["repos.0.on_push: a mandatory reviewer goes in both moments (a PR's first review and each push)"]);
+  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [c], on_push: [], mandatory: true }] })[0]).toMatch(/mandatory/);
 });

@@ -607,7 +607,7 @@ const http = createServer(async (req, res) => {
         const r = parseRef({ repo: String(b.repo ?? ""), number: Number(b.number) });
         return send(200, { threads: await poster.threads(r) });
       }
-      if (b.kind !== "post" && b.kind !== "notice") throw new GitHubRefused("kind is post or notice");
+      if (b.kind !== "post" && b.kind !== "notice" && b.kind !== "ruling") throw new GitHubRefused("kind is post, notice or ruling");
       if (op === "preview") return send(200, poster.preview(b.kind, b.args));
       if (op === "execute") return send(200, await poster.execute(b.kind, b.args));
       return send(404, { error: "no such operation" });

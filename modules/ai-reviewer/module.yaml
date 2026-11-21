@@ -38,7 +38,7 @@ check_jobs:
       expect: [ expect, expect_code, expect_second, expect_flag ]
 settings:
   # Whether the AI reviewer reviews code-host pushes and PRs: all (every one); none (no push or PR on any repo); or
-  # unless_code_review_mandatory (none on a repo whose code_review entry is `mandatory: true`). A push or PR skipped is approved
+  # unless_code_review_mandatory (none on a repo code review gates: a `mandatory: true` combo). A push or PR skipped is approved
   # by code (code_review_owns, on its card). Merges, closes, create_repo, sends, settings, deploys and tool calls are always
   # reviewed. Only the owner changes it: fewer reviews are less checking.
   ai_review_code:

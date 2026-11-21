@@ -1,14 +1,15 @@
 // Code review's posting (docs/design/code-review.md "Posting"), run for a kernel write record the AI reviewer approved: the
 // code-review module's executor calls `preview` (what the card shows) and `execute` (what is posted) through github-mcp's
 // /internal/review routes. It posts as the owner (the one sign-in), each text signed with the AidenHQ footer. A review is only
-// ever a COMMENT (advice: no approval, no change request), the status is never a failure, and a thread is resolved only when
-// Aiden posted it: its first comment is in AidenHQ's records (the kernel's /v1/objects) and carries our finding marker. Every
+// ever a COMMENT (no GitHub approval or change request: on a gated repo the merge queue asks code review's verdict itself), and
+// a thread is resolved only when Aiden posted it: its first comment is in AidenHQ's records (the kernel's /v1/objects) and carries our finding marker. Every
 // request goes through github.ts's `guard`.
+import type { z } from "zod";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { GitHub, GitHubRefused, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, ACK_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, counts, renderNotice, renderReview, reviewStatus, rightLines,
+  FINDING_MARK, ACK_MARK, RULING_MARK, comboText, NoticeArgsSchema, PostArgsSchema, RulingArgsSchema, RUN_MARK, counts, renderNotice, renderReview, renderRuling, rightLines,
   commandsBlock, type Finding, type NoticeArgs, type PostArgs,
 } from "./review-render.js";
 
@@ -27,12 +28,14 @@ export interface Thread {
   line: number | null;
   /** The finding id Aiden's marker names in the first comment, or null (a person's thread). */
   finding: string | null;
+  /** The first comment's id (a ruling replies to it). */
+  comment: number;
   /** The first comment is in AidenHQ's records and carries a finding marker: Aiden's own thread. */
   ours: boolean;
   author: string;
   url: string;
-  /** Replies, oldest first, as data (untrusted text). */
-  replies: { author: string; body: string }[];
+  /** Replies, oldest first, as data (untrusted text); `ruling`: Aiden's own answer to a dispute (its marker, posted as the owner). */
+  replies: { id: number; author: string; body: string; ruling: boolean }[];
 }
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
@@ -70,8 +73,8 @@ export class ReviewPoster {
         const finding = FINDING_MARK.exec(first.body)?.[1] ?? null;
         const author = first.author?.login ?? "";
         out.push({
-          id: n.id, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && (await this.ours(`${objectRef(ref)}/comment/${first.databaseId}`)), author, url: first.url,
-          replies: rest.map((c) => ({ author: c.author?.login ?? "", body: c.body.slice(0, 800) })),
+          id: n.id, comment: first.databaseId, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding, ours: finding !== null && (await this.ours(`${objectRef(ref)}/comment/${first.databaseId}`)), author, url: first.url,
+          replies: rest.map((c) => ({ id: c.databaseId, author: c.author?.login ?? "", body: c.body.slice(0, 2000), ruling: c.body.includes(RULING_MARK) && norm(c.author?.login ?? "") === norm(author) })),
         });
       }
       if (!t.pageInfo.hasNextPage) break;
@@ -135,21 +138,28 @@ export class ReviewPoster {
     return { url: made.html_url, object: `${objectRef(ref)}/comment/${made.id}` };
   }
 
-  private async status(ref: Ref, who: Who, sha: string, s: { state: string; description: string }, url?: string): Promise<void> {
-    await this.gh.request("POST", `${api(ref)}/statuses/${sha}`, { body: { state: s.state, context: STATUS_CONTEXT, description: s.description.slice(0, 140), ...(url ? { target_url: url } : {}) } });
-  }
-
   /** What the card shows and the record binds to, from the args alone (no GitHub call: the plan must come out the same each time). */
-  preview(kind: "post" | "notice", args: unknown): { facts: Record<string, string>; targets: Record<string, unknown> } {
+  preview(kind: "post" | "notice" | "ruling", args: unknown): { facts: Record<string, string>; targets: Record<string, unknown> } {
+    if (kind === "ruling") {
+      const a = RulingArgsSchema.parse(args);
+      return {
+        facts: {
+          target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
+          sentence: `Reply on Aiden's finding ${a.finding} on ${a.repo}#${a.pr}: the dispute is ${a.verdict}.`,
+          changes: `One reply on the finding's review thread, as the owner, signed by AidenHQ${a.verdict === "dismissed" ? ", and the thread resolved (Aiden's own only)" : ""}. The reason is the judge's text, made plain.`,
+          details: renderRuling(a),
+        },
+        targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
+      };
+    }
     if (kind === "notice") {
       const n = NoticeArgsSchema.parse(args);
-      const t = renderNotice(n);
       return {
         facts: {
           target: `${n.repo}#${n.pr} @ ${n.head.slice(0, 7)}`,
           sentence: `Update Aiden's review notice on ${n.repo}#${n.pr}: ${n.phase}${n.reason ? ` (${n.reason})` : ""}.`,
-          changes: `Edits Aiden's one acknowledgement comment on the pull request${t.status ? ` and sets the commit status ${STATUS_CONTEXT} to ${t.status.state}` : ""}, as the owner, signed by AidenHQ. The words are fixed; no model text.`,
-          details: `${t.text}${t.status ? `\n\nStatus ${STATUS_CONTEXT}: ${t.status.state}: ${t.status.description}` : ""}`,
+          changes: "Edits Aiden's one acknowledgement comment on the pull request, as the owner, signed by AidenHQ. The words are fixed; no model text.",
+          details: renderNotice(n),
         },
         targets: { [`${n.repo}#${n.pr}`]: { repo: n.repo, ref: `pull/${n.pr}`, commit: n.head, base_sha: null } },
       };
@@ -163,8 +173,7 @@ export class ReviewPoster {
       // refused whole reviews as prompt injection (2 of 40 posts, 2026-11-21).
       `Review summary (event COMMENT, at commit ${r.head}):`, "", summary.replace(commandsBlock(), "[AidenHQ's fixed Commands help: the `@aiden review` comments people on the pull request may write to ask for another review]"), "",
       ...comments.flatMap((m) => [`--- inline comment on ${m.path}:${m.line} ---`, "", m.body, ""]),
-      `Commit status ${STATUS_CONTEXT}: ${reviewStatus(r).state}: ${reviewStatus(r).description}`, "",
-      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run }).text}`,
+      `Acknowledgement comment: ${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}`,
       ...(a.resolve.length ? ["", `Resolves Aiden's own threads for findings: ${a.resolve.join(", ")} (only those it posted, and only if no longer reported).`] : []),
     ].join("\n");
     if (details.length > CARD_MAX) throw new GitHubRefused(`the review is ${details.length} characters, too large for the AI reviewer to read whole (${CARD_MAX}); the reviewer must report fewer findings`);
@@ -172,7 +181,7 @@ export class ReviewPoster {
       facts: {
         target: `${r.repo}#${r.pr} @ ${r.head.slice(0, 7)}`,
         sentence: `Post Aiden's review of ${r.repo}#${r.pr} (${comboText(r)}: ${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing).`,
-        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (as many as land on changed lines; the rest are listed in its summary), the commit status ${STATUS_CONTEXT} and the pull request's acknowledgement comment, as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} Advice only: a comment review, never an approval or a block.`,
+        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (as many as land on changed lines; the rest are listed in its summary) and the pull request's acknowledgement comment, as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
         details,
       },
       targets: { [`${r.repo}#${r.pr}`]: { repo: r.repo, ref: `pull/${r.pr}`, commit: r.head, base_sha: r.base } },
@@ -180,20 +189,30 @@ export class ReviewPoster {
   }
 
   /** Posts what `preview` showed. Throws (a failed outcome) when the pull request isn't open or its head moved. */
-  async execute(kind: "post" | "notice", args: unknown): Promise<{ ok: boolean; text: string; objects: string[] }> {
+  async execute(kind: "post" | "notice" | "ruling", args: unknown): Promise<{ ok: boolean; text: string; objects: string[] }> {
+    if (kind === "ruling") return this.ruling(RulingArgsSchema.parse(args));
     return kind === "post" ? this.post(target(PostArgsSchema.parse(args))) : this.notice(NoticeArgsSchema.parse(args));
+  }
+
+  /** The ruling, once per run (found again by its run id): a reply on the finding's thread; a dismissal resolves the thread. */
+  private async ruling(a: z.infer<typeof RulingArgsSchema>): Promise<{ ok: boolean; text: string; objects: string[] }> {
+    const ref = { ...split(a.repo), number: a.pr };
+    const who = await this.identity();
+    const t = (await this.threads(ref)).find((x) => x.comment === a.comment && x.finding === a.finding && x.ours);
+    if (!t) throw new GitHubRefused(`no thread of Aiden's for finding ${a.finding} on ${a.repo}#${a.pr}`);
+    const body = renderRuling(a);
+    const had = t.replies.find((r) => r.ruling && r.body.includes(`run \`${a.run}\``));
+    const made = had ? { id: had.id } : await this.gh.request<{ id: number }>("POST", `${api(ref)}/pulls/${a.pr}/comments/${a.comment}/replies`, { body: { body: withFooter(body, AGENT) } });
+    if (a.verdict === "dismissed" && !t.resolved) await this.gh.graphql("resolveThread", { thread: t.id });
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, verdict: a.verdict, resolved: a.verdict === "dismissed" }), objects: [`${objectRef(ref)}/comment/${made.id}`] };
   }
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const ref = { ...split(n.repo), number: n.pr };
     const who = await this.identity();
-    const pr = await this.pull(ref, who);
-    const t = renderNotice(n);
-    const ack = await this.ack(ref, who, t.text);
-    // A status belongs to the head it was asked for: a moved head has its own review coming.
-    const statusSet = Boolean(t.status) && pr.head.sha === n.head;
-    if (t.status && statusSet) await this.status(ref, who, n.head, t.status);
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, ack: ack.url, status: statusSet ? t.status!.state : null }), objects: [ack.object] };
+    await this.pull(ref, who);
+    const ack = await this.ack(ref, who, renderNotice(n));
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, ack: ack.url }), objects: [ack.object] };
   }
 
   private async post(a: PostArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
@@ -224,9 +243,8 @@ export class ReviewPoster {
     // open threads for findings the review no longer reports are resolved.
     const present = new Set(r.findings.map((f) => f.id));
     const done = await this.resolve(ref, { finding_ids: a.resolve.filter((id) => !present.has(id)) });
-    await this.status(ref, who, r.head, reviewStatus(r), review.html_url);
     const c = counts(r.findings);
-    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run }).text}\n[The review](${review.html_url})`);
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url, status: STATUS_CONTEXT }), objects: [...inlineIds, ack.object] };
+    const ack = await this.ack(ref, who, `${renderNotice({ repo: r.repo, pr: r.pr, head: r.head, phase: "done", engine: r.engine, model: r.model, effort: r.effort, ...c, cost_usd: r.cost_usd, run: a.run })}\n[The review](${review.html_url})`);
+    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, review: review.html_url, inline: comments.length, listed: r.findings.filter((f) => !earlier.has(f.id) && !comments.some((c) => c.id === f.id)).length, earlier: earlier.size, resolved: done.resolved.length, skipped: done.skipped, ack: ack.url }), objects: [...inlineIds, ack.object] };
   }
 }

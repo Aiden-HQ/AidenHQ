@@ -4,7 +4,9 @@
 //
 // One queue per repository: a poll merges at most one PR per repository, records in the order they were approved, so two merges
 // never race on a base. A PR merges only at the head the record bound (the merge call carries that sha, so GitHub refuses any
-// other), once the gate says so and, last, the reviewer-eval gate (evalgate.ts) has a verified receipt where it requires one.
+// other), once the gate says so, the reviewer-eval gate (evalgate.ts) has a verified receipt where it requires one and, last, on a
+// repo code review gates, code review's verdict for that head is pass (review-gate.ts). A review wait has no time limit: it
+// resumes when the verdict passes, and ends only when the PR moves or closes.
 // A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
 // head, beside its checks; with no verdict in time it is asked once more, then the PR isn't merged.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -13,6 +15,7 @@ import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { mergeable, withTrailer } from "./git-auth.ts";
 import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
+import type { ReviewGate } from "./review-gate.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
@@ -39,6 +42,8 @@ export function createMerges(d: {
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
   evalGate: EvalGate;
+  /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
+  reviewGate: ReviewGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
   flow?: Flow;
   /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
@@ -141,6 +146,12 @@ export function createMerges(d: {
       const gate = await d.evalGate(p.repo, data.repository.pullRequest);
       if (gate && "stop" in gate) return fail(gate.stop);
       if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
+      const review = await d.reviewGate(p.repo, p.number, p.head);
+      if (review) {
+        if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
+        p.note = review.wait;
+        return wait("review", review.wait, Infinity);
+      }
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       try {

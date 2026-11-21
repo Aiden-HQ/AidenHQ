@@ -9,6 +9,9 @@
 //   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
 //   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
+//   POST /findings/dismiss { repo, number, id, reason, by? } → { dismissed }   the owner dismisses an open finding (the board)
+//   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }] }   the github module's merge
+//                                        queue, with that module's own token (the kernel says whose), never the board's token
 // Errors are { error, detail }.
 //   GET  /healthz
 import { timingSafeEqual } from "node:crypto";
@@ -32,7 +35,7 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   throw new RequestError("send a JSON object");
 }
 
-export function handler(engine: Engine, token: () => string) {
+export function handler(engine: Engine, token: () => string, isGithub: (authorization: string) => Promise<boolean | undefined>) {
   const authorized = (req: IncomingMessage) => {
     const want = token();
     const got = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
@@ -42,6 +45,14 @@ export function handler(engine: Engine, token: () => string) {
     const url = new URL(req.url ?? "/", "http://localhost");
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "")}`;
     if (route === "GET /healthz") return send(res, 200, { ok: true });
+    if (route === "GET /v1/verdict") {
+      const ok = await isGithub(String(req.headers.authorization ?? ""));
+      if (!ok) return send(res, ok === undefined ? 503 : 401, { error: "unauthorized", detail: ok === undefined ? "the kernel couldn't say whose token this is; try again" : "only the github module's token" });
+      const q = url.searchParams;
+      const repo = (q.get("repo") ?? "").toLowerCase(), pr = Number(q.get("pr")), head = q.get("head") ?? "";
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(head)) return send(res, 400, { error: "bad_request", detail: "repo, pr and head (a 40-character sha)" });
+      return send(res, 200, engine.verdict(repo, pr, head));
+    }
     if (!authorized(req)) return send(res, 401, { error: "unauthorized", detail: "send the code-review API token" });
     try {
       if (route === "GET /reviews") {
@@ -55,6 +66,7 @@ export function handler(engine: Engine, token: () => string) {
       }
       if (route === "POST /reviews") return send(res, 200, { runs: await engine.oneoff(await body(req)) });
       if (route === "GET /repos") return send(res, 200, engine.repos());
+      if (route === "POST /findings/dismiss") return send(res, 200, engine.dismiss(await body(req)));
       if (route === "GET /engines") return send(res, 200, { engines: engine.engines() });
       if (route === "GET /github/repos") return send(res, 200, { repos: await engine.available(url.searchParams.get("q") ?? "") });
       return send(res, 404, { error: "not_found", detail: route.slice(0, 100) });

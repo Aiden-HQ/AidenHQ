@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
-import { MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type Severity } from "../../src/reviews";
+import { MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type Severity } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Meter, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
 import "./reviews.css";
@@ -40,7 +40,7 @@ const prUrl = (repo: string, n: number) => `https://github.com/${repo}/pull/${n}
 const githubLink = (u?: string | null) => (u && /^https:\/\/github\.com\//.test(u) ? u : undefined);
 const STATUS: Record<Run["status"], [StatusTone, string]> = { queued: ["idle", "Queued"], running: ["busy", "Reviewing"], done: ["done", "Reviewed"], skipped: ["idle", "Skipped"], failed: ["failed", "Failed"] };
 const live = (r: Run) => r.status === "queued" || r.status === "running";
-const OUTCOMES: Record<Outcome, [string, "ok" | "needs" | "neutral"]> = { fixed: ["Fixed", "ok"], open_at_merge: ["Open at merge", "needs"], open_at_close: ["Open at close", "neutral"] };
+const OUTCOMES: Record<Outcome, [string, "ok" | "needs" | "neutral"]> = { fixed: ["Fixed", "ok"], dismissed: ["Dismissed", "neutral"], open_at_merge: ["Open at merge", "needs"], open_at_close: ["Open at close", "neutral"] };
 const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
 const took = (r: Run) => (r.duration_ms != null ? (r.duration_ms >= 60_000 ? `${Math.floor(r.duration_ms / 60_000)}m ${Math.round((r.duration_ms % 60_000) / 1000)}s` : `${Math.max(1, Math.round(r.duration_ms / 1000))}s`) : r.started && r.ended ? elapsed(r.started, Date.parse(r.ended)) : null);
 /** The combos a review of this repo asks for by default: its on_open ones, else the defaults. */
@@ -73,7 +73,8 @@ const ComboTag = ({ c, engines }: { c: Pick<Combo, "engine" | "model" | "effort"
 const MODEL_ID = /^~?[\w.-]+\/[\w.:~-]+$/;
 const CUSTOM = "__custom";
 /** One moment's (or one ask's) combos: a row each of engine, model and effort, up to MAX_COMBOS. */
-function ComboPicker({ label, value, onChange, engines, none }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string }) {
+/** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
+function ComboPicker({ label, value, onChange, engines, none, gates }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
   const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium", run_usd: engines.codex.run_usd });
   return (
@@ -84,12 +85,18 @@ function ComboPicker({ label, value, onChange, engines, none }: { label: string;
         const custom = !e.models.includes(c.model);
         return (
           <div key={i} className="rv-combo">
-            <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", run_usd: engines[k].run_usd })} />
+            <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", run_usd: engines[k].run_usd, ...(c.mandatory ? { mandatory: true } : {}) })} />
             <span className="rv-combo-model">
               <Select aria-label={`${label} ${i + 1} model`} value={custom ? CUSTOM : c.model} options={[...e.models.map((m) => [m, m.replace(/^~/, "")] as const), [CUSTOM, "Other model…"] as const]} onChange={(m) => set(i, { ...c, model: m === CUSTOM ? "" : m })} />
               {custom && <Input aria-label={`${label} ${i + 1} model id`} aria-invalid={!MODEL_ID.test(c.model)} placeholder="vendor/model, like z-ai/glm-5.3" value={c.model} autoFocus={!c.model} onChange={(ev) => set(i, { ...c, model: ev.target.value.trim() })} />}
             </span>
             <Select aria-label={`${label} ${i + 1} effort`} value={c.effort} options={e.efforts.map((x) => [x, x] as const)} onChange={(x) => set(i, { ...c, effort: x })} />
+            {gates && (
+              <span className="rv-combo-gate" title="Its review gates merges: a PR merges only once it reviewed the head and its important findings are resolved">
+                <Switch on={!!c.mandatory} label={`${label} ${i + 1} mandatory`} onChange={(on) => { const { mandatory: _m, ...rest } = c; set(i, on ? { ...rest, mandatory: true } : rest); }} />
+                Mandatory
+              </span>
+            )}
             <Button size="sm" variant="quiet" aria-label={`Remove ${label} ${i + 1}`} title="Remove" onClick={() => onChange(value.filter((_, j) => j !== i))}>Remove</Button>
           </div>
         );
@@ -370,7 +377,7 @@ function RunRow({ r, engines }: { r: Run; engines: EngineCatalog | null }) {
 
 /* ----------------------------------------------------------------------------- one review */
 function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeReview | null; engines: EngineCatalog | null; onSignIn: () => void }) {
-  const [data, setData] = useState<{ run: Run; review: Review | null; findings: FindingRow[] } | null>(null);
+  const [data, setData] = useState<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null } | null>(null);
   const [error, setError] = useState("");
   const [again, setAgain] = useState(false);
   const load = useCallback(() => api.review(id).then((d) => (setData(d), setError("")), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), [id, onSignIn]);
@@ -384,7 +391,7 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
 
   const crumb = <a href="#/reviews/reviews">Code review</a>;
   if (!data) return <Page className="rv-page"><PageHeader crumb={crumb} title="Review" />{error ? <Banner tone="danger">Couldn't load this review: {error}</Banner> : <div className="rv-loading" aria-busy="true" />}</Page>;
-  const { run, review, findings } = data;
+  const { run, review, findings, gate } = data;
   const [tone, word] = STATUS[run.status];
   const outcomes = new Map(findings.map((f) => [f.id, f.outcome]));
   return (
@@ -427,6 +434,7 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
           ) : null}
         </div>
         <div>
+          {gate && <MergeGate run={run} gate={gate} onChanged={() => void load()} onSignIn={onSignIn} />}
           <Card>
             <Facts
               items={[
@@ -465,6 +473,58 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
       </div>
       {again && engines && <OneOffDialog config={config} engines={engines} url={prUrl(run.repo, run.number)} onClose={() => setAgain(false)} />}
     </Page>
+  );
+}
+
+/** A gated repo's merge verdict for the PR's current head: why it waits, and a Dismiss for each open important finding. */
+function MergeGate({ run, gate, onChanged, onSignIn }: { run: Run; gate: Gate; onChanged: () => void; onSignIn: () => void }) {
+  const [dismissing, setDismissing] = useState<Gate["open"][number] | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const close = () => (setDismissing(null), setReason(""), setError(""));
+  const dismiss = () => {
+    if (!dismissing) return;
+    setBusy(true);
+    api.dismissFinding({ repo: run.repo, number: run.number, id: dismissing.id, reason: reason.trim() }).then(
+      () => (close(), onChanged()),
+      (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
+    ).finally(() => setBusy(false));
+  };
+  return (
+    <Card className="rv-gate">
+      <span className="rv-head-status">
+        <b>Merge gate</b>
+        <StatusDot tone={gate.verdict === "pass" ? "done" : "busy"}>{gate.verdict === "pass" ? "May merge" : "Waiting"}</StatusDot>
+        <span className="rv-muted rv-mono">{short(gate.head)}</span>
+      </span>
+      {gate.reasons.map((r) => (
+        <span key={r.code} className="rv-gate-reason">
+          {r.text}
+          {r.unblock && <span className="rv-muted"> {r.unblock.replace(/^./, (c) => c.toUpperCase())}.</span>}
+        </span>
+      ))}
+      {gate.open.length > 0 && (
+        <ul className="rv-list rv-gate-open">
+          {gate.open.map((f) => (
+            <li key={f.id}>
+              <span><span className="rv-mono">{f.path}:{f.line}</span> {f.title}</span>
+              <Button size="sm" variant="quiet" onClick={() => setDismissing(f)}>Dismiss</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Dialog
+        open={!!dismissing}
+        onClose={close}
+        title="Dismiss this finding"
+        actions={<><Button variant="quiet" onClick={close}>Cancel</Button><Button disabled={busy || !reason.trim()} onClick={dismiss}>Dismiss</Button></>}
+      >
+        {dismissing && <span className="rv-muted"><span className="rv-mono">{dismissing.path}:{dismissing.line}</span> {dismissing.title}</span>}
+        <Field label="Why" help="Kept with the finding; it no longer holds the merge. Reported again later, it opens again.">{() => <Input aria-label="Why" value={reason} autoFocus onChange={(ev) => setReason(ev.target.value)} />}</Field>
+        {error && <Banner tone="danger">{error}</Banner>}
+      </Dialog>
+    </Card>
   );
 }
 
@@ -739,8 +799,8 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
           </div>
         </div>
       )}
-      <Field label="When a PR opens" help="Each row is one review, posted on its own">{() => <ComboPicker label="When a PR opens" value={f.on_open} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
-      <Field label="On each push" help="Only the new changes">{() => <ComboPicker label="On each push" value={f.on_push} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
+      <Field label="When a PR opens" help="Each row is one review, posted on its own">{() => <ComboPicker gates label="When a PR opens" value={f.on_open} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
+      <Field label="On each push" help="Only the new changes">{() => <ComboPicker gates label="On each push" value={f.on_push} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
       <div className="rv-grid3">
         <Field label="Daily cap" help="Reviews past it are skipped, with a comment saying why">
           {(id, d) => (

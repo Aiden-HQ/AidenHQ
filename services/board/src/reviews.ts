@@ -35,7 +35,14 @@ export interface Review {
   stale_guidance: string[];
 }
 /** What became of a posted finding, once known. */
-export type Outcome = "fixed" | "open_at_merge" | "open_at_close";
+export type Outcome = "fixed" | "dismissed" | "open_at_merge" | "open_at_close";
+/** On a repo code review gates (a mandatory combo): the PR's merge verdict at its current head and its open gating findings. */
+export interface Gate {
+  verdict: "pass" | "wait";
+  reasons: { code: string; text: string; unblock?: string }[];
+  head: string;
+  open: { id: string; path: string; line: number; title: string }[];
+}
 export interface FindingRow {
   id: string;
   severity: Severity;
@@ -105,6 +112,8 @@ export interface Combo {
   effort: string;
   /** The run's cap; unset means the engine's default (the module's ENGINES run_usd). */
   run_usd?: number;
+  /** Its review gates the repo's merges (a gated repo has one at both moments). */
+  mandatory?: boolean;
 }
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
@@ -124,6 +133,7 @@ export const ComboSchema = z
     model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id, like ~deepseek/deepseek-flash-latest"),
     effort: z.string(),
     run_usd: z.number().min(0.01).max(20).optional(),
+    mandatory: z.boolean().optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -140,9 +150,11 @@ export const RepoSchema = z
     day_usd: z.number().positive().max(10_000).optional(),
     ignore: z.array(PLAIN(200).min(1)).max(50).optional(),
     max_nits: z.number().int().min(0).max(50).optional(),
-    mandatory: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((r, ctx) => {
+    if (r.on_open.some((c) => c.mandatory) !== r.on_push.some((c) => c.mandatory)) ctx.addIssue({ code: "custom", path: ["on_push"], message: "a mandatory reviewer goes in both moments (a PR's first review and each push)" });
+  });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z
   .object({

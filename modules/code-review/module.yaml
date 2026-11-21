@@ -19,15 +19,18 @@ codehost:
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, budget_usd
-# is the run's run_usd less earlier attempts' spend (its model token's cap), previous the PR's still-open findings to recheck. It reads back GET /v1/checks/:id
-# with `result` (the Review JSON, bound into the receipt, stamped with the ledger's cost_usd and tokens) and `billed_usd` (a running check's spend so far too).
+# is the run's run_usd less earlier attempts' spend (its model token's cap), previous the PR's still-open findings to recheck (and
+# that the finders take as already reported), judge {} on a review. A dispute's judge is the same job in judge mode: judge holds
+# the finding and the fenced reply, combo the judge's model (another family than the PR author's). It reads back GET /v1/checks/:id
+# with `result` (the Review JSON, or the judge's { verdict, reason }, bound into the receipt, stamped with the ledger's cost_usd
+# and tokens) and `billed_usd` (a running check's spend so far too).
 check_jobs:
   code-review:
     dir: recipe
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 45
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json, judge: json }
     model: { max_usd: 25 }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
@@ -38,11 +41,13 @@ stages:
   - { name: review, label: Code review, from: review.started, to: review.ended }
 settings:
   # repos: [{ repo: owner/name, on_open: [combo], on_push: [combo], drafts: false, forks: manual|auto, day_usd: 200, ignore: [globs],
-  # max_nits: 5, mandatory: false }]. mandatory: code review is a required merge step for this repo (nothing enforces it as a
-  # merge gate yet: a later change does; today it is read by ai_review_code's unless_code_review_mandatory). A combo is { engine: codex|claude-code|codegenie|codex-native, model (an OpenRouter
+  # max_nits: 5 }]. A combo is { engine: codex|claude-code|codegenie|codex-native, model (an OpenRouter
   # id), effort (the engine's: codex and codex-native minimal-xhigh, the others low-max), run_usd (what one run may spend: its model token's hard
-  # cap, not a reservation; default $5 for each engine) }; each moment runs every combo it lists (at most 4, each its
-  # own review), [] none. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd each, bounded by the launcher's computers_max; a run whose spend can't be read counts at its whole run_usd). Read by the service
+  # cap, not a reservation; default $5 for each engine), mandatory (default false) }; each moment runs every combo it lists (at most 4, each its
+  # own review), [] none. A mandatory combo's review gates the repo's merges: the github module's merge queue merges a PR only
+  # once the mandatory combos reviewed its head and none of their important findings is open (fixed, judged dismissed on a
+  # dispute, or dismissed by the owner on the board); a gated repo has one at both moments, and its mandatory runs are never
+  # skipped for budget and review forks by themselves. ai_review_code's unless_code_review_mandatory reads the same repos. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd each, bounded by the launcher's computers_max; a run whose spend can't be read counts at its whole run_usd). Read by the service
   # (service/src/config.ts).
   code_review:
     type: object
@@ -60,7 +65,6 @@ settings:
       - { path: "repos.*.on_open", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 5 } ] }
       - { path: "repos.*.on_push", change: true, default: [ { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 5 } ] }
       - { path: "repos.*.ignore", change: true, default: [] }
-      - { path: "repos.*.mandatory", to: true, default: false }
     default:
       repos: []
       day_usd: 200
@@ -96,10 +100,10 @@ connections:
     tools:
       read: [ code_review_config, code_review_runs ]
       write: [ code_review_run, code_review_configure ]
-# Posting: this service files a record per post and per acknowledgement and executes it (executor@1) through github-mcp's
-# /internal/review routes (the github module's poster: App where installed with PR write, else the owner's sign-in). A post is
-# Tier 1 (the AI reviewer reads the whole rendered review first); a notice is Tier 0 (fixed words: phase and reason only). Plan
-# refuses a record this service didn't file for one of its runs.
+# Posting: this service files a record per post, per acknowledgement and per ruling and executes it (executor@1) through
+# github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post is Tier 1 (the AI reviewer
+# reads the whole rendered review first), and so is a ruling (a dispute's answer on the finding's thread: the judge's text); a
+# notice is Tier 0 (fixed words: phase and reason only). Plan refuses a record this service didn't file for one of its runs.
 providers:
   board: { url: "http://code-review:8098", auth: code_review_api_token }
   executor:
@@ -108,6 +112,11 @@ providers:
 writes:
   post:
     args: schemas/post.json
+    floor: 1
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  ruling:
+    args: schemas/ruling.json
     floor: 1
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }

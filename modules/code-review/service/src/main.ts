@@ -12,6 +12,7 @@ import { readConfig } from "./config.ts";
 import { createEngine } from "./engine.ts";
 import { configTools } from "./config-tool.ts";
 import { createMcp, serveMcp } from "./mcp.ts";
+import { isModule } from "./module-caller.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 
 const env = process.env;
@@ -30,6 +31,7 @@ const engine = createEngine({
   config: () => config,
   source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token),
   runner: kernelRunner(kernel),
+  agents: async () => Object.values(((await kernel.call("GET", "/v1/agents")) as { agents?: Record<string, { name?: string; model?: string }> }).agents ?? {}),
   poster: kernelPoster(kernel, log),
   emit: (f) => facts.emit(f),
   log,
@@ -47,7 +49,7 @@ setTimeout(tick, 5_000);
 // executor@1 for code-review.post and .notice: the kernel calls it with this module's service key, read fresh per request.
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
-const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE));
+const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth) => isModule(kernelUrl, auth, "github"));
 // The Reviewer Manager's tools on the module's connection (code_review): its setting as instance.yaml holds it, and its changes
 // filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };

@@ -99,7 +99,27 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
-export const STATUS_CONTEXT = "aidenhq/review";
+/** Marks a ruling's reply on a finding's thread, so the state service never takes Aiden's own answer for a dispute. */
+export const RULING_MARK = "<!-- aidenhq-ruling -->";
+
+/** A dispute's ruling, posted as a reply on the finding's thread: the judge's verdict and its reason (model text, made plain). */
+export const RulingArgsSchema = z.object({
+  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
+  pr: z.number().int().min(1),
+  head: z.string().regex(SHA),
+  /** The judge run: the idempotency key. */
+  run: RUN,
+  finding: z.string().regex(/^[A-Za-z0-9_-]{6,64}$/),
+  /** The thread's first comment (Aiden's finding), which the reply answers. */
+  comment: z.number().int().min(1),
+  verdict: z.enum(["dismissed", "upheld"]),
+  reason: z.string().min(1).max(1500),
+});
+export type RulingArgs = z.infer<typeof RulingArgsSchema>;
+export function renderRuling(a: RulingArgs): string {
+  const head = a.verdict === "dismissed" ? "**Dismissed** after review of the dispute: this finding no longer holds the merge." : "**Upheld** after review of the dispute: this finding still holds the merge until it is fixed or the owner dismisses it.";
+  return `${RULING_MARK}\n${head}\n\n${plain(a.reason, 1500)}\n\n<sub>Judged at ${code(short(a.head))} (run ${code(a.run)}).</sub>`;
+}
 
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
@@ -219,27 +239,21 @@ export function renderReview(r: Review, run: string, opts: { inline?: ReadonlySe
 }
 
 const usd = (n: number | undefined) => (n === undefined ? "" : ` ($${n.toFixed(2)})`);
-/** The acknowledgement comment's text and the commit status a notice sets (no status for `queued`), from fixed words only. */
-export function renderNotice(n: NoticeArgs): { text: string; status?: { state: "pending" | "success" | "error"; description: string } } {
+/** The acknowledgement comment's text, from fixed words only. */
+export function renderNotice(n: NoticeArgs): string {
   const who = n.engine && n.model && n.effort ? ` with ${code(comboText({ engine: n.engine, model: n.model, effort: n.effort }))}` : "";
   const sha = code(short(n.head));
   const c: Counts = { important: n.important ?? 0, nit: n.nit ?? 0, pre_existing: n.pre_existing ?? 0 };
   const head = `${ACK_MARK}\n**Aiden review**`;
   const help = "`@aiden review help` lists the commands.";
   switch (n.phase) {
-    case "queued": return { text: `${head}: queued${who} for ${sha}. ${help}` };
-    case "running": return { text: `${head}: reviewing ${sha}${who}…`, status: { state: "pending", description: "Reviewing" } };
-    case "done": return { text: `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`, status: { state: "success", description: `${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing` } };
-    case "skipped": { const why = SKIP_REASONS[n.reason ?? "unchanged"]; return { text: `${head}: skipped ${sha}: ${why}. ${help}`, status: { state: "success", description: `Skipped: ${why}`.replace(/`/g, "").slice(0, 140) } }; }
-    case "answered": return { text: `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}` };
-    case "failed": return { text: `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`, status: { state: "error", description: "Review failed" } };
+    case "queued": return `${head}: queued${who} for ${sha}. ${help}`;
+    case "running": return `${head}: reviewing ${sha}${who}…`;
+    case "done": return `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`;
+    case "skipped": return `${head}: skipped ${sha}: ${SKIP_REASONS[n.reason ?? "unchanged"]}. ${help}`;
+    case "answered": return `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}`;
+    case "failed": return `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`;
   }
-}
-
-/** The status a posted review sets: always success (advisory, never a block), with what it found and whether it was complete. */
-export function reviewStatus(r: Review): { state: "success"; description: string } {
-  const c = counts(r.findings);
-  return { state: "success", description: `${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing${r.coverage.incomplete ? " (incomplete)" : ""}`.slice(0, 140) };
 }
 
 /** The right-side line numbers of a unified diff patch: where GitHub accepts an inline comment. */

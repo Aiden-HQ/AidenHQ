@@ -17,9 +17,10 @@ export const ENGINES = {
 } as const;
 export type Engine = keyof typeof ENGINES;
 
-/** One review run's reviewer: its engine, model and effort, and the most the run may spend (its model token's hard
- * cap; the engine's default when unset: $5). */
-export type Combo = { engine: Engine; model: string; effort: string; run_usd: number };
+/** One review run's reviewer: its engine, model and effort, the most the run may spend (its model token's hard cap; the
+ * engine's default when unset: $5), and whether it is mandatory: a mandatory combo's review gates the repo's merges (the
+ * merge queue merges a PR only when its mandatory combos reviewed its head and none of their important findings is open). */
+export type Combo = { engine: Engine; model: string; effort: string; run_usd: number; mandatory: boolean };
 /** The moments a repo is reviewed at. */
 export const MOMENTS = ["on_open", "on_push"] as const;
 export type Repo = {
@@ -30,17 +31,17 @@ export type Repo = {
   /** manual: a fork PR is reviewed only when someone with write access asks; auto: like any other. */
   forks: "manual" | "auto";
   day_usd: number; ignore: string[]; max_nits: number;
-  /** Code review is a required merge step for this repo (read by ai_review_code; not yet enforced as a merge gate). */
-  mandatory: boolean;
 };
 export type Config = { repos: Repo[]; day_usd: number; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
-  on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 5 }],
-  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 5 }],
-  drafts: false, forks: "manual", day_usd: 200, ignore: [], max_nits: 5, mandatory: false,
+  on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 5, mandatory: false }],
+  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 5, mandatory: false }],
+  drafts: false, forks: "manual", day_usd: 200, ignore: [], max_nits: 5,
 };
+/** A repo is gated (its merges wait for code review) when any of its combos is mandatory. */
+export const gated = (r: Pick<Repo, "on_open" | "on_push">) => [...r.on_open, ...r.on_push].some((c) => c.mandatory);
 export const INSTANCE_DAY_USD = 200;
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
@@ -53,15 +54,16 @@ const num = (v: unknown, d: number, min = 0, max = 100_000) => (typeof v === "nu
 export function combo(raw: unknown): Combo | { error: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "a combo is { engine, model, effort }" };
   const c = raw as Record<string, unknown>;
-  const extra = Object.keys(c).filter((k) => !["engine", "model", "effort", "run_usd"].includes(k));
-  if (extra.length) return { error: `unknown field ${extra.join(", ")} (a combo is engine, model, effort and optionally run_usd)` };
+  const extra = Object.keys(c).filter((k) => !["engine", "model", "effort", "run_usd", "mandatory"].includes(k));
+  if (extra.length) return { error: `unknown field ${extra.join(", ")} (a combo is engine, model, effort and optionally run_usd and mandatory)` };
   const e = ENGINES[c.engine as Engine];
   if (!e) return { error: `engine is one of ${Object.keys(ENGINES).join(", ")}` };
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return { error: "model is an OpenRouter model id such as ~deepseek/deepseek-flash-latest" };
   if (!(e.efforts as readonly string[]).includes(c.effort as string)) return { error: `effort for ${c.engine} is one of ${e.efforts.join(", ")}` };
   const run_usd = num(c.run_usd, e.run_usd, 0.01, 20);
   if (Number.isNaN(run_usd)) return { error: "run_usd is a number of dollars, 0.01 to 20" };
-  return { engine: c.engine as Engine, model: c.model, effort: c.effort as string, run_usd };
+  if (c.mandatory !== undefined && typeof c.mandatory !== "boolean") return { error: "mandatory is true or false" };
+  return { engine: c.engine as Engine, model: c.model, effort: c.effort as string, run_usd, mandatory: c.mandatory === true };
 }
 
 /** A list of combos (a moment's, or a one-off's): the combos, or the first reason one isn't. */
@@ -84,6 +86,7 @@ function repo(raw: unknown): Repo | { error: string } {
   const r = (raw ?? {}) as Record<string, unknown>;
   if (typeof r.repo !== "string" || !SLUG.test(r.repo)) return { error: "repo is owner/name" };
   if ("on_risk" in r) return { error: "on_risk is gone: a deeper review is asked for with Review again or `@aiden review`" };
+  if ("mandatory" in r) return { error: "a repo's mandatory is gone: mark the combos whose review gates merges `mandatory: true`" };
   const out = { ...REPO_DEFAULTS, ...r, repo: r.repo.toLowerCase() } as Repo;
   for (const k of MOMENTS) {
     const c = combos(out[k], k);
@@ -91,7 +94,8 @@ function repo(raw: unknown): Repo | { error: string } {
     out[k] = c;
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
-  if (typeof out.mandatory !== "boolean") return { error: "mandatory is true or false" };
+  // A gated repo has a mandatory combo at both moments: a PR's first head is covered by on_open's, each later one by on_push's.
+  if (out.on_open.some((c) => c.mandatory) !== out.on_push.some((c) => c.mandatory)) return { error: "a mandatory combo goes in both on_open and on_push (a PR's first head is reviewed by on_open's, each push by on_push's)" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
   for (const k of ["day_usd", "max_nits"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };

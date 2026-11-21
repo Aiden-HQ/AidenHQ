@@ -128,9 +128,13 @@
 
 /* A moment's combos: engine, model, effort, remove. */
 .rv-combos { display: grid; gap: 8px; justify-items: start; width: 100%; }
-.rv-combo { display: grid; grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr) minmax(5rem, 6.5rem) auto; gap: 8px; align-items: start; width: 100%; }
+.rv-combo { display: grid; grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr) minmax(5rem, 6.5rem) auto auto; gap: 8px; align-items: start; width: 100%; }
 .rv-combo-model { display: grid; gap: 6px; min-width: 0; }
 .rv-combo-none { font-size: var(--text-sm); }
+.rv-combo-gate { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); white-space: nowrap; }
+.rv-gate { display: grid; gap: 8px; }
+.rv-gate-reason { font-size: var(--text-sm); }
+.rv-gate-open li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 @media (max-width: 640px) { .rv-combo { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .rv-combo-model { grid-column: 1 / -1; order: 3; } }
 
 /* Insights. */
