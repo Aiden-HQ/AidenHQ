@@ -6,15 +6,25 @@
 // - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post (Tier 1, the AI reviewer
 //   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
 //   /internal/review routes.
+// - The code host through the kernel (/v1/codehost/:op, this module's `codehost:` grant): snapshots (a tree's paths and the commit
+//   it resolved; a pending deepsec setup branch's files) and the deepsec setup PR (`setup`: github files its own Tier 1 write).
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
-import type { Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
+import type { CodeHost, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
 
-export const RECIPE = "code-review";
 /** This module's write kinds (module.yaml writes), executed by this service through github-mcp's review routes. */
 export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
 export const STATUS_KIND = "code-review.status";
+/** The one branch a deepsec setup PR is on, and the only files it may hold: what deepsec means to be committed (recipe/deepsec.ts
+ * setupPath; module.yaml codehost.setup lists the same paths). */
+export const SETUP_BRANCH = "aidenhq/deepsec-setup";
+export const SETUP_PATH = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 
@@ -44,13 +54,21 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
 }
 
 /**
- * The check job's spec (module.yaml check_jobs.code-review; every field a string of its kind): base is the merge base, and a full
- * review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the combo; the previous findings are
- * those the recipe rechecks (and the finders take as already reported), full reviews included.
+ * The check job's spec, by profile (module.yaml check_jobs; every declared field always sent, each a string of its kind).
+ * `code-review` (a combo, or one model option: combo.engine `skill:<id>` with the catalog's harness and skill, or an engine):
+ * base is the merge base, and a full review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the
+ * combo; the previous findings are those the recipe rechecks (and the finders take as already reported), full reviews included.
+ * A tree review has no merge base: base and incremental_from are its head (the recipe diffs against the empty tree), and pr is
+ * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
+ * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
  */
 export function checkSpec(s: ReviewSpec): Record<string, string> {
+  const tree = s.target === "tree";
+  const base = tree ? s.head : s.merge_base;
+  if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}) };
   return {
-    base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
+    base, incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
+    option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
   };
@@ -59,7 +77,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
 export function kernelRunner(kernel: KernelClient): ReviewRunner {
   return {
     async start(s) {
-      const v = await kernel.call("POST", "/v1/checks", { repo: s.repo, head: s.head, run: RECIPE, spec: checkSpec(s) });
+      const v = await kernel.call("POST", "/v1/checks", { repo: s.repo, head: s.head, run: s.profile, spec: checkSpec(s) });
       return { check: String(v.id) };
     },
     async result(check): Promise<RunResult> {
@@ -145,6 +163,14 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const r = (await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { ...(a.ack ? { ack: a.ack } : {}), repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.review ? { review: a.review } : {}), ...(a.counts ?? {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
+    async task(repo) {
+      const key = `${repo} repo reviews`;
+      if (!tasks.has(key)) {
+        const t = await kernel.call("POST", "/v1/tasks", { title: `Code review: ${key}`, description: `${repo}\n\nThe approvals of this repo's repo reviews (its deepsec setup PR) land here; its reports are on the board's Reviews page and in Primer.`, role: ROLE, source: `code-review:${repo}:repo-reviews`, quiet: true });
+        tasks.set(key, String(t.id));
+      }
+      return tasks.get(key)!;
+    },
     async close(repo, n, why, run) {
       // The engine closes only a PR that had a post, so its task exists: filing the same source again finds it after a restart.
       const id = await taskOf(repo, n, run);
@@ -179,6 +205,67 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
       // which keep only a code host's objects.
       const v = (await github("execute", { kind, args: rec.args })) as { ok?: boolean; text?: string };
       return { ok: v.ok === true, text: String(v.text ?? "") };
+    },
+  };
+}
+
+const SETUP_BODY = "deepsec's own set-up files (`.deepsec/`), written by `deepsec init` during a code review of this repository: its config, the matchers it generated and its summary of the repo. Merging them lets later reviews scan with them instead of setting up again. Nothing outside `.deepsec/` changes.";
+
+/**
+ * The code host through the kernel (POST /v1/codehost/:op, this module's `codehost:` grant). A snapshot's tarball is read as it
+ * streams (never held whole): `tree` lists its paths, `setupBranch` takes only deepsec's allowlisted files from the setup branch
+ * (absent: no such branch). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
+ */
+export function kernelCodeHost(kernelUrl: string, token: () => string, fetcher: typeof fetch = fetch): CodeHost {
+  const op = (name: string, body: unknown) => fetcher(`${kernelUrl.replace(/\/+$/, "")}/v1/codehost/${name}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
+  /** The snapshot of repo@ref through `tar args`; undefined when the code host has no such ref (404). */
+  const snapshot = async <T>(repo: string, ref: string, args: string[], read: (out: string) => T): Promise<{ sha: string; value: T } | undefined> => {
+    const r = await op("snapshot", { repo, ref });
+    if (r.status === 404) return undefined;
+    if (!r.ok || !r.body) throw Object.assign(new Error(`the snapshot of ${repo}@${ref.slice(0, 40)}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`), { status: r.status });
+    const sha = r.headers.get("x-aidenhq-commit") ?? "";
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`the snapshot of ${repo} named no commit`);
+    const out = await new Promise<string>((resolve, reject) => {
+      let text = "", err = "";
+      const t = spawn("tar", args, { stdio: ["pipe", "pipe", "pipe"] });
+      t.stdout.on("data", (b: Buffer) => { if (text.length < 64_000_000) text += b.toString("utf8"); });
+      t.stderr.on("data", (b: Buffer) => (err = (err + b.toString("utf8")).slice(0, 1000)));
+      t.stdin.on("error", () => {}); // tar ended early: its close says why
+      t.on("error", reject);
+      // GNU tar exits 2 when a pattern matched nothing: no files, not a failure.
+      t.on("close", (code) => (code === 0 || /Not found in archive/.test(err) ? resolve(text) : reject(new Error(`the snapshot of ${repo} didn't unpack: ${err.trim().slice(0, 200) || `tar ${code}`}`))));
+      Readable.fromWeb(r.body as never).on("error", reject).pipe(t.stdin);
+    });
+    return { sha, value: read(out) };
+  };
+  return {
+    async tree(repo, ref) {
+      const s = await snapshot(repo, ref, ["-tzf", "-"], (out) => out.split("\n").filter((l) => l && !l.endsWith("/")).slice(0, 200_000).map((l) => l.replace(/^\.\//, "")));
+      if (!s) throw Object.assign(new Error(`${repo} has no ${ref.slice(0, 40)}`), { status: 404 });
+      return { sha: s.sha, paths: s.value };
+    },
+    async setupBranch(repo) {
+      const dir = mkdtempSync(join(tmpdir(), "deepsec-setup-"));
+      try {
+        const s = await snapshot(repo, SETUP_BRANCH, ["-xzf", "-", "-C", dir, "--no-same-owner", "--wildcards", ".deepsec/*"], () => undefined);
+        if (!s) return undefined;
+        const files: Record<string, string> = {};
+        const walk = (rel: string) => {
+          for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+            const p = `${rel}/${e.name}`;
+            if (e.isDirectory()) walk(p);
+            else if (e.isFile() && SETUP_PATH.test(p) && statSync(join(dir, p)).size <= 2_000_000) files[p] = readFileSync(join(dir, p), "utf8");
+          }
+        };
+        try { walk(".deepsec"); } catch {}
+        return { tip: s.sha, files };
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    },
+    async setup(b) {
+      const r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY });
+      const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!r.ok) throw new Error(`the deepsec setup PR: ${r.status} ${JSON.stringify(j).slice(0, 300)}`);
+      return j;
     },
   };
 }

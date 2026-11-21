@@ -32,7 +32,8 @@ export type Repo = {
   forks: "manual" | "auto";
   day_usd: number; ignore: string[]; max_nits: number;
 };
-export type Config = { repos: Repo[]; day_usd: number; errors: string[] };
+/** `lenses`: repo reviews and the option catalog are on (off by default until their security review is done). */
+export type Config = { repos: Repo[]; day_usd: number; lenses: boolean; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
@@ -122,5 +123,6 @@ export function readConfig(text: string | undefined): Config {
   }
   const day_usd = num(raw.day_usd, INSTANCE_DAY_USD);
   if (Number.isNaN(day_usd)) errors.push("day_usd is a number");
-  return { repos, day_usd: Number.isNaN(day_usd) ? INSTANCE_DAY_USD : day_usd, errors };
+  if (raw.lenses !== undefined && typeof raw.lenses !== "boolean") errors.push("lenses is true or false");
+  return { repos, day_usd: Number.isNaN(day_usd) ? INSTANCE_DAY_USD : day_usd, lenses: raw.lenses === true, errors };
 }

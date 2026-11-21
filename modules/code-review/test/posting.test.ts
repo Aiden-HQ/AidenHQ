@@ -31,8 +31,15 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
     focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3 };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "pr", "previous"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "lens", "option", "pr", "previous", "setup_files", "target"]);
   assert.equal(spec.base, "m".repeat(40));
+  // A combo on a PR: no option, no pending setup.
+  assert.deepEqual([spec.target, spec.option, spec.lens, spec.setup_files, spec.pr], ["pr", "", "", "{}", "9"]);
+  // A tree: base is the head, pr empty; the tools check carries only its base (the commit itself) and the options it runs.
+  const t = checkSpec({ ...s, number: 0, target: "tree", profile: "code-review", merge_base: s.head, option: "sec.deepsec", lens: "security", setup_files: { ".deepsec/package.json": "{}" } });
+  assert.deepEqual([t.base, t.incremental_from, t.pr, t.target, t.option, t.setup_files], [s.head, s.head, "", "tree", "sec.deepsec", JSON.stringify({ ".deepsec/package.json": "{}" })]);
+  const tools = { "maint.knip": { lens: "maintainability", cmd: "knip", output: "knip" } };
+  assert.deepEqual(checkSpec({ ...s, target: "tree", profile: "code-review-tools", tools }), { base: s.head, options: JSON.stringify(tools) });
   assert.equal(spec.incremental_from, spec.base);
   assert.equal(spec.budget_usd, "1.5000");
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });
@@ -54,4 +61,14 @@ test("a done notice's review link is a field the notice kind takes (schemas/noti
   await poster.ack({ repo: "acme/x", number: 3, head, state: "done", run: "cr-1", combo: { engine: "codex", model: "~a/b", effort: "low" }, counts: { important: 1, nit: 0, pre_existing: 0, cost_usd: 0.1 }, review: "https://github.com/acme/x/pull/3#pullrequestreview-9", ack: 7 });
   validate(JSON.parse(readFileSync(new URL("../schemas/notice.json", import.meta.url), "utf8")), args);
   assert.equal(args.review, "https://github.com/acme/x/pull/3#pullrequestreview-9");
+});
+
+
+test("a repo review's report is filed as Primer's own publish record, private, keyed by repo; its outcome names the document", async () => {
+  const { primerPublisher } = await import("../service/src/primer-client.ts");
+  const calls = [];
+  const p = primerPublisher({ call: async (m, path, body) => (calls.push([m, path, body]), m === "POST" ? { id: "k-1", state: "review" } : { id: "k-1", state: "done", outcome: { ok: true, text: "New version v2 on Primer (document d-1, version 01ab-cd): https://primer.example.com/d/d-1" } }) });
+  assert.deepEqual(await p.file({ repo: "acme/x", title: "Repo review: acme/x", content: "# r", documentId: "d-1", versionNote: "abcdef0 2026-11-22" }), { state: "pending", write: "k-1" });
+  assert.deepEqual(calls[0][2], { kind: "primer.publish", args: { title: "Repo review: acme/x", content: "# r", format: "markdown", documentId: "d-1", versionNote: "abcdef0 2026-11-22", private: true, repo_key: "acme/x" } });
+  assert.deepEqual(await p.outcome("k-1"), { state: "done", write: "k-1", documentId: "d-1", url: "https://primer.example.com/d/d-1", version: 2 });
 });

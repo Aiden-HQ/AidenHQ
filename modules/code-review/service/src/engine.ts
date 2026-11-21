@@ -16,11 +16,22 @@
 // On a gated repo each open PR's head carries the commit status aidenhq/review, mirroring verdict() (mirror): GitHub's view of the
 // verdict; the merge queue still asks verdict() itself.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason (a budget skip once per head), never silent.
+//
+// A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
+// lifecycle: its catalog options as runs of one batch, in sequence: the tools check (the selected tool options together,
+// token-free) first, then each model option as its own metered check, each with what the batch's run_usd has left (none left:
+// skipped, "run cap spent"). Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
+// Primer (one document per repo, a version per review) and is served to the board. deepsec's set-up files from a run are asked
+// for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
+// that PR's branch until it merges. Everything here is off until settings.code_review.lenses is on.
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
-import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
+import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
+import type { Ack, CodeHost, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
+import { detect, toolSpec, type Option } from "./catalog.ts";
+import { render } from "./report.ts";
+import { SETUP_BRANCH, SETUP_PATH } from "./adapters.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 export const DEBOUNCE = 60_000;
@@ -69,7 +80,31 @@ export type RunRow = {
   review_url: string | null; resolved: number | null; identity: string | null;
   /** Its post filed again once (a refusal that wasn't a decision), and when that is due (posted 'retry'). */
   post_tries: number; post_due: number | null;
+  /** What it reviews: a PR (`pr`) or a repo review's tree (`tree`: number 0, head the commit); for a tree, the catalog option it
+   * runs (the tools run: its tool options, comma-separated) and its check job (`code-review` or `code-review-tools`). */
+  target: "pr" | "tree"; option: string | null; profile: string | null;
 };
+/** A repo review: its repo and the commit resolved when it was asked for, its options and combo, its cap, and once it ended its verdict and report. */
+export type BatchRow = {
+  id: string; repo: string; sha: string; options: string; combo: string; run_usd: number; status: "running" | "done"; verdict: string | null;
+  report: string | null; report_url: string | null; report_version: number | null; report_why: string | null; created: number; ended: string | null; author: string;
+  /** The commit has deepsec set up (any `.deepsec/` file): deepsec scans, and no setup branch is read. */
+  deepsec: number;
+  /** The deepsec setup branch when the review started (deepsec picked and not set up at the commit): its tip and files, which
+   * deepsec scans with; a branch there means its PR is pending, so no second one is asked for. */
+  setup_tip: string | null; setup_files: string | null;
+  /** The report's primer.publish write record, while its outcome is pending. */
+  report_write: string | null;
+};
+/** A repo review's cap (USD, across all its options): the default and the most. */
+export const RUN_USD = { default: 25, min: 1, max: 150 };
+/** The most one check of a repo review may spend (module.yaml check_jobs.code-review model.max_usd). */
+export const CHECK_MAX_USD = 100;
+/** The deepsec set-up files a run's box gets from a pending setup branch: its summary, config and matchers (the spec's json cap). */
+const BOX_SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
+/** A deepsec setup PR asked for and not on the code host yet (refused, or still with the AI reviewer) is asked for again after this. */
+const SETUP_RETRY = 24 * 3600_000;
+const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
@@ -87,7 +122,8 @@ CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status, due);
 CREATE TABLE IF NOT EXISTS reviews (run TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS findings (run TEXT NOT NULL, id TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, severity TEXT NOT NULL,
-  path TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, outcome TEXT, outcome_at TEXT, PRIMARY KEY (run, id));
+  path TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, outcome TEXT, outcome_at TEXT, why TEXT, evidence TEXT, claim TEXT,
+  option TEXT NOT NULL DEFAULT '', lens TEXT, PRIMARY KEY (run, id, option));
 CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
 CREATE TABLE IF NOT EXISTS seen (repo TEXT NOT NULL, comment TEXT NOT NULL, PRIMARY KEY (repo, comment));
 CREATE TABLE IF NOT EXISTS covered (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (repo, number, head));
@@ -95,14 +131,23 @@ CREATE TABLE IF NOT EXISTS dispositions (finding TEXT NOT NULL, repo TEXT NOT NU
   reason TEXT NOT NULL, evidence TEXT, by TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, finding);
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));`;
-/** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
- * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
-export const DATA_VERSION = 1;
+CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));
+CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, options TEXT NOT NULL, combo TEXT NOT NULL, run_usd REAL NOT NULL,
+  status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
+  author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0, setup_tip TEXT, setup_files TEXT, report_write TEXT);
+CREATE TABLE IF NOT EXISTS documents (repo TEXT PRIMARY KEY, document TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS setups (repo TEXT PRIMARY KEY, asked INTEGER NOT NULL, answer TEXT);`;
+/** The data's format (module.yaml data_version), migrated forward at start. 1: combos and findings; a database from before starts
+ * fresh (its runs, its PRs and today's spend counts are dropped: the first look at each repo then records what is open, as on a new
+ * install). 2: repo reviews (batches, documents, setups; runs' target, option and profile) and findings per option observation
+ * (their key gains the option): a version 1 database keeps every run, review and finding. */
+export const DATA_VERSION = 2;
 
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
   db: DatabaseSync; config: () => Config; source: PrSource; runner: ReviewRunner; poster: Poster;
+  /** Repo reviews: the code host (snapshots, the deepsec setup PR), the option catalog, and Primer (the report's document). */
+  codehost: CodeHost; catalog: () => Option[]; publisher: Publisher;
   emit?: (f: FactIn) => void; log?: Log; now?: () => number;
 };
 export class RequestError extends Error {
@@ -119,14 +164,30 @@ export function createEngine(d: EngineDeps) {
   const { db } = d;
   const now = d.now ?? Date.now;
   const log: Log = d.log ?? (() => {});
-  if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version < DATA_VERSION) {
+  const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (version < 1) {
     db.exec("DROP TABLE IF EXISTS prs; DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS reviews; DROP TABLE IF EXISTS findings; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS cursors;");
     db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"],
+    ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
+  if (version === 1) {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE findings_v2 (run TEXT NOT NULL, id TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, severity TEXT NOT NULL,
+        path TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, outcome TEXT, outcome_at TEXT, why TEXT, evidence TEXT, claim TEXT,
+        option TEXT NOT NULL DEFAULT '', lens TEXT, PRIMARY KEY (run, id, option));
+      INSERT INTO findings_v2 (rowid, run, id, repo, number, severity, path, line, title, outcome, outcome_at, why, evidence, claim)
+        SELECT rowid, run, id, repo, number, severity, path, line, title, outcome, outcome_at, why, evidence, claim FROM findings;
+      DROP TABLE findings;
+      ALTER TABLE findings_v2 RENAME TO findings;
+      CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
+      PRAGMA user_version = ${DATA_VERSION};
+      COMMIT;`);
+  }
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0 WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
@@ -251,6 +312,13 @@ export function createEngine(d: EngineDeps) {
     const c = d.config();
     const why = tx(() => {
       const cfg = repoCfg(r.repo);
+      // A repo review's model option gets what its batch's cap has left (the tools run is token-free): none left, it is skipped.
+      if (r.target === "tree" && r.profile !== "code-review-tools") {
+        const b = batchRow(r.batch)!;
+        const others = one<{ s: number }>("SELECT COALESCE(SUM(CASE WHEN status = 'queued' THEN billed_prior ELSE cost_usd END), 0) s FROM runs WHERE batch = ? AND id != ? AND status != 'running'", r.batch, r.id)!.s;
+        if (b.run_usd - others - r.billed_prior < 0.01) return "run cap spent";
+        run("UPDATE runs SET run_usd = ? WHERE id = ?", Math.round(Math.min(b.run_usd - others, r.billed_prior + CHECK_MAX_USD) * 10_000) / 10_000, r.id);
+      }
       // A mandatory run is never skipped for budget (its repo's merges wait on it); its spend still counts and shows.
       if (r.mandatory) return void run("UPDATE runs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'", iso(), r.id);
       const inst = spent();
@@ -264,6 +332,7 @@ export function createEngine(d: EngineDeps) {
     });
     if (!why) return runRow(r.id);
     skipQueued(r.id, why);
+    if (r.target === "tree") return undefined;
     const had = one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'skipped' AND why LIKE 'budget%' AND id != ?", r.repo, r.number, r.head, r.id);
     if (!had) void ack({ repo: r.repo, number: r.number, head: r.head, state: "skipped", run: r.id, combo: comboOf(r), why });
     return undefined;
@@ -310,6 +379,7 @@ export function createEngine(d: EngineDeps) {
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
 
   async function startRun(r: RunRow) {
+    if (r.target === "tree") return startTree(r);
     const cfg = repoCfg(r.repo);
     mirrorDue = true;
     // A retry is always full: a force-push (the baseline no longer an ancestor) is a likely reason the first attempt failed.
@@ -329,7 +399,7 @@ export function createEngine(d: EngineDeps) {
       }
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
       const previous = r.recheck ? recheckList(r.repo, r.number) : [];
-      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), focus: r.focus,
+      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus,
         incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -343,8 +413,33 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
-  /** The run's review.ended fact. */
+  /** A repo review's run: the whole tree at its commit (no merge base, no recheck), one option's check (the tools run: its tool options). */
+  async function startTree(r: RunRow) {
+    run("UPDATE runs SET attempts = attempts + 1, merge_base = ? WHERE id = ?", r.head, r.id);
+    const b = batchRow(r.batch)!;
+    const tools = r.profile === "code-review-tools";
+    const opts = new Map(catalogSafe().map((o) => [o.id, o]));
+    const o = tools ? undefined : opts.get(r.option!);
+    try {
+      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", profile: tools ? "code-review-tools" : "code-review",
+        combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skill: o.run.skill } : {}) },
+        ...(tools ? { tools: toolSpec(r.option!.split(",").map((id) => opts.get(id)).filter((x): x is Option => !!x)) } : { option: r.option!, lens: o?.lens ?? "" }),
+        // Only deepsec's small files go to the box (a json spec field holds 16 KB): its package.json and lockfile stay in the setup PR.
+        ...(r.engine === "deepsec" && b.setup_files ? { setup_files: Object.fromEntries(Object.entries(JSON.parse(b.setup_files) as Record<string, string>).filter(([p]) => BOX_SETUP.test(p))) } : {}),
+        focus: null, incremental_from: null, full: true, previous: [], mandatory: false, budget_usd: Math.max(0, r.run_usd - r.billed_prior), ignore: [], max_nits: 200 });
+      run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
+    } catch (e) {
+      if (!permanent(e)) {
+        run("UPDATE runs SET status = 'queued', started = NULL, attempts = attempts - 1, due = ? WHERE id = ?", now() + 60_000, r.id);
+        return void log("repo review run couldn't start now; it waits for a later tick", { run: r.id, err: String((e as Error).message).slice(0, 200) });
+      }
+      await finish(runRow(r.id)!, { state: "failed", why: `couldn't start: ${String((e as Error).message).slice(0, 200)}`, billed_usd: 0 });
+    }
+  }
+
+  /** The run's review.ended fact (a PR's flow; a repo review's runs have no PR). */
   function end(r: RunRow) {
+    if (r.target === "tree") return;
     d.emit?.({ type: "review.ended", subject: subject(r.repo, r.number), version: r.id, at: r.ended ?? iso(),
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
@@ -361,8 +456,14 @@ export function createEngine(d: EngineDeps) {
     // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
     if (res.state === "done") {
       const v = res.review as Partial<Review>;
-      if (String(v.repo ?? "").toLowerCase() !== r.repo || v.pr !== r.number || v.head !== r.head || v.base !== r.merge_base || !Array.isArray(v.findings))
-        res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
+      const bound = String(v.repo ?? "").toLowerCase() === r.repo && v.head === r.head && Array.isArray(v.findings) && (r.target === "tree" || (v.pr === r.number && v.base === r.merge_base));
+      if (!bound) res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
+      // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
+      else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string"))
+        res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title)", billed_usd: res.billed_usd };
+      // A tools run's finding names one of the options this run was asked to run; it is stored under that option, never another.
+      else if (r.profile === "code-review-tools" && !v.findings!.every((f) => typeof f.option === "string" && r.option!.split(",").includes(f.option)))
+        res = { state: "failed", why: "the review's result isn't for this run: a finding names an option the run didn't run", billed_usd: res.billed_usd };
     }
     if (res.state === "failed") {
       // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
@@ -375,10 +476,12 @@ export function createEngine(d: EngineDeps) {
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
       end(runRow(r.id)!);
+      if (r.target === "tree") return batchEnded(r.batch);
       if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
     }
     const cost = charge(r, res.billed_usd);
+    if (r.target === "tree") return finishTree(r, res.review, cost);
     // The run's own facts over whatever the box wrote for them.
     const { tokens, ...rest } = res.review;
     const review: Review = { ...rest, repo: r.repo, pr: r.number, head: r.head, base: r.merge_base!, ...comboOf(r), cost_usd: cost };
@@ -431,6 +534,105 @@ export function createEngine(d: EngineDeps) {
     done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
     afterPost(runRow(r.id)!, posted);
   }
+  /**
+   * A repo review's run is in: its review and its findings stored (one per option observation, under the option that found it),
+   * never posted and never marking anything fixed; deepsec's set-up files filed as a setup PR; the report once the batch is done.
+   */
+  async function finishTree(r: RunRow, res: Review, cost: number) {
+    const { tokens, setup, fixed: _f, unsafe: _u, ...rest } = res;
+    const review: Review = { ...rest, repo: r.repo, pr: 0, head: r.head, base: r.head, target: "tree", ...comboOf(r), cost_usd: cost };
+    const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
+    const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
+    const lens = new Map(catalogSafe().map((o) => [o.id, o.lens]));
+    tx(() => {
+      run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
+      run("UPDATE runs SET status = 'done', why = NULL, cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ?, duration_ms = ? WHERE id = ?",
+        cost, iso(), count("important"), count("nit"), count("pre_existing"), t("input"), t("cached"), t("output"), review.withheld?.important === 0 && !review.coverage?.incomplete && !review.coverage?.failed?.length ? 1 : 0, r.started ? now() - Date.parse(r.started) : null, r.id);
+      for (const f of review.findings) {
+        // The option is the run's (a tools run's: the one of its options the finding names, checked in finish); its lens the catalog's.
+        const option = r.profile === "code-review-tools" ? f.option! : r.option!;
+        run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, option, lens) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
+          r.id, f.id, r.repo, f.severity, f.path, f.line, f.title, String(f.why ?? "").slice(0, 1500), String(f.evidence ?? "").slice(0, 1500), option, lens.get(option) ?? null);
+      }
+    });
+    if (setup && r.engine === "deepsec") fileSetup(r, setup);
+    await batchEnded(r.batch);
+  }
+
+  // ---- repo reviews: the batch, its report, deepsec's setup PR ----------------------------------------------------------------
+
+  const batchRow = (id: string) => one<BatchRow>("SELECT * FROM batches WHERE id = ?", id);
+  /** The catalog, or none when it can't be read (a report then shows each option's id as its lens's stand-in). */
+  const catalogSafe = () => { try { return d.catalog(); } catch (e) { log("the option catalog can't be read", { err: String((e as Error).message).slice(0, 200) }); return []; } };
+
+  /** Once a repo review's last run has ended: its verdict and report, stored, then sent to Primer (a version of the repo's document). */
+  async function batchEnded(id: string) {
+    const b = batchRow(id);
+    if (!b || b.status !== "running" || one("SELECT 1 FROM runs WHERE batch = ? AND status IN ('queued', 'running')", id)) return;
+    const lens = new Map(catalogSafe().map((o) => [o.id, o.lens]));
+    let out: ReturnType<typeof render>;
+    try {
+      const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => {
+        const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
+        const tools = r.profile === "code-review-tools";
+        return { option: tools ? "tools" : r.option!, ...(tools ? { options: r.option!.split(",") } : {}), lens: tools ? null : lens.get(r.option!) ?? null, status: r.status, why: r.why, cost_usd: r.cost_usd, review: v ? (JSON.parse(v.json) as Review) : null };
+      });
+      out = render({ repo: b.repo, sha: b.sha, created: new Date(b.created).toISOString(), run_usd: b.run_usd, runs, lensOf: (o) => lens.get(o) ?? "correctness" });
+    } catch (e) {
+      // Never a stuck tick: the batch stays running and the sweep tries again (loudly) each tick.
+      return void log("repo review report not rendered", { batch: id, err: String((e as Error).message).slice(0, 200) });
+    }
+    run("UPDATE batches SET status = 'done', verdict = ?, report = ?, ended = ? WHERE id = ?", out.verdict, out.markdown, iso(), id);
+    const doc = one<{ document: string }>("SELECT document FROM documents WHERE repo = ?", b.repo)?.document;
+    try {
+      const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: out.markdown, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 7)} ${iso().slice(0, 10)}` });
+      run("UPDATE batches SET report_write = ? WHERE id = ?", o.write, id);
+      published(id, o);
+    } catch (e) { published(id, { state: "refused", write: "", why: String((e as Error).message).slice(0, 300) }); }
+  }
+  /** The report's publish record settled: its document saved for the repo (later reviews add versions to it), or why it isn't in Primer. */
+  function published(id: string, o: Awaited<ReturnType<Publisher["outcome"]>>) {
+    if (o.state === "pending") return;
+    const b = batchRow(id)!;
+    if (o.state === "refused") {
+      log("repo review report not published to Primer", { batch: id, why: String(o.why ?? "").slice(0, 200) });
+      return void run("UPDATE batches SET report_write = NULL, report_why = ? WHERE id = ?", `not in Primer: ${String(o.why ?? "refused").slice(0, 300)}`, id);
+    }
+    run("INSERT INTO documents (repo, document) VALUES (?, ?) ON CONFLICT (repo) DO UPDATE SET document = excluded.document", b.repo, o.documentId!);
+    run("UPDATE batches SET report_write = NULL, report_url = ?, report_version = ? WHERE id = ?", o.url ?? null, o.version ?? null, id);
+  }
+
+  /**
+   * deepsec set the repo up in a run: its set-up files (deepsec's allowlisted `.deepsec/` files only) are asked for as one setup PR
+   * through the code host (github files and reviews its own write, on a branch from the default branch's head, and makes it only
+   * once approved). Once a day at most per repo: the slot is taken before anything is awaited, so concurrent reviews ask once.
+   * The setup branch is read at that moment: while it exists (its PR pending or open) nothing is asked. Runs in the background:
+   * the code host may wait minutes for the write's approval, and the tick never waits on it.
+   */
+  function fileSetup(r: RunRow, raw: Record<string, string>) {
+    const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
+    if (!Object.keys(files).length) return;
+    const taken = tx(() => {
+      const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
+      if (asked !== undefined && now() - asked < SETUP_RETRY) return false;
+      run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
+      return true;
+    });
+    if (!taken) return;
+    const answer = (async () => {
+      if (await d.codehost.setupBranch(r.repo)) return "the setup branch exists: its PR is pending or open";
+      return JSON.stringify(await d.codehost.setup({ repo: r.repo, branch: SETUP_BRANCH, expected_tip: null, files, task: await d.poster.task(r.repo) })).slice(0, 1000);
+    })().catch((e) => {
+      log("deepsec setup PR not asked for", { repo: r.repo, err: String((e as Error).message).slice(0, 300) });
+      return `refused: ${String((e as Error).message).slice(0, 300)}`;
+    });
+    const p = answer.then((a) => void run("UPDATE setups SET answer = ? WHERE repo = ?", a, r.repo)).catch((e) => log("deepsec setup answer not saved", { repo: r.repo, err: String((e as Error).message).slice(0, 200) }));
+    setups.add(p);
+    void p.finally(() => setups.delete(p));
+  }
+  /** Setup PRs being asked for (tests and a clean stop await them). */
+  const setups = new Set<Promise<void>>();
+
   const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && !r.post_tries;
 
   /** Files the run's post (a Tier 1 write): its review, on the head it reviewed. */
@@ -705,9 +907,16 @@ export function createEngine(d: EngineDeps) {
         else live.delete(r.id); // no figure this tick: back to the whole run_usd
       }
     }
-    for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created", now())) {
+    for (const b of all<{ id: string; report_write: string }>("SELECT id, report_write FROM batches WHERE report_write IS NOT NULL"))
+      published(b.id, await d.publisher.outcome(b.report_write).catch(() => ({ state: "pending" as const, write: b.report_write })));
+    // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
+    for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
+    for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
+      // A repo review's options run one at a time, in order: each gets what the ones before it left of the cap.
+      if (r.target === "tree" && one("SELECT 1 FROM runs WHERE batch = ? AND id != ? AND (status = 'running' OR (status = 'queued' AND rowid < (SELECT rowid FROM runs WHERE id = ?)))", r.batch, r.id, r.id)) continue;
       const started = admit(r);
       if (started) await startRun(started);
+      else if (r.target === "tree") await batchEnded(r.batch);
     }
     if (github || mirrorDue) { mirrorDue = false; await mirror(); }
   }
@@ -872,6 +1081,19 @@ export function createEngine(d: EngineDeps) {
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------
 
+  const lensesOn = () => { if (!d.config().lenses) throw new RequestError("repo reviews are off: they turn on with settings.code_review.lenses (the owner's)"); };
+  /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
+  async function readTree(repoIn: unknown, commit: unknown) {
+    const repo = String(repoIn ?? "").toLowerCase();
+    if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo)) throw new RequestError("repo is owner/name");
+    if (commit !== undefined && commit !== null && commit !== "" && !(typeof commit === "string" && /^[0-9a-f]{7,40}$/.test(commit))) throw new RequestError("commit is a commit sha (or leave it out for the default branch's head)");
+    const ref = (commit as string) || "HEAD";
+    let tree: { sha: string; paths: string[] };
+    try { tree = await d.codehost.tree(repo, ref); } catch (e) { throw new RequestError(`${repo} can't be read at ${ref === "HEAD" ? "its default branch" : ref.slice(0, 12)}: ${String((e as Error).message).slice(0, 200)} (a repo snapshot needs the github or codehost-local module)`); }
+    if (ref !== "HEAD" && !tree.sha.startsWith(ref)) throw new RequestError(`the snapshot of ${repo} is of ${tree.sha.slice(0, 12)}, not ${ref.slice(0, 12)}`);
+    return { repo, tree };
+  }
+
   const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d{1,9})\/?$/;
   async function readPr(url: unknown) {
     const m = PR_URL.exec(String(url ?? "").trim());
@@ -924,7 +1146,8 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_usd: c.day_usd, day_spent_usd: round(spent()), errors: c.errors,
+      // lenses: repo reviews are on (the board shows its New repo review form only then).
+      return { day_usd: c.day_usd, day_spent_usd: round(spent()), errors: c.errors, lenses: c.lenses,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
@@ -937,6 +1160,61 @@ export function createEngine(d: EngineDeps) {
     },
     /** The engines a combo may name, with their efforts, offered models and default run cap. */
     engines() { return ENGINES; },
+    /** The options a repo's tree fits at a commit (default: its default branch's head, resolved now), and the commit. */
+    async catalogFor(q: { repo?: unknown; commit?: unknown }) {
+      lensesOn();
+      const { repo, tree } = await readTree(q.repo, q.commit);
+      const { available, recommended } = detect(tree.paths, d.catalog(), "one_off");
+      return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
+    },
+    /**
+     * A repo review: `target` { repo, commit? } (no commit: the default branch's head, resolved once now and kept), its options
+     * (default: the recommended ones the tree fits), the combo for the model options and its cap (run_usd, $25 by default, at most $150).
+     */
+    async repoReview(b: { target?: unknown; options?: unknown; combo?: unknown; run_usd?: unknown; author?: unknown }) {
+      lensesOn();
+      const t = (b.target ?? {}) as { repo?: unknown; commit?: unknown };
+      const run_usd = b.run_usd === undefined ? RUN_USD.default : b.run_usd;
+      if (typeof run_usd !== "number" || !Number.isFinite(run_usd) || run_usd < RUN_USD.min || run_usd > RUN_USD.max) throw new RequestError(`run_usd is ${RUN_USD.min} to ${RUN_USD.max} dollars (the cap across every option of the review)`);
+      const c = (b.combo ?? {}) as { model?: unknown; effort?: unknown };
+      const combo = { model: c.model ?? DEFAULT_MODEL, effort: c.effort ?? "medium" };
+      if (typeof combo.model !== "string" || !/^~?[\w.-]+\/[\w.:~-]+$/.test(combo.model) || !EFFORTS.includes(combo.effort as string)) throw new RequestError(`combo is { model: an OpenRouter id, effort: ${EFFORTS.join("|")} }`);
+      if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length <= 50 && b.options.every((o) => typeof o === "string"))) throw new RequestError("options lists catalog option ids");
+      const { repo, tree } = await readTree(t.repo, t.commit);
+      const { available, recommended } = detect(tree.paths, d.catalog(), "one_off");
+      const ids = [...new Set((b.options as string[] | undefined) ?? recommended)];
+      const unknown = ids.filter((id) => !available.some((o) => o.id === id));
+      if (unknown.length) throw new RequestError(`not offered for ${repo}: ${unknown.join(", ").slice(0, 300)} (GET /catalog lists what its tree fits)`);
+      if (!ids.length) throw new RequestError(`pick at least one option for ${repo}`);
+      const picked = available.filter((o) => ids.includes(o.id));
+      const id = `b-${randomBytes(6).toString("hex")}`;
+      const author = String(b.author ?? "").toLowerCase().slice(0, 100);
+      // deepsec scans when the commit has any of its files; else a pending setup branch's files (its PR not merged yet) are scanned with.
+      const deepsec = tree.paths.some((p) => p.startsWith(".deepsec/")) ? 1 : 0;
+      const pending = !deepsec && picked.some((o) => o.kind === "engine" && o.run.engine === "deepsec") ? await d.codehost.setupBranch(repo).catch((e) => void log("deepsec setup branch not read", { repo, err: String((e as Error).message).slice(0, 200) })) : undefined;
+      tx(() => {
+        run("INSERT INTO batches (id, repo, sha, options, combo, run_usd, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo), run_usd, now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
+        const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, run_usd, kind, status, full, due, created, author, batch, target, option, profile)
+          VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, 'oneoff', 'queued', 1, ?, ?, ?, ?, 'tree', ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, repo, tree.sha, tree.sha, engine, model, effort, now(), now(), author, id, option, profile);
+        // The tools first (free), then each model option in the catalog's order: each gets what the ones before it left.
+        const tools = picked.filter((o) => o.kind === "tool").map((o) => o.id);
+        if (tools.length) add("tools", "", "", tools.join(","), "code-review-tools");
+        for (const o of picked.filter((o) => o.kind !== "tool")) add(o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`, combo.model as string, combo.effort as string, o.id, "code-review");
+      });
+      return { batch: id, repo, sha: tree.sha, run_usd, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => view(r)) };
+    },
+    /** Repo reviews, newest first (the board's TreeBatch): commit, spend, status and why, and once ended the verdict, the report
+     * the service serves and its Primer document. */
+    batches(q: { repo?: string; limit?: number }) {
+      return all<BatchRow & { cost: number }>(`SELECT b.*, (SELECT COALESCE(SUM(cost_usd), 0) FROM runs r WHERE r.batch = b.id) cost FROM batches b ${q.repo ? "WHERE b.repo = ?" : ""} ORDER BY b.created DESC LIMIT ?`, ...(q.repo ? [q.repo.toLowerCase()] : []), Math.min(Math.max(1, q.limit ?? 50), 500))
+        .map((b) => ({ id: b.id, repo: b.repo, sha: b.sha, sha7: b.sha.slice(0, 7), verdict: b.verdict, cost_usd: round(b.cost), run_usd: b.run_usd, status: b.status, why: b.report_why,
+          started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], combo: JSON.parse(b.combo),
+          ...(b.status === "done" ? { report_url: `/reviews/${b.id}/report` } : {}), ...(b.report_url ? { primer_url: b.report_url } : {}) }));
+    },
+    /** Resolves once the setup PRs being asked for have their answers. */
+    idle: () => Promise.all([...setups]).then(() => {}),
+    /** A finished repo review's report (markdown), as Primer has it. */
+    report(id: string) { return batchRow(id)?.report ?? undefined; },
   };
 }
 export type Engine = ReturnType<typeof createEngine>;
@@ -949,6 +1227,7 @@ function view(r: RunRow & { title?: string | null }, waiting = false) {
   return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: waiting ? "waiting" : r.status, why: r.why, cost_usd: round(r.cost_usd),
     tokens_in: r.tokens_in, tokens_cached: r.tokens_cached, tokens_out: r.tokens_out, duration_ms: r.duration_ms,
     important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, box_at: r.box_at, check_job: r.check_job,
-    full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, url: `https://github.com/${r.repo}/pull/${r.number}`,
+    full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, target: r.target, batch: r.batch, ...(r.option ? { option: r.option } : {}),
+    url: r.target === "tree" ? `https://github.com/${r.repo}/tree/${r.head}` : `https://github.com/${r.repo}/pull/${r.number}`,
     ...(r.title ? { title: r.title } : {}), ...(r.review_url ? { review_url: r.review_url } : {}), ...(r.resolved != null ? { resolved: r.resolved } : {}) };
 }

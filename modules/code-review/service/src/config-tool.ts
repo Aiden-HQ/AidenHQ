@@ -4,6 +4,7 @@
 // (POST /v1/settings/agent with the call's caller assertion: kernel/src/settings-change.ts asAgent), the same write the board's
 // Reviews page makes for the owner. The new value is checked whole here (config.ts) before it is filed: nothing half-valid lands.
 import { combos, ENGINES, MOMENTS, readConfig, type Combo } from "./config.ts";
+import { RUN_USD } from "./engine.ts";
 
 type Dict = Record<string, unknown>;
 export interface Tool {
@@ -31,7 +32,7 @@ export interface Change {
  * the owner-readable reason when the result wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: string[] } {
-  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], day_usd: raw.day_usd ?? 200 };
+  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], day_usd: raw.day_usd ?? 200, ...(raw.lenses !== undefined ? { lenses: raw.lenses } : {}) };
   let repos = value.repos as Dict[];
   const summary: string[] = [];
   const key = (r: unknown) => String(r).toLowerCase();
@@ -114,17 +115,34 @@ export function configTools(d: {
   repos: () => unknown;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
-  /** The service's own one-off review (POST /reviews) and its runs (GET /reviews). */
+  /** The service's own one-off review of a PR and repo review (POST /reviews), and its runs (GET /reviews). */
   oneoff: (body: Dict) => Promise<unknown>;
+  repoReview: (body: Dict) => Promise<unknown>;
   runs: (q: { repo?: string; limit?: number }) => unknown[];
 }): Tool[] {
   return [
     {
       name: "code_review_run",
       roles: ["reviewer-manager"],
-      description: "Review one pull request now, posted to it like a watched repo's review, one run and post per combo: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }. Each combo is an engine's offered model at its default run_usd, or a combo a watched repo already runs; any other model or cap is the owner's to start from the board. Any PR the owner's GitHub sign-in can read; it posts as the owner, signed by AidenHQ.",
-      inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" } }, required: ["pr_url"], additionalProperties: false },
-      run: async (a) => { agentCombos(a.combos, d.repos); return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) }); },
+      description: `Review now. A pull request: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }, posted to it like a watched repo's review, one run and post per combo; each combo is an engine's offered model at its default run_usd, or a combo a watched repo already runs (any other model or cap is the owner's to start from the board); it posts as the owner, signed by AidenHQ. A whole repository at a commit (a repo review): { repo: owner/name, commit? (default: the default branch's head, resolved when it starts), options? (catalog option ids; default the recommended ones its stack fits), combo? { model, effort } for the model options, run_usd? (the cap across every option, default and at most $${RUN_USD.default} here; more is the owner's, from the board) }: its report lands in Primer, private to the owner, and on the board's Reviews page. Any repo the owner's GitHub sign-in can read.`,
+      inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" },
+        repo: { type: "string" }, commit: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 50 }, combo: { type: "object", properties: { model: { type: "string" }, effort: { type: "string" } }, additionalProperties: false }, run_usd: { type: "number" } }, additionalProperties: false },
+      run: async (a) => {
+        if (a.repo !== undefined) {
+          if (a.pr_url !== undefined) throw new Error("give pr_url (a pull request) or repo (a whole repository), not both");
+          // An agent's repo review stays within the default cap: a bigger one is the owner's, from the board (as a combo's run cap is).
+          if (a.run_usd !== undefined && !(typeof a.run_usd === "number" && a.run_usd <= RUN_USD.default)) throw new Error(`a repo review above $${RUN_USD.default} is the owner's to start from the board's Reviews page`);
+          // As a PR's combos: an agent picks an offered model at an engine's effort; any other is the owner's, from the board.
+          const c = (a.combo ?? {}) as { model?: unknown; effort?: unknown };
+          const offered = Object.values(ENGINES).filter((e) => c.model === undefined || (e.models as readonly string[]).includes(String(c.model)));
+          if (!offered.length || (c.effort !== undefined && !offered.some((e) => (e.efforts as readonly string[]).includes(String(c.effort)))))
+            throw new Error(`a repo review with ${String(c.model ?? "the default model")} at ${String(c.effort ?? "medium")} effort is the owner's to start from the board's Reviews page; an agent picks an offered model (${[...new Set(Object.values(ENGINES).flatMap((e) => e.models))].join(", ")}) at one of its engine's efforts`);
+          return d.repoReview({ target: { repo: a.repo, ...(a.commit ? { commit: a.commit } : {}) }, ...(a.options ? { options: a.options } : {}), ...(a.combo ? { combo: a.combo } : {}), ...(a.run_usd !== undefined ? { run_usd: a.run_usd } : {}) });
+        }
+        if (typeof a.pr_url !== "string") throw new Error("give pr_url (a pull request) or repo (a whole repository)");
+        agentCombos(a.combos, d.repos);
+        return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) });
+      },
     },
     {
       name: "code_review_runs",

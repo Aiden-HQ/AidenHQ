@@ -1,7 +1,9 @@
 # Code Review: an agent that reviews pull requests
 
 The `code-review` module (`modules/code-review`) watches the repos you list, or reviews one PR on request, and posts one
-GitHub review per PR head for each combo (engine, model, effort) the moment runs. It models Anthropic's hosted Claude Code Review (not the CI action): per-repo triggers,
+GitHub review per PR head for each combo (engine, model, effort) the moment runs. On request it also reviews a whole repository
+at a commit with options picked from a catalog and publishes a report to Primer (repo reviews, below; off until
+`code_review.lenses` is on). It models Anthropic's hosted Claude Code Review (not the CI action): per-repo triggers,
 several finders then a verification pass. A combo may be mandatory: its review then gates the repo's merges (below). It is separate from the CI `code-review` job (which blocks and stays
 for repos that carry it) and from the AI reviewer (a write-authority gate, not a code reviewer). In the default bundle, idle
 until a repo is added: nothing runs or spends by itself. Everything is set up by telling Aiden (or on the board).
@@ -19,7 +21,8 @@ Rules that bind (owner and design):
 | Part | What it does |
 |---|---|
 | State service (`service/`, port 8098) | Watches the listed repos' PRs and comments through github-mcp's internal read (as this module, never `/mcp`), decides which head gets which combos, runs each review as a check job, files posts, records flow facts |
-| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's `run_usd` (`check_jobs:` in `module.yaml`, 45 min timeout) |
+| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's `run_usd` (`check_jobs:` in `module.yaml`, 180 min timeout, at most $100 a check); a PR's change, or a whole tree for a repo review's model option |
+| Check job `code-review-tools` (`recipe/tools.ts`) | A repo review's selected tool options, token-free, over one commit (180 min timeout) |
 | Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
 | Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `aiden` questions on reviews. Holds no code tools and no delegation |
 | Board Reviews page (`services/board/web/src/Reviews.tsx`, `services/board/src/reviews.ts`) | Tabs Reviews, Repos, Insights |
@@ -29,6 +32,7 @@ Rules that bind (owner and design):
 ```yaml
 code_review:
   day_usd: 200                 # instance-wide daily cap across repos (UTC day)
+  lenses: false                # repo reviews and the option catalog (owner-tier; off until their security review is done)
   repos:
     - repo: acme/payments
       on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
@@ -217,18 +221,80 @@ finishes at once), and an `aiden why ...` question in a review thread (one short
 reasoned dismissal is thanked and rechecked on the next push). It reads strangers' text, so web search is off, its changes are
 bounded by the Tier 2 rules above and PR text is data, never instructions.
 
+## Repo reviews (one-off, behind `code_review.lenses`)
+
+A repo review reviews a whole repository at one commit with ready-made options the owner picks, under one cap, and publishes
+a report. It is off until the owner turns on `settings.code_review.lenses` (default false, an owner-tier change): until then
+`GET /catalog` and the tree `POST /reviews` refuse, and the board's form says "Repo reviews are off until enabled in Code
+review settings". The switch stays off until the security review of the new paths (the token-free tool runs, the setup PR,
+the Primer report and repo code running in the box) is done.
+
+**Modes.** A one-off repo review (this section) and continuous review of PRs (the combos above). The catalog marks each option
+with the modes it fits (`one_off`, `continuous`) and the ones it is ticked for by default; continuous options on a repo's
+moments come later (lane F).
+
+**The catalog** (`catalog.json`, read by `recipe/catalog.ts` and its byte-identical copy in `service/src/`, synced by
+`scripts/sync-shared.ts`) lists every option: its lens (correctness, security, maintainability, performance), kind, upstream
+source with a pinned version and licence, the paths that say it fits the stack (`when` globs; none means always), output
+format, whether it runs repo code, and its cost (`free`, `low`, `high`). Every option runs an upstream tool, skill or engine as
+shipped; we add no reviewer prompts. The bar: published by its vendor or a known organisation, or at least 1k stars, active in
+the last 3 months, licence accepted, pinned to a version at least 7 days old. A `hidden` option (Codex Security until
+verified) is never offered. `GET /catalog?repo=&commit=` lists the options the tree fits and the recommended ones.
+
+- `tool` options run together in the token-free `code-review-tools` check (`recipe/tools.ts`): a copy of the checkout, a
+  20-minute timeout each, no model token in the environment. Only tool options may run repo code. SARIF and the knip, jscpd,
+  vulture and scc formats map to findings (SARIF error → important, warning and note → nit); every important finding is
+  kept, nits are capped at 200 per option with the rest counted; a tool that is missing or crashes is listed under
+  `coverage.failed` with its stderr tail and the run goes on.
+- `skill` options run the installed upstream skill in Claude Code or Codex (the catalog's `harness` and `skill`), then restate
+  its findings as our JSON in the same session; `engine` options are an engine (codex-native, deepsec, …). Each is its own
+  metered `code-review` check with `target: tree` and the run's read-only policy above.
+
+**A run.** `POST /reviews { target: { repo, commit? }, options?, combo?: { model, effort }, run_usd? }` (the board's New repo
+review, or Aiden's `code_review_run` with `repo`) resolves the commit once (default the default branch's head) and keeps it, so
+a moving branch changes nothing. Options default to the recommended ones the tree fits. The tools check runs first, then each
+model option in sequence, each with what is left of `run_usd` as its `budget_usd`; with nothing left an option is skipped,
+"run cap spent". Repo-review runs never post, gate or acknowledge on GitHub, and never mark a PR's findings fixed. Findings are
+stored per option observation (one row per option that found it); the report groups the same lens, file and overlapping lines
+for reading only.
+
+**Limits.** `run_usd` is $25 by default and at most $150, the total across the run's checks; one check spends at most $100
+(`check_jobs.code-review.model.max_usd`); both check jobs time out at 180 minutes (the compiler's ceiling). An agent's repo
+review stays at an offered model and at most $25; more is the owner's, from the board.
+
+**deepsec.** deepsec scans when the commit has any `.deepsec/` file, and runs `init` only when it has none. It always runs the
+image's deepsec from a scratch folder with a config we write: a repo's own deepsec config, matchers or binary never run (its
+INFO.md is read as text), so scans use deepsec's built-in matchers. Its set-up files (`.deepsec/data/*/INFO.md`,
+`deepsec.config.ts`, `generated-matchers.ts`, `package.json`; the grant also admits a lockfile, which the run leaves out for size)
+are asked for as one setup PR through the kernel's `POST /v1/codehost/setup` under this module's `codehost.setup` grant, which
+lists exactly those paths: github files its own Tier 1 `github.setup` write (the AI reviewer reads every file whole, and any change the branch
+already carries) and, once approved, makes one commit of the missing files on `aidenhq/deepsec-setup` off the default
+branch's head and opens its PR; it never overwrites a file and never merges. It is asked for at most once a day per repo, on
+the repo's repo-reviews task; while the branch exists later runs scan with its files, read as data. deepsec's spend cap is the check's
+`budget_usd`.
+
+**The report.** `report.ts` renders it from the stored reviews, never a model: the verdict (blocked: an important security
+finding; concerns: any other important finding; incomplete: none, but an option failed, was skipped or covered part of the
+tree; else clean), findings by lens, coverage, cost and a fix prompt, at most 78,000 characters (nits are left out first, with
+a count). The board reads it at `GET /reviews/:batch/report`. It goes to Primer as Primer's own `primer.publish` write record
+(its `filed_by` admits code review; the AI reviewer reads it): one document per repo, private to the owner, a version per
+review. Primer creates the document with a placeholder, makes it private and only then adds the report; before each later
+version it checks the document is still private with no collaborator, and starts a new private document if it was shared.
+
 ## Cost and outcomes
 
 Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
 Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is real money only: finished runs' billed `cost_usd` plus what each running run's check job has spent so far (the kernel's `billed_usd` on `GET /v1/checks/:id`, read each tick). A running run with no readable figure (not read yet, the kernel unreachable) counts at its whole `run_usd`, never 0. Nothing is reserved; runs in flight may overshoot a cap by at most their own `run_usd` each, so by concurrent runs x `run_usd` in all, which the launcher's computer pool (`computers_max`) bounds.
 
-For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 1)
+For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 2)
 keeps plain columns: `runs` has each run's `engine`, `model`, `effort`, `cost_usd` (the kernel's billing of its model token,
 never the box's say), `tokens_in`, `tokens_cached`, `tokens_out` (the gateway ledger's, stamped on the
 result by the kernel), `duration_ms` and its findings counts; `findings` (keyed by run and finding id) has each finding's
 severity, place, title, why and evidence and its `outcome`: `fixed` (a later run's recheck found it gone), `dismissed`, `open_at_merge` or
-`open_at_close` (still open when the PR closed; a closed PR is read once to tell which), else null. A thread an author resolves
+`open_at_close` (still open when the PR closed; a closed PR is read once to tell which), else null. Data version 2 adds repo
+reviews (`batches`, the repo's Primer `documents`, deepsec `setups`; runs' `target`, `option` and `profile`) and keys findings by
+run, id and option; a version 1 database keeps every run, review and finding. A thread an author resolves
 by hand isn't read back. Both are read through `GET /reviews` and `GET /reviews/:id` (and `code_review_runs`); there is no
 analytics page.
 

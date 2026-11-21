@@ -1,5 +1,5 @@
 name: code-review
-description: "Code Review: reviews pull requests on the repos you list, or one PR on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. Idle until a repo is added: nothing runs or spends by itself."
+description: "Code Review: reviews pull requests on the repos you list, or one PR on request, and reviews a whole repository at a commit on request. Each moment (a PR opens, each push) runs a list of combos (engine: Codex, Claude Code or Codegenie; model; effort) in a credential-free box; each combo posts its own GitHub review, a write the AI reviewer approves, and its cost and findings are kept for later analysis. A repo review runs the ready-made options you pick (tools, upstream skills, deepsec) under one cap and publishes a report to Primer, private to you (off until code_review.lenses is on). Idle until a repo is added or a review is asked for: nothing runs or spends by itself."
 license: MIT
 # Design: docs/design/code-review.md. The state service (service/) watches the listed repos' PRs and comments through github-mcp's
 # internal read (as this module, never /mcp), decides which head gets which combos (triggers, `aiden review …` from someone with
@@ -16,6 +16,11 @@ roles:
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the owner's GitHub sign-in reaches.
 codehost:
   snapshot: { repos: [ "*/*" ] }
+  # A repo review's deepsec setup PR (POST /v1/codehost/setup): deepsec's own set-up files on aidenhq/deepsec-setup, branched from
+  # the default branch's head; github files and reviews its own Tier 1 write for it. Only these paths.
+  setup:
+    repos: [ "*/*" ]
+    paths: [ .deepsec/deepsec.config.ts, .deepsec/generated-matchers.ts, .deepsec/package.json, .deepsec/package-lock.json, .deepsec/pnpm-lock.yaml, .deepsec/yarn.lock, ".deepsec/data/*/INFO.md" ]
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, budget_usd
@@ -29,8 +34,11 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 180
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
-    # max_usd is the ceiling (the shared run cap is enforced by the service); budget_usd, the run's own cap, is what a token gets.
+    # target: pr, or tree (a whole repo at head: pr is empty and base is the head); option and lens: a catalog option's (empty
+    # for a combo); setup_files: a pending deepsec setup branch's files ({} for none).
+    spec: { base: sha, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, budget_usd: usd, previous: json }
+    # max_usd is the ceiling per check (the service enforces a repo review's run_usd, at most 150, across its checks); budget_usd,
+    # the run's own cap, is what a token gets.
     model: { max_usd: 100 }
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
@@ -57,7 +65,7 @@ settings:
   # once the mandatory combos reviewed its head and none of their important findings is open (fixed, answered on its thread by the
   # PR's author or a writer: fixed, disputed, by design or won't fix with a reason, or dismissed by the owner on the board); a gated repo has one at both moments, and its mandatory runs are never
   # skipped for budget and review forks by themselves. ai_review_code's unless_code_review_mandatory reads the same repos. on_push reviews only the new changes. day_usd: the instance-wide cap across repos, a UTC day's real spend (a run starts while spent is under it; runs in flight may overshoot by their run_usd each, bounded by the launcher's computers_max; a run whose spend can't be read counts at its whole run_usd). Read by the service
-  # (service/src/config.ts).
+  # (service/src/config.ts). lenses (default false): repo reviews and the option catalog, off until their security review is done.
   code_review:
     type: object
     writers: [ reviewer-manager ]
@@ -68,6 +76,7 @@ settings:
     # mandatory is its to do: it only adds a gate.
     owner:
       - { path: day_usd, raise: true }
+      - { path: lenses, to: true, default: false }
       - { path: "repos.*.day_usd", raise: true, default: 200 }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
@@ -87,6 +96,7 @@ settings:
     default:
       repos: []
       day_usd: 200
+      lenses: false
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
@@ -167,4 +177,4 @@ generated_secrets:
   - code_review_token
   - code_review_api_token
   - code_review_service_key
-data_version: 1 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+data_version: 2 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
