@@ -313,6 +313,9 @@ it("a close whose note cites a PR only as a bare PR #N is refused before anythin
     "closed the pr#12 one",
     "Acme/PR #12 (spaced, so not owner/name#N)",
     "merged in https://github.com/acme/product/pull/811; supersedes PR #700",
+    // Malformed: a space between the slash and PR is not owner/name#N, and findPrs reads no PR in these.
+    "Fixed by acme/ PR#12, merge 0ba0db1.",
+    "Fixed by acme/  PR#12, merge 0ba0db1.",
   ]) {
     await expect(m.state(PRODUCT, 1, "closed", "completed", note)).rejects.toThrow(/bare 'PR #N'/);
   }

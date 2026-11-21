@@ -29,14 +29,16 @@ const PR_CAP = 100;
 // ("acme/PR#12"), so that case, and only that case, is let through; the ordinary accepted forms ("owner/name#12",
 // "/pull/12", "codehost:.../change/12") carry no standalone PR at all.
 const PR_TOKEN = /(?<!\w)PR\s*#\s*\d+\b/gi;
-// "owner/PR#N", where the owner starts where the parser starts one: the only PR#N that is a citation.
-const REPO_NAMED_PR = /(?<![\w./:-])[\w.-]+\/\s*$/;
+// "owner/PR#N" with nothing between the slash and the word PR, where the owner starts where the parser starts one: the
+// only PR#N that is a citation. "acme/ PR#12" is not one (findPrs reads no PR there), so the slash must be adjacent.
+const REPO_NAMED_PR = /(?<![\w./:-])[\w.-]+\/$/;
 
 /** Why a close's `note` is refused, or undefined when it cites what it must. */
 export function noteProblem(note: string, state: "open" | "closed", reason?: "completed" | "not_planned"): string | undefined {
   if (state !== "closed") return undefined;
   for (const m of note.matchAll(PR_TOKEN)) {
-    // A spaced "PR #N" is never a citation, whatever sits before it; an unspaced "PR#N" is one only as owner/PR#N.
+    // A spaced "PR #N" is never a citation, whatever sits before it; an unspaced "PR#N" is one only as owner/PR#N, with
+    // the slash immediately before PR (a space after the slash is not the owner/name#N form the parser reads).
     const citation = !/\s/.test(m[0]) && REPO_NAMED_PR.test(note.slice(0, m.index));
     if (!citation) return "cite the PR as owner/name#number or its full /pull/ URL; a bare 'PR #N' is not read as a citation";
   }
