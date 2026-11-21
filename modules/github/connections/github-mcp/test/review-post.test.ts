@@ -104,7 +104,7 @@ describe("rendering model text", () => {
 /** A fake GitHub for one pull request: records writes, keeps the ack comment and threads. Everyone posts as the owner. */
 function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: string; merged?: boolean } } = {}) {
   const calls: { method: string; path: string; auth: string; body?: any }[] = [];
-  const state = { status: undefined as { context: string; state: string; description: string } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
+  const state = { status: undefined as { context: string; state: string; description: string; target_url?: string } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
   const impl = (async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -125,7 +125,7 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     if (method === "PUT" && /\/pulls\/12\/reviews\/\d+$/.test(url.pathname)) { state.reviews[0]!.body = body.body; return ok(state.reviews[0]); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/comments")) return ok({ id: 601, html_url: "https://github.com/acme/payments/pull/12#discussion_r601" }, 201);
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status$/.test(url.pathname)) return ok({ statuses: state.status ? [state.status] : [] });
-    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description }; return ok({}, 201); }
+    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description, target_url: body.target_url }; return ok({}, 201); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/reviews")) { const r = { id: 9, body: body.body, comments: body.comments ?? [], user: { login: "owner1" }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" }; state.reviews.push(r); return ok(r); }
     if (method === "GET" && url.pathname.endsWith("/issues/12/comments")) return ok(state.ack ? [{ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7", user: { login: "owner1" } }] : []);
     if (method === "POST" && url.pathname.endsWith("/issues/12/comments")) { state.ack = { id: 7, body: body.body }; return ok({ id: 7, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }, 201); }

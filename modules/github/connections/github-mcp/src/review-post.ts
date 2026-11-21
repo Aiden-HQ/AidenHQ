@@ -239,9 +239,9 @@ export class ReviewPoster {
     const who = await this.identity();
     const s = renderStatus(a);
     // The latest status of this context on the commit: the same state and words write nothing.
-    const now = await this.gh.request<{ statuses?: { context: string; state: string; description: string | null }[] }>("GET", `${api(ref)}/commits/${a.head}/status`, { query: { per_page: 100 } });
+    const now = await this.gh.request<{ statuses?: { context: string; state: string; description: string | null; target_url?: string | null }[] }>("GET", `${api(ref)}/commits/${a.head}/status`, { query: { per_page: 100 } });
     const had = now.statuses?.find((x) => x.context === STATUS_CONTEXT);
-    if (had?.state === s.state && had.description === s.description) return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, state: s.state, unchanged: true }), objects: [] };
+    if (had?.state === s.state && had.description === s.description && had.target_url === `https://github.com/${a.repo}/pull/${a.pr}`) return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, state: s.state, unchanged: true }), objects: [] };
     await this.gh.request("POST", `${api(ref)}/statuses/${a.head}`, { body: { state: s.state, context: STATUS_CONTEXT, description: s.description, target_url: `https://github.com/${a.repo}/pull/${a.pr}` } });
     return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, state: s.state }), objects: [] };
   }

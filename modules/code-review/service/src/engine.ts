@@ -773,7 +773,9 @@ export function createEngine(d: EngineDeps) {
         const s = heads.get(p.head)!;
         // One status per head: its verdict. The stages before it (queued, reviewing) are not written, unless the head shows an earlier
         // verdict (red or green) that is being reviewed again: that one pending write replaces it; an unreported check already waits.
-        const shown = p.status_key?.startsWith("{") ? (JSON.parse(p.status_key) as Mirror).reason : undefined;
+        // (the saved verdict may be an earlier head's: upsertPr moves the head and keeps the key)
+        const saved_ = p.status_key?.startsWith("{") ? (JSON.parse(p.status_key) as Mirror) : undefined;
+        const shown = saved_?.head === p.head ? saved_.reason : undefined;
         if (PENDING.has(s.reason) && (!shown || PENDING.has(shown))) continue;
         const key = JSON.stringify(s), failed = statusFailed.get(id);
         if (key === p.status_key || (failed?.key === key && now() - failed.at < STATUS_RETRY)) continue;
