@@ -11,12 +11,12 @@
 // A tool counts as failed (listed under coverage.failed with the tail of its stderr, the run carrying on) when it times out, can't
 // start, or leaves output that isn't its format or none where its format needs some. Its exit code alone says nothing: scanners
 // exit non-zero when they find something. A failed tool or a cut list of findings makes the review incomplete, never clean.
-// Findings are placed at real lines (review.ts `place`), tagged with `option` and `lens`, and at most MAX_PER_OPTION kept per
-// option (important first), the rest counted in coverage.dropped. The result is the review.ts result shape ($AIDENHQ_RESULT)
+// Findings are placed at real lines (review.ts `place`), tagged with `option` and `lens`, and every important one and at most MAX_PER_OPTION nits kept per
+// option, the rest counted in coverage.dropped. The result is the review.ts result shape ($AIDENHQ_RESULT)
 // with target "tree" (base is the head) or "pr", engine "tools" and no cost: the run always ends with a result, exit 0.
 import { spawn } from "node:child_process";
-import { closeSync, cpSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, cpSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LENSES, OUTPUTS } from "./catalog.ts";
 import type { Lens, ToolSpec } from "./catalog.ts";
@@ -68,6 +68,24 @@ function exec(cmd: string, cwd: string, env: Record<string, string>, tmp: string
   });
 }
 
+/** Paths the repo's .gitattributes mark export-ignore: a snapshot (git archive) leaves them out, so no tool saw them: a coverage gap. */
+export function exportIgnored(ws: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(join(ws, dir), { withFileTypes: true })) {
+      if (e.isDirectory() && e.name !== "node_modules" && e.name !== ".git") walk(posix.join(dir, e.name));
+      else if (e.isFile() && e.name === ".gitattributes") {
+        for (const l of readFileSync(join(ws, dir, e.name), "utf8").split("\n")) {
+          const [pat, ...attrs] = l.trim().split(/\s+/);
+          if (pat && !pat.startsWith("#") && attrs.includes("export-ignore")) out.push(posix.join(dir, pat.replace(/^\//, "")));
+        }
+      }
+    }
+  };
+  walk(".");
+  return out;
+}
+
 export interface RunInput { spec: ToolsSpec; ws: string; out: string; env?: NodeJS.ProcessEnv; minutes?: number }
 /** The review of the selected tools over the checkout `ws`; `out`: the box's out folder (a writable HOME lives in it). */
 export async function runTools({ spec, ws, out, env = process.env, minutes = Number(process.env.TOOLS_MINUTES || 20) }: RunInput) {
@@ -95,8 +113,10 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = Num
     // Each at a real place; one per id. What can't be placed (no file, a line past its end) is dropped and counted.
     const cleaned = clean(raw.map((f) => ({ ...f, evidence: redact(f.evidence), why: redact(f.why) })), work);
     const placed = place(cleaned, work, new Set(cleaned.map((f) => f.path)));
-    const unique = [...new Map(placed.map((f) => [f.id, f])).values()].sort((a, b) => Number(b.severity === "important") - Number(a.severity === "important"));
-    const kept = unique.slice(0, MAX_PER_OPTION);
+    const byId = [...new Map(placed.map((f) => [f.id, f])).values()];
+    // Every important finding is kept; only nits are capped.
+    const imp = byId.filter((f) => f.severity === "important"), nits = byId.filter((f) => f.severity !== "important").slice(0, MAX_PER_OPTION);
+    const kept = [...imp, ...nits];
     counts[id] = kept.length;
     if (raw.length > kept.length) dropped[id] = raw.length - kept.length;
     findings.push(...kept.map((f) => ({ ...f, option: id, lens: o.lens })));
@@ -107,7 +127,10 @@ export async function runTools({ spec, ws, out, env = process.env, minutes = Num
     coverage: { reviewed: [] as string[], excluded: [] as string[], incomplete: null as string | null, options: Object.keys(options).filter((id) => !failed.some((f) => f.id === id)), failed, dropped, counts },
     findings, fixed: [] as string[], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] as string[], guidance: [] as string[],
   };
+  const ignored = exportIgnored(ws);
+  result.coverage.excluded = ignored.map((p) => `${p} (export-ignore)`);
   const gaps = [
+    ...(ignored.length ? [`${ignored.length} path${ignored.length > 1 ? "s" : ""} marked export-ignore in .gitattributes, absent from the snapshot (${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? ", …" : ""})`] : []),
     ...(failed.length ? [`${failed.length} tool${failed.length > 1 ? "s" : ""} failed (${failed.slice(0, 5).map((f) => f.id).join(", ")}${failed.length > 5 ? ", …" : ""})`] : []),
     ...(Object.keys(dropped).length ? [`findings cut or unplaceable: ${Object.entries(dropped).slice(0, 5).map(([k, n]) => `${k} ${n}`).join(", ")}`] : []),
   ];

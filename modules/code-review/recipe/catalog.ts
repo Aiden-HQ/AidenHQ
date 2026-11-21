@@ -49,6 +49,7 @@ export function loadCatalog(source: string): Option[] {
     const run = o.run ?? {};
     if (o.kind === "tool" ? !text(run.cmd, 2000) || o.output === "findings" : o.output !== "findings" || (o.kind === "skill" ? !text(run.harness) || !text(run.skill, 500) : !text(run.engine))) bad(id, `${o.kind} has the run fields (and the output) its kind takes`);
     if (!Array.isArray(o.when) || o.when.some((g: unknown) => !text(g))) bad(id, "when is a list of globs");
+    if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
     if (typeof o.runs_code !== "boolean" || !["free", "low", "high"].includes(o.cost)) bad(id, "runs_code is a boolean and cost is free, low or high");
     if (o.severity !== undefined && o.severity !== "nit") bad(id, "severity is nit or absent");
   }

@@ -18,16 +18,16 @@ const spec = (options: object) => ({ repo: "acme/app", head: A, base: A, options
 const sarif = (results: object[]) => JSON.stringify({ runs: [{ tool: { driver: { name: "fake" } }, results }] });
 const hit = (level: string, line: number, msg = "bad thing") => ({ ruleId: "R1", level, message: { text: `${msg} ${line}` }, locations: [{ physicalLocation: { artifactLocation: { uri: "a.txt" }, region: { startLine: line } } }] });
 
-test("sarif: error -> important, warning and note -> nit; at most 200 kept per option, the rest counted", async () => {
+test("sarif: error -> important, warning and note -> nit; 200 nits kept per option, every important one, the rest counted", async () => {
   const lines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join("\n");
   const many = sarif([...Array.from({ length: 250 }, (_, i) => hit(i < 5 ? "error" : "warning", i + 1)), hit("note", 251)]);
   const { ws, out } = checkout({ "a.txt": lines, "out.sarif": many });
   const r = await runTools({ spec: spec({ "sec.fake": { lens: "security", cmd: "cat out.sarif", output: "sarif" } }), ws, out });
   assert.equal(r.target, "tree");
-  assert.equal(r.findings.length, 200);
+  assert.equal(r.findings.length, 205);
   assert.equal(r.findings.filter((f) => f.severity === "important").length, 5);
   assert.ok(r.findings.every((f) => f.option === "sec.fake" && f.lens === "security" && /^[0-9a-f]{16}$/.test(f.id)));
-  assert.equal(r.coverage.dropped["sec.fake"], 51);
+  assert.equal(r.coverage.dropped["sec.fake"], 46);
   assert.match(String(r.coverage.incomplete), /cut or unplaceable/);
   assert.equal(readSarif(sarif([hit("error", 1)]), "/w", "nit")[0].severity, "nit");
 });
@@ -76,4 +76,11 @@ test("adapters read the real output of knip, jscpd, vulture, scc and the line to
   const lines = readLines("src/bad.js:2:7: Variable 'unused' is declared but never used. [Error/eslint(no-unused-vars)]\nsrc/w.js:1:1: odd thing [Warning/x]\n.github/workflows/ci.yml:7:23: injection [expression]\nm.sql:1:0: warning: require-lock-timeout missing\n  |\n7 |   code\n");
   assert.deepEqual(lines.map((f) => [f.path, f.line, f.severity]), [["src/bad.js", 2, "important"], ["src/w.js", 1, "nit"], [".github/workflows/ci.yml", 7, "important"], ["m.sql", 1, "nit"]]);
   assert.throws(() => readKnip("{}"), /no issues/);
+});
+
+test("paths marked export-ignore in .gitattributes are listed as a coverage gap", async () => {
+  const { ws, out } = checkout({ ".gitattributes": "# c\ntests/** export-ignore\n/docs export-ignore\n*.txt text\n", "a.txt": "x\n" });
+  const r = await runTools({ ws, out, spec: spec({}) });
+  assert.deepEqual(r.coverage.excluded, ["tests/** (export-ignore)", "docs (export-ignore)"]);
+  assert.match(String(r.coverage.incomplete), /export-ignore/);
 });

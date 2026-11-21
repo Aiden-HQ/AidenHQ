@@ -30,8 +30,8 @@ check_jobs:
     timeout_min: 180
     title: the code review
     spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
-    # max_usd is the ceiling (a one-off review's run_usd goes to 150); budget_usd, the run's own cap, is what a token gets.
-    model: { max_usd: 150 }
+    # max_usd is the ceiling (the shared run cap is enforced by the service); budget_usd, the run's own cap, is what a token gets.
+    model: { max_usd: 100 }
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
   # the JSON object recipe/catalog.ts toolSpec builds, `base` the PR's base, or the commit itself for a whole-tree review. No model.

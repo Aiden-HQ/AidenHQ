@@ -1512,9 +1512,9 @@ export function checkEntries(name: string, def: Obj) {
  * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
  * recipe writes a JSON result the receipt binds).
  */
-/** The most a check job may run (minutes) and its model token may spend (USD): a one-off repo review (code-review) takes both. */
+/** The most a check job may run (minutes) and its model token may spend (USD): a one-off repo review needs the longer time. */
 export const MAX_CHECK_MIN = 180;
-export const MAX_CHECK_USD = 150;
+export const MAX_CHECK_USD = 100;
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name: string, def: Obj, root: string) {
   const out: Obj = {};
