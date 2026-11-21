@@ -25,6 +25,7 @@
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   modules/github/checks/{tests,history}.sh  a change's tests, in codehost-local's `change` check job
 //   modules/ci/template/.github/{code-review,review-tools,review-checklist}.ts  the review core, in the code review recipe
+//   modules/code-review/{catalog.json,recipe/catalog.ts}  the option catalog and its reader, in the code review service
 //   node scripts/sync-shared.ts
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -93,7 +94,10 @@ export function sharedCopies(root = repo) {
   // The changed files' shaping: the code host's plan shapes them for the reviewer, which (and its eval) reads this copy.
   "services/shared/review-files.ts": ["modules/ai-reviewer/service/src/review-files.ts", "modules/github/service/src/review-files.ts"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
-  "modules/ci/template/.github/review-checklist.ts": ["modules/ai-reviewer/service/src/review-checklist.ts", "modules/code-review/recipe/review-checklist.ts"],
+  "modules/ci/template/.github/review-checklist.ts": ["modules/ai-reviewer/service/src/review-checklist.ts", "modules/code-review/recipe/review-checklist.ts", "modules/code-review/service/src/review-checklist.ts"],
+  // The code review option catalog and its reader: the recipe's tools check and the state service (its own build context) read the same.
+  "modules/code-review/catalog.json": ["modules/code-review/service/src/catalog.json"],
+  "modules/code-review/recipe/catalog.ts": ["modules/code-review/service/src/catalog.ts"],
   // The review core (the CI reviewer's codex runner, its brief and parse, and its read-only repo tools): CI's code-review job
   // and the code review module's recipe run the same code (canonical in the CI template, MIT, copied as is into app repos).
   ...Object.fromEntries(["code-review.ts", "review-tools.ts"].map((f) => [`modules/ci/template/.github/${f}`, [`modules/code-review/recipe/${f}`]])),
