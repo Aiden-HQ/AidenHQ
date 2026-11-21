@@ -453,9 +453,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const { kind, k, t, args } = admit(who, asked, given, task);
       // A kernel job's last write attempt is on its row: the reason it was refused at plan time, or nothing once one went through
       // (dispatch blocks the task of a run that ended on a refusal).
-      // The refusal's source is the kind's module, as the kernel routed it: an executor's code never vouches for itself.
-      const mark = (why: string | null, code?: string, source?: string) => { if (who.job) markRefusal(records.db, who.job, why, code, source); };
-      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined).catch((e: { status?: number; message?: string; code?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000), e.code, k.module); throw e; });
+      // The refusal's kind and source are the kernel's own, as it routed them: a code an executor sends never vouches for itself,
+      // and the module alone is too broad (another of its kinds could return the same code).
+      const mark = (why: string | null, code?: string, at?: string, source?: string) => { if (who.job) markRefusal(records.db, who.job, why, code, at, source); };
+      const r = await file(kind, k, requesterOf(who, t), args, t, evidence, who.workspace || undefined).catch((e: { status?: number; message?: string; code?: string }) => { if (e?.status === 422) mark(`${kind}: ${e.message}`.slice(0, 1000), e.code, kind, k.module); throw e; });
       mark(null);
       if (r.state === "claimed") await execute(r, k);
       return r;

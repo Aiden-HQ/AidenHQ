@@ -136,13 +136,16 @@ Grant: `kernel.jobs`, for `GET /v1/jobs?open=1` and `GET /v1/jobs?task=<task>`.
 A job the kernel admits carries `refused` when its last write was refused at plan time and nothing later went through: the
 words the refusal gave (`<kind>: <reason>`). A refusal whose kind names a rule also carries `refusedCode`, that rule's stable
 identifier (for example `platform-only`), so a dispatcher matches the code and never the message's prose. A write that goes
-through clears all three. `executor@1` sends the code beside its words in the plan's 422 (`{ "error": "...", "code": "..." }`);
-a module whose plan throws an error carrying `code` needs no more than that, and a refusal with no code answers without one.
+through clears all of them. `executor@1` sends the code beside its words in the plan's 422
+(`{ "error": "...", "code": "..." }`); a module whose plan throws an error carrying `code` needs no more than that, and a
+refusal with no code answers without one.
 
-A coded refusal also carries `refusedSource`: the module whose kind the kernel routed (the `module` of the kind's entry in the
-registry), not anything the executor says. The code is the executor's, so only the two together name a rule — a dispatcher that
-acts terminally on a code without checking its source would let any executor block a task by returning someone else's code.
+A coded refusal also carries `refusedKind` and `refusedSource`: the kind the caller asked for, and the module whose kind the
+kernel routed (the `module` of the kind's entry in the registry). Neither is anything the executor says — the code is the
+executor's, so the kernel records the kind and module it routed itself. All three together name a rule: a dispatcher that acts
+terminally on a code without checking them would let any executor block a task by returning someone else's code, and the
+module alone is too broad, since another kind in the same module could return the same code.
 
 A dispatcher uses it to tell a refusal the agent can fix by retrying (a moved head, red checks, a branch outside the task's
 namespace) from one no retry can fix, such as a change only the platform line may publish: the dispatch module blocks a task
-only on `refusedCode: "platform-only"` **and** `refusedSource: "github"` together.
+only on `refusedCode: "platform-only"`, `refusedKind: "github.pr"` and `refusedSource: "github"` together.

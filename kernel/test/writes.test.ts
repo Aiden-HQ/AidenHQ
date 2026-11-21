@@ -138,6 +138,9 @@ test("a job's plan-time refusal keeps its rule's stable code beside its words, a
   assert.deepEqual([row.code, /platform-engineer/.test(row.why)], ["platform-only", true]);
   // The source is the kernel's own: the module whose kind it routed, never the executor's word, so a code alone cannot vouch.
   assert.equal(row.source, "twin");
+  // And the kind is the kernel's own too: the module alone is too broad (another of its kinds could return the same code), so
+  // the row names the exact kind the caller asked for beside it. It is the kernel's routing, not the executor's word.
+  assert.equal(k.records.db.prepare("SELECT kind FROM job_refusals WHERE job = ?").get("jw:twin.post").kind, "twin.post");
   // A refusal with no code (the executor sent none) records its words only.
   fx.refuse = { message: "head-moved: ask again for its new head" };
   await k.writes.request(who, { kind: "twin.post", args: { note: "y" }, task: "TASK-7" }).catch(() => {});
