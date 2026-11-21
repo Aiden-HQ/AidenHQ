@@ -199,7 +199,7 @@ const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance:
 const repos = () => ({ ...baseRepos, agentsOrg: fleetOrg(), agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
 log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review, capped
-// at REVIEW_USD (a change of any size is read whole, in parts, so its spend is bounded per review; at the cap it goes to the owner).
+// at REVIEW_USD (a change of any size is read whole, so its spend is bounded per review; at the cap it goes to the owner).
 const REVIEW_USD = 10;
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000, capUsd: REVIEW_USD }) });
 let raiseCap: (r: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }) => Promise<string> = async () => { throw new Error("the model gateway isn't up"); };

@@ -23,7 +23,8 @@ export function mintToken(secret: string, { kind, agentId = null, issueId = null
   if (!secret) throw new Error("the model gateway isn't set up on this host (no gateway_job_secret)");
   if (!MINTED.has(kind)) throw new Error(`not a token kind: ${kind}`);
   if ((kind === "job") !== Boolean(job)) throw new Error("a job token names its job, and only a job token does");
-  if (capUsd !== undefined && (kind !== "check" || !(capUsd > 0))) throw new Error("only a check token carries a spend cap, more than 0");
+  // A check's and a review's own spend cap (`u`): the gateway holds that token's run key to it.
+  if (capUsd !== undefined && (!["check", "reviewer"].includes(kind) || !(capUsd > 0))) throw new Error("only a check or reviewer token carries a spend cap, more than 0");
   const body = Buffer.from(JSON.stringify({ k: kind, a: agentId, i: issueId, c: component ?? null, x: now + ttlMs, ...(job ? { id: job } : {}), ...(capUsd !== undefined ? { u: capUsd } : {}) })).toString("base64url");
   return `${JOB_TOKEN_PREFIX}${body}.${sign(secret, body)}`;
 }
