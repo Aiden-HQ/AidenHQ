@@ -143,7 +143,9 @@ changed; the acknowledgement is left to the newer head), while a run whose PR mo
 
 Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
 finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
-several combos it shows the latest run to finish (each review names its own combo).
+several combos it shows the latest run to finish (each review names its own combo). An automatic review makes none (its summary
+says the same); a command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or
+summary already as it would be writes nothing, and a post's thread resolves are one request.
 
 Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment and notice ending with the
 AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a Tier 1 write). Every fleet write posts as
@@ -156,8 +158,8 @@ made only by the notice (one in flight per PR until its comment id is recorded);
 follows each settled post of the PR's current head.
 
 **The status `aidenhq/review`.** On a gated repo, each open non-draft PR's head carries the commit status `aidenhq/review`, so
-people and `gh pr checks --watch` see the verdict: pending while the head's mandatory review is queued or running (naming the
-reviewers), failure while important findings are open or the review failed or was partial (with the count and how to unblock),
+people and `gh pr checks --watch` see the verdict (nothing is written while the head's mandatory review is queued or running: an unreported
+status already waits, and each write counts against the owner's GitHub rate limit): failure while important findings are open or the review failed or was partial (with the count and how to unblock),
 success when the verdict passes. The service computes it from the same `verdict()` the merge queue asks and writes it only when
 it changes (one writer). It is a mirror: the merge queue still asks the service, and `kernel/sdk/src/checks.ts` leaves the
 status out of the named checks, so it never becomes a second gate. It is advice for people and agents watching a PR, not a gate:
