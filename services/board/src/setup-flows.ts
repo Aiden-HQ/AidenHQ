@@ -104,7 +104,7 @@ export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatch
 
 const DISMISSED = "setup_dismissed";
 
-export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; open: () => Promise<{ module: string; title: string }[]> } {
+export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; states: (module?: string) => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]> } {
   const doFetch = d.fetchImpl ?? fetch;
   const dismissed = (): string[] => {
     try {
@@ -154,11 +154,10 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; open:
   const flowDone = (f: SetupFlowPoint, signedIn: boolean, paired: boolean, present: Record<string, boolean> = {}) =>
     f.signin || f.connect_url || f.pair_url ? signedIn && (f.pair_url ? paired : true) : (f.secrets ?? []).every((x) => present[x]);
   const signedInOf = async (f: SetupFlowPoint, connected?: boolean) => (f.signin ? await d.signedIn(f.signin) : f.connect_url ? connected === true : true);
-  /** The flows still to set up as the setup page counts them (not done, not dismissed): the owner MCP's `status` lists these. */
-  const open = async () => {
+  /** Each flow's done and dismissed state as the setup page counts it: the owner MCP's `status` lists the open ones, `connect` marks the done ones. */
+  const states = async (module?: string) => {
     const gone = new Set(dismissed());
-    const all = await Promise.all(d.flows.map(async (f) => ({ f, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), await pairedOf(f)) })));
-    return all.filter((x) => !x.done && !gone.has(x.f.module)).map((x) => ({ module: x.f.module, title: x.f.title }));
+    return Promise.all(d.flows.filter((f) => !module || f.module === module).map(async (f) => ({ module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), await pairedOf(f)), dismissed: gone.has(f.module) })));
   };
 
   const routes: SetupRoute[] = [
@@ -261,5 +260,5 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; open:
       },
     },
   ];
-  return { routes: routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) })), open };
+  return { routes: routes.map((r) => ({ ...r, handle: async (m, b, who, host) => (ready(who), r.handle(m, b, who, host)) })), states };
 }
