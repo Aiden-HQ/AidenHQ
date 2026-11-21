@@ -153,6 +153,9 @@ type GenieFinding = { title?: string; severity?: string; path?: string; anchor?:
 type GenieReview = { findings?: GenieFinding[]; summaryOnlyFindings?: GenieFinding[]; coverage?: { totalHunks?: number; reviewedHunks?: number }; budgetSummary?: { completeness?: string; partialReasons?: unknown[] } };
 const GENIE_SEVERITY: Record<string, string> = { critical: "important", high: "important", medium: "important", low: "nit" };
 const DEPTH: Record<string, string> = { low: "light", medium: "normal", high: "normal", xhigh: "deep", max: "deep" };
+// Its reasoning level: codegenie's own normalization (its CLI's aliases) of our effort, since codegenie refuses a level the model
+// doesn't list (DeepSeek Flash lists low, high and max: medium was refused as a config error). The effort's depth is DEPTH's.
+const REASONING: Record<string, string> = { low: "low", medium: "high", high: "high", xhigh: "max", max: "max" };
 
 /** codegenie's review as our finder JSON: its published findings (inline or summary-only), its severity mapped to ours. */
 export function genieFindings(v: GenieReview) {
@@ -172,7 +175,7 @@ async function codegenie({ model, effort, root, base, minutes, scratch, own, tru
   const git = (a: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...a], { cwd: root, env: { PATH: String(process.env.PATH), HOME: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, encoding: "utf8" }).trim();
   const head = git(["rev-parse", "HEAD"]);
   git(["worktree", "add", "--detach", "-q", tree, trusted ?? base]);
-  const r = await run("codegenie", ["review", "--base", base, "--head", head, "--provider", "openrouter", "--model", String(model).replace(/^openrouter\//, ""), "--reasoning", effort,
+  const r = await run("codegenie", ["review", "--base", base, "--head", head, "--provider", "openrouter", "--model", String(model).replace(/^openrouter\//, ""), "--reasoning", REASONING[effort] ?? effort,
     "--depth", DEPTH[effort] ?? "normal", "--max-time", String(Math.max(1, Number(minutes ?? 20) - 2)), "--format", "json", "--no-progress", "--ci", "--no-cache"], {
     cwd: tree, minutes,
     env: { PATH: String(process.env.PATH), HOME: home, OPENROUTER_API_KEY: String(process.env.OPENROUTER_API_KEY ?? ""), CODEGENIE_GATEWAY: gateway(), NODE_OPTIONS: `--import=${join(HERE, "gateway-fetch.ts")}` },
