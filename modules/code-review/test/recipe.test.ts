@@ -155,6 +155,8 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   // A result past the kernel's limit: the lowest-ranked findings are withheld to fit.
   const big = bound({ coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: Array.from({ length: 100 }, () => F({ severity: "nit", evidence: "x".repeat(4000) })) });
   assert.ok(Buffer.byteLength(JSON.stringify(big)) <= 200_000 && big.withheld.nit > 0 && big.findings.length + big.withheld.nit === 100);
+  // A long list of coverage gaps fits the post's 500 characters.
+  assert.equal(bound({ coverage: { reviewed: [], excluded: [], incomplete: "x".repeat(900) }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: [] }).coverage.incomplete.length, 498);
 });
 
 test("a review: earlier findings are fixed only where the change touched them, after a recheck that looked, and never when addressed", async () => {
