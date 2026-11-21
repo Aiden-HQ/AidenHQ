@@ -44,9 +44,14 @@ const OWNER_SENTENCE: Record<string, string> = {
 
 /** Alertmanager's webhook body: firing alerts are kept (or updated), resolved ones dropped. */
 export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
-  // One call at a time (it reads the map, awaits the owner notice, writes the map back): overlapping calls would drop each
-  // other's alerts. A notice that doesn't settle in NOTICE_MS counts as failed, so it can't hold the chain.
-  const run = serial.then(() => applyAlerts(kv, alerts, (text) => Promise.race([notify(text), new Promise<void>((_, no) => setTimeout(() => no(new Error("notice timed out")), NOTICE_MS).unref())]), now));
+  // One call at a time (it reads the map, awaits the owner notices, writes the map back): overlapping calls would drop each
+  // other's alerts. The call's notices share one NOTICE_MS budget; one still unsent when it runs out counts as failed and is
+  // tried again on the next webhook or tick, so a slow kernel can't hold the chain.
+  const run = serial.then(() => {
+    const until = Date.now() + NOTICE_MS;
+    const bounded = (text: string) => Promise.race([notify(text), new Promise<void>((_, no) => setTimeout(() => no(new Error("notice timed out")), Math.max(0, until - Date.now())).unref())]);
+    return applyAlerts(kv, alerts, bounded, now);
+  });
   serial = run.catch(() => {});
   return run;
 }
