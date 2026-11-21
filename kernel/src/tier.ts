@@ -236,7 +236,7 @@ export function recordKey(r: Prior): string | undefined {
 }
 
 /** One branch or PR a request changes, as the retry bound counts it, and its patch key (the change's content key). */
-export type Target = { key: string; patch?: string };
+export type Target = { key: string; patch?: string; /** A run's own: other records' rejections and notes on the task are not this request's (reviewInput scopes them). */ own?: true };
 /** The arguments that say where a connection tool call is aimed (never its text): an issue, a PR, a channel, a thread. */
 const AIM = ["repo", "number", "issue_number", "pull_number", "channel", "thread_ts", "id"];
 /**
@@ -259,7 +259,7 @@ export function requestTargets(action: string, s: any): { targets: Target[]; lab
   if (prs.length) return { targets: prs.map((p: any) => of(p, `${String(p.repo).toLowerCase()}#${p.number}`)), label: `PR${prs.length > 1 ? "s" : ""} ${prs.map((p: any) => `#${p.number}`).join(", ")}` };
   // A request that names the run it reports on (a review's post, one per run) is aimed at that run: sibling runs of one task
   // are different requests, never retries of each other.
-  if (typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}` }], label: `run ${s.run}` };
+  if (typeof s?.run === "string" && s.run) return { targets: [{ key: `${action}|run=${s.run}`, own: true }], label: `run ${s.run}` };
   return undefined;
 }
 /** The targets a record was raised against (its card's args), for a rejection to be counted on. */

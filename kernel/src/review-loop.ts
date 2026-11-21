@@ -202,9 +202,14 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const authored = comments.flatMap((c) => { const a = authorOf(c, { owner, requester: r.requester.agent, delegator: delegator === r.requester.agent ? undefined : delegator, agent: task.agent }); return a ? [{ c, a }] : []; });
   const said = taskComments(authored);
   const chainHash = requestHash(chain, said);
-  const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), authored.slice(-COMMENTS));
+  // A run's own request (tier.ts Target.own) reads only its own run's reviewer rejections: a sibling run's rejected post, answered
+  // or not, is another review's finding. The owner's decisions on the task all stay (their veto is the task's).
+  const aimed = requestTargets(action, r.args);
+  const own = aimed?.targets.every((t) => t.own) ?? false;
+  const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
+  const split = answered(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id && sameRun(x)).map(asPrior), authored.slice(-COMMENTS));
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
-  const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, requestTargets(action, r.args));
+  const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed);
   const veto = priorPart(prior);
   const reviewed: ReviewInput = { tier: 1, rule: action, reason: r.card.reason ?? "", previous: [...split.answers, ...prior.findings], splits: prior.splits, panel: r.panel };
   // Tier 2 on its merits (the owner's veto here, or the record's own merit tier): reviewed, then the owner's.
