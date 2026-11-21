@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GRADER_MARKER, appEvidence, applyEvidence, citedEvidence, citedIds, deploysOf, fileEvidence, issueEvidence, namedTasks, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
+import { GRADER_MARKER, appEvidence, applyEvidence, citedEvidence, citedIds, deploysOf, fileEvidence, issueEvidence, namedTasks, openCard, otherTaskEvidence, predatesDeploys, presentNow, prEvidence, stamp, wordsEvidence } from "./evidence.ts";
 import { findPrs, stripRubric } from "./text.ts";
 import { GLM, LUNA } from "../aidenhq-sdk/judge.ts";
 import { dataBlock as fence } from "../aidenhq-sdk/fence.ts";
@@ -90,7 +90,7 @@ export async function gather(deliverable: any, deps: any, rubric: string[] = [])
   const busy = (await deps.busy?.()) || "";
   if (busy) return { awaiting: busy, busy: true };
   const cards = await deps.approvals();
-  const open = cards.filter((a: any) => ["pending", "approved"].includes(a.state) || (a.state === "used" && !a.outcome));
+  const open = cards.filter(openCard);
   if (open.length) return { awaiting: `an approval card is still open (${open.map((a: any) => `${a.id} ${a.action}`).join(", ")})` };
   const kind = deliverable.kind;
   // The deployed app whose live pages are evidence. undefined: the registry read failed (unavailable evidence, never "not an
