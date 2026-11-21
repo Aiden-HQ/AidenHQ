@@ -93,8 +93,23 @@ test("claims are exclusive; a claimed row with no job comes back after its lease
   const [c] = w.wakes.claim("dispatch").filter((x) => x.task === "t5");
   assert.equal(c.key, "comment:c5");
   assert.equal(c.live_job, "j-5");
-  assert.ok(w.wakes.delivered("dispatch", "comment:c5"));
+  assert.ok(w.wakes.delivered("dispatch", "comment:c5", "j-5"));
   assert.equal(w.wakes.get("comment:c5").state, "delivered");
+  assert.deepEqual(w.facts.forTask("t5").filter((f) => f.subject === "wake:comment:c5" && f.type === "wake.bound").map((f) => f.data.job), ["j-5"], "its end is a fact: bound to the live job");
+});
+
+test("a comment a later job consumed ends bound to that job, so task state never reads it as still waiting", async () => {
+  const w = world();
+  w.issue("t30", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  w.comment("t30", "c30");
+  await w.wakes.event({ issueId: "t30" });
+  w.db.prepare("INSERT INTO jobs VALUES ('j-30', 't30', ?, 'done', ?)").run(AGENT, w.tick());
+  w.tick();
+  assert.deepEqual(w.wakes.claim("dispatch").filter((x) => x.task === "t30"), []);
+  assert.deepEqual(w.rows("t30"), ["comment:c30 done"]);
+  assert.deepEqual(w.facts.forTask("t30").filter((f) => f.subject === "wake:comment:c30").map((f) => [f.type, f.data.job]), [["wake.opened", undefined], ["wake.bound", "j-30"]]);
 });
 
 test("the events route takes the plugin's key only, and the plugin forwards a comment's ids", async () => {

@@ -233,5 +233,17 @@ export function backfillLocal(db: DatabaseSync, facts: Facts, { agentKey = () =>
       fill({ type: "wake.opened", subject, version: "opened", task: w.task, at: iso(w.at), actor: "unknown", data: { cause: w.cause, author: null } });
     }
   }
+  // Ends the kernel didn't write before 2026-11-21 (task state read them as open for good): a job deferred for want of a computer
+  // (its row deleted, its job.queued never ended), and a comment wake a job consumed (done, or delivered into its live job) with
+  // no fact. Each gets its end once; a job or wake already ended, or a job still on its row, gets nothing.
+  if (have.has("jobs")) {
+    for (const f of db.prepare("SELECT subject, task, at, actor FROM facts f WHERE type = 'job.queued' AND NOT EXISTS (SELECT 1 FROM facts g WHERE g.subject = f.subject AND g.type IN ('job.started', 'job.ended')) AND NOT EXISTS (SELECT 1 FROM jobs WHERE id = substr(f.subject, 5))").all() as any[])
+      fill({ type: "job.ended", subject: f.subject, version: "deferred", task: f.task, at: f.at, actor: f.actor, data: { state: "deferred", exit: null, why: "deferred: no computer for it; its wake went back to its dispatcher" } });
+  }
+  // Bound to the job its row kept, else to none (the job that consumed it was never kept), at its own time: never a guessed job.
+  if (have.has("wakes")) {
+    for (const w of db.prepare("SELECT key, task, at, job FROM wakes w WHERE state IN ('done', 'delivered') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'wake:' || w.key AND f.type IN ('wake.bound', 'wake.dropped'))").all() as any[])
+      fill({ type: "wake.bound", subject: `wake:${w.key}`, version: `bound:${w.job ?? "unkept"}`, task: w.task, at: iso(w.at), actor: "kernel", data: { job: w.job ?? null } });
+  }
   return n;
 }

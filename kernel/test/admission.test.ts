@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs } from "../src/jobs.ts";
+import { createJobs, queueFacts } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createPool } from "../src/pool.ts";
@@ -42,7 +42,8 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
     cp: { task: async (id) => (tasks[id] ? { id, identifier: id.toUpperCase(), assigneeAgentId: tasks[id], status: "todo", ...origins[id] } : undefined) },
     wakes: wakeInbox(db),
-    launch: async (job) => { launched.push(job); await launch(job); },
+    // A launch that returns started the job: its first start writes the queue facts (jobs.ts start).
+    launch: async (job) => { launched.push(job); await launch(job); queueFacts(db, (f) => facts.record(f), job.id, grants[job.agent]?.key ?? job.agent); },
     log: () => {},
   });
   return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, origins, provenance, caps };
@@ -189,6 +190,24 @@ test("an admitted job is queued from its wake's time and binds the wake; a refus
   db.prepare("UPDATE jobs SET state = 'done'").run();
   assert.equal(await adm.admit("acme-dispatch", req(w2)).catch((e) => e.code), "over-cap");
   assert.deepEqual(facts.forTask("task-3").filter((f) => f.type === "job.held").map((f) => f.data.reason), ["capacity", "spend_cap"]);
+});
+
+test("a job deferred for want of a computer leaves no job.queued: task state reads its wake as held, then queued again", async () => {
+  let full = true;
+  const { adm, wake, facts } = setup({ launch: async () => { if (full) throw Object.assign(new Error("all computers are busy"), { status: 503, code: "launcher-unavailable" }); } });
+  const deferred = await adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1")));
+  assert.equal(deferred.state, "deferred");
+  assert.deepEqual(facts.forTask("task-1").map((f) => [f.type, f.subject]), [["job.held", "wake:w1"]]);
+  const { taskState } = await import("../src/task-state.ts");
+  const now = Date.now() + 1000;
+  const row = (type, subject, data = {}) => ({ seq: 0, id: type, type, subject, version: "v", task: "task-1", at: new Date(2).toISOString(), seen_at: new Date(2).toISOString(), actor: "kernel", source: "live", data });
+  const read = () => taskState("task-1", [row("task.created", "task:task-1"), row("wake.opened", "wake:w1"), ...facts.forTask("task-1").map((f, i) => ({ ...f, seq: i + 1 }))], now, []);
+  assert.deepEqual([read().reason, read().ref], ["job_held", "launcher_unavailable"]);
+  full = false;
+  wake("w2", "task-1", "agent-1");
+  const job = await adm.admit("acme-dispatch", req("w2"));
+  assert.deepEqual(facts.forTask("task-1").filter((f) => f.subject === `job:${job.id}`).map((f) => f.type), ["job.queued"]);
+  assert.equal(read().ref, `job:${job.id}`); // queued, never stuck on the deferred one
 });
 
 test("recover() never takes a launch still in flight in this process, and gives back what the previous kernel left admitted", async () => {
