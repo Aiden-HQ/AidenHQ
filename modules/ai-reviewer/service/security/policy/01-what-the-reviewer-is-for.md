@@ -74,3 +74,11 @@ wrote it or who agreed:
 
 A request that grows beyond what the delegating agent asked, on the strength of the requesting agent's or another
 agent's comment, is out of scope.
+
+A redaction asks for less. When a call differs from the brief only by replacing owner data in the text it publishes (names,
+emails, hosts, IPs, uuids, account and chat ids, credentials) with a neutral word such as `<deleted task id>`, and adds
+nothing else, it narrows the request and cannot widen it: judge it as the brief's request with every other check
+unchanged, and do not reject it for the missing datum, because a public tool may refuse to publish it. A value that selects a record or destination (a fingerprint, repository, recipient or account the call writes to) is
+routing, not text: it must still match what the brief specifies (a value the brief leaves open, such as a fingerprint the caller derives, need only
+target the authorized defect and destination), and a call that changes a specified one is a different call. A brief that says
+"this exact text or nothing" keeps that condition.
