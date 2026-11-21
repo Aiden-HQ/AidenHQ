@@ -15,7 +15,10 @@ export interface Deps {
   caller: (req: IncomingMessage) => Promise<Caller & { assertion?: string }>;
 }
 
-const same = (a: string, b: string) => Boolean(a && b) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a: string, b: string) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return Boolean(a && b) && x.length === y.length && timingSafeEqual(x, y);
+};
 const read = async (req: IncomingMessage, max = 2_000_000) => {
   const chunks: Buffer[] = [];
   let n = 0;
@@ -26,6 +29,7 @@ const send = (res: ServerResponse, status: number, v: unknown, type = "applicati
 
 export function createStewardServer(d: Deps) {
   return createServer(async (req, res) => {
+    if (!URL.canParse(req.url ?? "/", "http://x")) return send(res, 400, { error: "bad request" });
     const path = new URL(req.url ?? "/", "http://x").pathname;
     const auth = String(req.headers.authorization ?? "");
     try {

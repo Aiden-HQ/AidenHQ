@@ -77,7 +77,7 @@ export function serveExecutor(ex: Executor, { key, kernelUrl = process.env.AIDEN
       if (!runs.has(id)) {
         if (runs.size >= 1000) runs.delete(runs.keys().next().value!);
         runs.set(id, { state: "running" });
-        void ex.execute(body).catch((e: Error) => ({ ok: false, text: e.message, objects: undefined as string[] | undefined })).then(async (o) => {
+        void Promise.resolve().then(() => ex.execute(body)).catch((e: unknown) => ({ ok: false, text: String((e as Error)?.message ?? e), objects: undefined as string[] | undefined })).then(async (o) => {
           runs.set(id, { state: o.ok ? "done" : "failed", text: o.text, ...(o.objects?.length ? { objects: o.objects } : {}) });
           await report(id, o.ok, o.text, o.objects);
         });

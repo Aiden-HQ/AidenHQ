@@ -4,6 +4,16 @@ import { accountsApi, api } from "./api";
 import { adoptStoredAccount, load, prefetch, useCached, type Persist } from "./cache";
 import { chatListForDevice } from "./conversation";
 
+/** The URL hash without its `#/`, percent-decoded; a malformed escape stays raw. */
+export function hashPath(): string {
+  const raw = location.hash.replace(/^#\/?/, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export interface Query<T> {
   key: string;
   fetch: () => Promise<T>;
@@ -81,7 +91,7 @@ export function preloadBoot() {
   const quiet = (p: Promise<unknown>) => void p.catch(() => {});
   quiet(load("session", api.session, false));
   quiet(load("board", api.board));
-  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
+  const h = hashPath();
   let view = "chat";
   try {
     view = localStorage.getItem("aidenhq.view") ?? "chat";

@@ -100,7 +100,8 @@ const appToken = env("SLACK_APP_TOKEN");
 const health = JSON.stringify({ ok: true, channels: { slack: Boolean(appToken && cfg.botToken) } });
 
 const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  let url: URL;
+  try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
   if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(health);
   if (url.pathname === "/pair") {
     // The board's pairing endpoint: only with the pair token (a signed-in admin with an authenticator reaches it there).

@@ -115,6 +115,7 @@ function docker(args: string[], opts: { stdin?: string; timeoutMs?: number } = {
     const t = opts.timeoutMs! > 0 ? setTimeout(() => { timedOut = true; c.kill("SIGKILL"); }, opts.timeoutMs) : null;
     c.stdout!.on("data", (d) => (out += d));
     c.stderr!.on("data", (d) => (err += d));
+    c.on("error", (e) => { if (t) clearTimeout(t); resolve({ exitCode: 1, signal: null, timedOut: false, stdout: out, stderr: e.message }); });
     c.on("close", (code, signal) => { if (t) clearTimeout(t); resolve({ exitCode: timedOut ? null : code, signal, timedOut, stdout: out, stderr: err }); });
     if (opts.stdin != null) c.stdin!.end(opts.stdin);
   });
@@ -389,6 +390,8 @@ const gatewayServer = http.createServer(async (req, res) => {
 // ------------------------------------------------------------------ boxes from before a restart, and idle reaping
 
 const existing = await docker(["ps", "-a", "--filter", "label=aidenhq.computer=1", "--format", "{{.Names}}"]);
+// A failed scan is not an empty one: starting would prune every saved lease, so fail and let the supervisor restart us.
+if (existing.exitCode !== 0) throw new Error(`docker ps failed: ${existing.stderr.trim() || existing.signal}`);
 const orphans = [];
 for (const name of existing.stdout.trim().split("\n").filter(Boolean)) {
   if (!ours(name)) continue;

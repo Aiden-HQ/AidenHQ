@@ -105,7 +105,10 @@ export const doorSource = (g: GateInfo | undefined): string | undefined =>
 const HANDOFF_TTL_MS = 60_000;
 /** The board's MCP endpoint: the resource (RFC 8707) every MCP client's token names. */
 export const mcpResource = (boardUrl = "http://localhost:3121") => `${new URL(boardUrl).origin}/mcp`;
-const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const same = (a: string, b: string) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const dateOf = (v: string | number) => new Date(typeof v === "number" ? v : String(v));
 
