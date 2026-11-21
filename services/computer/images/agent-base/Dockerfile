@@ -5,9 +5,10 @@
 ARG BASE=aidenhq/computer-browser
 FROM ${BASE}
 # file, binutils (strings, readelf) and sqlite3: the commands Engineer jobs reached for most and didn't find (job logs,
-# 2026-11-16: file 42 times, strings 11, sqlite3 4).
+# 2026-11-16: file 42 times, strings 11, sqlite3 4). bubblewrap and socat: Claude Code's sandbox for a code review's Bash
+# (modules/code-review/recipe/engines.ts).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git jq ripgrep ffmpeg python3 python3-venv procps less file binutils sqlite3 \
+      git jq ripgrep ffmpeg python3 python3-venv procps less file binutils sqlite3 bubblewrap socat \
     && rm -rf /var/lib/apt/lists/*
 RUN npm i -g @openai/codex@0.166.0 && npm cache clean --force
 # Code review's other engines (modules/code-review/recipe/engines.ts): Claude Code 2.1.323 (published 2026-11-12) and codegenie

@@ -53,10 +53,23 @@ the final message out; fan-out, verification, dedupe and the schema are `review.
 
 | Engine | Finder step | Verify / recheck | Repo access |
 |---|---|---|---|
-| `codex` | our finder prompt; 2 finders and a verifier past low effort, 1 and none at minimal/low | our prompts | the repo tools (MCP), shell off, empty cwd |
-| `claude-code` | Claude Code's own `/code-review <effort>` over the change, then our finder prompt in the same session restates its findings as our JSON | our prompts | `claude -p` through the gateway's Anthropic route; built-in tools off but Agent, the repo tools (MCP); empty cwd, user settings only, CLAUDE.md off |
+| `codex` | our finder prompt; 2 finders and a verifier past low effort, 1 and none at minimal/low | our prompts | the repo tools (MCP) and the shell; empty cwd |
+| `claude-code` | Claude Code's own `/code-review <effort>` over the change, then our finder prompt in the same session restates its findings as our JSON | our prompts | `claude -p` through the gateway's Anthropic route; built-in tools off but Agent and Bash, the repo tools (MCP); empty cwd, user settings only, CLAUDE.md off |
 | `codegenie` | `codegenie review --format json` (Polygon's harness, its own planning and verification), mapped to our findings | recheck by codex on the same model | a worktree of the trusted base (its `codegenie.toml` and `.codegenie/skills` are the base's), the head as review data; its OpenRouter calls rewritten to the gateway (`gateway-fetch.ts`) |
-| `codex-native` | `codex exec review --base <base>` (OpenAI's built-in reviewer and its own prompt; the brief as its developer instructions), its findings mapped to ours (P0-P2 important, P3 nit) | recheck by codex on the same model | the box's checkout (base and head commits) as its cwd; its shell has full access inside the box (writes and network included: owner's decision, 2026-11-21, since a review box holds nothing but the run's own capped, time-limited token, and codex's read-only sandbox can't start under gVisor) with no inherited environment but PATH (never the run's token), so it can run anything in the box, the PR's code included; project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off, the project never trusted. It reads git itself, so coverage isn't tracked: every review says so (`coverage.incomplete`). Every engine's output has the run's token and any key-shaped text (`ahq*_`, `sk-`) redacted before it is mapped (`review.ts` scrub) |
+| `codex-native` | `codex exec review --base <base>` (OpenAI's built-in reviewer and its own prompt; the brief as its developer instructions), its findings mapped to ours (P0-P2 important, P3 nit) | recheck by codex on the same model | the box's checkout (base and head commits) as its cwd and the shell; it reads git itself, so coverage isn't tracked: every review says so (`coverage.incomplete`) |
+
+**One access policy for every reviewer** (owner, 2026-11-21: the same settings across all reviewers, no special case per
+engine). An engine that runs commands gets a shell that reads the repo and the system and runs read-only commands, with the
+network open; it writes nowhere but the engine's own per-run temp directory (Claude Code: its empty cwd; codex: nowhere). The
+shell inherits no credential (codex's `shell_environment_policy` inherits nothing but PATH; Claude Code's
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). Verdicts and results come only from channels the shell can't write: the engine's stdout
+stream, or its session files outside the writable area (codex-native's review). codex and codex-native get it from codex's own
+sandbox, a read-only permission profile with the network on (`default_permissions`; no network namespace, which gVisor can't set
+up); claude-code from Claude Code's sandbox (bubblewrap, `failIfUnavailable`, no network restriction set, never unsandboxed).
+Nothing of the repo is loaded as config: project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off,
+the project never trusted. The run's token (the check's own `check` token: capped at `run_usd`, time-limited) is the box's only
+secret; a command can still read it from the engine's process, which the owner accepted, and every engine's output has it and
+any key-shaped text (`ahq*_`, `sk-`) redacted before it is mapped (`review.ts` scrub).
 
 The box image (`services/computer/images/agent-base`) pins `@anthropic-ai/claude-code` 2.1.323 and `@0xsequence/codegenie`
 0.7.0, dependencies resolved as of 2026-11-13. Repo context is the repo's own `REVIEW.md`, `AGENTS.md` and `CLAUDE.md` at the

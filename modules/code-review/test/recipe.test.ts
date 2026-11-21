@@ -83,7 +83,7 @@ test("a review: incremental from the last head, a finder that fails is said, a v
   await assert.rejects(review({ spec: spec({ combo: combo({ engine: "claude-code", effort: "minimal" }) }), ...box({ head, base }), run }), /effort for claude-code/);
 });
 
-test("the codex engine: only the model key in its environment, its shell off, the repo tools on the box's history", async () => {
+test("the codex engine: only the model key in its environment, its shell read-only with the network on, the repo tools on the box's history", async () => {
   const bin = mkdtempSync(join(tmpdir(), "cr-codex-"));
   writeFileSync(join(bin, "codex"), `#!/bin/sh
 out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
@@ -101,7 +101,7 @@ echo '{"findings":[]}' > "$out"; echo '{"type":"turn.completed"}'
   const seen = readFileSync(join(bin, "seen"), "utf8");
   assert.doesNotMatch(seen, /ghs_secret|GH_TOKEN|OPENROUTER_API_KEY/);
   assert.match(seen, /^CI_REVIEW_KEY=ahqj_run$/m);
-  for (const line of ['base_url = "http://10.0.0.1:8201/api/v1"', "shell_tool = false", "hooks = false", "project_doc_max_bytes = 0", 'model = "~deepseek/deepseek-flash-latest"']) assert.ok(seen.includes(line), line);
+  for (const line of ['base_url = "http://10.0.0.1:8201/api/v1"', 'default_permissions = "review"', 'filesystem = { ":root" = "read" }', "network = { enabled = true }", 'inherit = "none"', "hooks = false", "project_doc_max_bytes = 0", 'model = "~deepseek/deepseek-flash-latest"']) assert.ok(seen.includes(line), line);
   assert.ok(seen.includes(`"/workspace", "${A}"`));
 });
 
@@ -220,12 +220,12 @@ test("a review in the recipe's real output shape is accepted by the post kind, s
   assert.ok(!("addressed" in args.review) && !("guidance" in args.review) && !("fixed" in args.review));
 });
 
-test("the claude-code engine: Claude Code's own /code-review, then our JSON in the same session; the gateway's Anthropic route, nothing of the repo loaded", async () => {
+test("the claude-code engine: Claude Code's own /code-review, then our JSON in the same session; the gateway's Anthropic route, its Bash sandboxed, nothing of the repo loaded", async () => {
   const bin = mkdtempSync(join(tmpdir(), "cr-claude-"));
   // A fake claude: records its argv, cwd and env per turn; turn 1 reads the diff and reviews, turn 2 (resumed) answers our JSON.
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 n=$(ls "${bin}"/turn-* 2>/dev/null | wc -l | tr -d ' ')
-{ pwd; env | sort; for a in "$@"; do echo "ARG:$a"; done; } > "${bin}/turn-$n"
+{ pwd; env | sort; for a in "$@"; do echo "ARG:$a"; done; cat "$CLAUDE_CONFIG_DIR/settings.json"; } > "${bin}/turn-$n"
 if [ "$n" = 0 ]; then
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__repo__diff","input":{}},{"type":"tool_use","name":"mcp__repo__read_file","input":{"path":"a.js"}}]}}'
   echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s-1","result":"a.js:3 off by one"}'
@@ -252,7 +252,9 @@ fi
     assert.match(t, /^ANTHROPIC_AUTH_TOKEN=ahqj_run$/m);
     assert.match(t, /^CLAUDE_CODE_DISABLE_CLAUDE_MDS=1$/m);
     assert.match(t, /ARG:--setting-sources\nARG:user\n/);
-    assert.match(t, /ARG:--tools\nARG:Agent\n/);
+    assert.match(t, /ARG:--tools\nARG:Agent,Bash\n/);
+    assert.match(t, /^CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1$/m); // its Bash never sees the token
+    assert.match(t, /"sandbox":\{"enabled":true,"failIfUnavailable":true,"autoAllowBashIfSandboxed":true,"allowUnsandboxedCommands":false\}/);
     assert.ok(!t.split("\n")[0].startsWith("/workspace"), "its cwd is empty, never the repo");
   }
 });
@@ -298,7 +300,7 @@ JSON
   assert.match(seen, /^NODE_OPTIONS=--import=.*gateway-fetch\.ts$/m);
 });
 
-test("the codex-native engine: codex's own review in the checkout, full access in the box, through the gateway; its real output mapped to ours", async () => {
+test("the codex-native engine: codex's own review in the checkout, read-only shell with the network on, through the gateway; its real output mapped to ours", async () => {
   const fx = join(import.meta.dirname, "fixtures", "codex-native"); // a real `codex exec review` run (codex 0.166.0), its root renamed /workspace
   assert.deepEqual(nativeFindings(nativeReview([readFileSync(join(fx, "rollout.jsonl"), "utf8")]), ["/workspace"]).map((f) => [f.severity, f.path, f.line, f.title]), [
     ["important", "lib.js", 12, "Keep filenames out of the shell in lineCount"],
@@ -336,7 +338,7 @@ cat "${events}"
   assert.match(seen, new RegExp(`ARG:exec\nARG:review\nARG:--base\nARG:${B}\nARG:--ignore-rules\n`));
   assert.match(seen, /^CI_REVIEW_KEY=ahqj_run$/m);
   assert.ok(!/OPENROUTER_API_KEY/.test(seen), "only the model key, under codex's own name");
-  for (const line of ['sandbox_mode = "danger-full-access"', 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "none"', 'exclude = ["CI_REVIEW_KEY"', "hooks = false"]) assert.ok(seen.includes(line), line);
+  for (const line of ['default_permissions = "review"', "network = { enabled = true }", 'base_url = "http://10.0.0.1:8201/api/v1"', 'developer_instructions = "the brief"', "project_doc_max_bytes = 0", "include_instructions = false", 'inherit = "none"', 'exclude = ["CI_REVIEW_KEY"', "hooks = false"]) assert.ok(seen.includes(line), line);
   // A run with no review in its rollout (codex couldn't read the model's answer) is no review, never a clean one.
   assert.deepEqual(await run(false), { message: "", read: true, cause: "codex review gave no review" });
   // A review whose commands never printed the diff didn't read it (the recipe counts it as no answer).
