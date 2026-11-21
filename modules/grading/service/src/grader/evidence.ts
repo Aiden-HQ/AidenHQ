@@ -58,6 +58,12 @@ function ciMap(text: string): CiMap | undefined {
   };
 }
 
+/** Whether `url` is the runner's own link to `repo`'s job `job` in run `run` (`…/actions/runs/<run>/job/<job>`). */
+function runnerJobUrl(repo: string, url: unknown, run: string, job: string): boolean {
+  const m = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d{1,20})\/job\/(\d{1,20})\/?$/.exec(String(url ?? ""));
+  return m !== null && m[1]!.toLowerCase() === repo.toLowerCase() && m[2] === run && m[3] === job;
+}
+
 /** `p`, or undefined after `ms`; a failure — thrown or rejected — is the same as no answer at all. */
 const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | undefined> =>
   Promise.race([Promise.resolve().then(p).catch(() => null), new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
@@ -66,8 +72,9 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * A suite's pass, as CI itself records it: CI's `post-checks` job (`.github/workflows/ci.yml`, `f61fa8e0`) posts one completed
  * `success` check per suite a shard ran, named exactly the suite, with `external_id: <run_id>/<job id>/<shard>`. A check alone
  * proves nothing: GitHub's check API answers any App token, so PR code holding the workflow token could post one. So the fact
- * also needs the shard's own Actions job record behind that `job id` — its `run_id` is the check's `<run_id>` and its name is
- * the shard the check names — which a posted check has none of. A re-run may keep an earlier attempt's passing shard (CI's
+ * also needs the check GitHub itself created for that job: GitHub Actions' App, a check suite whose `workflow_run` is that
+ * run, and a link to that run's `job id` — plus the job's own record (its `run_id` is the check's `<run_id>`, its name is the
+ * shard the check names), which a posted check has none of. A re-run may keep an earlier attempt's passing shard (CI's
  * own `filter=latest` list), so the attempt is not narrowed: every attempt of that run ran the same head. Then the run must
  * be the repository's own CI on the graded
  * head: `.github/workflows/ci.yml`, active, `pull_request`, `head_sha` the graded head. The command and directory come from
@@ -105,6 +112,12 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     const m = /^(\d{1,20})\/(\d{1,20})\/(\d{1,6})$/.exec(String(c.externalId ?? ""));
     if (!m) return undefined;
     const [, run, jobId, shard] = m as unknown as [string, string, string, string];
+    // The check must be the one GitHub created for that job: GitHub Actions' own App, in a check suite whose workflow run is
+    // this run, linking to this run's job. A check posted through the API carries the poster's URL and lives in the poster's
+    // check suite, whatever its `external_id` says — the job record alone cannot tell them apart, these three can.
+    if (String(c.app?.slug ?? "") !== "github-actions") return undefined;
+    if (String(c.checkSuite?.workflowRun?.databaseId ?? "") !== run) return undefined;
+    if (!runnerJobUrl(repo, c.detailsUrl, run, jobId)) return undefined;
     const j: any = await read(`job/${jobId}`, () => deps.job(repo, jobId));
     // A made-up or posted check has no such job, or one from another run or another shard: never a fact.
     if (!j || String(j.run_id ?? "") !== run || j.name !== `packages (${shard})` && j.name !== `modules (${shard})`) return undefined;

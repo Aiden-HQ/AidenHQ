@@ -175,7 +175,16 @@ const withChecks = (n, head, merge, checks, files = ["kernel/src/x.ts"]) => ({
   files: { pageInfo: { hasNextPage: false }, nodes: files.map((path) => ({ path })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: checks } } } }] },
 });
-const PASS = (name, external) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external });
+/**
+ * A check as GitHub gives CI's own: GitHub Actions' App, in the shard run's check suite, linking to a shard job of that run.
+ * `external` is `<run>/<job id>/<shard>`; the job link follows it, as GitHub's does.
+ */
+const PASS = (name, external) => {
+  const [run, job] = String(external).split("/");
+  return { __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external,
+    app: { slug: "github-actions" }, checkSuite: { workflowRun: { databaseId: Number(run) || 0 } },
+    detailsUrl: run && job ? `https://github.com/${REPO}/actions/runs/${run}/job/${job}` : null };
+};
 /**
  * The command facts' reads: `file` answers `areas.json` at a base and `ci.yml` at the head; `job` answers the shard's Actions
  * job (null is the 404 a check with no job behind it gets); `run` answers the workflow run CI made. `bases` names the run's
@@ -310,3 +319,30 @@ test("a job or run read that throws is no answer, not a failed grade", async () 
   const ev = await prEvidence([{ repo: REPO, number: 312, url: url(312), heads: ["branch-a"] }], "", deps);
   assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), ev.facts.join("\n"));
   assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+});
+
+test("a check that only claims a job's id mints nothing: it must be GitHub's own for that job", async () => {
+  // A check posted through the API can repeat a green job's `external_id` verbatim. What it cannot have is GitHub Actions'
+  // App, a check suite whose `workflow_run` is that run, and that run's job link — so each of those alone is enough to
+  // refuse it, and the job read behind the id is then never even the question.
+  const forged = (extra) => ({ ...PASS("kernel#1", "7/150/1"), ...extra });
+  const cases = [
+    ["another App", forged({ app: { slug: "aidenhq" } }), "posted by something other than GitHub Actions"],
+    ["no App at all", forged({ app: null }), "a check with no App"],
+    ["its own check suite", forged({ checkSuite: { workflowRun: { databaseId: 99 } } }), "a check suite whose run is another run"],
+    ["no check suite", forged({ checkSuite: null }), "a check in no check suite"],
+    ["a URL of its own", forged({ detailsUrl: "https://example.com/actions/runs/7/job/150" }), "a URL that is not this run's job"],
+    ["another job's URL", forged({ detailsUrl: `https://github.com/${REPO}/actions/runs/7/job/151` }), "a link to another job"],
+    ["another repo's URL", forged({ detailsUrl: `https://github.com/acme-agents/other/actions/runs/7/job/150` }), "a link into another repository"],
+    ["no URL", forged({ detailsUrl: null }), "no link at all"],
+  ];
+  for (const [what, check, why] of cases) {
+    const prs = [withChecks(313, "a", "b", [check])];
+    const ev = await prEvidence([{ repo: REPO, number: 313, url: url(313), heads: ["branch-a"] }], "", factDeps(prs));
+    assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), `${what}: ${why}`);
+  }
+  // The same check with all of them right is the one that mints: the refusal is the binding, not a blanket distrust.
+  const prs = [withChecks(313, "a", "b", [PASS("kernel#1", "7/150/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 313, url: url(313), heads: ["branch-a"] }], "", factDeps(prs));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});

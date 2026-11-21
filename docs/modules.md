@@ -62,14 +62,16 @@ that workflow is the repository's CI on the head being graded.
 
 A job's log is never evidence: a PR's test output can print any line, so nothing read from a log can carry a fact. A
 command fact comes from a completed `success` check named exactly a suite in `.github/ci/areas.json`, whose
-`external_id` is CI's `<run_id>/<job id>/<shard>` and whose `<job id>` is a real Actions job of that run and shard
-(`packages (<shard>)`/`modules (<shard>)`, conclusion `success`): a posted check has no such job. The run must be
-`.github/workflows/ci.yml`, active, from a `pull_request` whose `head_sha` is the graded head. The fact names the
-suite's `run` and directory from `areas.json` at the run's own base (`base_sha`; a merged PR's run no longer lists its
-PR, so the PR's own base oid stands in) and only when that map is byte-identical to the head's, never the branch tip.
-Because the workflows, the
-suite runner and the map are the inputs that decide what a shard ran, a PR that changes anything under
-`.github/workflows/` or `.github/ci/` mints no command fact at all.
+`external_id` is CI's `<run_id>/<job id>/<shard>`, and it must be the check GitHub created for that job: GitHub Actions'
+App (`app.slug` `github-actions`), a check suite whose `workflow_run` is that run, and a `detailsUrl` of that run's job.
+A check posted through the API carries the poster's App, URL and check suite whatever its `external_id` repeats, so it
+mints nothing. Behind it the `<job id>` must be a real Actions job of that run and shard (`packages (<shard>)`/
+`modules (<shard>)`, conclusion `success`). The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
+whose `head_sha` is the graded head. The fact names the suite's `run` and directory from `areas.json` at the run's own
+base (`base_sha`; a merged PR's run no longer lists its PR, so the PR's own base oid stands in) and only when that map
+is byte-identical to the head's, never the branch tip. Because the workflows, the suite runner and the map are the
+inputs that decide what a shard ran, a PR that changes anything under `.github/workflows/` or `.github/ci/` mints no
+command fact at all.
 
 ## `POST /v1/tasks` — file a task
 

@@ -61,7 +61,8 @@ test("the PR query asks for each check's external_id and whether the check list 
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../service/src/ops.ts", import.meta.url), "utf8");
   const query = /const PR_QUERY = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
-  assert.match(query, /CheckRun \{ name status conclusion externalId \}/, "a suite check's external_id carries the run and job the fact is bound to");
+  assert.match(query, /CheckRun \{ name status conclusion externalId detailsUrl app \{ slug \} checkSuite \{ workflowRun \{ databaseId \} \} \}/,
+    "a suite check carries its external_id, the App and check suite GitHub made it in, and its own job link");
   assert.match(query, /statusCheckRollup \{ contexts\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated check list is refused, not read as complete");
   assert.match(query, /files\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated file list is refused too");
   assert.match(query, /baseRef \{ target \{ oid /, "the PR's own base oid comes back, for a merged run whose pull_requests list GitHub dropped");
