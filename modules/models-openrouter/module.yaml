@@ -16,6 +16,9 @@ models:
   - { id: "~openai/gpt-sol-latest", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 65536 }
   - { id: "~openai/gpt-terra-latest", in: 1, cached_in: 0.05, out: 5, peak: 2, max_output: 65536 }
   - { id: "~openai/gpt-astra-latest", in: 8, cached_in: 0.4, out: 40, peak: 2, max_output: 65536 }
+  # Gemini 4 has no latest alias: exact ids.
+  - { id: "google/gemini-4-neon", in: 3, cached_in: 0.15, out: 15, peak: 2, max_output: 65536 }
+  - { id: "google/gemini-4-carbon", in: 2, cached_in: 0.1, out: 10, peak: 2, max_output: 65536 }
   - { id: "~z-ai/glm-flash-latest", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
   - { id: "z-ai/glm-5.3-flash", in: 0.0399, cached_in: 0.03, out: 0.0784, peak: 6, max_output: 128000 }
   - { id: "z-ai/glm-5.3", in: 0.0699, cached_in: 0.0689, out: 1.4, peak: 12, max_output: 128000 }
