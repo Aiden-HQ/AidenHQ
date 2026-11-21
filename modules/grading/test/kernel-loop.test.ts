@@ -311,3 +311,72 @@ test("a verdict's reopen and its parent's notice that hit a kernel 5xx land on t
   await loop2.runGrades();
   assert.deepEqual(calls.wake, ["p1"], "the next pass tells the parent");
 });
+
+test("a rubric naming another task reads its file list as evidence; a 404 is a fact, and only a real read failure waits", async (t) => {
+  // A rubric that names another task ("put WOR-101's mockups onto it") used to wait forever on a stub. Its file list now comes
+  // from cp-read: the task, then its attachments (never their bytes). WOR-404 is not a task in this company, a real fact.
+  const prompts = [];
+  const gateway = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    prompts.push(JSON.parse(body).messages.at(-1).content);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer(["yes"])) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+
+  const task = (id, identifier) => ({ id, identifier, title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null });
+  const named = { id: "t101", identifier: "WOR-101", title: "the mockups", status: "done", companyId: "co" };
+  const mockup = { id: "f1", originalFilename: "mockup.png", contentType: "image/png", byteSize: 1200, createdByAgentId: "art", createdAt: "2026-11-20T10:00:00Z" };
+  const calls = { resolve: [], wake: [] };
+  const kernel = async (method, path, body) => {
+    if (path === "/v1/cp/read/api/issues/t9") return task("t9", "WOR-9");
+    if (path === "/v1/cp/read/api/issues/t10") return task("t10", "WOR-10");
+    if (path.endsWith("/comments")) return [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Done; the mockup is on WOR-101.", createdAt: "2026-11-20T11:00:00Z" }];
+    if (path.endsWith("/attachments") && !path.includes("t101")) return [];
+    if (path === "/v1/cp/read/api/issues/WOR-101") return named;
+    if (path === "/v1/cp/read/api/issues/t101/attachments") return [mockup];
+    if (path === "/v1/cp/read/api/agents/art") return { id: "art", name: "Ada" };
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
+    if (path === "/v1/cp/read/api/issues/WOR-404") throw Object.assign(new Error("kernel GET → 404: no task WOR-404"), { status: 404 });
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path === "/v1/work?task=t9" || path === "/v1/work?task=t10" || path === "/v1/work?task=t101") return { busy: false, jobs: [], records: [] };
+    if (path === "/v1/work/grader-token") return { token: "tok" };
+    if (path === "/v1/checks/t9" || path === "/v1/checks/t10") return calls.resolve.push({ path, body }), {};
+    if (path === "/v1/wakes") return calls.wake.push(body), { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const db = new DatabaseSync(":memory:");
+  const byRef = { t9: task("t9", "WOR-9"), t10: task("t10", "WOR-10"), "WOR-9": task("t9", "WOR-9"), "WOR-10": task("t10", "WOR-10") };
+  const { runner, grades } = createGrading({ db, kernel: { issue: async (ref) => byRef[ref], settings: async () => ({}), release: async () => {} }, keys: { check: "c", runner: "r", board: "b" } });
+  grades.file("t9", ["the mockup on WOR-101 is the one applied here"], { kind: "report", ref: "" });
+  grades.file("t10", ["WOR-404 says where the mockup came from"], { kind: "report", ref: "" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  completionGate(grades, "t9", "finish_turn");
+  completionGate(grades, "t10", "finish_turn");
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  t.after(() => { Date.now = realNow; });
+  await loop.runGrades();
+
+  assert.deepEqual(calls.resolve.map((c) => c.body.verdict), ["ok", "ok"], "both grades complete: neither named read waits");
+  assert.equal(grades.get("t9").state, "satisfied");
+  assert.equal(grades.get("t10").state, "satisfied");
+  const [attached, missing] = prompts;
+  assert.match(attached, /WOR-101 \(another task the rubric names; its file list read now, not the files' contents\): 1 file attached/);
+  assert.match(attached, /agent Ada/, "the uploader is named from the agents read");
+  assert.match(attached, /mockup\.png \(image\/png\)/, "the file's name and type are in OTHER_TASK_FILES");
+  assert.match(missing, /WOR-404: no such task in this company \(nothing read from it\)/, "a 404 is a fact, not a wait");
+
+  // Only a genuine transient failure (5xx, network) still waits: it must not become "not met".
+  const down = async (m, p, b) => {
+    if (p === "/v1/cp/read/api/issues/WOR-101") throw Object.assign(new Error("kernel 502"), { status: 502 });
+    return kernel(m, p, b);
+  };
+  // Reopen WOR-9's row as pending, past the bridge-close grace, with only its named-task read failing.
+  db.prepare("UPDATE grades SET state = 'pending', verdicts = '[]', updated_at = ? WHERE issue_id = 't9'").run(new Date(realNow() - 60_000).toISOString());
+  const waiting = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel: down, kernelBytes: async () => { throw new Error("no bytes"); }, apps: async () => { throw new Error("no apps"); }, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  const before = calls.resolve.length;
+  await waiting.runGrades();
+  assert.equal(calls.resolve.length, before, "a 502 on the named task's read passes no verdict");
+  assert.equal(grades.get("t9").state, "awaiting_evidence", "a 502 on the named task's read waits for the next look");
+});
