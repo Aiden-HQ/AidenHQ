@@ -3,7 +3,7 @@
 // merged PR in the same repo beside the superseded branch, the merged PR is the one graded.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { localPullRequest, prEvidence } from "../service/src/grader/evidence.ts";
+import { baseCommitOf, localPullRequest, prEvidence } from "../service/src/grader/evidence.ts";
 
 const REPO = "acme-agents/app";
 const SHA = (c) => c.repeat(40);
@@ -77,9 +77,10 @@ test("when every PR the task names is closed, the hold applies: no verdict eithe
 });
 
 // The prerequisite-then-pin shape: a PR whose history starts on the commit its prerequisite just merged. The fixture is a
-// squash-merged prerequisite (#102 as SHA("2")) and a single-commit PR whose parent is that merge. Real #103 was not that shape --
-// its oldest commit's parent is 164171ae, because its branch was cut before #102 merged -- which is why the fact labels the value
-// "parent of the PR's oldest commit" and never claims a cut point.
+// prerequisite squash-merged as SHA("2") and a single-commit PR whose parent is that merge, so the base the criterion asks about
+// is named rather than "not established". A check of real PRs showed that shape is what a branch cut after the prerequisite
+// merged looks like; a branch cut before it keeps the older parent, which is why the fact labels the value "parent of the PR's
+// oldest commit" and never claims a cut point.
 test("a PR whose history starts on the commit its prerequisite just merged names that base commit in its trusted facts", async () => {
   const prerequisite = merged(102, "1", "2"); // squash-merged as SHA("2")
   const landed = merged(103, "3", "4", "2", { chain: chainOf([{ oid: "3", parents: ["2"] }]) });
@@ -89,6 +90,18 @@ test("a PR whose history starts on the commit its prerequisite just merged names
   assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the fact gives the prerequisite's merge commit, not 'not established'");
   assert.equal(SHA("2"), prerequisite.mergeCommit.oid, "and that commit is exactly the prerequisite's squash merge");
   assert.match(fact, /base commit [0-9a-f]{40} \(parent of the PR's oldest commit\)/, "and the label states only what the parent edge proves");
+});
+
+// The derivation itself, without the evidence around it: the one commit whose first parent is outside the list is the start of
+// the history, and only its single parent is the base.
+test("baseCommitOf names the parent of the single commit that starts the PR's history", () => {
+  assert.equal(baseCommitOf(merged(601, "3", "4", "2")), SHA("2"), "a one-commit history names its parent");
+  assert.equal(baseCommitOf({ ...merged(602, "3", "4"), chain: chainOf([{ oid: "3", parents: ["b"] }, { oid: "b", parents: ["2"] }]) }), SHA("2"), "the start is found by the parent edges, not by the list's order");
+  // A node repeated in the list is one commit, not two starting commits.
+  assert.equal(baseCommitOf({ ...merged(603, "3", "4"), chain: chainOf([{ oid: "3", parents: ["2"] }, { oid: "3", parents: ["2"] }]) }), SHA("2"), "a repeated commit does not read as two starts");
+  assert.equal(baseCommitOf({ ...merged(604, "3", "4"), state: "OPEN" }), "", "an unmerged PR has no base yet");
+  assert.equal(baseCommitOf({ ...merged(605, "3", "4"), chain: undefined }), "", "a read with no commit list establishes nothing");
+  assert.equal(baseCommitOf({ ...merged(606, "3", "4"), chain: { nodes: [{ commit: { oid: SHA("3"), parents: { totalCount: 1, nodes: [{ oid: SHA("3") }] } } }], pageInfo: { hasNextPage: false } } }), "", "a commit that starts nothing establishes nothing");
 });
 
 // The oldest commit is found by the graph, not by the list's order: GitHub documents neither the connection's order nor that one page

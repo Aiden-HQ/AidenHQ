@@ -87,6 +87,37 @@ const addId = (list: string[], v: unknown, re?: RegExp) => {
 const samePr = (a: { repo: string; number: number }, b: { repo: string; number: number }) => a.repo.toLowerCase() === b.repo.toLowerCase() && Number(a.number) === Number(b.number);
 
 /**
+ * A merged PR's base commit: the single parent of the commit its own history starts from, or "" when the read does not
+ * establish one.
+ *
+ * GitHub defines a PR's commits as the head branch's commits not present in the base branch (`pullRequest.commits`). In that
+ * list the starting commit is the one commit whose first parent is not itself in the list, so its parent is the commit this
+ * history starts from. It is found by the parent edges, never by list order: GitHub documents neither the connection's order
+ * nor that one page holds every commit.
+ *
+ * The value states only that relationship. It is not where the branch was cut -- a rebase after opening re-parents the oldest
+ * commit -- and it is not the base branch's tip or the git merge base, both of which move; neither is ever substituted for it.
+ *
+ * Nothing is established (""), rather than guessed, when the PR is not merged; the list was cut off
+ * (`pageInfo.hasNextPage`) or is empty; more than one commit starts the history (a merge commit that starts it counts: with
+ * several parents, which one is the base is not settled); or the starting commit's parent is missing, ambiguous or not a
+ * commit id.
+ */
+export function baseCommitOf(pr: any): string {
+  if (pr?.state !== "MERGED" || pr.chain?.pageInfo?.hasNextPage) return "";
+  const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit ?? n).filter((c: any) => c && typeof c.oid === "string");
+  const own = new Set(chain.map((c: any) => c.oid));
+  // One entry per distinct commit, so a repeated node is not read as two starting commits.
+  const starts = new Map<string, any>();
+  for (const c of chain) if (!own.has(c?.parents?.nodes?.[0]?.oid)) starts.set(c.oid, c);
+  if (starts.size !== 1) return "";
+  const [root] = [...starts.values()];
+  if (root?.parents?.totalCount !== 1) return "";
+  const parent = root?.parents?.nodes?.[0]?.oid;
+  return typeof parent === "string" && SHA40.test(parent) ? parent : "";
+}
+
+/**
  * Identifiers from anything that names a PR: a merged record (the arrays taskPrRows and taskMergePrs return) or a record as it
  * is stored. `head` is a branch on a branch row and a bound head commit on a merge card (a 40-hex value), so it goes wherever
  * its shape says.
@@ -371,20 +402,10 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    // The base commit: the parent of the PR's oldest commit, known only when exactly one of the PR's commits has a parent that
-    // is not itself one of them. GitHub defines the PR's commits as the head branch's commits not present in the base branch, so
-    // that unique root commit is where this history starts; the fact says exactly that, never that the branch was cut there (a
-    // rebase after opening re-parents it) and never that it is the base branch's tip. A cut-off list (pageInfo.hasNextPage), two
-    // roots, a root with no parent or more than one, or an unreadable commit establish nothing rather than guessing. The base ref's
-    // oid and the git merge base are never substituted.
-    const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit).filter(Boolean);
-    const ownIds = new Set(chain.map((c: any) => c?.oid).filter((id: any) => typeof id === "string"));
-    // A commit starts this list when its first parent is not itself one of them. A merge commit that starts it counts too: it has
-    // more than one parent, so which one is the base is not settled, and counting it is what makes that read "not established"
-    // rather than dropping it and letting a later commit's parent pass as the base.
-    const roots = chain.filter((c: any) => typeof c?.oid === "string" && !ownIds.has(c?.parents?.nodes?.[0]?.oid));
-    const root = roots.length === 1 && roots[0]?.parents?.totalCount === 1 ? roots[0]?.parents?.nodes?.[0]?.oid : undefined;
-    const base = merged && !pr.chain?.pageInfo?.hasNextPage && typeof root === "string" && SHA40.test(root) ? root : "";
+    // The base commit (baseCommitOf): the parent of the PR's oldest commit, stated only when the read proves exactly one
+    // starting commit with exactly one parent. It is where this history starts, never where the branch was cut, the base
+    // branch's tip or the git merge base, and "not established" is missing evidence rather than a guess.
+    const base = baseCommitOf(pr);
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (parent of the PR's oldest commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
