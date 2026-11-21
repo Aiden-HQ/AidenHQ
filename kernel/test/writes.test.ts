@@ -53,6 +53,7 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
   handler = serveExecutor({
     plan: async (req) => {
       fx.plans.push(req);
+      if (fx.refuse) throw Object.assign(new Error(fx.refuse.message), fx.refuse.code ? { code: fx.refuse.code } : {});
       if (fx.satisfied) return { args: { note: String(req.args.note) }, satisfied: { evidence: fx.satisfied } };
       if (req.kind === "twin.ping") return { args: {} };
       return { args: { note: String(req.args.note ?? "") }, targets: { commit: fx.target }, card: { target: fx.target } };
@@ -123,6 +124,28 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   const ping = await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]));
   assert.equal(ping.json.tier, 0);
   await until(() => fx.executes.some((e) => e.id === ping.json.id));
+});
+
+test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {
+  const { k, fx } = await twin(t);
+  // The executor refuses this plan with a code, as the code host's platform-only rule does: the job's row keeps both, so a
+  // dispatcher matches the code (never the message prose) and an ordinary refusal, with no code, stays the agent's to fix.
+  fx.refuse = { message: "only a job holding the platform-engineer role opens this; file it on a task the owner filed", code: "platform-only" };
+  const token = mintToken("job-secret", { kind: "job", job: "jw:twin.post", agentId: "ag-bo", issueId: "TASK-7" });
+  const who = { kind: "run", job: "jw:twin.post", agent: "ag-bo", task: "TASK-7", roles: [], tools: {}, writes: ["twin.post"], key: "bo" };
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" }, task: "TASK-7" }, token)).status, 422);
+  const row = k.records.db.prepare("SELECT why, code, source FROM job_refusals WHERE job = ?").get("jw:twin.post");
+  assert.deepEqual([row.code, /platform-engineer/.test(row.why)], ["platform-only", true]);
+  // The source is the kernel's own: the module whose kind it routed, never the executor's word, so a code alone cannot vouch.
+  assert.equal(row.source, "twin");
+  // A refusal with no code (the executor sent none) records its words only.
+  fx.refuse = { message: "head-moved: ask again for its new head" };
+  await k.writes.request(who, { kind: "twin.post", args: { note: "y" }, task: "TASK-7" }).catch(() => {});
+  assert.deepEqual({ ...k.records.db.prepare("SELECT why, code FROM job_refusals WHERE job = ?").get("jw:twin.post") }, { why: "twin.post: head-moved: ask again for its new head", code: null });
+  // A later write that goes through clears the refusal.
+  fx.refuse = undefined;
+  await k.writes.request(who, { kind: "twin.post", args: { note: "z" }, task: "TASK-7" });
+  assert.equal(k.records.db.prepare("SELECT 1 FROM job_refusals WHERE job = ?").get("jw:twin.post"), undefined);
 });
 
 test("a changed target on revalidate gives stale and a refile; the owner's decision is a channel's token, stamped as one", async (t) => {
