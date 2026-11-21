@@ -99,19 +99,22 @@ export function history(ws: string, out: string, spec: Spec) {
    * (binaries and left-out files included) can be larger than a string holds. */
   const anyLine = (args: string[], test: (line: string) => boolean) => {
     const file = join(out, `git-${randomBytes(6).toString("hex")}`);
-    const w = openSync(file, "w");
-    try { execFileSync("git", [...flags, ...args], { cwd: ws, env, stdio: ["ignore", w, "ignore"] }); } finally { closeSync(w); }
-    const r = openSync(file, "r"), buf = Buffer.alloc(1 << 20);
     try {
-      let rest = "", n: number;
-      while ((n = readSync(r, buf, 0, buf.length, null)) > 0) {
-        const lines = (rest + buf.toString("utf8", 0, n)).split("\n");
-        rest = lines.pop()!;
-        if (lines.some(test)) return true;
-        if (rest.length > 1 << 20) { if (test(rest)) return true; rest = ""; } // one huge line: judged as far as it went
-      }
-      return test(rest);
-    } finally { closeSync(r); rmSync(file, { force: true }); }
+      const w = openSync(file, "w");
+      try { execFileSync("git", [...flags, ...args], { cwd: ws, env, stdio: ["ignore", w, "ignore"] }); } finally { closeSync(w); }
+      const r = openSync(file, "r"), buf = Buffer.alloc(1 << 20);
+      try {
+        let rest = "", n: number;
+        while ((n = readSync(r, buf, 0, buf.length, null)) > 0) {
+          const lines = (rest + buf.toString("utf8", 0, n)).split("\n");
+          rest = lines.pop()!;
+          if (lines.some(test)) return true;
+          // One huge line: judged so far, then kept as its first character (its +) and its last 4 KB, so text across the cut is still seen.
+          if (rest.length > 1 << 20) { if (test(rest)) return true; rest = rest[0]! + rest.slice(-4096); }
+        }
+        return test(rest);
+      } finally { closeSync(r); }
+    } finally { rmSync(file, { force: true }); }
   };
   const commit = (tree: string | undefined, msg: string) => {
     if (tree) g(["add", "-A", "-f"], { GIT_WORK_TREE: tree });
