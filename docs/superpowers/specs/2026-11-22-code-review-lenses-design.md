@@ -215,7 +215,7 @@ A marketplace itself is never a checkbox.
 - `.deepsec/` exists at the commit → the run scans: `scan` + `process` + `revalidate` for one-off runs, or
   `process --diff <base>` for continuous runs.
 - `.deepsec/` is missing → the run sets up in the box (`init`), which writes the repo summary, config and generated matchers,
-  then scans. The service opens a **setup PR** adding only the files deepsec means to be committed. Later runs reuse that
+  then scans. The service files a **setup PR** write adding only the files deepsec means to be committed (see the settled decisions). Later runs reuse that
   PR's files until it merges. "Force set-up" re-runs set-up and updates the PR.
 - deepsec state (`DEEPSEC_DATA_ROOT`) lives in the run's temp directory. Its spend cap is `run_usd`. Its model goes through
   the gateway on its pi backend's OpenAI-compatible route.
@@ -257,16 +257,17 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
 
 ### Settled after the builder check (my calls, simplest to maintain)
 
-- **Who gets the report.** Every admin is an owner, so "the requester" is the owner's Primer account. The report is
-  filed as the primer module's existing `publish` write: `content` is the rendered markdown, and `documentId` is the
-  repo's document from earlier runs, kept in code review's SQLite. Primer creates it as the owner, so no
-  collaborator call is needed. There is no new write kind.
-- **Runs and spend.** A one-off run is a sequence of check jobs that the service starts, the same way it starts a moment's
-  combos today:
-  1. One `repo-review` job runs every selected `tool` option in one box. These use no model token.
-  2. Then one job per selected `skill` or `engine` option, one after another. Each job's `budget_usd` is `run_usd` minus
-     what the run has already spent, so the shared cap holds exactly.
-  3. Each job's billed cost, read from the ledger as today, is that option's cost.
+- **Who gets the report.** Every admin is an owner, so the requester is the owner's Primer account. Code review's
+  module token can't file Primer's write, so Primer gains an authenticated internal route for code review's report
+  submissions. Primer files its own `publish` write record, creates the document private to the requester, adds a version
+  when the repo already has a document, and serialises first publication per repo so concurrent runs share one document.
+- **Runs and spend.** There is one run lifecycle for both modes. The existing batches, runs, findings, `kernelRunner` and
+  `/reviews` API gain a PR-or-tree target through a forward-only migration. One recipe has two check profiles:
+  - `code-review-tools`: token-free, running the selected tool options.
+  - `code-review`: one metered check per model option, run in sequence, each with `budget_usd = run_usd - spent`.
+
+  The kernel attributes spend per check, so each option's cost is that check's bill. The generic check-job limits in the
+  compiler rise explicitly to `max_usd` 150 and a 180-minute timeout. A failed or timed-out check becomes a coverage gap.
 
   The recipe's `max_usd` is a fixed ceiling of 150, and `run_usd` is the real cap. The timeout is 180 minutes per job. A
   failed or timed-out job becomes a coverage gap, and the run carries on.
@@ -282,11 +283,9 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
 - **Continuous options.** A continuous model option is a combo entry like today's, posting its own GitHub review as a
   comment. Tool options run together in one extra job, which posts one review only when it has findings. Nothing posted
   requests changes or gates a merge.
-- **Findings.** One-off findings are keyed by repo, run and stable id. The stable id is today's function over the
-  option, file and normalised title. A finding found again in a later run keeps its id and history. It counts as fixed
-  when a later run of the same option, with full coverage, no longer reports it.
-  - Dedupe across options is deterministic and needs no model call. Findings in the same lens and file whose lines
-    overlap within 3 lines are merged, keeping every option that found them.
+- **Findings.** Findings are stored per option observation, keyed by the existing stable id, so outcomes and cost stay per
+  option. The report groups findings in the same lens and file with overlapping lines for display only. A partial or
+  truncated run never reports clean and never marks a missing finding fixed.
 - **The verdict.** Computed in code:
   - **blocked**: an important security finding.
   - **concerns**: any other important finding.
@@ -294,12 +293,14 @@ each option. Recommended marks change by that measure, through a catalog PR, nev
   - **incomplete**: no important finding, but coverage was partial.
 - **Vulnerability databases.** These are data, not code. osv-scanner, trivy and govulncheck fetch their databases when the
   run starts (the network is open). The supply-chain rule covers installed code only.
-- **The default branch's head.** Resolved with the code host's `head` op, which needs a `fetch` grant on the snapshot repos.
-- **The deepsec setup PR.** The box returns the committed `.deepsec/` files deepsec writes. The service commits them
-  one file at a time with the code host's `commit` op onto a setup branch. Its grant names exactly those paths:
-  `.deepsec/INFO.md`, `.deepsec/deepsec.config.ts`, `.deepsec/generated-matchers.ts`, `.deepsec/package.json` and its
-  lockfile. It then opens the PR through the github module's typed PR path. Until the PR merges, the next run
-  fetches the setup branch for those files.
+- **The default branch's head.** When no commit is given, the code host's `snapshot` of `HEAD` returns the SHA, resolved
+  once at start. Stack detection runs once, in the service, on that snapshot, and the board shows the result.
+- **The deepsec setup PR.** It is one reviewed write, `code-review.setup`, with a Tier 1 floor (following the
+  `code-review.post` pattern). The record holds the repo, the base SHA, the setup branch, its expected tip, and the exact
+  allowlisted `.deepsec/` files. After approval, the executor calls an authenticated github internal op. That op creates or
+  updates the branch with **one commit** (refused if the tip moved or a path is outside the allowlist), then opens or
+  reuses the PR using github's existing PR code. Pending setup files are read through `snapshot` at the recorded tip. No
+  generic commit grant is added.
 
 ## New installs
 
