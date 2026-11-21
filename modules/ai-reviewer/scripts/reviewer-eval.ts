@@ -60,6 +60,21 @@ export function recordReceipt(content: string, r: { passed: number; total: numbe
   renameSync(`${file}.tmp`, file);
 }
 
+/**
+ * The cases the owner retired (test/retired-cases.json: [{ case, reason, approved_by: "owner", date }]), by file name. The
+ * judge reads the file from the base branch with the rest of the harness (module.yaml `judged.files`), never from the change, so
+ * a PR can't retire its own cases: a retirement merges to main first, in its own PR, which the path inventory makes the
+ * owner's. A retired case doesn't run, in either of its versions (`<case>.json`, the judge's `<case>.head.json`).
+ */
+export function retiredCases(text: string) {
+  const list = JSON.parse(text);
+  const ok = (e: any) => e && typeof e.case === "string" && /^[\w.-]+$/.test(e.case) && typeof e.reason === "string" && e.reason.trim() && e.approved_by === "owner" && /^\d{4}-\d{2}-\d{2}$/.test(String(e.date));
+  if (!Array.isArray(list) || !list.every(ok)) throw new Error("test/retired-cases.json is a list of { case, reason, approved_by: \"owner\", date: YYYY-MM-DD }");
+  return new Set(list.map((e: { case: string }) => e.case.replace(/\.json$/, "")));
+}
+/** Whether a case file is retired: its name without `.json` (or the judge's `.head.json`) is on the list. */
+export const isRetired = (file: string, retired: Set<string>) => retired.has(file.replace(/(\.head)?\.json$/, ""));
+
 if (import.meta.main) await main();
 
 async function main() {
@@ -80,8 +95,11 @@ async function main() {
     process.exit(2);
   }
   const dir = join(import.meta.dirname, "../test/reviewer-cases");
+  const retired = retiredCases(readFileSync(join(import.meta.dirname, "../test/retired-cases.json"), "utf8"));
+  const skipped = readdirSync(dir).filter((f) => f.endsWith(".json") && isRetired(f, retired));
+  if (skipped.length) console.log(`retired by the owner, not run: ${skipped.join(", ")}`);
   const cases = readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
+    .filter((f) => f.endsWith(".json") && !isRetired(f, retired))
     .sort()
     .map((f) => ({ file: f, ...JSON.parse(readFileSync(join(dir, f), "utf8")) }))
     .filter((c) => c.file.includes(only) || c.name.includes(only))

@@ -33,6 +33,7 @@ test("both sides of a rename count, the highest entry wins, the owner-approval r
   assert.equal(pathRaise(inv, "product", [{ path: "docs/moved.md", from: "kernel/src/tier.ts" }]).rule, "gate-core");
   assert.equal(pathRaise(inv, "product", [{ path: "docs/a.md" }]), undefined);
   assert.equal(pathRaise(inv, "other", [{ path: ".github/supply-chain-source-exceptions.yaml" }]).tier, 2);
+  assert.equal(pathRaise(inv, "product", [{ path: "modules/ai-reviewer/test/retired-cases.json" }]).tier, 2, "retiring a reviewer case is the owner's");
   assert.equal(pathRaise(inv, "product", [{ path: ".github/supply-chain-source-exceptions.yaml" }, { path: "docs/a.md" }]).tier, 2, "2 beats the panel's .github/");
   assert.equal(pathRaise(undefined, "product", [{ path: "docs/a.md" }]).rule, "gate-list-unknown", "no inventory: the owner's");
   assert.equal(pathRaise(inv, "product", undefined).rule, "unknown-files");
