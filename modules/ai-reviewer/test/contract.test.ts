@@ -130,17 +130,18 @@ test("a hung model call stops reporting progress: one beat when the call starts,
     seen = beats.length;
     await new Promise((ok) => setTimeout(ok, 100));
   }
-  const before = beats.length;
+  const seenIds = new Set(beats);
   answers.push({ decision: "approve", reason_code: "in_scope", reason: "as asked", second_review: false });
   // The gateway hangs for 140 ms: three beat intervals (40 ms each) pass with no answer at all.
   slowMs = 140;
   try {
     const asking = ask({ card, diff: "+x" });
-    // Wait for the call's start beat (it may be the call before this one still settling), then watch the hang.
-    await until(() => beats.length > before);
-    const sawStart = beats.length;
+    // Count this review's own beats (its URL carries its id), never one a leftover review of an earlier test sent.
+    await until(() => beats.some((b) => !seenIds.has(b)));
+    const mine = beats.find((b) => !seenIds.has(b));
+    const starts = beats.filter((b) => b === mine).length;
     await new Promise((ok) => setTimeout(ok, 110));
-    assert.equal(beats.length, sawStart, "the clock alone never keeps a hung call alive");
+    assert.equal(beats.filter((b) => b === mine).length, starts, "the clock alone never keeps a hung call alive");
     assert.equal((await asking).status, 200);
   } finally {
     slowMs = 0;
