@@ -60,6 +60,7 @@ describe("a module's private report (primer.publish with private)", () => {
     expect(plan.raise?.tier).toBe(2);
     // Only a module files a private report: an agent never repoints a repo's report document.
     await expect(p.ex.plan({ kind: "primer.publish", args: args(), requester: agent, task: "T-2" })).rejects.toThrow(/module only/);
+    await expect(p.ex.plan({ kind: "primer.publish", args: args({ private: undefined, repo_key: undefined }), requester: codeReview, task: "T-1" })).rejects.toThrow(/private reports only/);
     await expect(p.ex.plan({ kind: "primer.publish", args: { ...args(), repo_key: undefined }, requester: codeReview, task: "T-1" })).rejects.toThrow(/repo_key/);
   });
 

@@ -111,6 +111,8 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       // stay at the floor. Only a module identity, which no agent can hold, counts.
       // Only a module files a private report (primer's module.yaml filed_by names which): an agent never repoints a repo's report.
       if (args.private && req.requester?.kind !== "module") throw new Error("a private report is filed by a module only");
+      // Another module files here only by primer's filed_by, and only a private report (never an organization-wide document).
+      if (req.requester?.kind === "module" && req.requester.module !== "primer" && !args.private) throw new Error("a module files private reports only");
       const report = Boolean(args.private);
       const sha = createHash("sha256").update(args.content).digest("hex");
       return {
@@ -140,7 +142,7 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
         if (known !== undefined && (await ownerOnly(call, known))) return write({ ...a, documentId: known }, undefined);
         // A new document: created with a placeholder, made private, and only then given the report, so the report is never
         // readable by the organization, not even for a moment.
-        const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", title: a.title ?? `Repo review: ${a.repo_key}` }, undefined);
+        const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", description: undefined, title: a.title ?? `Repo review: ${a.repo_key}` }, undefined);
         if (!made.ok) return made;
         const id = /\(document ([A-Za-z0-9-]+)\)/.exec(made.text)?.[1];
         if (!id) return { ok: false, text: `${made.text}: its id wasn't in Primer's answer, so the report wasn't added` };
