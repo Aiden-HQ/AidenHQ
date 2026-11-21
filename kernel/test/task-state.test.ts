@@ -73,6 +73,8 @@ const cases = [
   ["a delegator wait ends at another's comment, not the holder's", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:kai", 2)], NOW,
     { reason: "delegator_wait", attention: [{ who: "agent", why: "delegator_wait" }] }],
   ["a delegator's answer ends the delegator wait", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:aiden", 2)], NOW, { reason: not("delegator_wait") }],
+  ["a release-derived delegator wait carries no question and outlives a comment", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), f("finish.verdict", 5, { check: "grading.finish", verdict: "release" }), comment("agent:aiden", 6)], NOW,
+    { reason: "delegator_wait", question: undefined, attention: [{ who: "agent", why: "delegator_wait" }] }],
   ["a PR on its checks is waiting, never orphaned", [created(), assignee("kai", 0), job("job.ended", 1, { state: "done" }), prWait("checks", 2)], NOW, { kind: "waiting", reason: "module_wait", ref: "checks", since: iso(2), attention: [] }],
   ["a module wait resumed is over", [created(), assignee("kai", 0), prWait("checks", 2), prResumed(5)], NOW, { reason: not("module_wait") }],
   ["a module wait ends when a job starts", [created(), assignee("kai", 0), prWait("checks", 2), job("job.started", 5)], 6, { kind: "working" }],
