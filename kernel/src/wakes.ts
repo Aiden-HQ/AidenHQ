@@ -466,7 +466,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
      */
     async observe(issue: Issue, actor: string) { taskFacts(issue, "live", actor); },
     /**
-     * The reconcile poll: every open task of every polled agent, and its blocked tasks whose blockers closed; and wakes whose jobs
+     * The reconcile poll: every open or blocked task of every polled agent (a blocked one is released once its blockers closed); and wakes whose jobs
      * ended are done. Then every other open task of their companies (the owner's, unassigned ones, unpolled agents') has its facts
      * recorded, and the tasks the facts call open that no list returned are read one by one.
      */
@@ -487,7 +487,11 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
           const b = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
           for (const issue of b.json as Issue[]) listed.add(issue.id);
-          for (const issue of b.json as Issue[]) await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
+          // A blocked task hears its comments too (a sub-task's question to its delegator, which it is blocked on), then is released.
+          for (const issue of b.json as Issue[]) {
+            await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+            await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
+          }
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }

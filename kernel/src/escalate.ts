@@ -2,7 +2,7 @@
 // kernel.db). Two callers: the review loop when the AI reviewer parks a target (MAX_REJECTS), and an agent's own wait on
 // its delegator or the owner (task_wait `for`, notify's decision; idle.ts).
 // - The delegator: the task's parent, else the task of the job that created it (provenance), heard as a kernel notice on
-//   that task (notices.ts, a blocked parent reopens). It carries the wake-notice marker, so the delegator's dispatcher reads it
+//   that task (notices.ts; a parent blocked on the asking task stays blocked and still wakes: wakes.ts scans blocked tasks). It carries the wake-notice marker, so the delegator's dispatcher reads it
 //   as a notice that wakes it, never as the owner's words, although the board key posts it.
 // - The chief of staff (the agent holding role fleet-admin) settles every other judgement: an agent's question for the owner,
 //   and an ask with no open delegator. It gets one small task per ask (kernel-filed, keyed by the asking task and its ask
