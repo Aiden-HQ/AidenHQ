@@ -376,13 +376,30 @@ test("a repo code review gates merges only on its pass for the bound head; a wai
   clock.t += 7 * 24 * 3600_000; // a week of waiting on findings: still waiting
   await merges.step();
   assert.equal(merges.status("k-00000000000000g1").state, "running");
-  answer = "down"; // the service goes down: a wait, until it has been down over 10 minutes
+  answer = "down"; // the service goes down: a wait, until it has been down over 10 minutes (the queue asks every 30 s)
   await merges.step();
-  clock.t += 9 * 60_000;
-  await merges.step();
+  for (let i = 0; i < 18; i++) { clock.t += 30_000; await merges.step(); }
   assert.equal(github.merges().length, 1);
-  clock.t += 2 * 60_000;
-  await merges.step();
+  for (let i = 0; i < 3; i++) { clock.t += 30_000; await merges.step(); }
   assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge", HEAD], ["/repos/acme-agents/widget/pulls/1/merge", HEAD]]);
   assert.deepEqual(bypassed.map(([repo, n, head]) => [repo, n, head]), [["acme-agents/widget", 1, HEAD]], "recorded as pr.review_bypassed");
+});
+
+test("the outage timer counts only one continuous streak of failures: an answer or a quiet spell starts it over", async () => {
+  let down = true;
+  const clock = { t: 0 };
+  const gate = createReviewGate({ gated: ["acme-agents/widget"], url: "http://code-review:8098", key: () => "k", now: () => clock.t,
+    fetchFn: async () => (down ? new Response("", { status: 503 }) : new Response(JSON.stringify({ verdict: "wait" }), { status: 200 })) });
+  const ask = () => gate("acme-agents/widget", 1, HEAD);
+  await ask(); // one blip, then hours with no merge waiting
+  clock.t += 3 * 3600_000;
+  assert.ok("wait" in (await ask()), "a single failure after a quiet spell is a new outage, not a 3-hour one");
+  for (let i = 0; i < 18; i++) { clock.t += 30_000; await ask(); }
+  down = false; // one answer ends the streak
+  clock.t += 30_000; await ask();
+  down = true;
+  clock.t += 30_000;
+  assert.ok("wait" in (await ask()), "the streak starts over after an answer");
+  for (let i = 0; i < 21; i++) { clock.t += 30_000; await ask(); }
+  assert.ok("bypass" in (await ask()), "over 10 minutes of continuous failure lets the merge go");
 });
