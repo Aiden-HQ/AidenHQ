@@ -91,12 +91,13 @@ export async function syncDrive(store: SourceStore, drive: Drive, now = Date.now
   return written;
 }
 
-/** Errors no retry fixes: Drive says 403, 404 or 410, or the file type can't be read. Anything else (5xx, timeouts) is retried. */
+/** Errors no retry fixes: Drive says 403 (not a rate or quota limit), 404 or 410, or the file type can't be read. Anything else (5xx, timeouts, limits) is retried. */
 const UNREADABLE = /^(Google API (403|404|410)\b|Unsupported file type)/;
+const RATE_LIMITED = /rateLimitExceeded|quotaExceeded/i;
 
 /**
  * The summaries pass: Docs and Slides whose revision (or the model or prompt) differs from their summary's, quiet for
- * QUIET_HOURS. A doc that can't be read for good (gone, forbidden, unsupported type) records summary_error for that revision (not retried until it changes); a transient failure stops the pass and is retried next time; a model
+ * QUIET_HOURS. A doc that can't be read for good (gone, forbidden, unsupported type) records summary_error for that revision (not retried until it changes); a transient failure skips that doc for this pass (its revision unstamped, so it is retried next time) and the pass goes on; a model
  * failure stops the pass and is retried next time. Summary writes keep the row's baseline flag and log no change.
  */
 export async function summariseDocs(store: SourceStore, drive: Drive, summarise: Summarise, model: string): Promise<number> {
@@ -116,7 +117,7 @@ export async function summariseDocs(store: SourceStore, drive: Drive, summarise:
       text = (await drive.readFile(d.doc_id, MODEL_INPUT_CHARS)).text;
     } catch (err) {
       const message = String((err as Error).message ?? err);
-      if (!UNREADABLE.test(message)) throw err;
+      if (!UNREADABLE.test(message) || RATE_LIMITED.test(message)) continue;
       await store.upsert(DOC, { ...stamp, summary: null, summary_error: message.slice(0, 300) }, { baseline: true });
       continue;
     }

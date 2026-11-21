@@ -58,7 +58,7 @@ export async function startSocket({ appToken, store, onKept, chat, pair, bind, t
         return;
       }
       const e = msg.type === "events_api" ? toEvent(msg.body) : null;
-      if (e) dedupe(e, () => { if (store.insertEvent(e)) onKept(); });
+      if (e) dedupe(e, () => { store.insertEvent(e); onKept(); }); // the wake-up follows every delivery, so a redelivery after a failed one still wakes
     } catch (err) {
       log.error({ err: String(err) }, "event insert failed; not acking so Slack redelivers");
       return;
