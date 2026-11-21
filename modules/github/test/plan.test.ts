@@ -27,7 +27,7 @@ describe("plan: local change requests", () => {
     assert.ok(planParts("push", { ...s, branches: [{ ...wf, repo: "acme-agents/expense-tracker" }] })[0].some((p) => p.rule === "github-dir" && p.tier === 1), "in the agents org");
     for (const repo of [s.productRepo, s.instanceRepo, "acme-agents/Apps", "acme-agents/.github"]) assert.equal(planParts("create_repo", { ...s, repo })[0][0].tier, 2, repo);
     const red = planParts("merge", { ...s, prs: [pr("local/expense-tracker", { checks: [{ name: "tests", ok: false }] })] })[0][0];
-    assert.equal(red.rule, "checks-not-green");
+    assert.equal(red.rule, "checks-not-green", "a local change has no waiting queue: refused here");
     assert.match(red.reason, /aidenhq status/);
     assert.equal(planParts("merge", { ...s, prs: [pr("local/aidenhq-instance")] })[0][0].rule, "core-repo-merge");
   });
@@ -91,7 +91,8 @@ describe("plan: maintained repos (maintainer_repos)", () => {
     assert.deepEqual(rules("merge", m, pr("Globex/Payments", { checks: [{ name: "tests", pending: true }] })), [["maintained-merge-checks-running", 0]]);
     assert.deepEqual(rules("merge", m, pr("globex/payments", { ownHead: false, dependabot: true })), [["maintained-merge-foreign-head", 1], ["maintained-merge", 0]]);
     assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { ownHead: false })] })[0][0].reason, /the owner listed it in maintainer_repos/);
-    assert.equal(rules("merge", m, pr("globex/payments", { checks: [{ name: "tests", ok: false }] }))[0][0], "checks-not-green", "the same friction");
+    assert.equal(rules("merge", m, pr("globex/payments", { checks: [{ name: "tests", ok: false }] }))[0][0], "maintained-merge-checks-running", "red is the queue's: filed");
+    assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { checks: [] })] })[0][0].reason, /none registered yet/);
     assert.equal(rules("merge", m, pr("globex/payments", { headMatches: false }))[0][0], "head-moved");
     // Listing the product or instance repo changes nothing: their own rules come first.
     assert.deepEqual(rules("merge", { ...m, requester: { platform: true } }, pr(s.productRepo, { platformHead: true })), [["product-merge", 1]]);

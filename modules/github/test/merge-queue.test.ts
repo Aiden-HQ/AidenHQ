@@ -106,16 +106,20 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   assert.deepEqual(JSON.parse(line.replace(/^merged-prs: /, "")).map((p) => [p.repo, p.number, p.head, typeof p.sha]), [["acme-agents/widget", 1, HEAD, "string"]], "the first line lists what it merged, with its merge commit");
 });
 
-test("missing evidence never counts as passing: no checks, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
+test("missing evidence never counts as passing: no checks wait with no time limit, a truncated page of checks, the base's gate check not yet on the head", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", names: [] } };
   const { handle, github, outcomes, merge, settle, clock } = await setup(t, { prs });
   await merge("k-00000000000000c1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
-  clock.t += 11 * 60_000;
+  clock.t += 7 * 24 * 3600_000;
   await handle.stepMerges();
   await settle();
-  assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /no checks on its head/);
+  assert.equal(outcomes.length, 0, "no checks yet: still waiting, never failed for the time");
+  assert.deepEqual(github.merges(), []);
+  prs["acme-agents/widget"] = { head: HEAD, checks: "SUCCESS", names: ["build"] };
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, "merged once its checks registered and passed");
 
   outcomes.length = 0;
   prs["acme-agents/widget"] = { head: HEAD, checks: "SUCCESS", more: true };
@@ -133,7 +137,7 @@ test("missing evidence never counts as passing: no checks, a truncated page of c
   await handle.stepMerges();
   await settle();
   assert.equal(outcomes[0]?.ok, true);
-  assert.deepEqual(github.merges().map((w) => w.body.sha), [HEAD], "merged only once the gate check passed on the head");
+  assert.equal(github.merges().length, 2, "merged again only once the gate check passed on the head");
 });
 
 test("a queue outlives a restart: the kernel hears it still runs, and its outcome once it merged", async (t) => {
@@ -232,7 +236,7 @@ test("a UI head waiting on its design review gets the UI Reviewer's task beside 
   const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING", files: ["web/app.css"] } };
   const tasks = [];
   const checks = (method, url, b) => method === "POST" && url === "/v1/tasks" ? (tasks.push(b), { id: `t${tasks.length}`, identifier: `T-${tasks.length}` }) : undefined;
-  const { handle, github, outcomes, merge, clock } = await setup(t, { prs, checks });
+  const { handle, github, outcomes, merge, settle, clock } = await setup(t, { prs, checks });
   await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
   await handle.stepMerges();
@@ -244,6 +248,10 @@ test("a UI head waiting on its design review gets the UI Reviewer's task beside 
   assert.equal(tasks[1]?.source, `design-review:acme-agents/widget/1@${HEAD}#again`, "no verdict in time: asked once more");
   assert.deepEqual(github.merges(), [], "never merged without the design review's pass");
   assert.equal(outcomes.length, 0);
+  clock.t += 121 * 60_000;
+  await handle.stepMerges();
+  assert.equal(github.merges().length, 1, "still no verdict after the second ask: the design review is advisory for this head");
+  await settle();
 });
 
 test("a merge-queue wait and its end become waiting and resumed facts with the reason", async (t) => {

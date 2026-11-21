@@ -148,7 +148,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
-    if (path.endsWith("/update-branch")) return { status: update, body: {} };
+    if (path.endsWith("/update-branch")) return { status: update, body: update === 422 ? { message: "merge conflict between base and head" } : {} };
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
@@ -191,7 +191,10 @@ test("an agent PR red on its own head wakes its task once per head, and no PR ge
   capped.set([capped.agentPr(8, redPr(8))]);
   writeFileSync(join(capped.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wakes: { "https://github.com/acme/app/pull/8": { head: "h8", n: 3 } } } }));
   await capped.watch.tick();
-  assert.equal(capped.woke.length, 0, "three wakes at this head: no more");
+  assert.equal(capped.woke.length, 1, "three wakes at this head: no more, but the asker is told once");
+  assert.deepEqual([capped.woke[0].to, /Wake cap on ACME-8/.test(capped.woke[0].text)], ["asker", true]);
+  await capped.watch.tick();
+  assert.equal(capped.woke.length, 1, "told once per head");
 });
 
 test("red checks whose job never started are re-run once at the head, with no wake", async (t) => {
@@ -214,6 +217,11 @@ test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refuse
   assert.ok(d.gh.includes("PUT /repos/acme/app/pulls/6/update-branch merge"));
   assert.equal(d.woke.length, 1);
   assert.match(d.woke[0].text, /Rebase the PR's branch onto `origin\/main`/);
+  const e = await rig(t, { behind: 2, update: 502 });
+  e.set([e.agentPr(7, redPr(7))]);
+  await e.watch.tick(); await e.watch.tick();
+  assert.equal(e.gh.filter((g) => g === "PUT /repos/acme/app/pulls/7/update-branch rebase").length, 1, "a 5xx is asked again after its backoff, not every tick");
+  assert.equal(e.woke.length, 0, "no wake while the update will retry");
 });
 
 test("a green agent PR has its merge filed by the kernel for its task, once per head; a head its task's PR didn't push wakes the task", async (t) => {

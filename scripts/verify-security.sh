@@ -815,7 +815,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
 rgate="modules/github/service/src/evalgate.ts"
 [ "$(grep -c 'await d\.evalGate(' "$rq")" = 1 ] && [ "$(grep -c 'await mergePut(' "$rq")" = 1 ] \
   && [ "$(awk '/^  async function poll\(/,/^  }$/' "$rq" | grep -nE 'await d\.evalGate\(|await mergePut\(' | cut -d: -f2- | sed 's/^ *//' | cut -c1-24 | tr '\n' '|')" = 'const gate = await d.eva|p.sha = await mergePut(p|' ] \
-  && grep -qF 'if (gate && "stop" in gate) return fail(gate.stop);' "$rq" && grep -qF 'if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);' "$rq" \
+  && grep -qF 'if (gate && "stop" in gate) return fail(gate.stop);' "$rq" && grep -qF 'if (gate) return wait("eval");' "$rq" \
   && pass "codehost: a PR that changes the AI reviewer's code merges only on a passing eval receipt for its exact head, verified by the kernel ($rgate)" \
   || fail "codehost: the reviewer-eval receipt gate on merges changed ($rgate, $rq)"
 # ...and it must see the reviewer where it lives: the product's own modules/ai-reviewer (one repo since 2026-11-18). A product

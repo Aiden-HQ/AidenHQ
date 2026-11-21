@@ -6,15 +6,17 @@
 // never race on a base. A PR merges only at the head the record bound (the merge call carries that sha, so GitHub refuses any
 // other), once the gate says so, the reviewer-eval gate (evalgate.ts) has a verified receipt where it requires one and, last, on a
 // repo code review gates, code review's verdict for that head is pass (review-gate.ts). A review wait has no time limit: it
-// resumes when the verdict passes, and ends only when the PR moves or closes.
+// resumes when the verdict passes, and ends only when the PR moves or closes. So does every other wait (running checks, a red
+// base, mergeability, GitHub's errors, a reviewer eval that couldn't run): waiting is never failing, and a PR fails only on a
+// terminal state (closed, head moved, red checks on the head, changes requested).
 // A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
-// head, beside its checks; with no verdict in time it is asked once more, then the PR isn't merged.
+// head, beside its checks; with no verdict in time it is asked once more, then the design review is advisory for that head.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { mergeable, withTrailer } from "./git-auth.ts";
-import { DESIGN_REVIEW, EVAL_WAIT_MINUTES, PR_QUERY, WAIT_MINUTES, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
+import { DESIGN_REVIEW, PR_QUERY, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
@@ -22,13 +24,11 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 export type EvalGate = (repo: string, pr: any) => Promise<undefined | { wait: string } | { stop: string }>;
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; checked?: string; unanswered?: boolean; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; unanswered?: boolean; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
-/** How long GitHub may keep failing on one PR before it is reported not merged. */
-const ERROR_MINUTES = 30;
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs this queue merged (finish). */
 export const MERGED_LINE = "merged-prs: ";
@@ -105,9 +105,8 @@ export function createMerges(d: {
       delete p.wait;
       q.said.push(`**Not merged:** ${p.url}: ${why}.`);
     };
-    const wait = (key: string, why: string, limit: number) => {
+    const wait = (key: string) => {
       if (p.wait?.key !== key) p.wait = { key, since: now().toISOString() };
-      if (t - Date.parse(p.wait.since) > limit * 60_000) fail(`stuck for ${limit} minutes: ${why}`);
     };
     const askReview = async (again: boolean) => {
       if (again) p.reviewAskedAgain = p.head;
@@ -120,7 +119,7 @@ export function createMerges(d: {
     try {
       const data = await readPr(p.repo, p.number);
       const uiReview = inFleetOrg(p.repo);
-      const v = decide(data, p.head, { uiReview });
+      let v = decide(data, p.head, { uiReview, designAdvisory: p.reviewExpired === p.head });
       const pull = data.repository.pullRequest;
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
       const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
@@ -140,25 +139,32 @@ export function createMerges(d: {
         if (ours) merged.add(p.repo.toLowerCase());
         return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
       }
-      if (v.do === "fail") return fail(v.why);
       if (v.do === "wait") {
         // No verdict within its time: the reviewer is asked once more for the same head and the wait starts over.
-        if (v.review && p.wait?.key === v.why && t - Date.parse(p.wait.since) > DESIGN_REVIEW.minutes * 60_000 && p.reviewAskedAgain !== p.head) {
-          p.wait = { key: v.why, since: now().toISOString() };
-          return askReview(true);
+        // Still none after that: a slow UI Reviewer is not a verdict, so its review is advisory for this head (a failure still fails).
+        if (v.review && p.wait?.key === v.why && t - Date.parse(p.wait.since) > DESIGN_REVIEW.minutes * 60_000) {
+          if (p.reviewAskedAgain !== p.head) {
+            p.wait = { key: v.why, since: now().toISOString() };
+            return askReview(true);
+          }
+          p.reviewExpired = p.head;
+          log("design review advisory: no verdict in time", { pr: p.url });
+          v = decide(data, p.head, { uiReview, designAdvisory: true });
         }
-        return wait(v.why, v.why, v.limit ?? WAIT_MINUTES);
       }
+      if (v.do === "fail") return fail(v.why);
+      if (v.do === "wait") return wait(v.why);
+      if (v.do !== "merge") return;
       const gate = await d.evalGate(p.repo, data.repository.pullRequest);
       if (gate && "stop" in gate) return fail(gate.stop);
-      if (gate) return wait("eval", gate.wait, EVAL_WAIT_MINUTES);
+      if (gate) return wait("eval");
       const review = await d.reviewGate(p.repo, p.number, p.head);
       if (review && "bypass" in review) p.bypass = review.bypass;
       else delete p.bypass;
       if (review && "wait" in review) {
         if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
         p.note = review.wait;
-        return wait("review", review.wait, Infinity);
+        return wait("review");
       }
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
@@ -166,13 +172,13 @@ export function createMerges(d: {
         p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
-        if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry", "GitHub asked to try the merge again", WAIT_MINUTES);
+        if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry");
         // Only a 4xx is GitHub's answer. A timeout or a 5xx may have merged: the next poll reads the PR and sees which.
         const status = (e as { status?: number }).status ?? 0;
         if (status >= 400 && status < 500) return fail(`GitHub refused the merge: ${says(e)}`);
         log("merge call unanswered", { pr: p.url, err: says(e) });
         p.unanswered = true;
-        return wait("put", `GitHub didn't answer the merge call: ${says(e)}`, ERROR_MINUTES);
+        return wait("put");
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
@@ -183,7 +189,7 @@ export function createMerges(d: {
       q.said.push(`Merged ${p.url}.`);
     } catch (e) {
       log("merge poll failed", { repo: p.repo, number: p.number, err: says(e) });
-      wait("error", `GitHub kept failing: ${says(e)}`, ERROR_MINUTES);
+      wait("error");
     }
   }
 
