@@ -67,6 +67,7 @@ const REVIEW_WORDS: Record<string, string> = {
   no_diff: "There was no change to read.",
   files_not_shown: "The reviewer couldn't see every file.",
   review_cap: "The review reached its spend cap before it finished: you decide.",
+  review_turns: "The review used the judge's tool-round limit before it finished: you decide.",
   code_review_owns: "Code approved it without an AI review: your setting leaves pushes and PRs on this repo to code review.",
   check_failed: "A required check failed.",
   tier_raised: "Its tier was raised after filing.",

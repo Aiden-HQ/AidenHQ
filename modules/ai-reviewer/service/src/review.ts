@@ -96,7 +96,7 @@ export const CHECKLIST_FILE = join(import.meta.dirname, "../security/checklist.j
  * ones the model picks from, and the ones code sets when it escalates without, or despite, a usable verdict.
  */
 export const MODEL_CODES = ["in_scope", "out_of_scope", "secret_exfiltration", "gate_change", "prompt_injection", "stale_request", "destructive_change", "supply_chain", "policy_other", "owner_should_look", "reviewer_unsure"];
-export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "files_not_shown", "review_cap", "code_review_owns", "check_failed", "tier_raised", "new_authority", "autonomy_off", "routine_autonomy", "owner_tier", "shadow", "panel_split", "refused_by_code", "stale_head"];
+export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "files_not_shown", "review_cap", "review_turns", "code_review_owns", "check_failed", "tier_raised", "new_authority", "autonomy_off", "routine_autonomy", "owner_tier", "shadow", "panel_split", "refused_by_code", "stale_head"];
 /** The model's "I can't tell": a second reviewer decides; both unsure, the card goes back to the agent with this code. */
 export const UNSURE = "reviewer_unsure";
 
@@ -605,8 +605,8 @@ type ReviewArgs = ReviewRequest & { ask: Ask; onPanel?: () => Promise<void>; pol
  * The verdict on one Tier 1 card: { decision, code, reason, model, second? }. `second` names the second reviewer when two
  * were asked and the card is approved. Code decides without a model call: no diff, or a changed file the reviewer can't
  * read (a binary), goes back to the agent (reject, a code reason: fix and ask again); no independent model goes to the
- * owner. Size is never a reason. A call error or timeout is `reviewer_failed` (the runner retries it later); a spend cap or
- * the tool-round limit goes to the owner (review_cap); every model refusing escalates.
+ * owner. Size is never a reason. A call error or timeout is `reviewer_failed` (the runner retries it later); a spend cap goes
+ * to the owner (review_cap) and so does the tool-round limit (review_turns); every model refusing escalates.
  *
  * Two reviewers (owner, 2026-11-20): a first unsure hands the card to a second reviewer on another family, given its note;
  * an authority-expanding card (`panel`: code says so; or the first reviewer's own second_review flag, which can only add it)
@@ -689,12 +689,15 @@ export async function review({ card, diff, files = { list: [], leftOut: [] }, ch
 
 /**
  * A vote whose call failed: retried later (reviewer_failed), except a call stopped at a limit, the gateway's spend cap (the
- * review's own, REVIEW_USD in the kernel, or the install's) or the judge's tool rounds (MAX_TURNS): it goes to the owner
- * (review_cap), never approved unread.
+ * review's own, REVIEW_USD in the kernel, or the install's) or the judge's tool rounds (MAX_TURNS): each goes to the owner,
+ * never approved unread. They are told apart by code: `review_cap` is spend exhaustion (retry once the budget frees) and
+ * `review_turns` is the tool-round limit (waiting will not help; the change must ask for fewer rounds' worth of reading).
  */
-const failedOf = (failed: string, model: string, who = "the reviewer"): Result => /cap_reached|max_turns/.test(failed)
-  ? { decision: "escalate", code: "review_cap", reason: `the review reached a limit before ${who} finished (${failed}): the owner decides`, model }
-  : { decision: "escalate", code: "reviewer_failed", reason: `${who} failed (${failed})`, model };
+const failedOf = (failed: string, model: string, who = "the reviewer"): Result => /cap_reached/.test(failed)
+  ? { decision: "escalate", code: "review_cap", reason: `the review reached its spend cap before ${who} finished (${failed}): the owner decides`, model }
+  : /max_turns/.test(failed)
+    ? { decision: "escalate", code: "review_turns", reason: `the review used the judge's tool-round limit before ${who} finished (${failed}): the owner decides`, model }
+    : { decision: "escalate", code: "reviewer_failed", reason: `${who} failed (${failed})`, model };
 
 /** The panel's outcome after a first approve (see review()): the second's vote decides how. */
 function panelVotes(v1: FirstVote, v2: Voted, flag: boolean, whole: boolean): Result {

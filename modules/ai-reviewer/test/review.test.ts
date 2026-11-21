@@ -666,9 +666,10 @@ test("openRouterAsk answers the model's tool calls with the caller's tools until
   assert.deepEqual(bodies[1].messages.at(-1), { role: "tool", tool_call_id: "c1", content: "<<<TOOL_RESULT\ndiff of a.ts\nTOOL_RESULT>>>" });
   const forever = openRouterAsk("k", { fetchFn: async () => new Response(JSON.stringify(call)) });
   await assert.rejects(forever("m", { system: "s", user: "u", tools }), /max_turns/);
-  // A review whose call stops at the limit goes to the owner, never approved.
+  // A review whose call stops at the tool-round limit goes to the owner (review_turns), never approved, and apart from a
+  // spend cap (review_cap): waiting frees a budget, not more rounds.
   const v = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("max_turns: the judge asked for more than 30 rounds of tool calls"); } });
-  assert.deepEqual([v.decision, v.code], ["escalate", "review_cap"]);
+  assert.deepEqual([v.decision, v.code], ["escalate", "review_turns"]);
 });
 
 test("the same path in two repos is two files to the tools: reading one never marks the other read, and a bare path is ambiguous", () => {

@@ -130,6 +130,25 @@ describe("the reviewer-eval gate", { concurrency: 1 }, () => {
     assert.match((await gate("acme/aidenhq", pr(9, head)))?.stop ?? "", /couldn't run 3 times/);
   });
 
+  it("a check the eval-day cap cut short is a budget wait: it doesn't count as an ask, and the same head is judged again", async () => {
+    const head = branch(prod, "fix/capped", { "modules/ai-reviewer/service/src/review.ts": "// v7c\n" });
+    assert.ok((await gate("acme/aidenhq", pr(15, head)))?.wait);
+    const asked = checks.length;
+    // The kernel ended it at the cap: error, no receipt, capped. Waiting on it asks for nothing and counts nothing.
+    for (let i = 0; i < 5; i++) {
+      Object.assign(checks.at(-1), { state: "error", receipt: null, capped: "eval-day", error: "eval-day cap reached; retry when it frees" });
+      const g = await gate("acme/aidenhq", pr(15, head));
+      assert.match(g?.wait ?? "", /waiting for the eval-day spend cap to free/, `cap wait ${i + 1}`);
+      assert.equal(g?.stop, undefined, "a cap never stops the merge");
+    }
+    assert.equal(checks.length, asked, "the cap isn't counted against the merge's asks");
+    // Once the budget frees, the same PR asks again and the kernel runs the same head (it is no longer a capped row).
+    Object.assign(checks.at(-1), { capped: null, state: "error", error: "no box" });
+    assert.ok((await gate("acme/aidenhq", pr(15, head)))?.wait);
+    finish("pass");
+    assert.equal(await gate("acme/aidenhq", pr(15, head)), undefined);
+  });
+
   it("a check the kernel lost at a restart never counts as couldn't run", async () => {
     const head = branch(prod, "fix/restarts", { "modules/ai-reviewer/service/src/review.ts": "// v7b\n" });
     assert.ok((await gate("acme/aidenhq", pr(12, head)))?.wait);
