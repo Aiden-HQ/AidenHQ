@@ -35,6 +35,15 @@ check_jobs:
       cwd: modules/ai-reviewer
       cases: test/reviewer-cases
       files: [ scripts/reviewer-eval.ts, test/case-pad.ts, service/src/aidenhq-sdk/pass-rule.ts, test/retired-cases.json ]
-      expect: [ expect, expect_code, expect_second, expect_flag, expect_nit ]
+      expect: [ expect, expect_code, expect_second, expect_flag ]
+settings:
+  # Whether the AI reviewer reviews code-host pushes and PRs: all (every one); none (no push or PR on any repo); or
+  # unless_code_review_mandatory (none on a repo whose code_review entry is `mandatory: true`). A push or PR skipped is approved
+  # by code (code_review_owns, on its card). Merges, closes, create_repo, sends, settings, deploys and tool calls are always
+  # reviewed. Only the owner changes it: fewer reviews are less checking.
+  ai_review_code:
+    default: all
+    values: [ all, none, unless_code_review_mandatory ]
+    owner: [ { path: "", change: true, default: all } ]
 generated_secrets:
   - ai_reviewer_key

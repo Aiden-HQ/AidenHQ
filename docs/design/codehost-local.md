@@ -73,7 +73,7 @@ words, diff and decisions are kernel records.
 - **Kinds:** the same actions, args, floors and path-based tiering as `github`'s. `pr` publishes a branch and opens the change
   for it, or moves the open change of that branch to its new head; `merge` names the change with its approved `head`; `close`
   writes the `closed` ref. Cards carry the diff (`git diff base...head`), the reviewer also reads each changed file at
-  the head and the change's Evidence section, read from the repo and workspace, never from the args.
+  the head, read from the repo and workspace, never from the args.
 - Apps-mcp's `/internal/open-prs` and `/internal/pr-states` answer for `local/*` from these refs (read-only mount, section 6).
 
 ## 5. Checks and merge

@@ -27,7 +27,6 @@
     "(answered on the task since: see TASK_COMMENTS) The request requires the supplied file byte-for-byte, but the diff uses `\\n` escapes where the supplied content has `\\\\n` (and makes the same change in other regexes and strings). Refile with the exact requested content or update the request to authorize the different file.",
     "(answered on the task since: see TASK_COMMENTS) The request requires the supplied file byte-for-byte, but the diff uses single `\\n` and `\\s` escapes where the supplied content uses double escapes, including in the step boundaries and regexes. Refile with the exact requested content or update the request to authorize this version."
   ],
-  "evidence": "`npm test` in modules/maintainer now runs the new test: all pass.",
   "claim": "Publishes the authorised test file and widens the test glob, as the owner approved on the task.",
   "expect": [
     "reject",

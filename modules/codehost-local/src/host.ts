@@ -14,7 +14,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join } from "node:path";
 import { planParts, plan as planRules } from "../../github/service/src/plan.ts";
 import { fileContext, numstat } from "../../github/service/src/review-files.ts";
-import { evidenceOf } from "../../github/service/src/evidence.ts";
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "../../github/service/src/sources.ts";
 import { DEFAULT_CHURN_EXCLUDE, churnFromGit } from "../../../kernel/sdk/src/churn.ts";
 import type { FactIn } from "../../../kernel/sdk/src/kernel-client.ts";
@@ -147,7 +146,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   const base = (requester?: { roles?: string[] }) => ({ agentsOrgs: [LOCAL_ORG], allowedOrgs: [LOCAL_ORG], instanceRepo, productRepo, requester: { platform: (requester?.roles ?? []).includes("platform-engineer") } });
 
   /** The verified state plan.ts tiers a request on, and the card's diff: read from the bare repos and the workspace, never the args. */
-  async function stateFor(action: string, a: any, requester?: { roles?: string[] }): Promise<{ state: any; target: string; sentence: string; diff: string; reads?: { name: string; read: () => Promise<string> }[]; changed?: { path: string; add?: number; del?: number }[]; evidence?: string; bases?: { repo: string; base: string; read: (path: string) => Promise<string> }[] }> {
+  async function stateFor(action: string, a: any, requester?: { roles?: string[] }): Promise<{ state: any; target: string; sentence: string; diff: string; reads?: { name: string; read: () => Promise<string> }[]; changed?: { path: string; add?: number; del?: number }[]; bases?: { repo: string; base: string; read: (path: string) => Promise<string> }[] }> {
     // What the reviewer reads beside the diff: each changed file at the reviewed head, and the change's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
     const changed: { path: string; add?: number; del?: number }[] = [];
@@ -156,7 +155,6 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     if (action === "create_repo") return { state: { ...base(requester), repo: String(a.repo) }, target: String(a.repo), sentence: `Create the repository ${a.repo} on this server.`, diff: "" };
     if (action === "merge" || action === "close") {
       const prs = [];
-      const evidence: string[] = [];
       let diff = "";
       for (const p of a.prs ?? []) {
         if (!exists(p.repo)) throw fail(404, `${p.repo} isn't on this server`);
@@ -166,13 +164,12 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
           diff += await diffText(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head);
           changed.push(...(await numstatOf(p.repo, c.base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.head)));
           for (const f of c.files) reads.push({ name: `${p.repo} ${f}`, read: () => git(["--git-dir", bare(p.repo), "show", `${c.head}:${f}`], { raw: true }) });
-          evidence.push(`### ${changeUrl(p.repo, c.n)}\n${evidenceOf(c.meta?.body)}`);
           bases.push({ repo: p.repo, base: c.main ? await defaultBranch(p.repo) : "", read: (path) => g(p.repo, ["show", `${c.main}:${path}`]) });
         }
         prs.push({ repo: p.repo, number: c.n, head: c.head, base: c.base, headMatches: !p.head || p.head === c.head, files: c.files, ownHead: true, dependabot: false, checks: action === "merge" ? (await checks(p.repo, c.head, c.base, true)).map(({ ok, pending }) => ({ ok, pending })) : [] });
       }
       const urls = prs.map((p) => changeUrl(p.repo, p.number)).join(", ");
-      return { state: { ...base(requester), prs }, target: urls, sentence: `${action === "merge" ? "Merge" : "Close"} ${urls}${action === "merge" ? " at its approved head, once its checks are green" : ""}.`, diff, reads, changed, bases, ...(action === "merge" ? { evidence: evidence.join("\n\n") } : {}) };
+      return { state: { ...base(requester), prs }, target: urls, sentence: `${action === "merge" ? "Merge" : "Close"} ${urls}${action === "merge" ? " at its approved head, once its checks are green" : ""}.`, diff, reads, changed, bases };
     }
     const branches = [];
     let diff = "";
@@ -207,7 +204,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       }
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
-    return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff, reads, changed, bases, ...(action === "pr" && a.text ? { evidence: evidenceOf(a.text.body) } : {}) };
+    return { state: { ...base(requester), workspace: a.workspace, branches }, target: names, sentence: `${action === "pr" ? "Publish and open a change request for" : "Push"} ${names}.`, diff, reads, changed, bases };
   }
 
   /**
@@ -234,10 +231,10 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       // The reviewer's context goes with the filing only, as codehost-github's (every changed file read whole).
       if (req.revalidate) return planned;
       const sources = await readCardSourceExceptions(s.bases ?? [], (repo: string, base: string) => s.bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
-      if (!s.reads?.length && !s.changed?.length && s.evidence === undefined && !sources) return planned;
+      if (!s.reads?.length && !s.changed?.length && !sources) return planned;
       const files = [];
       for (const f of s.reads ?? []) files.push({ name: f.name, text: await f.read().catch(() => undefined) });
-      return { ...planned, review: { ...(files.length || s.changed?.length ? { files: { ...fileContext(files), ...(s.changed?.length ? { changed: s.changed } : {}) } } : {}), ...(s.evidence !== undefined ? { evidence: s.evidence } : {}), ...(sources ? { sources } : {}) } };
+      return { ...planned, review: { ...(files.length || s.changed?.length ? { files: { ...fileContext(files), ...(s.changed?.length ? { changed: s.changed } : {}) } } : {}), ...(sources ? { sources } : {}) } };
     },
     async execute(rec: { kind: string; args: any }) {
       const a = rec.args ?? {}, action = rec.kind.replace(/^codehost-local\./, "");

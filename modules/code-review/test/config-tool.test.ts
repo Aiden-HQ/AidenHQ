@@ -40,3 +40,9 @@ test("an agent's one-off takes an engine's offered model at its default cap, or 
   await assert.rejects(run.run({ pr_url: "https://github.com/acme/x/pull/1", combos: [{ engine: "claude-code", model: "anthropic/claude-opus-5.5", effort: "max", run_usd: 20 }] }, who), /owner's to choose/);
   assert.equal(asked.length, 1);
 });
+
+test("a repo's mandatory flag (code review is a required merge step) is false by default and only true or false", () => {
+  const c = readConfig(JSON.stringify({ repos: [{ repo: "acme/x", mandatory: true }, { repo: "acme/y" }, { repo: "acme/z", mandatory: "yes" }] }));
+  assert.deepEqual(c.repos.map((r) => [r.repo, r.mandatory]), [["acme/x", true], ["acme/y", false]]);
+  assert.ok(c.errors.some((e) => /mandatory is true or false/.test(e)));
+});
