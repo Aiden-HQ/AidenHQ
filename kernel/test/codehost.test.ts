@@ -296,15 +296,87 @@ test("a codehost needs_owner answer is recorded, and the answer is unchanged", a
   t.after(() => host.close());
   const url = `http://127.0.0.1:${host.address().port}`;
   const needs = [];
+  const cleared = [];
   const op = createCodehost({
     grants: () => [{ module: "ci", runner: { orgs: ["acme"] } }],
     repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }),
     secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
     recordNeed: (module, need) => needs.push([module, need]),
+    clearNeed: (module) => cleared.push(module),
   });
   const sent: { head?: number; body?: string } = {};
   const res = { writeHead(c) { sent.head = c; return this; }, write(c) { sent.body = (sent.body ?? "") + c; }, end(b) { if (b) sent.body = (sent.body ?? "") + b; }, on() { return this; }, once() { return this; }, emit() {} };
   await op.op("ci", "runner_token", { org: "acme" }, res);
   assert.deepEqual(needs, [["ci", { cause: "scope", scope: "admin:org", detail: "GitHub needs the `admin:org` permission: reconnect GitHub on the board" }]]);
   assert.deepEqual([sent.head, sent.body], [403, answer], "the module's answer goes back as it came");
+  assert.deepEqual(cleared, [], "a refusal clears nothing");
+});
+
+// The other half: a 2xx op proves the owner's sign-in worked, so a full need an earlier refusal recorded clears the way the
+// MCP proxy's SIGNED_IN answer clears it (a scope need is partial and stays until the owner grants it).
+test("a codehost 2xx answer clears a full need, and the answer is unchanged", async (t) => {
+  const answer = JSON.stringify({ ok: true });
+  const host = createServer((req, res) => { req.resume().on("end", () => res.writeHead(200, { "content-type": "application/json" }).end(answer)); });
+  await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
+  t.after(() => host.close());
+  const url = `http://127.0.0.1:${host.address().port}`;
+  const cleared = [];
+  const op = createCodehost({
+    grants: () => [{ module: "ci", runner: { orgs: ["acme"] } }],
+    repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }),
+    secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
+    clearNeed: (module) => cleared.push(module),
+  });
+  const sent = {};
+  const res = { writeHead(c) { sent.head = c; return this; }, write(c) { sent.body = (sent.body ?? "") + c; }, end(b) { if (b) sent.body = (sent.body ?? "") + b; }, on() { return this; }, once() { return this; }, emit() {} };
+  await op.op("ci", "runner_token", { org: "acme" }, res);
+  assert.deepEqual(cleared, ["ci"], "the op's own module clears what it recorded");
+  assert.deepEqual([sent.head, sent.body], [200, answer], "the module's answer goes back as it came");
+});
+
+// A transient cause (unreachable, rate_limited) is not the owner's to fix: it records nothing, as the MCP proxy's readNeed
+// leaves it as a plain error. An unknown cause reads as not_connected, as readNeed does, so a typo never recreates a silent refusal.
+test("only owner-fixable causes record a need; a transient one does not", async (t) => {
+  for (const [body, expected] of [
+    [{ error: "rate limited until 12:00", need: { cause: "rate_limited" } }, []],
+    [{ error: "acme/x isn't reachable", need: { cause: "unreachable" } }, []],
+    [{ error: "GitHub said no", need: { cause: "not_a_cause" } }, [["ci", { cause: "not_connected", detail: "GitHub said no" }]]],
+  ] as const) {
+    const host = createServer((req, res) => { req.resume().on("end", () => res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify(body))); });
+    await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
+    t.after(() => host.close());
+    const url = `http://127.0.0.1:${host.address().port}`;
+    const needs = [];
+    const op = createCodehost({
+      grants: () => [{ module: "ci", runner: { orgs: ["acme"] } }],
+      repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }),
+      secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
+      recordNeed: (module, need) => needs.push([module, need]),
+    });
+    const res = { writeHead() { return this; }, write() {}, end() {}, on() { return this; }, once() { return this; }, emit() {} };
+    await op.op("ci", "runner_token", { org: "acme" }, res);
+    assert.deepEqual(needs, expected, JSON.stringify(body));
+  }
+});
+
+// An error answer too big to hold whole streams through unchanged and records nothing: op() never rejects before the caller
+// has its answer (a body is not a reason to fail the op), and a partial read is never parsed as a need.
+test("an oversized error answer streams through unchanged and records no need", async (t) => {
+  const answer = JSON.stringify({ error: "x".repeat(2 << 20), need: { cause: "scope", scope: "admin:org" } });
+  const host = createServer((req, res) => { req.resume().on("end", () => res.writeHead(403, { "content-type": "application/json" }).end(answer)); });
+  await new Promise((ok) => host.listen(0, "127.0.0.1", ok));
+  t.after(() => host.close());
+  const url = `http://127.0.0.1:${host.address().port}`;
+  const needs = [];
+  const op = createCodehost({
+    grants: () => [{ module: "ci", runner: { orgs: ["acme"] } }],
+    repos: () => ({}), kind: () => ({ module: "github", floor: 0, tools: [], executor: { url: `${url}/aidenhq/v1/executor`, auth_secret: "k" } }),
+    secret: () => "ch-key", resolver: { resolve: async (u) => ({ host: "127.0.0.1", port: Number(new URL(u).port), path: new URL(u).pathname }), forget: () => {} },
+    recordNeed: (module, need) => needs.push([module, need]),
+  });
+  const chunks: Buffer[] = [];
+  const res = { writeHead() { return this; }, write(c) { chunks.push(Buffer.from(c)); return true; }, end(b) { if (b) chunks.push(Buffer.from(b)); return this; }, on() { return this; }, once() { return this; }, emit() {} };
+  await op.op("ci", "runner_token", { org: "acme" }, res);
+  assert.deepEqual(needs, [], "a partial read never records a need");
+  assert.equal(Buffer.concat(chunks).toString("utf8"), answer, "the answer reaches the caller as it came");
 });

@@ -3,21 +3,25 @@
 // at once: RestartSec=1 stays the job-to-job path.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const scripts = ["ci-runner.sh", "ci-runner-backoff.sh"].map((name) => join(here, "../../ops", name));
+// The unit's scripts and the helper both source, at the paths they use in a checkout.
+const scripts = ["ci-runner.sh", "ci-runner-backoff.sh", "lib/ci-runner-backoff.sh"].map((name) => join(here, "../../ops", name));
 
 /** A checkout whose node, docker and sleep are fakes recording each call; `token` fails while the fixture file says so. */
 function checkout() {
   const dir = mkdtempSync(join(tmpdir(), "ci-runner-"));
   mkdirSync(join(dir, "bin"));
-  mkdirSync(join(dir, "ops"));
-  for (const script of scripts) writeFileSync(join(dir, "ops", script.slice(script.lastIndexOf("/") + 1)), readFileSync(script, "utf8"));
+  for (const script of scripts) {
+    const into = join(dir, "ops", script.slice(script.lastIndexOf("/ops/") + 5));
+    mkdirSync(dirname(into), { recursive: true });
+    writeFileSync(into, readFileSync(script, "utf8"));
+  }
   const fake = (name, body) => {
     writeFileSync(join(dir, "bin", name), `#!/usr/bin/env bash\nprintf '%s\\n' "${name} $*" >> "$LOG"\n${body}\n`);
     chmodSync(join(dir, "bin", name), 0o755);
@@ -79,6 +83,59 @@ test("a refused token waits 1s, 2s, 4s before the next attempt; a token that min
   const clean = await run(dir);
   assert.equal(clean.status, 0, clean.out);
   assert.deepEqual(retries(clean.calls), [], "a clean start does not sleep");
+});
+
+// A marker an older version left at 300s exceeds systemd's 90s ExecStartPre timeout: the attempt would be killed before the
+// script could retry or lower it. The wait is clamped to the cap, and the clamp is persisted, so the refusal loop keeps going.
+test("a legacy 300s marker is clamped to the 60s cap before sleeping", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "fail"), "");
+  mkdirSync(join(dir, "data/ci-runner"), { recursive: true });
+  writeFileSync(marker(dir), "300\n");
+  const r = await run(dir);
+  assert.equal(r.status, 1, r.out);
+  assert.deepEqual(retries(r.calls), [60], "the persisted wait is clamped before it is served");
+  assert.equal(readFileSync(marker(dir), "utf8").trim(), "60", "and the clamp is written back");
+  const next = await run(dir);
+  assert.deepEqual(retries(next.calls), [60], "the next attempt serves the cap");
+  assert.equal(readFileSync(marker(dir), "utf8").trim(), "60", "and stays at the cap");
+});
+
+// A marker left before a drain or an outage is not a refusal that is still looping: once it is old, the runner starts at once
+// rather than serving a stale wait (the owner may have fixed the sign-in while the units were stopped).
+test("a stale marker does not delay a runner brought back after a drain", async () => {
+  const dir = checkout();
+  mkdirSync(join(dir, "data/ci-runner"), { recursive: true });
+  writeFileSync(marker(dir), "60\n");
+  const long_ago = new Date(Date.now() - 60 * 60_000);
+  utimesSync(marker(dir), long_ago, long_ago);
+  const r = await run(dir);
+  assert.equal(r.status, 0, r.out);
+  assert.deepEqual(retries(r.calls), [], "the stale wait is not served");
+  assert.ok(r.calls.some((c) => c.startsWith("docker compose run")), r.calls.join("\n"));
+});
+
+// A data dir that can't take the marker must not turn the refusal into a clean exit (the unit would then look healthy): the
+// script reports it and exits non-zero, so the unit keeps restarting and CiRunnerRestartLooping sees the loop.
+test("a marker that can't be written still ends the attempt as a refusal", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "fail"), "");
+  writeFileSync(join(dir, "data"), "not a directory");
+  const r = await run(dir);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /could not record the 1s backoff/);
+  assert.ok(!r.calls.some((c) => c.startsWith("docker compose run")), "the job's container never runs without a token");
+});
+
+// The scripts keep the marker through one helper, so its path and sanitisation live in one place: an org id with a slash
+// (impossible in a unit name, possible in an argument) never writes outside the data dir.
+test("one marker per unit, under the data dir, from both scripts", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "fail"), "");
+  const r = await run(dir, "acme/../x");
+  assert.equal(r.status, 1, r.out);
+  assert.ok(existsSync(join(dir, "data/ci-runner/acme_.._x.backoff")), "the id is reduced to filename characters");
+  assert.ok(!existsSync(join(dir, "data/x.backoff")));
 });
 
 test("each unit has its own delay", async () => {

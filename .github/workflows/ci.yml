@@ -321,6 +321,19 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      # The monitoring rules, in the image modules/monitoring/prometheus/Dockerfile pins (a change to it is dated by the policy
+      # job): the same promtool the module ships, so the check and the test are the deployed version's. `test rules` also runs
+      # `check rules` internally; both are run so a malformed rule file fails with promtool's own message before a test does.
+      # The image is read from the Dockerfile, so this never holds a version or a digest of its own.
+      - name: promtool check rules
+        run: |
+          image=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' modules/monitoring/prometheus/Dockerfile | head -n 1)
+          echo "promtool from ${image}"
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$image" check rules rules.yml
+      - name: promtool test rules
+        run: |
+          image=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' modules/monitoring/prometheus/Dockerfile | head -n 1)
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$image" test rules rules.test.yml
       # The suites to test (.github/ci/select.ts, map in .github/ci/areas.json): on a pull request, those its changed
       # files touch, both files read from the base so a PR can't shrink its own set (a base without them runs every suite);
       # on a rebased head with an unchanged patch, only those main's new commits also touch. Every suite on a push to main.

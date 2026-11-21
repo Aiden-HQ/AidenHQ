@@ -1,6 +1,7 @@
 # The alert rules' behaviour (docs/design/monitoring.md, "Alerts and routing"):
 #   promtool test rules modules/monitoring/prometheus/rules.test.yml
-# No CI job runs it (none does today): run it by hand, or with the module's image (docs/design/monitoring.md).
+# The `checks` job of .github/workflows/ci.yml runs `promtool check rules` and `promtool test rules` on every pull request head
+# and push to main, with the prom/prometheus image modules/monitoring/prometheus/Dockerfile pins (docs/design/monitoring.md).
 # Prometheus's own rule test: synthetic series in, alerts out at each eval time.
 rule_files:
   - rules.yml
@@ -109,8 +110,9 @@ tests:
             exp_annotations:
               summary: "CI runner unit aidenhq-ci-runner@7.service stopped reporting (it was in units.prom within the last day)"
 
-  # Restart=always reaches neither CiRunnersDown nor UnitFailed: a runner unit dropping out of `active` over and over
-  # (a refused registration token) is a loop, and it fires CiRunnerRestartLooping once it has stayed that way for 5 minutes.
+  # Restart=always never makes UnitFailed, and the ExecStartPre backoff keeps a refused unit activating: a runner unit
+  # dropping out of `active` over and over (a refused registration token) is a loop, and it fires CiRunnerRestartLooping
+  # once it has stayed that way for 5 minutes.
   - name: a CI runner unit that keeps dropping out is a restart loop
     interval: 1m
     input_series:
@@ -157,6 +159,21 @@ tests:
         values: '0x36'
       - series: 'aidenhq_fleet_draining'
         values: '0x36'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x36'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CiRunnerRestartLooping
+        exp_alerts: []
+
+  # A planned drain stops the runner units on purpose; the same oscillation while aidenhq_fleet_draining is 1 raises nothing.
+  - name: a restart loop during a planned drain fires nothing
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_active{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0'
+      - series: 'aidenhq_fleet_draining'
+        values: '1x36'
       - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
         values: '0+60x36'
     alert_rule_test:

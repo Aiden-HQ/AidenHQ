@@ -410,12 +410,14 @@ change under 20 added plus deleted lines with no sensitive path; `package-lock.j
 the unit then starts the next, at once (`Restart=always`, `RestartSec=1`). A refused token (the sign-in missing
 `admin:org`, GitHub unreachable) backs off instead: `ops/ci-runner.sh` writes that unit's delay (1 second, doubling to a
 minute) and exits, and the unit's `ExecStartPre` (`ops/ci-runner-backoff.sh`) waits it out before the next attempt. The
-next token that mints clears the delay, so a persistent refusal retries slowly rather than hot-looping while a clean job
-exit still starts the next runner immediately. Because the wait runs before `ExecStart`, a unit backing off is
+minute is a hard cap: a longer `ExecStartPre` wait would outlast systemd's 90-second timeout, and a marker an older version
+left at 300 seconds is clamped to it. The next token that mints clears the delay, and a marker more than 15 minutes old (a
+drain, an outage) is dropped rather than served, so a persistent refusal retries slowly rather than hot-looping while a
+clean job exit still starts the next runner immediately. Because the wait runs before `ExecStart`, a unit backing off is
 `activating` rather than `active`. The missing permission also reaches the owner: a codehost op's
 `needs_owner` answer is recorded as connection state, so it lands in the owner's digest (the GitHub card's own row comes
-from the sign-in's granted scopes), and `CiRunnerRestartLooping` (`modules/monitoring/prometheus/rules.yml`) alerts on a
-unit that keeps restarting.
+from the sign-in's granted scopes), a 2xx op clears a full cause, and `CiRunnerRestartLooping`
+(`modules/monitoring/prometheus/rules.yml`) alerts on a unit that keeps restarting.
 
 Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
 sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI

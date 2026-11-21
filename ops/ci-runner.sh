@@ -5,6 +5,8 @@
 # repo's org).   ops/ci-runner.sh [<org>-]<n>
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=ops/lib/ci-runner-backoff.sh
+. ops/lib/ci-runner-backoff.sh
 id="${1:-1}"
 org=""
 [[ "$id" == *-* ]] && org="${id%-*}" # an org name may hold dashes; the runner number is after the last one
@@ -12,21 +14,16 @@ org=""
 # RestartSec=1: note a delay here, where a refused mint is told apart from a finished job, and keep RestartSec=1 for the
 # job-to-job exit, which has to start the next runner at once. The delay doubles per refusal up to a minute, and the next
 # token that mints forgets it. The wait itself is ops/ci-runner-backoff.sh in ExecStartPre, so the unit is activating (not
-# active) while it waits and the loop stays visible to CiRunnerRestartLooping.
-backoff="${AIDENHQ_DATA_DIR:-data}/ci-runner/$(printf '%s' "$id" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100).backoff"
+# active) while it waits and the loop stays visible to CiRunnerRestartLooping. Both scripts keep the file in one helper.
 if ! RUNNER_TOKEN="$(node ops/ci-runner-token.ts ${org:+"$org"})"; then
-  delay="$(cat "$backoff" 2>/dev/null || true)"
-  if [[ "$delay" =~ ^[0-9]+$ ]] && [ "$delay" -ge 1 ]; then
-    delay=$(( delay * 2 > 60 ? 60 : delay * 2 )) # the wait just served doubles; a minute is the cap
-  else
-    delay=1 # no delay yet: the first refused token waits a second
-  fi
-  mkdir -p "$(dirname "$backoff")"
-  echo "$delay" > "$backoff"
+  delay="$(ci_runner_backoff_read "$id")"
+  # No delay yet: the first refused token waits a second. Else the wait just served doubles; a minute is the cap.
+  if [ -n "$delay" ]; then delay=$(( delay * 2 )); else delay=1; fi
+  ci_runner_backoff_write "$id" "$delay"
   echo "ci runner $id: no registration token; the next attempt waits ${delay}s" >&2
   exit 1
 fi
-rm -f "$backoff"
+ci_runner_backoff_clear "$id"
 export RUNNER_TOKEN
 args=(-e RUNNER_TOKEN)
 [ -n "$org" ] && args+=(-e "RUNNER_URL=https://github.com/$org") # else compose's default, the fleet org

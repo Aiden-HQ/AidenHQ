@@ -58,8 +58,9 @@ Images (pinned by digest in each folder's Dockerfile; Dependabot bumps them; rel
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
   maintenance. They and `CiRunnerRestartLooping` (a unit flipping out of `active` over and over, which `Restart=always`
-  makes invisible to the other two) also need a fresh `units.prom` (written within 3 minutes), so a dead exporter is a
-  freshness alert and never reads as "0 active" or "16 failed".
+  makes invisible to `UnitFailed`; a refused registration token backs off in `ExecStartPre`, so a refusal across every
+  runner also leaves `CiRunnersDown` nothing active long enough to fire) also need a fresh `units.prom` (written within 3
+  minutes), so a dead exporter is a freshness alert and never reads as "0 active" or "16 failed".
 
 No secrets or ids in labels.
 
@@ -70,17 +71,19 @@ Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, o
 `CoreServiceDown` (an aidenhq-project container other than `ci-runner`, the `aidenhq-runner` or `aidenhq-gateway` user unit, or
 the board not answering Prometheus, for 5 minutes, **critical**), `ApplyFailed` (the newest apply generation failed its health
 check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerRestartLooping` (a runner unit that
-keeps dropping out of `active` and isn't staying up: `Restart=always` reaches neither `CiRunnersDown` nor `UnitFailed`, so a
-refused registration token would otherwise loop unseen), `CiRunnerUnitMissing` (a runner unit seen in
+keeps dropping out of `active` and isn't staying up: `Restart=always` never makes `UnitFailed`, and a unit backing off a
+refused registration is `activating` rather than `active`, so the loop is named by unit; a refusal across every runner also
+empties `CiRunnersDown`'s active count), `CiRunnerUnitMissing` (a runner unit seen in
 the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`, `CiReviewSpendNearCap` and `AppsCpuStarved` (an
 `app-*` container's own CPU pressure over 20% while the host's is over 15%; the alert names the app's project, and host
 pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `ApplyFailed` are critical.
 
 The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only spike fires nothing, an `app-*` match carries its
-project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, or one going
-job to job, doesn't). No CI job runs it: it is promtool's alone, and the file's own header used to claim a `rules` job that
-doesn't exist. A workflow change is the platform line's, so wiring a `Prometheus rules` step into `checks` is a change of
-its own. Until then it is run by hand, with the module's own image:
+project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, one going
+job to job, or one whose fleet is draining, doesn't). The `checks` job of `.github/workflows/ci.yml` runs `promtool check rules
+rules.yml` and `promtool test rules rules.test.yml` on every pull request head and push to main, in the image
+`modules/monitoring/prometheus/Dockerfile` pins (the job reads the `FROM` line, so the workflow holds no version of its own).
+Locally it is the same image:
 `docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 check rules rules.yml`
 (and `test rules rules.test.yml`).
 

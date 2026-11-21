@@ -26,13 +26,13 @@
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
 import http from "node:http";
-import type { Readable } from "node:stream";
+import { Readable } from "node:stream";
 import type { ServerResponse } from "node:http";
 import { LOCAL_ORG } from "./kinds.ts";
 import type { Resolver } from "./net.ts";
 import type { Facts } from "./facts.ts";
 import type { Kind } from "./writes.ts";
-import { OWNER_CAUSES, type Cause, type Need } from "../sdk/src/vendor/needs.ts";
+import { readNeed, type Need } from "../sdk/src/vendor/needs.ts";
 
 export const CODEHOST = "github";
 /** The code host modules: their write kinds are an Engineer's (admission.ts), each for the repos it owns. */
@@ -102,19 +102,24 @@ const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "comme
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
 const READ_KINDS = ["pr", "issue", "diff", "job", "prs"];
+/** How much of a refusal's answer is read to find its need; a bigger body streams through unread (no need is that big). */
+const NEED_BODY = 1 << 20;
 /**
- * The owner-fixable need in the code host's error answer (`{error, need}`, modules/github/service/src/ops.ts serveOps): an
- * unreachable or rate-limited cause is not one (the MCP proxy's readNeed reads the same five causes). Only known string
- * fields are kept, as connection-state.ts's normalise keeps them.
+ * The owner-fixable need in the code host's error answer (`{error, need}`, modules/github/service/src/ops.ts serveOps). An
+ * unreachable or rate-limited cause is transient, not the owner's to fix, and records nothing; anything else keeps
+ * OWNER_CAUSES. The need's shape is readNeed's (the MCP proxy reads the same fields), and `detail` is the code host's error
+ * text, which is what the owner sees.
  */
-function ownerNeed(body: string): Need | undefined {
-  let j: { error?: unknown; need?: Record<string, unknown> } | undefined;
-  try { j = JSON.parse(body) as typeof j; } catch { return undefined; }
+function ownerNeed(answer: string): Need | undefined {
+  let j: { error?: unknown; need?: unknown } | undefined;
+  try { j = JSON.parse(answer) as typeof j; } catch { return undefined; }
   const n = j?.need;
-  if (!n || typeof n !== "object" || !(OWNER_CAUSES as readonly unknown[]).includes(n.cause)) return undefined;
-  const out: Need = { cause: n.cause as Cause, detail: typeof j!.error === "string" ? j!.error : "" };
-  for (const k of ["scope", "org", "url", "account"] as const) if (typeof n[k] === "string") out[k] = n[k] as string;
-  return out;
+  if (!n || typeof n !== "object") return undefined;
+  // A transient cause is a plain error, not a connection need; a cause outside OWNER_CAUSES reads as not_connected, as readNeed reads it.
+  const cause = (n as { cause?: unknown }).cause;
+  if (cause === "unreachable" || cause === "rate_limited") return undefined;
+  const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: n as Record<string, unknown> } });
+  return need && { ...need, detail: typeof j!.error === "string" ? j!.error : need.detail };
 }
 const int = (v: unknown, what: string) => {
   const n = Number(v);
@@ -157,7 +162,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
 /** codehost-local's ops, in process (modules/codehost-local/src). */
 export type LocalOps = { snapshot(repo: string, ref: string): Promise<Answer>; bundle(repo: string): Promise<{ file: string; done: () => void }> };
 
-export function createCodehost({ grants, repos, kind, secret, resolver, local = () => undefined, noteObject = () => {}, recordNeed = () => {} }: {
+export function createCodehost({ grants, repos, kind, secret, resolver, local = () => undefined, noteObject = () => {}, recordNeed = () => {}, clearNeed = () => {} }: {
   grants: () => OpsGrant[];
   /** The kernel's own repos (AIDENHQ_INSTANCE_REPO, AIDENHQ_PRODUCT_REPO, the agents org): what @ names in grants resolve to. */
   repos: () => KernelRepos;
@@ -170,6 +175,8 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
   noteObject?: (ref: string, record: string) => void;
   /** A code host op's needs_owner answer: the module that asked, and the need, recorded as connection state (main.ts). */
   recordNeed?: (module: string, need: Need) => void;
+  /** A code host op's 2xx answer: the owner's sign-in served it, so a full need GitHub had clears (main.ts). */
+  clearNeed?: (module: string) => void;
 }) {
   /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, a bundle, or a snapshot's tarball). */
   async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
@@ -181,7 +188,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       if (!ORG.test(org)) throw fail(400, `${org.slice(0, 100)} is not an org`);
       if (!g?.runner?.orgs.some((o) => o === "*" || resolveOrg(o, repos()).some((x) => same(x, org)))) throw fail(403, `${module} has no runner_token grant on ${org}`);
       if (!k?.executor) throw fail(404, NO_HOST);
-      return forward(k, op, { module, org });
+      return forward(k, module, op, { module, org });
     }
     const repo = String(b?.repo ?? "");
     const m = SLUG.exec(repo);
@@ -215,17 +222,20 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     } else {
       out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths) };
     }
-    return forward(k!, op, out);
+    return forward(k!, module, op, out);
   }
   /** The GitHub code host's call: the kernel's executor key, the op's validated body, the answer as it came. */
-  async function forward(k2: Kind, op: string, out: Record<string, unknown>): Promise<Answer> {
+  async function forward(k2: Kind, module: string, op: string, out: Record<string, unknown>): Promise<Answer> {
     const key = secret(k2.executor!.auth_secret);
     if (!key) throw fail(503, `${CODEHOST}'s key is missing`);
     const url = new URL(`/ops/${op}`, k2.executor!.url).toString();
     const to = await resolver.resolve(url);
     const data = Buffer.from(JSON.stringify(out));
     return new Promise<Answer>((ok, reject) => {
-      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10 * 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, ok);
+      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 10 * 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } },
+      // The code host answers as the owner: a 2xx proves the sign-in worked, so a full need an earlier refusal recorded clears
+      // (a scope need is partial and stays until the owner grants it). The answer itself is untouched.
+      (r) => { if ((r.statusCode ?? 500) < 300) clearNeed(module); ok(r); });
       req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`)));
       req.on("error", (e) => { resolver.forget(url); reject((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`)); });
       req.end(data);
@@ -261,15 +271,28 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       const r = await ask(module, op, b);
       // A typed need (a refusal only the owner can fix) is connection state, as an MCP's needs_owner answer is (connection-state.ts):
       // without this a runner registration refused for a missing scope reached nobody. The answer still goes back as it came.
-      let need: Need | undefined;
       let body: Buffer | undefined;
+      let more: Readable | undefined;
       if ((r.statusCode ?? 500) >= 400 && String(r.headers["content-type"] ?? "").startsWith("application/json")) {
+        const it = r[Symbol.asyncIterator]();
         const chunks: Buffer[] = [];
-        for await (const c of r) chunks.push(c as Buffer);
-        body = Buffer.concat(chunks);
-        need = ownerNeed(body.toString("utf8"));
-        if (need) {
-          try { recordNeed(module, need); } catch { /* a need never fails the op */ }
+        let size = 0;
+        for (;;) {
+          const n = await it.next();
+          if (n.done) break;
+          size += n.value.length;
+          if (size > NEED_BODY) {
+            // Too big to hold whole: hand what was read and the rest of the answer on unread, and record no need from a partial read.
+            const head = Buffer.concat([...chunks, n.value]);
+            more = Readable.from((async function* () { yield head; for (;;) { const x = await it.next(); if (x.done) return; yield x.value; } })());
+            break;
+          }
+          chunks.push(n.value);
+        }
+        if (!more) {
+          body = Buffer.concat(chunks);
+          const need = ownerNeed(body.toString("utf8"));
+          if (need) recordNeed(module, need);
         }
       }
       // A new comment is ours: remembered by its ref, so editing it (the comment op with `id`) is allowed and no other is.
@@ -283,7 +306,8 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       }
       res.writeHead(r.statusCode ?? 502, { "content-type": String(r.headers["content-type"] ?? "application/json"), ...(r.headers["x-aidenhq-commit"] ? { "x-aidenhq-commit": String(r.headers["x-aidenhq-commit"]) } : {}) });
       if (body) return void res.end(body);
-      await new Promise<void>((ok, reject) => { r.pipe(res); r.on("end", ok).on("error", reject); });
+      const out = more ?? r;
+      await new Promise<void>((ok, reject) => { out.pipe(res); out.on("end", ok).on("error", reject); });
     },
   };
 }
