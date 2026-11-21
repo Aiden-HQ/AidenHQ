@@ -13,9 +13,17 @@ RUN npm i -g @openai/codex@0.166.0 && npm cache clean --force
 # Code review's other engines (modules/code-review/recipe/engines.ts): Claude Code 2.1.323 (published 2026-11-12) and codegenie
 # 0.7.0 (2026-09-25), each at least 7 days old, with every dependency resolved as of 2026-11-13 (--before), so none is newer
 # either. Claude Code's postinstall copies its native binary into place; it is run explicitly (npm may skip install scripts).
+# codegenie 0.7.0 pins zod 4.6.5, whose `$ZodArray` keeps one issue per failing element with no cap, so a large unconstrained
+# array in a request body exhausts memory (GHSA-mrhx-c7xc-m3w5). The newer codegenie that moves the pin is under 7 days old,
+# and the fix is in zod 4.6.6, so zod 4.6.7 (the 4.6.x the 7-day rule picks) replaces codegenie's own copy in a staged
+# install: npm re-resolves codegenie's directory as a root project and fails on its dev tree, so installing in place won't do.
 RUN npm i -g --before=2026-11-13 @anthropic-ai/claude-code@2.1.323 @0xsequence/codegenie@0.7.0 && npm cache clean --force \
     && (cd "$(npm root -g)/@anthropic-ai/claude-code" && node install.cjs) \
-    && claude --version | grep -q '^2\.1\.323 ' && codegenie --version | grep -q '^codegenie v0\.7\.0 '
+    && claude --version | grep -q '^2\.1\.323 ' && codegenie --version | grep -q '^codegenie v0\.7\.0 ' \
+    && (tmp=$(mktemp -d) && npm i --prefix "$tmp" --no-save --no-audit --no-fund zod@4.6.7 >/dev/null \
+        && cd "$(npm root -g)/@0xsequence/codegenie/node_modules" && rm -rf zod \
+        && mv "$tmp/node_modules/zod" zod && rm -rf "$tmp" \
+        && node -p 'JSON.parse(require("fs").readFileSync("zod/package.json","utf8")).version' | grep -qx 4.6.7)
 # apply_patch as a command: Codex takes `apply_patch <<EOF` as its patch tool only when it is the whole command, so an edit
 # chained with a build (`… EOF` then `&& npm test`) failed with "command not found". The pinned Codex binary runs the same
 # patch tool when called by that name (arg0), so this adds no dependency; the build checks it applies a patch.
