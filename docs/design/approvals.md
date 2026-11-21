@@ -76,9 +76,11 @@ a change too large to read) goes back to the agent, never to the owner.
   kernel refuses a `second_unsure` approval without it and drops `second_unsure` from a verdict that ends as anything but an
   approval. A model's own claim about its input never decides it. Reviewers are told the diff is whole only when it is.
   The kernel refuses a reviewer approval of a panel card that names neither a second approval nor a second reviewer that was
-  unsure. A failed or slow review is retried with backoff and after `REVIEW_TRIES` (6) goes back to the agent; a diff too
-  large (`MAX_DIFF` 80,000 characters in `plan.ts`; a card's details over 80,000 are refused at filing, never cut),
-  missing, or with files the reviewer can't read goes back too. After an unsure send-back and after each panel split, the
+  unsure. A failed or slow review is retried with backoff and after `REVIEW_TRIES` (6) goes back to the agent; a diff
+  missing, or with files the reviewer can't read, goes back too. Nothing is refused at filing for its size: the card stores
+  its details cut (with code's note) and the record's context carries them whole while it is open, for the reviewer and the
+  owner's card. Each review's model calls are capped (`REVIEW_USD`, $10, on its gateway token); a review that reaches a
+  spend cap goes to the owner (`review_cap`), never approved. After an unsure send-back and after each panel split, the
   same commits get one more review once the request chain changed (the same chain stays refused).
 - **Tier 2: owner.** A board card plus a message on the owner channel. The AI reviewer reads every one first (owner,
   2026-11-16: every write is reviewed before it reaches the owner) and its verdict is on the card.
@@ -135,7 +137,7 @@ token. It returns `{decision: approve | reject | escalate | unsure, reason_code,
   zero data retention; the requester's own model family is excluded and the requester can never choose the reviewer. The
   panel's second reviewer is GLM Flash (high), else DeepSeek, else Luna: never the requester's family nor the first reviewer's.
 - **Files it can't see.** Images, fonts, audio, video and PDFs are named with type and size. A file it cannot read at all (an
-  executable or opaque binary, or one past the 300-file cap) sends the card back to the agent in code (`files_not_shown`)
+  executable or opaque binary) sends the card back to the agent in code (`files_not_shown`)
   without a model call. A text file past the changed-files budget (`MAX_FILES`, 200,000 characters, `review-files.ts`) is
   named with its size and the card is judged from the diff; the verdict says so.
 - **Input.** The policy (`service/security/policy/`, from the product repo only, so instances cannot loosen it); the card; the

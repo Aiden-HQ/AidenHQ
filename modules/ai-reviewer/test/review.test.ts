@@ -729,3 +729,11 @@ test("a product compose port with no verify-security pin is rejected by code; wi
   r = asker([approve]);
   assert.equal((await review({ card: c.card, diff: pinned, chain: c.chain, policy: "p", ask: r.ask })).decision, "approve");
 });
+
+test("a call refused at a spend cap goes to the owner (review_cap), never approved; another failure is retried later", async () => {
+  const capped = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error('OpenRouter 402: {"error":{"type":"cap_reached","message":"spend cap reached: run $10.00 of $10.00"}}'); } });
+  assert.deepEqual([capped.decision, capped.code], ["escalate", "review_cap"]);
+  assert.match(capped.reason, /spend cap .*the owner decides/);
+  const failed = await review({ card, diff: "+x", policy: "p", ask: async () => { throw new Error("timeout"); } });
+  assert.equal(failed.code, "reviewer_failed");
+});

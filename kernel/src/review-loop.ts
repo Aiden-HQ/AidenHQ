@@ -212,7 +212,8 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const input: ReviewInput = veto?.reject ? veto : merit ? meritOwner({ ...reviewed, tier: 2, rule: merit.rule, reason: merit.reason }) : reviewed;
   const request = {
     card: { action, rule: input.rule, target: r.card.target ?? "", sentence: r.card.sentence, reason: input.reason, ...(product.length ? { product } : {}) },
-    diff: cardDiff(action, r.card.details),
+    // A planned write's whole diff rides in its context (writes.ts, set by the kernel); a tool call's card details are its input.
+    diff: cardDiff(action, r.context?.diff ?? r.card.details),
     // The changed files at the reviewed head and the PR's Evidence section, as the code host's plan read them at filing.
     ...(r.context?.files ? { files: r.context.files } : {}),
     ...(r.context?.evidence !== undefined ? { evidence: r.context.evidence } : {}),

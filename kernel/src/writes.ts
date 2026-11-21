@@ -41,11 +41,14 @@ export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown
 export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 export const CONN_TOOL = "conn.tool";
 /**
- * The largest serialised conn.tool payload a card may carry, measured with the JSON.stringify the card builds. Sized to
- * stay well inside the reviewer's own MAX_DIFF (modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts, 150,000), so a
- * carded payload is always reviewable whole.
+ * The largest serialised conn.tool payload a card may carry, measured with the JSON.stringify the card builds.
  */
 export const CONN_TOOL_ARGS_MAX = 100_000;
+/**
+ * The most an executor's answer may carry: a plan brings the change's diff and every changed file whole for the reviewer
+ * (the reviewer module takes a request up to the same size). Held only while the record is open (records.ts).
+ */
+const PLAN_MAX = 64_000_000;
 const fail = (status: number, type: string, message: string, code?: string) => Object.assign(new Error(message), { status, type, ...(code ? { code } : {}) });
 
 /** The kind's strict args schema: a small subset of JSON Schema, enough for tool arguments and the kernel's kinds. Throws with the first problem. */
@@ -74,7 +77,7 @@ export function validate(s: Schema, v: unknown, at = "args"): void {
 }
 
 /** Card text from the kind's templates over args, facts and the planner's card values: {{name}} only, printable, capped. */
-/** A card's details cap: a reviewed card's details over it are refused at filing (prepare), never cut. */
+/** What a card stores and shows of its details; a reviewed card's whole details ride in its context (the reviewer's input). */
 const DETAILS_MAX = 80_000;
 export function render(t: Partial<Card>, values: { [k: string]: unknown }, detailsMax = DETAILS_MAX): Card {
   const val = (k: string) => { const v = values[k]; return v == null ? "" : typeof v === "string" ? v : JSON.stringify(v); };
@@ -141,7 +144,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return new Promise((resolve, reject) => {
       const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 30_000, headers: { host: new URL(k.executor!.url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (res) => {
         let text = "";
-        res.setEncoding("utf8").on("data", (c) => { if (text.length < 1_000_000) text += c; }).on("end", () => {
+        res.setEncoding("utf8").on("data", (c) => { if (text.length < PLAN_MAX) text += c; }).on("end", () => {
           let j: any;
           try { j = JSON.parse(text); } catch { return reject(fail(502, "bad_executor", `${k.module}'s ${op} answered ${res.statusCode} with no JSON`)); }
           // A 4xx is the executor's refusal; a 5xx (a module starting, or failing) is no answer yet.
@@ -231,7 +234,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const targets = plan.targets ?? {};
     // The kernel's planner writes its card whole; a module's kind renders its manifest's templates.
     const whole = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card }, Infinity);
-    const card = { ...whole, details: whole.details.slice(0, DETAILS_MAX) };
+    // Cut for storage only with code's note: an open record's card is shown whole from its context (backplane GET /v1/writes).
+    const card = { ...whole, details: whole.details.length > DETAILS_MAX ? `${whole.details.slice(0, DETAILS_MAX)}\n[${whole.details.length - DETAILS_MAX} characters not shown here: the card shows the whole diff while it is open]` : whole.details };
     // A job's record names its workspace (its task's identifier, from the job's row): where the code host reads its commits.
     const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}) };
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
@@ -243,9 +247,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
     const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
-    // A reviewer reads a reviewed card's details whole or not at all: one past the cap is refused, never cut.
-    if (t.tier > 0 && whole.details.length > DETAILS_MAX) throw fail(413, "too_large", `the change is too large to review (${whole.details.length} characters, over ${DETAILS_MAX}): split it into smaller changes`);
-    return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 && plan.review ? { context: plan.review } : {}) } };
+    // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
+    // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
+    return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */

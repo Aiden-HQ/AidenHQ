@@ -7,7 +7,8 @@
 // base), incremental_from (= base for a full review), pr, combo (engine, model and effort, JSON), focus, budget_usd }. It makes its own
 // history from them (base, then the last reviewed head, then the head), so the repo tools' diff is exactly the change.
 //
-// A run: the changed files minus excluded ones (the repo's ignore globs, binary, lockfiles and generated files, huge files);
+// A run: the changed files minus excluded ones (the repo's ignore globs, binary, lockfiles and generated files), whatever the
+// change's size: the tools page every answer, so any file and any diff is read in full;
 // the guidance (REVIEW.md, AGENTS.md, CLAUDE.md at the root and in every folder above a changed file, and the repo's
 // .github/code-review-checklist.json items the diff triggers), from the base tree only, never the PR's;
 // N finders in parallel, each with its own lens (engines.ts plan: codex fans out; claude-code and codegenie run their own
@@ -27,6 +28,7 @@ import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
 import { checklistText, globRe, matchChecklist } from "./review-checklist.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
+import { page, tools } from "./review-tools.ts";
 import type { Combo, EngineResult } from "./engines.ts";
 
 type Severity = "important" | "nit" | "pre_existing";
@@ -52,8 +54,6 @@ const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"];
 // the change adds it (a place to hide code).
 const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum", "**/bun.lockb"];
 const GENERATED = ["**/generated/**", "**/__generated__/**", "**/vendor/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
-const HUGE = 3000; // changed lines past which a file is excluded (a dump, not a change to read)
-const MAX_FILES = 300;
 const MAX_PRE = 5;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
@@ -103,6 +103,36 @@ export function history(ws: string, out: string, spec: Spec) {
   return { base: b, from: f, head, git: (args: string[]) => g(args) };
 }
 
+/**
+ * The reviewed files whose diff no finder read to its end. Code pages the whole diff and each file's as the diff tool does: a
+ * file counts as read when some finder fetched every page of its own diff, or every page of the whole diff its lines are on.
+ * A finder that never looked can't make a review clean.
+ */
+export function unreadDiffs(answers: EngineResult[], reviewed: string[], t: ReturnType<typeof tools>, rel: (p: string) => string) {
+  const calls = answers.flatMap((a) => a.calls ?? []).filter((c) => c.tool === "diff" && !c.stat);
+  // Each page's first line, from the tool's own paging.
+  const starts = (text: string) => {
+    const s = [1];
+    for (let m; (m = /call again with from: (\d+) for the rest\]$/.exec(page(text, s.at(-1)))); ) s.push(Number(m[1]));
+    return s;
+  };
+  const fetched = (path?: string) => new Set(calls.filter((c) => (path === undefined ? !c.path || c.path === "." : c.path && rel(c.path) === path)).map((c) => c.from ?? 1));
+  const whole = String(t.diff!.run({}));
+  const pages = starts(whole), tree = fetched();
+  // The whole diff's lines as the pages count them (a line over a page is several), and where each file's part begins.
+  const lines = whole.split("\n").flatMap((l) => (l.length > 100_000 ? l.match(/[^]{1,100000}/g)! : [l])); // review-tools' page size
+  const heads = lines.flatMap((l, i) => (/^diff --git a\//.test(l) ? [{ i: i + 1, path: /^diff --git a\/(.+) b\/\1$/.exec(l)?.[1] ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l)?.[1] }] : []));
+  const viaTree = (p: string) => {
+    const k = heads.findIndex((h) => h.path === p);
+    if (k < 0) return false;
+    const from = heads[k]!.i, to = (heads[k + 1]?.i ?? lines.length + 1) - 1;
+    return pages.every((s, j) => (pages[j + 1] ?? lines.length + 1) - 1 < from || s > to || tree.has(s));
+  };
+  // A file the tool can't diff by path (one the head deleted) is read only through the whole diff.
+  const own = (p: string) => { try { return starts(String(t.diff!.run({ path: p }))); } catch { return undefined; } };
+  return reviewed.filter((p) => { if (viaTree(p)) return false; const got = fetched(p), s = own(p); return !s || !s.every((x) => got.has(x)); });
+}
+
 /** The changed files from `from` to the head with their line counts: [{ path, added, removed, binary }]. */
 export function changed(git: Git, from: string): Changed[] {
   const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", from, "HEAD"]);
@@ -114,8 +144,8 @@ export function changed(git: Git, from: string): Changed[] {
 
 /**
  * Which files a review reports on and which it leaves out, with why. Left out means "no findings there", never unread: the tools
- * still read and search them. `gap`: a left-out file the change could hide code in (huge, past the file limit, or a new file
- * under a generated or vendored path), so the review is incomplete and never reads as a clean pass. The repo's own ignore globs
+ * still read and search them. `gap`: a left-out file the change could hide code in (a new file under a generated or vendored
+ * path), so the review is incomplete and never reads as a clean pass. Size never leaves a file out. The repo's own ignore globs
  * (its config) and binary files are no gap. `added`: the paths this change adds.
  */
 export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>()) {
@@ -124,8 +154,8 @@ export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new 
   for (const f of files) {
     // A change to how git reads files is always reviewed, whatever the globs say.
     const attrs = posix.basename(f.path) === ".gitattributes";
-    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : f.added + f.removed > HUGE ? "huge" : reviewed.length >= MAX_FILES ? "over the file limit" : undefined;
-    ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: ["huge", "over the file limit", "generated, changed by this PR"].includes(why) } : f.path);
+    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
+    ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: why === "generated, changed by this PR" } : f.path);
   }
   return { reviewed, excluded };
 }
@@ -325,6 +355,8 @@ export async function review({ spec, ws, out, run = runEngine }: { spec: Spec; w
   if (failed.length === n) throw new Error(`no finder finished: ${failed[0]!.cause ?? (failed[0]!.read ? "an answer that isn't the JSON asked for" : "it never read the diff")}`);
   if (failed.length) gaps.push(`${failed.length} of ${n} finders didn't finish (${failed[0]!.cause ?? "no usable answer"})`);
   for (const a of answers) if (a.incomplete) gaps.push(a.incomplete);
+  const unread = unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
+  if (unread.length) gaps.push(`${unread.length} reviewed file${unread.length > 1 ? "s" : ""} whose diff no finder read to the end (${unread.slice(0, 10).join(", ")}${unread.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
   const reviewedSet = new Set(reviewed);
   let candidates = dedupe(place(good.filter(Boolean).flatMap((j) => clean(j.findings, root)), ws, reviewedSet));

@@ -254,7 +254,7 @@ export function createService(o: Options) {
         const pr = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}`);
         // A rename counts at both paths: a file moved out of `.github/` still changes `.github/`.
         const listed = await api("GET", `/repos/${s.slug}/pulls/${Number(p.number)}/files?per_page=100`);
-        const files = listed.flatMap((f: any) => [f.filename, f.previous_filename].filter(Boolean));
+        let files: string[] | undefined = pr.changed_files > listed.length ? undefined : listed.flatMap((f: any) => [f.filename, f.previous_filename].filter(Boolean));
         // A merge's card carries the PR's diff at its head (the one the record binds), against its merge base with the base branch.
         if (merge) {
           const head = await fetchRemote(s, String(pr.head?.sha));
@@ -262,14 +262,16 @@ export function createService(o: Options) {
           const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
           diff += `${await diffOf(head.dir, mb || EMPTY_TREE, head.sha)}\n`;
           changed.push(...(await numstatOf(head.dir, mb || EMPTY_TREE, head.sha)));
-          if (pr.changed_files <= listed.length) for (const f of listed.map((x: any) => String(x.filename))) reads.push({ name: `${s.slug} ${f}`, read: () => git(head.dir, ["show", `${head.sha}:${f}`]) });
+          // Every changed file, from git itself (GitHub lists at most 100 a page): no renames, so a file moved counts at both paths.
+          files = (await git(head.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, head.sha])).split("\0").filter(Boolean);
+          for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(head.dir, ["show", `${head.sha}:${f}`]) });
           evidence.push(`### https://github.com/${s.slug}/pull/${Number(p.number)}\n${evidenceOf(pr.body)}`);
           bases.push({ repo: s.slug, base: String(pr.base?.ref ?? ""), read: (path) => git(into.dir, ["show", `${into.sha}:${path}`]), dir: into.dir, tip: into.sha });
         }
         own.add(`${s.slug.toLowerCase()}#${Number(p.number)}`);
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
-          files: pr.changed_files > listed.length ? undefined : files, checks: await checksAt(s, pr.head?.sha),
+          files, checks: await checksAt(s, pr.head?.sha),
           ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), pushedBy: pushedBy()[pr.head?.sha]?.task, platformHead: pushedBy()[pr.head?.sha]?.platform === true, dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
@@ -310,12 +312,12 @@ export function createService(o: Options) {
   }
 
   /**
-   * The changed files' text for the reviewer (fileContext, as the runner read them): in order, a file that can't be read at the
-   * head (deleted) skipped, past 300 not read.
+   * The changed files' text for the reviewer (fileContext, as the runner read them): every one in order, a file that can't be
+   * read at the head (deleted) skipped.
    */
   async function readFiles(list: { name: string; read: () => Promise<string> }[]) {
-    const files: { name: string; text: string | null | undefined }[] = [];
-    for (const [i, f] of list.entries()) files.push({ name: f.name, text: i < 300 ? await f.read().catch(() => undefined) : null });
+    const files: { name: string; text: string | undefined }[] = [];
+    for (const f of list) files.push({ name: f.name, text: await f.read().catch(() => undefined) });
     return fileContext(files);
   }
 

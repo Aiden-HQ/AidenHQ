@@ -216,12 +216,11 @@ const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);
  * for this request (as `s` above). A refusal throws (the kernel answers it as refused); otherwise the tier above 0 comes back
  * as `raise`, and `targets` bind the record to what it acts on: each branch's commit and base, each PR's head. When any of
  * them moves after approval, the revalidating plan's targets differ and the kernel closes the record as stale. `facts` are the
- * card's (target, sentence, diff), read by the code host from git: a reviewer reads the whole diff or nothing, so one too
- * large for a reviewed change (Tier 1 or 2) is refused, never cut. Tier 0 runs unread (a lockfile, a new repo's first push).
+ * card's (target, sentence, diff), read by the code host from git and never cut: the reviewer reads a diff of any size whole
+ * (in parts when it is large). Tier 0 runs unread (a lockfile, a new repo's first push).
  * A push, PR or merge also returns `paths`, one { repo, files: [{ path }] } per branch or PR (a rename is listed at both
  * paths): the kernel raises its tier by them and runs the platform check on them; without them it is the owner's.
  */
-export const MAX_DIFF = 80_000;
 export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: State, facts: { diff: string; [k: string]: unknown }) {
   const action = String(kind).replace(/^(codehost|github)\./, "");
   const parts = planParts(action, state).flat();
@@ -233,7 +232,6 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null }]));
-  if (top.tier > 0 && facts.diff.length > MAX_DIFF) throw Object.assign(new Error(`the diff is over ${MAX_DIFF} characters, too large for a reviewer to read whole: split it into smaller changes`), { rule: "diff-too-large", status: 413 });
   const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
   return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };

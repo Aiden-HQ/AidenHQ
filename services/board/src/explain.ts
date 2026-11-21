@@ -67,6 +67,7 @@ const REVIEW_WORDS: Record<string, string> = {
   no_diff: "There was no change to read.",
   too_large: "The change was too large to review.",
   files_not_shown: "The reviewer couldn't see every file.",
+  review_cap: "The review reached its spend cap before it finished: you decide.",
   check_failed: "A required check failed.",
   tier_raised: "Its tier was raised after filing.",
   new_authority: "It adds authority: the reviewer approved, you decide next.",

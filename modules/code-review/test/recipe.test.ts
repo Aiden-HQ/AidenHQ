@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { bound, review } from "../recipe/review.ts";
-import { tools } from "../recipe/review-tools.ts";
+import { bound, history, review } from "../recipe/review.ts";
+import { argsProblem, page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
-import { runEngine } from "../recipe/engines.ts";
+import { callOf, runEngine } from "../recipe/engines.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 const lay = (dir, files) => { for (const [f, t] of Object.entries(files)) (mkdirSync(dirname(join(dir, f)), { recursive: true }), writeFileSync(join(dir, f), t)); };
@@ -121,9 +121,11 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   const r = await review({ spec: spec(), ws, out, run });
   assert.equal(r.addressed, true);
   assert.ok(seen[0].instructions.includes("addressed to a reviewer"));
-  // A new vendored file and a huge one got no findings pass: listed with why, and the review is incomplete, never clean.
-  assert.deepEqual(r.coverage.excluded, ["big.js (huge)", "docs/notes.md (ignored)", "img.bin (binary)", "vendor/evil.js (generated, changed by this PR)"]);
-  assert.match(r.coverage.incomplete, /2 changed files got no findings pass \(big\.js: huge; vendor\/evil\.js: generated, changed by this PR\)/);
+  // A new vendored file got no findings pass: listed with why, and the review is incomplete, never clean. A huge file is
+  // reviewed like any other: size never leaves a file out.
+  assert.deepEqual(r.coverage.excluded, ["docs/notes.md (ignored)", "img.bin (binary)", "vendor/evil.js (generated, changed by this PR)"]);
+  assert.ok(r.coverage.reviewed.includes("big.js"));
+  assert.match(r.coverage.incomplete, /1 changed file got no findings pass \(vendor\/evil\.js: generated, changed by this PR\)/);
   // The confirmed finding survives an absolute tool path; the finder with no findings list is a failed finder, not a clean one.
   assert.deepEqual(r.findings.map((f) => [f.path, f.line]), [["a.js", 2]]);
   assert.match(r.coverage.incomplete, /1 of 2 finders didn't finish/);
@@ -133,6 +135,23 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   assert.match(t.read_file.run({ path: "vendor/evil.js" }), /steal\(\)/);
   assert.match(t.search.run({ pattern: "steal" }), /vendor\/evil\.js/);
   assert.throws(() => t.read_file.run({ path: "img.bin" }), /binary/);
+  // A tool answer over its page size is paged, never cut: every line is a call away.
+  const whole = t.diff.run({ path: "big.js" });
+  const first = page(whole.repeat(30));
+  const next = Number(/call again with from: (\d+)/.exec(first)[1]);
+  assert.ok(first.length < whole.repeat(30).length && next > 1);
+  assert.equal(page(whole.repeat(30), next).split("\n")[0], whole.repeat(30).split("\n")[next - 1]);
+  // A line longer than a page is paged too, by pieces: every character is reachable, none cut.
+  const long = "x".repeat(250_000) + "END";
+  let text = "", from = 1;
+  for (let n = 0; n < 10; n++) {
+    const p = page(long, from);
+    const m = /\n\[answer lines \d+-\d+ of \d+ .*call again with from: (\d+) for the rest\]$/.exec(p);
+    text += m ? p.slice(0, m.index) : p;
+    if (!m) break;
+    from = Number(m[1]);
+  }
+  assert.equal(text, long);
   // A result past the kernel's limit: the lowest-ranked findings are withheld to fit.
   const big = bound({ coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: Array.from({ length: 100 }, () => F({ severity: "nit", evidence: "x".repeat(4000) })) });
   assert.ok(Buffer.byteLength(JSON.stringify(big)) <= 200_000 && big.withheld.nit > 0 && big.findings.length + big.withheld.nit === 100);
@@ -220,7 +239,7 @@ fi
     r = await runEngine("claude-code", { prompt: "Review: answer JSON", instructions: "brief", model: "anthropic/claude-sonnet-5.5", effort: "high", root: "/workspace", base: A, minutes: 1, scratch: mkdtempSync(join(tmpdir(), "cr-s-")), own: true });
   } finally { process.env = old; }
   assert.equal(JSON.parse(r.message).findings[0].title, "Off by one");
-  assert.deepEqual([r.read, r.calls], [true, [{ tool: "diff", path: undefined }, { tool: "read_file", path: "a.js" }]]);
+  assert.deepEqual([r.read, r.calls], [true, [{ tool: "diff" }, { tool: "read_file", path: "a.js" }]]);
   const [t1, t2] = [readFileSync(join(bin, "turn-0"), "utf8"), readFileSync(join(bin, "turn-1"), "utf8")];
   assert.match(t1, new RegExp(`ARG:/code-review high ${A}\\.\\.HEAD --max-findings all`));
   assert.match(t2, /ARG:--resume\nARG:s-1/);
@@ -275,4 +294,37 @@ JSON
   assert.match(seen, /ARG:--depth\nARG:normal\n/);
   assert.match(seen, /^CODEGENIE_GATEWAY=http:\/\/10\.0\.0\.1:8201\/api\/v1$/m);
   assert.match(seen, /^NODE_OPTIONS=--import=.*gateway-fetch\.ts$/m);
+});
+
+test("a review whose finders didn't page through a big file's diff is incomplete and names it; read to the end, it isn't", async () => {
+  const base = { "a.js": "1\n" }, head = { "a.js": "1\n2\n", "big.js": "const row = 'x';\n".repeat(12_000) };
+  const once = async () => ({ read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) });
+  const r = await review({ spec: spec({ combo: combo({ effort: "low" }) }), ...box({ head, base }), run: once });
+  assert.match(r.coverage.incomplete, /1 reviewed file whose diff no finder read to the end \(big\.js\)/);
+  // Every page of big.js's diff fetched: covered.
+  const all = async (_e, o) => {
+    const calls = [{ tool: "diff" }, { tool: "diff", path: "big.js" }];
+    for (let from = 1, t = tools(o.root, o.base); ; ) {
+      const m = /call again with from: (\d+) for the rest\]$/.exec(page(t.diff.run({ path: "big.js" }), from));
+      if (!m) break;
+      from = Number(m[1]);
+      calls.push({ tool: "diff", path: "big.js", from });
+    }
+    return { read: true, calls, message: JSON.stringify({ findings: [] }) };
+  };
+  const read = await review({ spec: spec({ combo: combo({ effort: "low" }) }), ...box({ head, base }), run: all });
+  assert.equal(read.coverage.incomplete, null);
+});
+
+test("tool arguments of the wrong type are refused and never count as a read; file names are literal pathspecs", async () => {
+  const { ws, out } = box({ base: { "a.js": "1\n" }, head: { "a.js": "1\n2\n", ":(glob)*": "odd\n" } });
+  const t = tools(ws, history(ws, out, spec()).base);
+  assert.match(argsProblem(t.diff, { stat: "yes" }), /stat must be a boolean/);
+  assert.equal(argsProblem(t.diff, { stat: true, path: "a.js" }), undefined);
+  assert.equal(callOf("diff", { stat: "yes" }), undefined);
+  assert.deepEqual(callOf("diff", { path: "a.js", from: 3 }), { tool: "diff", path: "a.js", from: 3 });
+  // A file named like a pathspec magic is that file: its diff is its own, not every file's.
+  const odd = t.diff.run({ path: ":(glob)*" });
+  assert.match(odd, /\+odd/);
+  assert.doesNotMatch(odd, /a\.js/);
 });

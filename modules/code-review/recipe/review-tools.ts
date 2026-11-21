@@ -24,8 +24,36 @@ interface Rpc { id?: number; method?: string; params?: { uri: string; diagnostic
 interface Lsp { request: (method: string, params: unknown) => Promise<Loc | Loc[] | null | undefined>; open: (rel: string) => Promise<string>; diags: Map<string, Diag[]> }
 interface Msg { id?: number; method?: string; params?: { protocolVersion?: string; name?: string; arguments?: Args } }
 
-const MAX = 100_000; // characters a tool answer may carry (about 25k tokens); the rest is cut with a note
-const cut = (s: string) => (s.length > MAX ? `${s.slice(0, MAX)}\n[cut at ${MAX} characters: ask for a narrower range]` : s);
+const MAX = 100_000; // characters one tool answer carries (about 25k tokens); a longer one is paged (`from`), never cut
+
+/**
+ * One page of a tool's answer: its lines from `from` (1-based) up to MAX characters, naming where the next page starts. A line
+ * longer than MAX counts as several lines of MAX characters each, so every character of any answer is a page away.
+ */
+export function page(text: string, from: unknown = 1) {
+  const lines = text.split("\n").flatMap((l) => (l.length > MAX ? l.match(new RegExp(`[^]{1,${MAX}}`, "g"))! : [l]));
+  const start = Math.min(Math.max(1, Math.floor(Number(from)) || 1), lines.length);
+  const out: string[] = [];
+  let size = 0, i = start - 1;
+  for (; i < lines.length && (!out.length || size + lines[i]!.length + 1 <= MAX); i++) (out.push(lines[i]!), (size += lines[i]!.length + 1));
+  return i < lines.length ? `${out.join("\n")}\n[answer lines ${start}-${i} of ${lines.length} (a line over ${MAX} characters counts as several): call again with from: ${i + 1} for the rest]` : out.join("\n");
+}
+
+/**
+ * What is wrong with a tool call's arguments against its declared schema (and `from`), or undefined: a wrong type is refused
+ * before the tool runs, so the tool and code's record of what it read take the same value.
+ */
+export function argsProblem(tool: { schema: Record<string, unknown>; required?: string[] } | undefined, args: Record<string, unknown>) {
+  if (!tool) return "no such tool";
+  const props: Record<string, unknown> = { ...tool.schema, from: { type: "integer" } };
+  for (const [k, v] of Object.entries(args ?? {})) {
+    const type = (props[k] as { type?: string } | undefined)?.type;
+    if (!type) return `no argument ${k}`;
+    if (!(type === "integer" ? Number.isInteger(v) : type === "boolean" ? typeof v === "boolean" : typeof v === type)) return `${k} must be ${type === "integer" ? "an integer" : `a ${type}`}`;
+  }
+  const missing = (tool.required ?? []).find((k) => args?.[k] === undefined);
+  return missing ? `${missing} is required` : undefined;
+}
 
 /** The tools, bound to one checkout and the PR's base commit. Each returns text; a bad argument throws. */
 export function tools(root: string, base: string): Record<string, Tool> {
@@ -41,14 +69,15 @@ export function tools(root: string, base: string): Record<string, Tool> {
   };
   // No system or global git config (a home-directory .gitconfig could name a pager, fsmonitor or diff program): only the
   // checkout's own .git/config, which actions/checkout wrote and the PR can't change.
-  const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
-  const git: Git = (...args) => cut(execFileSync("git", ["--no-pager", ...args], { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, env }));
+  // Pathspecs are literal: a file the PR names `:(glob)*` or `:!x` is that file, never a pattern.
+  const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" };
+  const git: Git = (...args) => (execFileSync("git", ["--no-pager", ...args], { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, env }));
   const str = { type: "string" };
   return {
     diff: {
       description: `The PR's changes: git diff from its base (${base.slice(0, 12)}, the merge base) to the checked-out head, for the whole tree or one path. stat: true lists changed files with line counts instead.`,
       schema: { path: str, stat: { type: "boolean" } },
-      run: ({ path, stat }) => git("diff", "--no-ext-diff", "--no-textconv", "--no-color", ...(stat ? ["--stat=200"] : []), `${base}...HEAD`, "--", inside(path)),
+      run: ({ path, stat }) => git("diff", "--no-ext-diff", "--no-textconv", "--no-color", ...(stat === true ? ["--stat=200"] : []), `${base}...HEAD`, "--", inside(path)),
     },
     log: {
       description: "The PR's commits since its base, with their messages.",
@@ -66,7 +95,7 @@ export function tools(root: string, base: string): Record<string, Tool> {
         if (readFileSync(resolve(root, rel)).subarray(0, 8000).includes(0)) throw new Error(`${path} is a binary file`);
         const lines = readFileSync(resolve(root, rel), "utf8").replace(/\n$/, "").split("\n");
         const from = Math.max(1, Number(start) || 1), to = Math.min(lines.length, Number(end) || lines.length);
-        return cut(lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(6)}\t${l}`).join("\n"));
+        return lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(6)}\t${l}`).join("\n");
       },
     },
     blame: {
@@ -162,7 +191,7 @@ function lspTools(root: string, inside: (p?: unknown) => string, git: Git): Reco
   const pos = { path: { type: "string" }, line: { type: "integer" }, symbol: { type: "string" } };
   return {
     definition: { description: "Where a TypeScript/JavaScript symbol on a line of the PR's head is defined (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a: Args) => where(await (lsp ?? start()).request("textDocument/definition", await at(a))) },
-    references: { description: "Every reference to a TypeScript/JavaScript symbol on a line of the PR's head (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a: Args) => cut(where(await (lsp ?? start()).request("textDocument/references", { ...(await at(a)), context: { includeDeclaration: false } }))) },
+    references: { description: "Every reference to a TypeScript/JavaScript symbol on a line of the PR's head (language server).", schema: pos, required: ["path", "line", "symbol"], run: async (a: Args) => (where(await (lsp ?? start()).request("textDocument/references", { ...(await at(a)), context: { includeDeclaration: false } }))) },
     diagnostics: {
       description: "TypeScript's errors for one file of the PR's head (language server; the PR's dependencies aren't installed, so unresolved packages are expected).",
       schema: { path: { type: "string" } }, required: ["path"],
@@ -185,13 +214,17 @@ export function serve(t: Record<string, Tool>, input: NodeJS.ReadableStream = pr
     if (m.method === "initialize") return ok({ protocolVersion: m.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "repo", version: "1" } });
     if (m.method === "ping") return ok({});
     if (m.method === "tools/list") {
-      return ok({ tools: Object.entries(t).map(([name, d]) => ({ name, description: d.description, inputSchema: { type: "object", properties: d.schema, ...(d.required ? { required: d.required } : {}) }, annotations: { readOnlyHint: true, openWorldHint: false } })) });
+      // Every answer is paged: `from` asks for the page that starts at that line of it.
+      const from = { from: { type: "integer", description: `the answer's line to start at, for an answer over ${MAX} characters (it names the next page's line)` } };
+      return ok({ tools: Object.entries(t).map(([name, d]) => ({ name, description: d.description, inputSchema: { type: "object", properties: { ...d.schema, ...from }, ...(d.required ? { required: d.required } : {}) }, annotations: { readOnlyHint: true, openWorldHint: false } })) });
     }
     if (m.method === "tools/call") {
       const d = t[m.params?.name!];
+      const bad = d && argsProblem(d, m.params?.arguments ?? {});
+      if (bad) return ok({ content: [{ type: "text", text: `bad arguments: ${bad}` }], isError: true });
       if (!d) return send({ id: m.id, error: { code: -32602, message: `no tool ${m.params?.name}` } });
       return Promise.resolve().then(() => d.run(m.params!.arguments ?? {})).then(
-        (text) => ok({ content: [{ type: "text", text }], isError: false }),
+        (text) => ok({ content: [{ type: "text", text: page(text, m.params!.arguments?.from) }], isError: false }),
         (e) => ok({ content: [{ type: "text", text: String(e.stderr || e.message).slice(0, 2000) }], isError: true }));
     }
     send({ id: m.id, error: { code: -32601, message: `no method ${m.method}` } });
