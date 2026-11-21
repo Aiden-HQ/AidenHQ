@@ -302,10 +302,12 @@ const raw = (host, port) => new Promise((done) => {
 });
 // A PostgreSQL server waits for the client, so an HTTP GET makes it hang up (raw: closed) and says nothing about what it is.
 // An SSLRequest's reply alone is not identification either: a TLS listener offers SSL too. So the server must decline SSL
-// (\"N\") and then answer a startup message with a *complete, well-formed* protocol message (AuthenticationRequest,
-// ErrorResponse or NoticeResponse). A truncated header, a frame whose length runs past what arrived, or a malformed body is
-// not identification: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at the
-// server's first answer. A server that offers SSL (\"S\") is not identified: the port may be HTTPS, so it stays closed.
+// with exactly one byte (\"N\"), with no trailing bytes, and then answer a startup message with a *complete, well-formed*
+// protocol message (AuthenticationRequest, ErrorResponse or NoticeResponse). A refusal that carries anything after the
+// \"N\" is not a server's answer to this probe: those bytes would be read as the startup reply without a valid one-byte
+// refusal, so the port stays closed. A truncated header, a frame whose length runs past what arrived, or a malformed body
+// is not identification either: a half-answer must not exempt a port. No credentials are sent: the handshake is dropped at
+// the server's first answer. A server that offers SSL (\"S\") is not identified: the port may be HTTPS, so it stays closed.
 // "postgres" identifies the socket, "invalid" is a definitive no (stop reading), "" needs more bytes. One complete frame,
 // validated against its own type, or nothing.
 const pgFrame = (b) => {
@@ -365,8 +367,9 @@ const postgres = (host, port) => new Promise((done) => {
     got = Buffer.concat([got, d]);
     if (stage === 0) {
       if (!got.length) return;
-      const r = got[0]; got = got.subarray(1);
-      if (r !== 0x4e) return end(""); // "S" offers SSL: the port may be HTTPS, so it is not identified
+      if (got[0] !== 0x4e) return end(""); // "S" offers SSL: the port may be HTTPS, so it is not identified
+      if (got.length > 1) return end(""); // the refusal is exactly "N": trailing bytes are not the server's answer to this probe
+      got = Buffer.alloc(0);
       stage = 1;
       const user = Buffer.from("user\0postgres\0database\0postgres\0\0", "utf8");
       const head = Buffer.alloc(8); head.writeUInt32BE(8 + user.length, 0); head.writeUInt32BE(196608, 4);

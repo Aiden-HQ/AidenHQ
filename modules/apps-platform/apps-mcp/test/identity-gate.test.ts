@@ -313,6 +313,36 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
   }, 60_000);
 
+  it.runIf(process.platform === "linux")("keeps a coalesced SSL refusal with trailing bytes hard: the refusal must be exactly one byte", async () => {
+    // A server that declines SSL sends exactly "N" and nothing else. If a peer sends "N" and a well-formed AuthenticationOk
+    // frame in the same write, a probe that keeps the trailing bytes would read the frame as the startup reply and identify
+    // the port as PostgreSQL without a valid one-byte refusal. The trailing bytes are not the server's answer to this probe.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    const coalesced = await tcp(`(s) => {
+      let stage = 0;
+      s.on("data", (d) => {
+        if (stage === 0 && d[0] === 0x47) return s.destroy();
+        if (stage === 0 && d[0] === 0x16) return s.destroy();
+        if (stage === 0) { stage = 1; return s.write(Buffer.concat([Buffer.from("N"), Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])])); }
+        s.destroy();
+      });
+    }`);
+    const r = await scan(db, [coalesced]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer/) });
+    // The refusal arriving in its own write is the normal case and stays identified: only extra bytes in the same write fail.
+    const split = await tcp(`(s) => {
+      let stage = 0;
+      s.on("data", (d) => {
+        if (stage === 0 && d[0] === 0x47) return s.destroy();
+        if (stage === 0 && d[0] === 0x16) return s.destroy();
+        if (stage === 0) { stage = 1; return s.write("N"); }
+        s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0]));
+      });
+    }`);
+    expect(await scan(db, [split])).toMatchObject({ ok: true, findings: [{ hard: false, what: expect.stringMatching(/speaks PostgreSQL/) }] });
+  }, 60_000);
+
   it.runIf(process.platform === "linux")("keeps a truncated PostgreSQL reply hard: a header alone is not a protocol message", async () => {
     // The peer declines SSL and sends the first five bytes of an AuthenticationRequest that claims eight more bytes it never
     // sends, then hangs up. A header is not a message: the gate must wait for the whole frame and stay closed when it never
