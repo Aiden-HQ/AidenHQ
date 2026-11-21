@@ -20,6 +20,8 @@ const asker = (answers) => {
 const ok = { content: JSON.stringify({ decision: "approve", reason: "matches the ask", second_review: false }) };
 const flagged = { content: JSON.stringify({ decision: "approve", reason: "a gate fix as asked", second_review: true }) };
 const no = { content: JSON.stringify({ decision: "reject", reason_code: "gate_change", reason: "it fails open", second_review: true }) };
+// A split's ordinary reject (out of scope): a third family may outvote it; a security code (gate_change, ...) it never does.
+const split2 = { content: JSON.stringify({ decision: "reject", reason_code: "out_of_scope", reason: "it fails open", second_review: true }) };
 
 test("the panel: code's flag or the reviewer's own asks a second family; approve + reject goes to a third family, whose vote decides", async () => {
   // Code says authority-expanding: Luna, then GLM (never DeepSeek for a DeepSeek requester, never OpenAI after Luna).
@@ -31,7 +33,7 @@ test("the panel: code's flag or the reviewer's own asks a second family; approve
   // The first reviewer's own flag adds the second reviewer; a missing flag counts as set.
   // Approve + reject: a third reviewer of the family neither used reads both notes; two to one decides (owner, 2026-11-21).
   let prompts = [];
-  r = asker([flagged, no, ok]);
+  r = asker([flagged, split2, ok]);
   const twoToOne = await review({ card, diff: "+x", policy: "p", ask: async (m, p) => (prompts.push(p), r.ask(m)) });
   assert.deepEqual(r.asked, [LUNA, GLM, DEEPSEEK]);
   assert.deepEqual([twoToOne.decision, twoToOne.model, twoToOne.second], ["approve", LUNA, DEEPSEEK]);
@@ -41,15 +43,17 @@ test("the panel: code's flag or the reviewer's own asks a second family; approve
   r = asker([flagged, leak, ok]);
   const hard = await review({ card, diff: "+x", policy: "p", ask: r.ask });
   assert.deepEqual([hard.decision, hard.code, r.asked.length], ["reject", "secret_exfiltration", 2]);
-  r = asker([flagged, no, no]);
+  r = asker([flagged, split2, split2]);
   const outvoted = await review({ card, diff: "+x", policy: "p", ask: r.ask });
-  assert.deepEqual([outvoted.decision, outvoted.code, outvoted.model], ["reject", "gate_change", DEEPSEEK]);
+  assert.deepEqual([outvoted.decision, outvoted.code, outvoted.model], ["reject", "out_of_scope", DEEPSEEK]);
+  r = asker([flagged, no, ok]);
+  assert.deepEqual([(await review({ card, diff: "+x", policy: "p", ask: r.ask })).code, r.asked.length], ["gate_change", 2], "a gate_change reject is never outvoted");
   // A third that is unsure, or none left (a DeepSeek requester: Luna, GLM, then only its own family, which is asked), sends it back.
-  r = asker([flagged, no, { content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "can't tell", second_review: false }) }]);
+  r = asker([flagged, split2, { content: JSON.stringify({ decision: "unsure", reason_code: "reviewer_unsure", reason: "can't tell", second_review: false }) }]);
   const split = await review({ card, diff: "+x", policy: "p", ask: r.ask });
   assert.deepEqual([split.decision, split.code], ["reject", "panel_split"]);
   assert.match(split.reason, /fix what the rejecting one names.*approve \(a gate fix as asked\).*reject \(it fails open\)/);
-  r = asker([flagged, no, ok]);
+  r = asker([flagged, split2, ok]);
   assert.equal((await review({ card, diff: "+x", policy: "p", requesterModel: "deepseek/deepseek-flash", ask: r.ask })).decision, "approve");
   assert.deepEqual(r.asked, [LUNA, GLM, DEEPSEEK], "the requester's own family breaks the tie when no other is left");
   r = asker([{ content: JSON.stringify({ decision: "approve", reason: "fine" }) }, ok]);

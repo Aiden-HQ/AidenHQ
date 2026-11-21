@@ -101,8 +101,8 @@ export const MODEL_CODES = ["in_scope", "out_of_scope", "secret_exfiltration", "
 export const CODE_CODES = ["reviewer_failed", "reviewer_refused", "no_independent_model", "no_diff", "files_not_shown", "review_cap", "code_review_owns", "check_failed", "tier_raised", "new_authority", "autonomy_off", "routine_autonomy", "owner_tier", "shadow", "panel_split", "refused_by_code", "stale_head"];
 /** The model's "I can't tell": a second reviewer decides; both unsure, the card goes back to the agent with this code. */
 export const UNSURE = "reviewer_unsure";
-/** Rejection codes that name an attack (exfiltration, injected instructions): a panel's tiebreak never outvotes one. */
-const HARD_CODES = ["secret_exfiltration", "prompt_injection"];
+/** Rejection codes that name a security failure (exfiltration, injected instructions, a weakened gate, a supply-chain source): a panel's tiebreak never outvotes one. */
+const HARD_CODES = ["secret_exfiltration", "prompt_injection", "gate_change", "supply_chain"];
 
 export const REVIEW_SCHEMA = {
   type: "object",
@@ -776,7 +776,9 @@ async function panelVotes(v1: FirstVote, v2: Voted, flag: boolean, whole: boolea
   const all = `Third reviewer ${v3.model}: ${v3.code === UNSURE ? "unsure" : v3.decision} (${cut(v3.reason, 800)}). Earlier: ${v1.model}: approve (${cut(v1.reason, 450)}) ${v2.model}: reject (${cut(v2.reason, 450)})`.slice(0, 1960);
   if (v3.decision === "approve") return { decision: "approve", code: "in_scope", reason: `Approved two to one. ${all}`.slice(0, 1990), model: v1.model, second: v3.model, flag };
   if (v3.code === UNSURE) return { ...split(", and the third reviewer was unsure", v3.model), reason: `The reviewers split and the third was unsure: fix what the rejecting one names and ask again. ${all}`.slice(0, 1990) };
-  return { flag, decision: v3.decision, code: v3.code, reason: `${v3.decision === "reject" ? "Rejected two to one" : "The third reviewer escalated"}. ${all}`.slice(0, 1990), model: v3.model };
+  // A third vote that doesn't settle it (an escalation) goes back to the agent like a split, never to the owner.
+  if (v3.decision !== "reject") return { ...split(", and the third reviewer escalated", v3.model), reason: `The reviewers split and the third escalated: fix what the rejecting one names and ask again. ${all}`.slice(0, 1990) };
+  return { flag, decision: "reject", code: v3.code, reason: `Rejected two to one. ${all}`.slice(0, 1990), model: v3.model };
 }
 
 /** Each note cut to fit, so the second's survives the board's 2,000 characters. */
@@ -803,7 +805,8 @@ async function secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, p
   }
   // No second family: back to the agent when code couldn't verify the input whole; otherwise code's no_independent_model,
   // which the kernel approves on a Tier 1 card (tier.ts failOpen).
-  if (!seconds.length) return whole ? { ...v1, decision: "escalate", code: "no_independent_model", reason: `the first reviewer was unsure and no second reviewer is independent of the requester and the first. First reviewer: ${v1.reason}`.slice(0, 1990) } : { flag, decision: "reject", code: UNSURE, reason: `The reviewer was unsure, no second reviewer was left, and code couldn't verify the change and its request were shown whole: make what it names clear and ask again. ${cut(v1.reason)}`.slice(0, 1990), model: v1.model };
+  // No second family: back to the agent (no reviewer approved it), never the owner and never approved by code.
+  if (!seconds.length) return { flag, decision: "reject", code: UNSURE, reason: `The reviewer was unsure and no second reviewer was left: make what it names clear and ask again. ${cut(v1.reason)}`.slice(0, 1990), model: v1.model };
   const v2 = await askFirst(seconds, () => prompt(panel || flag), ask, checks);
   if (!v2) return { ...v1, decision: "escalate", code: "reviewer_refused", reason: `the first reviewer was unsure and the second refused. First reviewer (unsure): ${v1.reason}`.slice(0, 1990) };
   if (v2.failed) return { ...failedOf(v2.failed, v1.model, "the second reviewer"), flag };
@@ -820,7 +823,8 @@ async function secondOpinion({ v1, whole, panel, requesterModel, ask, onPanel, p
   // Two unsures on input code verified whole: a third reviewer of a third family decides (owner, 2026-11-21).
   if (v2.code === UNSURE) {
     const v3 = await third(v2);
-    if (v3 === "none") return { flag, decision: "escalate", code: "no_independent_model", reason: `Two AI reviewers were unsure and no third reviewer was left: ${notes(800)}`.slice(0, 1990), model: v2.model };
+    // No affirmative vote: back to the agent, never approved by code.
+    if (v3 === "none") return { flag, decision: "reject", code: UNSURE, reason: `Two AI reviewers were unsure and no third reviewer was left; fix the request: ${notes(800)}`.slice(0, 1990), model: v2.model };
     if (!v3 || v3.code === UNSURE) return { flag, decision: "reject", code: UNSURE, reason: `Three AI reviewers were unsure${v3 ? "" : " or refused"}; fix the request: ${notes(600)}${v3 ? ` ${v3.model} (unsure): ${cut(v3.reason, 600)}` : ""}`.slice(0, 1990), model: v3?.model ?? v2.model };
     if (v3.failed) return { ...failedOf(v3.failed, v1.model, "the third reviewer"), flag };
     if (v3.decision === "approve") return { flag, decision: "approve", code: "in_scope", reason: `Approved by the third reviewer; the first two were unsure (code verified the change and its request were shown whole). ${notes(600)} ${v3.model} (approve): ${cut(v3.reason, 600)}`.slice(0, 1990), model: v3.model, second_unsure: v2.model, whole: true };

@@ -47,6 +47,8 @@ export type Rec = {
   replaced?: boolean;
   /** The hash of the request chain the reviewer read (an unsure-twice rejection lifts once it changes). */
   chain?: string | null;
+  /** When its review started as a parked target's panel re-review (tier.ts counts those panels by it). */
+  retry_at?: string | null;
   /** Requests on the same task and kind with the same target replace each other while open (the requester's key). */
   target?: string | null;
   /** The content key the owner's veto binds to ("?" unknown: fails closed against any veto); null when the kind has none. */
@@ -96,7 +98,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["retry_at", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   // a task by its identifier (a fact's task, facts.ts; a task's records)
   db.exec("CREATE INDEX IF NOT EXISTS records_identifier ON records (identifier)");
   const facts = openFacts(db, now);
@@ -254,6 +256,10 @@ export function openRecords(file: string, now = () => new Date()) {
       return get(id)!;
     },
     /** The first reviewer found it authority-expanding: from now on it needs a second reviewer's approval too. Never cleared. */
+    /** A parked target's panel re-review starting now: a panel, stamped with when it started (tier.ts priorDecisions). */
+    markRetry(id: string, digest: string): boolean {
+      return db.prepare("UPDATE records SET panel = 1, retry_at = ? WHERE id = ? AND digest = ? AND state = 'review'").run(new Date().toISOString(), id, digest).changes === 1;
+    },
     markPanel(id: string, digest: string): boolean {
       return db.prepare("UPDATE records SET panel = 1 WHERE id = ? AND digest = ? AND state = 'review'").run(id, digest).changes === 1;
     },

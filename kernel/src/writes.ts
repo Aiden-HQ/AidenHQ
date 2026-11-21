@@ -428,7 +428,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // A panel the review requires (code's on the record, or a parked target's re-review in the request) is recorded on the
     // record first, so a one-vote approval is refused there, and code review never stands in for it.
     const panel = Boolean(request.panel || r.panel);
-    if (panel && !r.panel && !records.markPanel(r.id, r.digest)) return { decision: "escalate", code: "reviewer_failed", reason: "couldn't record that it needs a second reviewer (it changed meanwhile)", model };
+    // A parked target's panel re-review is stamped with when it started (tier.ts counts those panels by it).
+    if (request.retry === true && !records.markRetry(r.id, r.digest)) return { decision: "escalate", code: "reviewer_failed", reason: "couldn't record the panel re-review's start (it changed meanwhile)", model };
+    if (panel && !r.panel && request.retry !== true && !records.markPanel(r.id, r.digest)) return { decision: "escalate", code: "reviewer_failed", reason: "couldn't record that it needs a second reviewer (it changed meanwhile)", model };
     if (!panel && codeReviewOwns(r, reviewCode())) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
     let v: Verdict & { panel_marked?: boolean };
     try {

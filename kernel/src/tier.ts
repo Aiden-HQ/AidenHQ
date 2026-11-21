@@ -173,7 +173,7 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
  * requester; at most one agent lift per REVIEW_COOLDOWN_MS). An answered rejection no longer refuses the same content nor
  * counts toward MAX_REJECTS.
  */
-export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean; /** Reviewed as a panel (two families). */ panel?: boolean; /** When it was filed. */ createdAt?: string | null };
+export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; requestChain?: string; digest?: string; answered?: "owner" | "agent"; /** No agent filed it (a module's own write). */ service?: boolean; /** Reviewed as a panel (two families). */ panel?: boolean; /** When its review started as a parked target's panel re-review. */ retryAt?: string | null; /** The filing agent (none for a module's own write). */ requester?: string };
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
 /** A no on a stale or duplicate card (decided_by `stale:account:<id>`) judged nothing: neither a veto nor a rejection. */
@@ -336,9 +336,9 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   const at = (r: Prior | undefined) => Date.parse(String(r?.decidedAt ?? ""));
   const state = (list: Prior[]) => {
     let parkAt = list.length >= MAX_REJECTS ? at(list[MAX_REJECTS - 1]) : NaN, panels = 0;
-    // A panel's: filed after the cooldown (a request filed during it is refused as parked), so a review already in flight
-    // when the target parked never takes a panel's place.
-    for (const r of list.slice(MAX_REJECTS)) if (r.panel && Date.parse(String(r.createdAt ?? "")) >= parkAt + cooldown) { panels++; parkAt = at(r); }
+    // A panel's: a review started as the park's re-review (retryAt, stamped when it started) once the cooldown ended, so an
+    // ordinary review in flight when the target parked never takes a panel's place, and a late-reached one still counts.
+    for (const r of list.slice(MAX_REJECTS)) if (r.retryAt && Date.parse(r.retryAt) >= parkAt + cooldown) { panels++; parkAt = at(r); }
     return { list, panels, parkedUntil: Number.isFinite(parkAt) ? parkAt + cooldown : undefined };
   };
   const states = (targets?.targets.length ? [...onTarget.values()] : [open]).map(state);
@@ -353,7 +353,8 @@ export function priorDecisions(records: Prior[], action: string, also: string[] 
   const sameContent = (r: Prior) => (key !== undefined && recordKey(r) === key) || (typeof patches === "string" && recordPatches(r) === patches);
   const rejectedSame = key !== undefined || typeof patches === "string" ? open.filter(sameContent) : [];
   const [only] = rejectedSame;
-  const fresh = rejectedSame.length === 1 && ((Boolean(chain) && only!.requestChain !== chain) || now - Date.parse(String(only!.decidedAt ?? "")) >= cooldown);
+  // A rejection naming an attack (exfiltration, injected instructions) gets no fresh review of the same content.
+  const fresh = rejectedSame.length === 1 && !["secret_exfiltration", "prompt_injection"].includes(only!.reviewCode ?? "") && ((Boolean(chain) && only!.requestChain !== chain) || now - Date.parse(String(only!.decidedAt ?? "")) >= cooldown);
   const sameOne = fresh ? undefined : rejectedSame.at(-1);
   // The owner's no on this exact content holds until they approve that same content, whatever else they approved since.
   // Same content: the commits, or the patch keys (a rebased or renamed resubmission). Patch keys that couldn't be computed

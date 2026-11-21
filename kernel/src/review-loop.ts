@@ -14,7 +14,7 @@
 // a decision on the task: answered), the instance's decisions digest from the instance repo's main, and the fleet's current
 // model settings (modelSettings, from the grants table). Code decides first where it can (tier.ts codeVerdict): those reads no model.
 import type { Rec, Records, State } from "./records.ts";
-import { CODE_REJECTS, MAX_REJECTS, PANEL_TRIES, REVIEW_COOLDOWN_MS, afterReview, codeVerdict, failOpen, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
+import { CODE_REJECTS, MAX_REJECTS, PANEL_TRIES, REVIEW_COOLDOWN_MS, afterReview, codeVerdict, failOpen, requestPatches, heldInput, meritOwner, priorDecisions, priorPart, requestHash, requestKey, requestTargets, type Prior, type ReviewInput, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { UNSURE } from "../sdk/src/reviewer.ts";
@@ -47,7 +47,7 @@ const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed"
 /** A record as earlier decisions are read (tier.ts Prior). */
 const asPrior = (r: Rec): Prior & { review?: string | null } => ({
   id: r.id, action: actionOf(r.kind), args: r.args, state: STATE[r.state] ?? "expired", decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
-  service: !r.requester.agent, panel: Boolean(r.panel), createdAt: r.created_at, reviewCode: r.review_code ?? null, review: r.review, requestChain: r.chain ?? undefined, digest: r.digest,
+  service: !r.requester.agent, requester: r.requester.agent, panel: Boolean(r.panel), retryAt: r.retry_at ?? null, reviewCode: r.review_code ?? null, review: r.review, requestChain: r.chain ?? undefined, digest: r.digest,
 });
 
 const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -187,7 +187,8 @@ export function answered(records: (Prior & { review?: string | null })[], author
   for (const c of all) {
     const at = String(c.createdAt ?? "");
     if (last && Date.parse(at) - Date.parse(last) < gap) continue;
-    if (!task.some((r) => open(r, at) && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) continue;
+    // Only a rejection this comment could lift (never its own author's request) uses up the window.
+    if (!task.some((r) => open(r, at) && r.requester !== c.authorAgentId && String(r.decidedAt ?? "") < at && String(r.decidedAt ?? "") >= last)) continue;
     last = at;
     if (may.has(c)) agent = may.get(c);
   }
@@ -223,7 +224,7 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const authored = comments.flatMap((c) => { const a = authorOf(c, { owner, requester: r.requester.agent, delegator: delegator === r.requester.agent ? undefined : delegator, agent: task.agent }); return a ? [{ c, a }] : []; });
   const said = taskComments(authored);
   // What the reviewer read: the request, the task's comments and its own inputs (the decisions digest, the pin).
-  const chainHash = requestHash(chain, `${said}\n\n${pin}\n\n${decisions?.text ?? ""}\n\n${settings}`);
+  const chainHash = requestHash(chain, `${said}\n\n${pin}\n\n${decisions?.text ?? ""}\n\n${settings}\n\n${graded ? graderBlock(graded) : ""}`);
   // A run's own request (tier.ts Target.own) reads only its own run's reviewer rejections: a sibling run's rejected post, answered
   // or not, is another review's finding. The owner's decisions on the task all stay (their veto is the task's).
   const aimed = requestTargets(action, r.args, !r.requester.agent);
@@ -231,11 +232,13 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
   const sameRun = (x: Rec) => !own || !/^reviewer:/.test(x.decided_by ?? "") || Boolean(requestTargets(actionOf(x.kind), x.args, !x.requester.agent)?.targets.some((t) => aimed!.targets.some((y) => y.key === t.key)));
   const onTask = records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id);
   // The delegator's and the chief of staff's comments read apart from this requester: they hold the task-wide lift limit.
-  const lifters = comments.filter((c) => ["delegator", "chief"].includes(authorOf(c, { owner, requester: "", delegator, agent: task.agent })?.who ?? ""));
+  const lifters = comments.filter((c) => c.authorAgentId !== r.requester.agent && ["delegator", "chief"].includes(authorOf(c, { owner, requester: "", delegator, agent: task.agent })?.who ?? ""));
   // Lifts come only from comments the reviewer is shown; the task-wide limit reads every lifter's comment.
   const split = answered(onTask.filter(sameRun).map(asPrior), authored.slice(-COMMENTS), REVIEW_COOLDOWN_MS, onTask.map(asPrior), lifters);
   const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
-  const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed, now);
+  // The change's content: its commits, and its patch keys when the record carries them (a rebase or cherry-pick of the same patch).
+  const patches = requestPatches(action, args) ?? undefined;
+  const prior = priorDecisions(split.records, action, [], requestKey(action, { ...args, digest: r.digest }), patches, chainHash, aimed, now);
   const veto = priorPart(prior, now);
   // A parked target past its cooldown is reviewed again by the panel (priorPart's Tier 1 part).
   const reviewed: ReviewInput = { tier: 1, rule: action, reason: r.card.reason ?? "", previous: [...split.answers, ...prior.findings], panel: r.panel || (veto?.tier === 1 && veto.panel === true) };
@@ -264,11 +267,13 @@ export async function reviewInput(r: Rec, { records, task, decisions, product, g
     // A fresh review of rejected content, or a parked target's panel: the rejecting model's family is asked last.
     ...(prior.avoid ? { avoid: prior.avoid } : {}),
     panel: Boolean(input.panel || r.panel),
+    // A parked target's panel re-review: the kernel stamps when it started (records.ts markRetry), never sent to the reviewer.
+    ...(veto?.rule === "retries-panel" ? { retry: true } : {}),
     previous: (input.previous as string[] | undefined) ?? [],
     component: "AI reviewer",
   };
   // The retry state once a verdict on this record is posted, computed exactly as the next filing's (for its notices).
-  const after = (done: Rec) => priorDecisions([...split.records, asPrior(done)], action, [], requestKey(action, { ...args, digest: r.digest }), undefined, chainHash, aimed);
+  const after = (done: Rec) => priorDecisions([...split.records, asPrior(done)], action, [], requestKey(action, { ...args, digest: r.digest }), patches, chainHash, aimed);
   return { input, request, prior, lifted: split.by, chain: chainHash, after };
 }
 
@@ -300,7 +305,7 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
 }) {
   const inFlight = new Set<string>();
   /** A record's task and content (tier.ts requestKey), the key a fresh review is reserved on; undefined when it has none. */
-  const contentOf = (r: Rec) => { const k = requestKey(actionOf(r.kind), { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest }); return k ? `content|${r.task}|${actionOf(r.kind)}|${k}` : undefined; };
+  const contentOf = (r: Rec) => { const a = r.args && typeof r.args === "object" ? r.args : {}; const k = requestPatches(actionOf(r.kind), a) || requestKey(actionOf(r.kind), { ...a, digest: r.digest }); return k ? `content|${r.task}|${actionOf(r.kind)}|${k}` : undefined; };
   // The pin, read at most once a minute (a precheck asks on every call).
   let pinned: { at: number; value: Promise<string> } | undefined;
   const pinNow = () => (pinned && Date.now() - pinned.at < 60_000 ? pinned : (pinned = { at: Date.now(), value: pin().catch(() => "") })).value;
@@ -382,7 +387,9 @@ export function createReviewLoop({ records, writes, task, decisions, product, gr
       const [digest, at] = await Promise.all([decisions().catch(() => undefined), pinNow()]);
       const { input, request } = await reviewInput(r, { records, task, decisions: digest, product: product(), pin: at, settings: settings() });
       const held = heldInput({ ...input, cap: r.cap ?? null }, r.review_first);
-      return codeVerdict(held, "kernel/code") ?? afterReview(held, failOpen(held, await ask(request), r.panel));
+      // The panel the filed review would need: the record's, the history's (request.panel), or one the reviewer marked.
+      const v = await ask(request) as Verdict & { panel_marked?: boolean; flag?: boolean };
+      return codeVerdict(held, "kernel/code") ?? afterReview(held, failOpen(held, v, Boolean(r.panel || request.panel || v.panel_marked || v.flag)));
     },
     /**
      * One sweep: the oldest 200 records in review not already being reviewed nor waiting out a failed review's backoff, so a
