@@ -472,18 +472,21 @@ test("a retry reports only the wait's own deadline, never one that was never rec
   assert.notEqual(again.until, new Date(w.now() + 40 * MIN).toISOString(), "never the one this call supplied");
 });
 
-test("a closed delegator's legacy ask marker is not ambiguous: the question routes on", async (t) => {
+test("a closed delegator doesn't settle a legacy ask: its bare marker may be the chief of staff's", async (t) => {
   const w = world(t);
   const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
   w.tick(MIN);
-  // The old scheme stored the bare kind, and the delegator has closed since: nobody it named can answer, so it is no open ask
-  // rather than an unreadable one, and the next question reaches the chief of staff.
+  // The old scheme stored the bare kind, and it also stored it for an ask that actually went to the chief of staff: a closed
+  // delegator can't settle who holds that question, so it stays refused as ambiguous rather than dropped and asked again.
   w.db.prepare("UPDATE escalations SET kind = 'delegator' WHERE key = 'ask:t1'").run();
   w.issues.t0.status = "done";
   w.tick(MIN);
-  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" })).to, "chief_of_staff");
-  assert.match(w.asked.chief[0].description, /Or this one\?/);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" }), (e) => e.status === 409 && /recipient can't be told apart/.test(e.message));
+  assert.equal(w.asked.chief.length, 0, "nothing was sent");
+  assert.equal(w.asked.notices.length, 1, "nothing was sent to anyone");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
 });
 
 test("a malformed deadline on a new question fails before anything is sent", async (t) => {

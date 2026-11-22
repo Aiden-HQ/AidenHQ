@@ -368,12 +368,12 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       if (r?.sent === "open") throw fail(503, "unavailable", "This task's ask state can't be read now, so nothing was sent and this task's wait is unchanged. Try again.");
       if (r?.sent === "ambiguous") throw fail(409, "conflict", "This task's earlier question is still open, but its recipient can't be told apart from the record (it was asked before the kernel recorded the exact destination), so nothing was sent: have that question answered with a comment on the task, then ask again.");
       // A retry of the question already open reuses that wait: nothing is sent, nothing recorded, and its own deadline stands. The
-      // deadline reported is the one on the recorded wait, never a fresh one no wait carries; when the row can't be read, none is
-      // claimed (the held deadline is not this call's either, since nothing new was armed).
+      // deadline reported is the one the gate read from the row that proved the ask open, never a fresh one no wait carries and
+      // never a second read that could differ; when that row carries none, none is claimed (the held deadline is not this call's
+      // either, since nothing new was armed).
       if (r?.sent === "same" || r?.sent === "asked-open") {
-        const at = state.read({ ids: [caller.task] }).tasks[0]?.wait_until;
         return {
-          waiting: true, ...(at ? { until: at } : {}), to: r.to as AskTo, asked: true,
+          waiting: true, ...(r.until ? { until: r.until } : {}), to: r.to as AskTo, asked: true,
           ...(r.sent === "asked-open" ? { note: `The owner already has this question, and this task's earlier question is still open with ${r.to as AskTo}: both replies land on the task and wake you.` } : {}),
         };
       }

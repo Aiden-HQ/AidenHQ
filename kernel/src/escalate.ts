@@ -1,6 +1,6 @@
 // A judgement call a task can't make for itself reaches whoever can make it, once per episode (durable: escalations in
-// kernel.db). Two callers: the review loop when the AI reviewer parks a target (MAX_REJECTS), and an agent's own wait on
-// its delegator or the owner (task_wait `for`, notify's decision; idle.ts).
+// kernel.db). Its callers: an agent's own wait on its delegator or the owner (task_wait `for`, notify's decision, a
+// handback of an agent's task: idle.ts), and an idle in-review task (idle.ts).
 // - The delegator: the task's parent, else the task of the job that created it (provenance), heard as a kernel notice on
 //   that task (notices.ts; a parent blocked on the asking task stays blocked and still wakes: wakes.ts scans blocked tasks). It carries the wake-notice marker, so the delegator's dispatcher reads it
 //   as a notice that wakes it, never as the owner's words, although the board key posts it.
@@ -18,7 +18,7 @@
 // 409 the agent acts on); only a retry of the open question goes through, and it changes nothing. The marker records the exact
 // destination (`to:owner` and so on), so a legacy marker whose recipient can't be told (bare `delegator`, which also meant the
 // chief of staff) is refused rather than guessed. No chief of staff installed: filing its task fails, so the ask fails loudly
-// and is tried again (the agent's call errors; the review loop's park isn't marked).
+// and is tried again (the agent's call errors).
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral } from "./channels.ts";
@@ -63,7 +63,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   /** A task as the control plane has it now; undefined when it is gone. Throws when it can't be read now. */
   issue: (id: string) => Promise<Issue | undefined>;
   /** A task's state (task-state-read.ts): its open wait's question and start, and who it needs; no row fails an ask closed. */
-  state: (task: string) => Pick<StateRow, "attention" | "question" | "wait_since"> | undefined;
+  state: (task: string) => Pick<StateRow, "attention" | "question" | "wait_since" | "wait_until"> | undefined;
   /** An agent as the owner channel's attention reads it: its name, key and roles. */
   asker: (id: string) => Promise<{ name: string; key: string; roles: string[] }>;
   /** A durable kernel notice on a task (notices.ts queue). */
@@ -98,7 +98,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
    * open ask either: nobody it was sent to can answer it. `undefined`: no open ask; `"unknown"`: unreadable; `"ambiguous"`: a
    * legacy marker whose recipient can't be told.
    */
-  async function openAsk(t: Issue): Promise<{ to: AskTo; question: string } | "ambiguous" | "unknown" | undefined> {
+  async function openAsk(t: Issue): Promise<{ to: AskTo; question: string; until?: string } | "ambiguous" | "unknown" | undefined> {
     const task = t.id;
     const row = state(task);
     if (!row) return "unknown";
@@ -117,15 +117,19 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     // The bare kinds are older, except `chief_of_staff`, which the revision just before this one wrote as the resolved
     // destination. Bare "owner" is the owner either way; bare "delegator" is the requested category, where it also stood for
     // the chief of staff, so who waits on one can't be told from the row: it is `"ambiguous"`.
+    // A bare `delegator` marker can't say who holds the question: the scheme that wrote it also wrote it for an ask routed to the
+    // chief of staff. That is ambiguous whether or not a delegator is open now (one closed since may have handed it on), so it is
+    // never dropped on a guess: only an exact `to:delegator` marker names a recipient a closed delegator can settle.
+    if (!exact && marker.kind === "delegator") return "ambiguous";
     const to = exact ? marker.kind.slice(3) : marker.kind === "owner" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
-    // Nobody can answer an ask whose delegator has gone, and that settles the legacy `delegator` kind too: a bare delegator row is
-    // only ambiguous while a delegator is there to have been asked; with none, the question it held has no answerer left.
-    if ((to === "delegator" || (!exact && marker.kind === "delegator")) && !(await delegatorOf(t))) return undefined;
+    // Nobody can answer an exact delegator ask whose delegator has gone: no open ask, so the next question routes on.
+    if (to === "delegator" && !(await delegatorOf(t))) return undefined;
     if (to !== "owner" && to !== "delegator" && to !== "chief_of_staff") return "ambiguous";
     // The wait fact and the marker are written together: an owner ask is an owner wait, every other one a delegator wait. A
     // row that disagrees with its own wait is not this ask's destination either.
     if (answeredBy === "owner" ? to !== "owner" : to === "owner") return "ambiguous";
-    return { to, question: row.question };
+    // The deadline reported for this ask is the one on the row that proved it open, never a fresh or re-read one.
+    return { to, question: row.question, ...(row.wait_until ? { until: row.wait_until } : {}) };
   }
 
   async function toOwner(t: Issue, text: string, dedupe = `escalate:${t.id}`) {
@@ -185,7 +189,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
      * that same question goes through (`same`, nothing sent, the wait untouched); an `asked` replay of another question is
      * `asked-open` (nothing sent, the live ask untouched, the owner has the newer question); another one is `open`.
      */
-    async ask(task: string, who: "owner" | "delegator", question: string, asked = false, beforeSend?: () => void): Promise<{ sent: "asked" | "asked-open" | "same" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo }> {
+    async ask(task: string, who: "owner" | "delegator", question: string, asked = false, beforeSend?: () => void): Promise<{ sent: "asked" | "asked-open" | "same" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo; until?: string }> {
       const q = neutral(question).trim().slice(0, 1500);
       const t = await issue(task);
       if (!q || !t || CLOSED.includes(String(t.status))) return { sent: "gone" };
@@ -201,11 +205,11 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       if (open) {
         // A retry of the question already open is idempotent: nothing is sent twice and the recorded wait stands as it is. The
         // wait fact holds the question as the caller sent it; the comparison normalises both the same way `q` was.
-        if (neutral(open.question).trim().slice(0, 1500) === q) return { sent: "same", to: open.to };
+        if (neutral(open.question).trim().slice(0, 1500) === q) return { sent: "same", to: open.to, ...(open.until ? { until: open.until } : {}) };
         // An `asked` replay that may go to the owner directly was already delivered (notify): refusing it would fail a call whose
         // question the owner has, and recording it would replace the live ask. The live ask stands and the caller is told the
         // owner has the newer question too, so the agent can read that reply rather than lose it.
-        if (asked && to === "owner") return { sent: "asked-open", to: open.to };
+        if (asked && to === "owner") return { sent: "asked-open", to: open.to, ...(open.until ? { until: open.until } : {}) };
         // One open ask per task: a different question waits for the answer, and the caller fails actionably (idle.ts).
         return { sent: "open", to: open.to };
       }
