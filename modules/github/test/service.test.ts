@@ -377,6 +377,19 @@ test("a symlinked bundle, or a bundles folder that leads out of the task, is ref
   assert.ok(existsSync(join(ws, ".git", "HEAD")));
 });
 
+// A pre-publish code review's head: the kernel names the job's workspace and branch, and the snapshot is that bundle's commit.
+test("a snapshot of a job's unpublished commit reads its bundle, the branch's tip only", async (t) => {
+  const { root, sha, raw } = await setup(t);
+  const snap = await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: sha, workspace: "TASK-1", branch: "feature" });
+  assert.equal(snap.status, 200);
+  assert.equal(snap.headers.get("x-aidenhq-commit"), sha);
+  const tgz = join(root, "ws-snap.tgz");
+  writeFileSync(tgz, Buffer.from(await snap.arrayBuffer()));
+  assert.deepEqual(execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean).sort(), [".gitattributes", "README.md", "app.js"]);
+  // A sha the branch's bundle isn't at is refused.
+  assert.notEqual((await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: "b".repeat(40), workspace: "TASK-1", branch: "feature" })).status, 200);
+});
+
 test("a job's commit never reaches what snapshot and bundle serve as GitHub's", async (t) => {
   const { root, sha, call, raw } = await setup(t);
   assert.equal((await planPush(call, sha)).status, 200); // the job's commit is now in the service's ws cache

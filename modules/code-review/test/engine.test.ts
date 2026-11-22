@@ -1742,4 +1742,8 @@ test("pre-publish review: its findings reach the asking task; a PR opened, then 
   // A head no pre-publish review saw gets the normal review.
   w.pr(2, sha("4"), { head_ref: "fix/x" }); await w.tick(); w.later(DEBOUNCE); await w.tick();
   assert.deepEqual([w.started.length, w.started[3].number, w.started[3].incremental_from], [4, 2, sha("3")]);
+  // Three rounds before one publish (counted from the PR's newest review), then the PR's own review takes over.
+  for (const h of ["5", "6", "7"]) { w.later(1000); assert.match((await ask(sha(h))).text, /mandatory reviewer/); }
+  w.later(1000);
+  assert.match((await ask(sha("8"))).text, /has had its 3 pre-publish reviews/);
 });

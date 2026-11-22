@@ -74,7 +74,9 @@ for (let i = 0; i < rest.length; i++) {
   else words.push(rest[i]);
 }
 
-async function call(path, body, auth = { authorization: `Bearer ${token}` }) {
+// `absent`: said (exit 0) instead of failing when the connection isn't installed here (404) or the tool isn't this job's.
+const isAbsent = (absent) => { if (absent) { console.log(absent); process.exit(0); } };
+async function call(path, body, auth = { authorization: `Bearer ${token}` }, absent) {
   const res = await fetch(new URL(path, gateway), {
     method: body ? "POST" : "GET",
     headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -83,6 +85,7 @@ async function call(path, body, auth = { authorization: `Bearer ${token}` }) {
   }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
   const text = await res.text();
   if (!res.ok) {
+    if (res.status === 404) isAbsent(absent);
     let msg = text;
     try { msg = JSON.parse(text).error?.message ?? text; } catch {}
     fail(msg);
@@ -161,10 +164,10 @@ const firstSubject = (repo, branch) => {
   return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", "--remotes"], { encoding: "utf8" }).split("\n")[0];
 };
 /** One tool of a connection (tasks-mcp's by default), through the kernel's tool proxy as this job (its frozen tools), as the box's
- * own MCP config calls it. */
-async function tool(name, args, connection = "paperclip_tasks") {
+ * own MCP config calls it. `absent`: what to say (exit 0) when the connection or the tool isn't there for this job. */
+async function tool(name, args, connection = "paperclip_tasks", absent) {
   const path = `/c/${connection}/mcp`;
-  const first = await call(path, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "aidenhq", version: "1" } } }, { "x-agent-key": token });
+  const first = await call(path, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "aidenhq", version: "1" } } }, { "x-agent-key": token }, absent);
   const answer = await fetch(new URL(path, gateway), {
     method: "POST",
     headers: { "x-agent-key": token, "content-type": "application/json", accept: "application/json, text/event-stream", ...(first.session ? { "mcp-session-id": first.session } : {}) },
@@ -177,6 +180,7 @@ async function tool(name, args, connection = "paperclip_tasks") {
   const msgs = text.trimStart().startsWith("{") ? [text] : text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
   const r = msgs.map((m) => { try { return JSON.parse(m); } catch { return undefined; } }).find((m) => m?.id === 2);
   if (!r) fail("the tool sent no answer");
+  if (r.error?.code === -32602 && /no-grant/.test(String(r.error.message))) isAbsent(absent);
   if (r.error) fail(r.error.message ?? JSON.stringify(r.error));
   const out = (r.result?.content ?? []).filter((c) => c?.type === "text").map((c) => c.text).join("\n");
   if (r.result?.isError) fail(out || "the tool refused");
@@ -220,15 +224,18 @@ if (command === "publish" || command === "review") {
   if (words.length !== 2) fail("usage: aidenhq code-review <org/repo> <branch> [--base <branch>]", 2);
   const [repo, branch] = words;
   const head = commitOf(repo, branch);
-  // What the change is: everything since it left the base branch, as its pull request will show it.
+  // What the change is: everything since it left the base branch, as its pull request will show it. A branch with no base to
+  // leave (a new, empty repository) has nothing a review could diff against: there is nothing to run before publishing.
   const base = `refs/remotes/origin/${flags.base ?? "HEAD"}`;
+  const git = (...a) => execFileSync("git", ["-C", cloneOf(repo).have, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   let mergeBase;
-  try {
-    mergeBase = execFileSync("git", ["-C", cloneOf(repo).have, "merge-base", base, head], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    fail(`no merge base of \`${branch}\` with ${base.replace("refs/remotes/", "")}: refresh it with \`aidenhq clone ${repo}\`, or name the base with --base <branch>`, 2);
+  try { git("rev-parse", "--verify", "--quiet", `${base}^{commit}`); } catch {
+    if (flags.base) fail(`origin/${flags.base} isn't in this clone: refresh it with \`aidenhq clone ${repo}\``, 2);
+    console.log(`${repo} has no base branch to compare \`${branch}\` with: nothing runs before publishing. Publish.`);
+    process.exit(0);
   }
-  lines.push(await tool("code_review_prepublish", { repo, branch, head, merge_base: mergeBase }, "code_review"));
+  try { mergeBase = git("merge-base", base, head); } catch { fail(`\`${branch}\` shares no history with ${base.replace("refs/remotes/", "")}: name the branch its PR targets with --base <branch>`, 2); }
+  lines.push(await tool("code_review_prepublish", { repo, branch, head, merge_base: mergeBase }, "code_review", "Code review isn't installed here: nothing runs before publishing. Publish."));
 } else if (command === "merge") {
   if (!words.length || words.length % 2) fail("name the pull requests to merge as <PR link> <head sha> pairs, in order", 2);
   for (let i = 0; i < words.length; i += 2) {

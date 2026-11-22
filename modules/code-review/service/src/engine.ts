@@ -47,7 +47,8 @@ const ATTEMPTS = 2;
 /** A mandatory run is tried this many times in all, each retry RUN_RETRY after the last (flat: a stream error or a restart is
  * over by then, and the merge waits on it). */
 const MANDATORY_ATTEMPTS = 4;
-/** A branch's pre-publish reviews per asking task (each a new commit): past them, the pull request's own review takes over. */
+/** A branch's pre-publish reviews per asking task before each publish (each a new commit; the count starts again once its pull
+ * request has a newer review): past them, the pull request's own review takes over. */
 const PREPUBLISH_ROUNDS = 3;
 const WRITERS = new Set(["admin", "maintain", "write"]);
 
@@ -1556,7 +1557,9 @@ export function createEngine(d: EngineDeps) {
       const have = list.map((c) => one<RunRow>("SELECT * FROM runs WHERE kind = 'prepublish' AND repo = ? AND head = ? AND merge_base = ? AND engine = ? AND model = ? AND effort = ? AND status IN ('queued', 'running', 'done') ORDER BY created DESC LIMIT 1",
         repo, head, merge_base, c.engine, c.model, c.effort));
       if (have.some((x) => !x)) {
-        const rounds = one<{ n: number }>("SELECT COUNT(DISTINCT r.batch) n FROM runs r JOIN askers a ON a.batch = r.batch WHERE r.kind = 'prepublish' AND r.repo = ? AND r.branch = ? AND a.task = ?", repo, branch, asker.task)!.n;
+        // Rounds since the branch was last published: after its PR's newest review run (none yet: every round so far).
+        const since = pr ? one<{ c: number | null }>("SELECT MAX(created) c FROM runs WHERE repo = ? AND number = ?", repo, pr.number)?.c ?? 0 : 0;
+        const rounds = one<{ n: number }>("SELECT COUNT(DISTINCT r.batch) n FROM runs r JOIN askers a ON a.batch = r.batch WHERE r.kind = 'prepublish' AND r.repo = ? AND r.branch = ? AND a.task = ? AND r.created > ?", repo, branch, asker.task, since)!.n;
         if (rounds >= PREPUBLISH_ROUNDS) return { text: `${repo} \`${branch}\` has had its ${PREPUBLISH_ROUNDS} pre-publish reviews on this task: publish it, and the pull request's mandatory review takes it from here.` };
       }
       const batch = `b-${randomBytes(6).toString("hex")}`;
@@ -1569,7 +1572,7 @@ export function createEngine(d: EngineDeps) {
       });
       recordAsker(runs[0]!.batch, { requester: asker.requester.slice(0, 100) || "an agent", task: asker.task }, runs.map((r) => r.id));
       if (runs.every((r) => r.status === "done")) return { runs: runs.map((r) => r.id), text: prepublishText(runs, 30_000) };
-      return { runs: runs.map((r) => r.id), text: `Reviewing ${repo} \`${branch}\` at ${head.slice(0, 12)} with its ${runs.length} mandatory ${runs.length === 1 ? "reviewer" : "reviewers"} (${runs.map((r) => `${r.engine} ${r.model} ${r.effort}`).join("; ")}). The findings come on this task as a wake when they finish (usually minutes): end this turn now, then act on them.` };
+      return { runs: runs.map((r) => r.id), text: `Reviewing ${repo} \`${branch}\` at ${head.slice(0, 12)} with its ${runs.length} mandatory ${runs.length === 1 ? "reviewer" : "reviewers"} (${runs.map((r) => `${r.engine} ${r.model} ${r.effort}`).join("; ")}). The findings come on this task when they finish (usually minutes): record \`task_wait\` (on: the pre-publish code review of ${head.slice(0, 12)}) and end this turn.` };
     },
     runs(q: { repo?: string; status?: string; limit?: number }) {
       const where: string[] = [], args: unknown[] = [];

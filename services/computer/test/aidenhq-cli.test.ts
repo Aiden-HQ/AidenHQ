@@ -79,3 +79,45 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   await assert.rejects(run(process.execPath, [CLI, "reset"], { env: { PATH: process.env.PATH } }), /only available inside a job's computer/);
 });
 
+
+test("aidenhq code-review: the branch's bundle and its merge base with origin's default branch go to code review; none installed, or no base, is nothing to run", async (t) => {
+  const calls = [];
+  let installed = true;
+  const kernel = createServer((req, res) => {
+    let b = "";
+    req.on("data", (d) => (b += d));
+    req.on("end", () => {
+      const body = JSON.parse(b || "{}");
+      const json = (s, o, h = {}) => res.writeHead(s, { "content-type": "application/json", ...h }).end(JSON.stringify(o));
+      if (req.url !== "/c/code_review/mcp" || !installed) return json(404, { error: { message: "no connection code_review" } });
+      if (body.method === "initialize") return json(200, { jsonrpc: "2.0", id: 1, result: {} }, { "mcp-session-id": "s1" });
+      calls.push({ key: req.headers["x-agent-key"], name: body.params.name, args: body.params.arguments });
+      json(200, { jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "Reviewing acme/app `fix-login`." }] } });
+    });
+  });
+  await new Promise((r) => kernel.listen(0, "127.0.0.1", r));
+  t.after(() => kernel.close());
+  const ws = mkdtempSync(join(tmpdir(), "aidenhq-cr-"));
+  t.after(() => rmSync(ws, { recursive: true, force: true }));
+  const git = (...a) => execFileSync("git", ["-C", join(ws, "app"), "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "-b", "main", join(ws, "app")]);
+  execFileSync("git", ["-C", join(ws, "app"), "remote", "add", "origin", "aidenhq://acme/app"]);
+  git("commit", "-q", "--allow-empty", "-m", "chore: start");
+  const base = git("rev-parse", "HEAD");
+  git("switch", "-q", "-c", "fix-login");
+  git("commit", "-q", "--allow-empty", "-m", "fix(login): stop the loop");
+  const head = git("rev-parse", "HEAD");
+  const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job", AIDENHQ_TASK_WORKTREE: ws };
+  const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
+
+  // No origin branch at all (a new, empty repository): nothing to review against.
+  assert.match(await aidenhq("code-review", "acme/app", "fix-login"), /no base branch[\s\S]*Publish\./);
+  git("update-ref", "refs/remotes/origin/main", base);
+  git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  assert.match(await aidenhq("code-review", "acme/app", "fix-login"), /Reviewing acme\/app/);
+  assert.deepEqual(calls, [{ key: "ahqj_job", name: "code_review_prepublish", args: { repo: "acme/app", branch: "fix-login", head, merge_base: base } }]);
+  execFileSync("git", ["bundle", "verify", "--quiet", join(ws, ".aidenhq", "bundles", `${head}.bundle`)], { cwd: join(ws, "app") });
+  // Without the code review module: nothing runs, and that is not a failure.
+  installed = false;
+  assert.match(await aidenhq("code-review", "acme/app", "fix-login"), /isn't installed here[\s\S]*Publish\./);
+});
