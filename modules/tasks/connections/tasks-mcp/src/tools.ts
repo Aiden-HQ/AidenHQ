@@ -869,10 +869,15 @@ const SCAN_MS = 120_000;
  * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
  * empty page, or at repeated pages (a server that ignores `offset`, reported as stalled).
  */
-async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } = {}, ms?: () => number) {
+async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; expired?: boolean } = {}, ms?: () => number) {
   const seen = new Set<string>();
   let repeats = 0, last = "";
   for (let offset = 0; ; ) {
+    // A page that adds nothing new does not yield, so the caller cannot check the clock: check it here too.
+    if (ms && ms() <= 0) {
+      progress.expired = true;
+      return;
+    }
     const p = new URLSearchParams(q);
     p.set("limit", String(PAGE));
     p.set("offset", String(offset));
@@ -1030,7 +1035,7 @@ const TOOLS: Record<string, Tool> = {
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
       // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
       const deadline = Date.now() + SCAN_MS;
-      const progress: { stalled?: boolean } = {};
+      const progress: { stalled?: boolean; expired?: boolean } = {};
       let complete = true;
       // Reads at the budget's edge are abandoned, not failed: a slow page or kernel read leaves the matches collected so far
       // with `incomplete`, and anything that fails before the deadline still surfaces.
@@ -1077,11 +1082,13 @@ const TOOLS: Record<string, Tool> = {
           // A tie keeps the assigned (b) snapshot: the one read last.
           const fromB = x.done || (!y.done && at(y.value) >= at(x.value));
           const row = (fromB ? y.value : x.value) as readonly [Json, Json];
+          if (!seen.has(row[0].id)) {
+            seen.add(row[0].id);
+            // The row is yielded before its source is advanced, so a caller that stops at `limit` never reads past it.
+            yield row;
+          }
           if (fromB) y = await right.next();
           else x = await left.next();
-          if (seen.has(row[0].id)) continue;
-          seen.add(row[0].id);
-          yield row;
         }
       };
       const take = async (rows: AsyncIterable<readonly [Json, Json]>) => {
@@ -1127,7 +1134,9 @@ const TOOLS: Record<string, Tool> = {
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
-        ...(complete && !progress.stalled ? {} : { incomplete: progress.stalled ? "the issues list stopped advancing through its pages; some tasks were not read" : "the scan ran past its time budget; some older tasks were not read" }),
+        ...(complete && !progress.stalled && !progress.expired
+          ? {}
+          : { incomplete: progress.stalled ? "the issues list stopped advancing through its pages; some tasks were not read" : "the scan ran past its time budget; some older tasks were not read" }),
       };
     },
   },

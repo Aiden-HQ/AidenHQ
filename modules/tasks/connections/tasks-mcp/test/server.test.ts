@@ -246,3 +246,20 @@ test("task_list(mine) stops reading pages once it has limit distinct matches", a
   assert.equal(out.out.tasks.length, 2);
   assert.ok(reads <= 4, `read ${reads} pages for two matches; it should stop early`);
 });
+
+test("task_list(mine) returns the newest match without reading the rest of the history", async () => {
+  // One matching task at the top of the assigned list, then 900 non-matching older rows.
+  let reads = 0;
+  const rows = [{ ...row("match-1", "todo"), assigneeAgentId: "me", createdAt: "2026-06-01T00:00:00Z" },
+    ...Array.from({ length: 900 }, (_, n) => ({ ...row(`old-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" }))];
+  const board = issueBoard({ rows });
+  const handler = async (req, res) => {
+    if ((req.url ?? "").includes("/issues?")) reads++;
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "match-1" ? "waiting" : "working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { mine: true, state: "waiting", limit: 1 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["match-1"]);
+  assert.ok(reads <= 4, `read ${reads} pages for one match; it should stop after yielding it`);
+});
