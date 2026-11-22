@@ -507,3 +507,36 @@ test("a branch whose name ends in a no-break space is still the checked-out bran
   assert.match(out, /incomplete: uncommitted changes/, out);
   assert.match(out, /^self-review: branch topic\u00a0 base /m);
 });
+
+test("a finding on a file the change deletes is validated against the base's file and kept, labelled", () => {
+  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "" : "one\ntwo\nthree\n") });
+  sh(repo, "rm", "-q", "--ignore-unmatch", "gone.txt"); sh(repo, "commit", "-q", "--allow-empty", "-m", "delete");
+  const head = sh(repo, "rev-parse", "HEAD");
+  const f = { severity: "important" as const, path: "gone.txt", line: 2, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "" };
+  assert.equal(place([f], repo, new Set(["gone.txt"]), undefined, undefined, head).length, 0, "at the head alone it is dropped");
+  const kept = place([f], repo, new Set(["gone.txt"]), undefined, undefined, head, base);
+  assert.equal(kept.length, 1);
+  assert.match(kept[0]!.why, /^\[base side: this change deletes the file\] /);
+  assert.equal(place([{ ...f, line: 9 }], repo, new Set(["gone.txt"]), undefined, undefined, head, base).length, 0, "a line the base's file doesn't have is still dropped");
+});
+
+test("self-review prints a finding on a deleted file instead of dropping it", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "x\n" : "one\ntwo\n"), "a.txt": (v) => `a${v}\n` });
+  sh(repo, "rm", "-q", "gone.txt"); sh(repo, "commit", "-qm", "delete");
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const model = await endpoint([], "gone.txt");
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    assert.equal(out.status, 1, out.stdout);
+    assert.match(out.stdout, /base side: this change deletes the file/);
+    assert.match(out.stdout, /1 important finding/);
+  } finally { model.close(); }
+});

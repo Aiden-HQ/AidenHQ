@@ -55,15 +55,16 @@ export function guidePaths(paths: string[]) {
 }
 
 /** The head file's lines for a tracked regular file the review read (never a link out of the tree), else undefined. */
+/** A regular file's lines as commit `at` has it (never the work tree), else undefined. */
+function linesAt(root: string, at: string, path: string) {
+  try {
+    const git = (...a: string[]) => execFileSync("git", a, { cwd: root, maxBuffer: 8 << 20, stdio: ["ignore", "pipe", "ignore"] });
+    if (!/^100(644|755) /.test(git("ls-tree", "-z", at, "--", `:(literal)${path}`).toString("utf8"))) return undefined;
+    return git("show", `${at}:${path}`).toString("utf8").split("\n");
+  } catch { return undefined; }
+}
 function linesOf(root: string, path: string, reviewed: Set<string>, head?: string) {
-  if (head) {
-    // The file as the reviewed commit has it (never the work tree, which may have moved on): a regular file only.
-    try {
-      const git = (...a: string[]) => execFileSync("git", a, { cwd: root, maxBuffer: 8 << 20, stdio: ["ignore", "pipe", "ignore"] });
-      if (!/^100(644|755) /.test(git("ls-tree", "-z", head, "--", `:(literal)${path}`).toString("utf8"))) return undefined;
-      return git("show", `${head}:${path}`).toString("utf8").split("\n");
-    } catch { return undefined; }
-  }
+  if (head) return linesAt(root, head, path); // the reviewed commit's file (the work tree may have moved on)
   if (!reviewed.has(path) && !existsSync(join(root, path))) return undefined;
   if (path.split("/").includes(".git") || !plain(root, path)) return undefined;
   const t = readSmall(join(root, path), 8 << 20);
@@ -75,18 +76,20 @@ function linesOf(root: string, path: string, reviewed: Set<string>, head?: strin
  * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
  * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
  * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
- * out (`left`) is dropped. `head`: read the files from that commit, not the work tree.
+ * out (`left`) is dropped. `head`: read the files from that commit, not the work tree. `base`: where a file the change deletes is read from.
  */
-export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>(), head?: string) {
+export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>(), head?: string, base?: string) {
   const out: Placed[] = [];
   for (const f of findings) {
     if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
-    const lines = linesOf(root, f.path, reviewed, head);
+    let lines = linesOf(root, f.path, reviewed, head), deleted = false;
+    // A file the change deletes has no lines at the head: a finding on it is validated against the base's file and says so.
+    if (!lines && base) { lines = linesAt(root, base, f.path); deleted = !!lines; }
     if (!lines || f.line > lines.length) continue;
     const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
     const anchor = lines[f.line - 1]!.trim();
     const id = createHash("sha256").update(`${f.path}\n${f.title.toLowerCase().replace(/\W+/g, " ").trim()}\n${anchor}`).digest("hex").slice(0, 16);
-    out.push({ id, ...f, severity, ...(f.end_line && f.end_line > lines.length ? { end_line: lines.length } : {}) });
+    out.push({ id, ...f, ...(deleted ? { why: `[base side: this change deletes the file] ${f.why}` } : {}), severity, ...(f.end_line && f.end_line > lines.length ? { end_line: lines.length } : {}) });
   }
   return out;
 }

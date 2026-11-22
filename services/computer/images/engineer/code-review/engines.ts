@@ -579,7 +579,7 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
       const important = (fs: { severity: string }[]) => fs.filter((f) => f.severity === "important").length;
       const kept = clean(got, root), asked = downgrade(kept).findings.filter((f) => !left.includes(f.path));
       // Not "own" for the severity rule (a finding in a file the change doesn't touch is a nit in the check, not a drop).
-      const placed = place(asked, root, new Set(files), new Set(asked.map((f) => f.path)), new Set(), head);
+      const placed = place(asked, root, new Set(files), new Set(asked.map((f) => f.path)), new Set(), head, base);
       const keptAt = new Set(kept.map((f) => `${f.path}\n${f.line}`)); // what clean() rejected as malformed counts when the failure-scenario rule would keep it important
       const lost = important(downgrade(got.filter((f) => !keptAt.has(`${f.path}\n${f.line}`))).findings) + important(asked) - important(placed);
       if (lost > 0) failed.push(`part ${i + 1} of ${groups.length}: ${lost} important finding${lost === 1 ? "" : "s"} at a place that is not in the change`);

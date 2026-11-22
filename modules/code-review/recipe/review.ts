@@ -398,7 +398,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   result.downgraded += down.n;
   const cleaned = down.findings;
   const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
-  let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
+  let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_, undefined, h.from));
   for (const f of candidates) if (restates(f, f.id)) restated.add(f.id);
   candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
@@ -428,7 +428,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         confirmed.push({ ...f, severity, ...(Number.isInteger(c.line) && c.line >= 1 ? { line: c.line } : {}) });
       }
       // A moved line is checked again (and its id follows its new anchor).
-      candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own, out_));
+      candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own, out_, undefined, h.from));
     }
   }
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);
