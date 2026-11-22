@@ -78,10 +78,11 @@ const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
   : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
 
 // The distro and codename a Dockerfile FROM installs: Docker Hub's debian:<codename> (sid, bookworm, trixie, …) and
-// ubuntu:<codename> (noble, or a `noble-…` / `…-noble` tag). Anything else, a local stage or an unread codename: none.
-const DISTRO_TAGS = new Map<string, [string, string[]]>([
-  ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"]]],
-  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"]]],
+// ubuntu:<codename> (noble, or a `noble-…` / `…-noble` tag), plus the numeric release tags each suite answers to
+// (`debian:12` is bookworm, `ubuntu:24.04` is noble). Anything else, a local stage or an unread codename: none.
+const DISTRO_TAGS = new Map<string, [string, string[], Record<string, string>]>([
+  ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"], { "12": "bookworm", "13": "trixie", "11": "bullseye", "10": "buster", "14": "forky" }]],
+  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"], { "24.04": "noble", "22.04": "jammy", "20.04": "focal", "24.10": "oracular", "25.04": "plucky", "25.10": "questing", "26.04": "resolute" }]],
 ]);
 function baseDistro(ref: string): { distro: string; release: string } | undefined {
   const { host, repo, tag } = parseImage(ref);
@@ -89,9 +90,9 @@ function baseDistro(ref: string): { distro: string; release: string } | undefine
   // A Map, not an object: an image named `constructor` or `__proto__` must read as an unknown image, not Object.prototype.
   const entry = host === "docker.io" ? DISTRO_TAGS.get(repo.slice("library/".length)) : undefined;
   if (!entry) return undefined;
-  const [distro, codenames] = entry;
-  const release = tag.split("-").find((part) => codenames.includes(part));
-  return release ? { distro, release } : undefined;
+  const [distro, codenames, numbers] = entry;
+  const release = tag.split("-").find((part) => codenames.includes(part) || numbers[part] !== undefined);
+  return release ? { distro, release: numbers[release] ?? release } : undefined;
 }
 
 export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));

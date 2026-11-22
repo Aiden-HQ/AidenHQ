@@ -98,6 +98,16 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
     assert.deepEqual(sources, ["http://archive.ubuntu.com/ubuntu noble-updates main"], why);
   }
 
+  // A numeric suite tag is that suite: `debian:12` is bookworm and `ubuntu:24.04` is noble, so neither falls to the
+  // default. Without this a Debian 12 stage was dated from Ubuntu's noble pockets — the same mis-dating the FROM base fixes.
+  for (const [base, distro, codename] of [["debian:12", "debian", "bookworm"], ["debian:12-slim", "debian", "bookworm"], ["debian:13", "debian", "trixie"], ["ubuntu:24.04", "ubuntu", "noble"], ["ubuntu:22.04", "ubuntu", "jammy"]]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], [distro, codename], base);
+  }
+  // An unknown number keeps the default: a tag the map doesn't list is not guessed at.
+  const [unknown] = scanFile("Dockerfile", `FROM debian:99${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
+  assert.deepEqual([unknown.distro, unknown.release], [undefined, "noble"]);
+
   // The last FROM is the stage the pin runs in: an earlier Debian base doesn't date a later Ubuntu one, and vice versa.
   const [last] = scanFile("Dockerfile", `FROM debian:bookworm${d} AS tools\nFROM ubuntu:jammy${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
   assert.deepEqual([last.distro, last.release], ["ubuntu", "jammy"]);
