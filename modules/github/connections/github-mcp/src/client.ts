@@ -44,8 +44,9 @@ export function needText(n: Need): string {
 export class GitHubNeed extends Error {
   readonly need: Need;
   readonly ownerFixable: boolean;
-  constructor(need: Need) {
-    super(needText(need));
+  /** `detail` adds what a caller should know about this particular call (the cause and its fields are kept). */
+  constructor(need: Need, detail?: string) {
+    super(detail ?? needText(need));
     this.need = need;
     this.ownerFixable = OWNER_FIXABLE.has(need.cause);
   }

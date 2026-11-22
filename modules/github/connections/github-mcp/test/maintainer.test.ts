@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { Maintainer } from "../src/maintainer.js";
 import { GitHubRefused } from "../src/github.js";
+import { GitHubNeed } from "../src/client.js";
 import { inMaintained, parseRepos } from "../src/aidenhq-sdk/maintained-repos.js";
 import { accessFor } from "./fake-access.js";
 
@@ -296,8 +297,11 @@ it("a close whose note posted but whose state change is rate limited says the no
   }) as typeof fetch;
   const note = "Fixed by acme/product#7, merge 0ba0db1.";
   const err = await maintainer(f).state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
-  expect(err).toBeInstanceOf(GitHubRefused);
-  expect((err as Error).message).toMatch(/the note was posted .*still open — call this again with the same state and no note after /);
+  // The typed need survives, so the kernel still routes an owner-fixable cause and the caller still sees the real `until`.
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need.cause).toBe("rate_limited");
+  expect((err as Error).message).toMatch(/the note was posted .*the state change to closed did not complete.*call this again with the same state and no note after /i);
+  expect((err as Error).message).not.toMatch(/still open/);
   // The note went once; the retry the message asks for (no note) only sends the state change.
   f.fetchFn = original;
   expect(await maintainer(f).state(PRODUCT, 1, "closed", "completed")).toMatchObject({ state: "closed" });

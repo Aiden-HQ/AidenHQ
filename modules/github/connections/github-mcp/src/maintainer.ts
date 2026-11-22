@@ -482,10 +482,11 @@ export class Maintainer {
     try {
       res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     } catch (e) {
-      // The note is already on the issue: retrying the whole call would post it twice, so say what is left, and when.
+      // The note is already on the issue: retrying the whole call would post it twice, so say what is left, and when. The need
+      // stays typed (its cause and fields, and the kernel's needs_owner routing), with the note's outcome added to its text.
       if (posted && e instanceof GitHubNeed) {
         const when = e.need.cause === "rate_limited" ? ` after ${e.need.until}` : "";
-        throw new GitHubRefused(`the note was posted (${posted.url}); the issue is still open — call this again with the same state and no note${when}`);
+        throw new GitHubNeed(e.need, `${e.message}. The note was posted (${posted.url}); the state change to ${state} did not complete — call this again with the same state and no note${when}`);
       }
       throw e;
     }
