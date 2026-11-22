@@ -276,7 +276,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    */
   // One resolution at a time per task, so two checks' oks never each see the other's hold and both leave the task in review.
   const resolving = new Map<string, Promise<unknown>>();
-  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown };
+  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown; expectStatus?: unknown };
   /** The module's one finish check and the verdict's target status, or the refusal: asked before any task is looked up. */
   function pick(module: string, b: Resolve) {
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
@@ -297,6 +297,10 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const { id, c, to } = pick(module, b);
     const i = await issue(ref);
     if (!recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
+    // A resolve names the task state its decision was made on (a grader's close is decided on the review it read): a task
+    // cancelled, handed back or moved on since is refused rather than overwritten by a verdict about work it no longer holds.
+    if (b.expectStatus !== undefined && String(b.expectStatus) !== i.status)
+      throw fail(409, "conflict", `${i.identifier ?? i.id} is ${i.status}, not ${String(b.expectStatus)}: the move it was decided on no longer applies`);
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");

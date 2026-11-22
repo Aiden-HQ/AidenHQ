@@ -485,3 +485,141 @@ test("a claimed record keeps its task's grade open, and the grade runs once it e
   assert.deepEqual(calls.resolve, ["ok"], "the grade runs once the record ends");
   assert.equal(prompts.length, 1);
 });
+
+test("a close is bound to the round it was decided on: a re-filed submission is not closed by the pass before it", async () => {
+  // The assignee submits again while the close is waiting: the row goes back to pending for the new submission, but the filing
+  // (its rubric and deliverable) is unchanged, so only the round tells the two passes apart.
+  const issue = { id: "t14", identifier: "WOR-14", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t14", filed, deliverable);
+  grades.record("t14", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  const before = grades.get("t14");
+  // The assignee finishes again: the gate parks the row for the new submission, leaving the filing's words as they were.
+  completionGate(grades, "t14", "finish_turn");
+  assert.equal(grades.get("t14").state, "pending");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t14', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: before.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the close from the satisfied pass does not land on the new submission");
+  assert.deepEqual(calls.resolve, [], "no close is sent");
+});
+
+test("a close queued for a task cancelled meanwhile is dropped, not applied", async () => {
+  // An owner cancels the task while the grader is checking its evidence. The close must not overwrite `cancelled` with `done`
+  // and tell the parent the work passed. The cancel lands on the close's last read of the row (just before the write), so the
+  // stale-evidence branch above never sees it: only the guard before the write keeps `cancelled`.
+  const issue = { id: "t15", identifier: "WOR-15", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t15", filed, deliverable);
+  const g = grades.record("t15", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  let reads = 0;
+  const read = async (m, p, b) => {
+    const r = await runner(m, p, b);
+    // The row's reads: the first when the step is replayed, the second immediately before the close.
+    if (m === "GET" && /^\/internal\/grades\/[^/]+$/.test(p) && ++reads === 2) issue.status = "cancelled";
+    return r;
+  };
+  // The kernel refuses a resolve whose task moved on since the decision: `cancelled` is not `in_review`.
+  const held = kernel;
+  const strict = async (m, p, b) => {
+    if (m === "POST" && p === "/v1/checks/t15" && b?.expectStatus !== undefined && b.expectStatus !== issue.status)
+      throw Object.assign(new Error(`the task is ${issue.status}, not ${b.expectStatus}`), { status: 409 });
+    return held(m, p, b);
+  };
+  const loop = createKernelGradeLoop({ db, runner: read, due: () => ({ grades: [], resubmitted: [] }), kernel: strict, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t15', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }, { do: "tell", issue: { id: "t15", parentId: "p1" }, kind: "done", who: "WOR-15 (Dana)", title: "report", identifier: "WOR-15" }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "cancelled", "the cancel stands");
+  assert.deepEqual(calls.resolve, [], "no close is sent");
+  assert.deepEqual(calls.wake, [], "the parent is not told the work passed");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t15'").get()?.v ?? "", "", "the close and its notice are dropped together");
+});
+
+test("a legacy close whose evidence changed is requeued, not left satisfied", async () => {
+  // A close saved before steps carried a filing matches a satisfied revision-zero row, but the assignee added evidence since.
+  // The stale close resets the row to be graded again; without the verified row's filing hash the reset is dropped by the
+  // store and the task sits in review on a satisfied row that is never picked up.
+  const issue = { id: "t16", identifier: "WOR-16", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t16", filed, deliverable);
+  grades.record("t16", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  // The step names no filing and a version the report's evidence no longer reads: the version check makes it stale.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t16', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: "an-older-version", status: "in_review", deliverable, rubric: filed }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the stale close does not land");
+  assert.equal(grades.get("t16").state, "awaiting_evidence", "the row is requeued for the evidence it now holds, not left satisfied");
+  assert.deepEqual(grades.due().map((x) => x.issueId), ["t16"], "the next pass picks the row up again");
+});
+
+test("a re-submission landing between the close's last read and its write still stops the close", async () => {
+  // The read and the write are not one step: the assignee can submit again in the window between them, which sends the row
+  // from satisfied back to pending without changing the filing's words. The close claims the exact round it was decided on,
+  // and the store refuses the claim once the re-submission has moved the row on.
+  const issue = { id: "t17", identifier: "WOR-17", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t17", filed, deliverable);
+  const g = grades.record("t17", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  // The re-submission lands after the close's last read and before its claim is applied: the window the close cannot close
+  // by reading. The claim sees the row the re-submission moved on.
+  let again = false;
+  const read = async (m, p, b) => {
+    if (m === "POST" && /\/claim$/.test(p) && !again) {
+      again = true;
+      completionGate(grades, "t17", "finish_turn");
+      return false;
+    }
+    return runner(m, p, b);
+  };
+  const loop = createKernelGradeLoop({ db, runner: read, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t17', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the close does not land on the re-submitted row");
+  assert.deepEqual(calls.resolve, [], "no close is sent");
+  assert.equal(grades.get("t17").state, "pending", "the re-submitted row is left for its own grading pass");
+});
+
+test("a legacy close whose evidence changed is requeued, not left satisfied", async () => {
+  // A close saved before steps carried a filing matches a satisfied revision-zero row, but the assignee added evidence since.
+  // The stale close resets the row to be graded again; without the verified row's filing hash the reset is dropped by the
+  // store and the task sits in review on a satisfied row that is never picked up.
+  const issue = { id: "t16", identifier: "WOR-16", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t16", filed, deliverable);
+  grades.record("t16", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  // The step names no filing and a version the report's evidence no longer reads: the version check makes it stale.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t16', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: "an-older-version", status: "in_review", deliverable, rubric: filed }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the stale close does not land");
+  assert.equal(grades.get("t16").state, "awaiting_evidence", "the row is requeued for the evidence it now holds, not left satisfied");
+  assert.deepEqual(grades.due().map((x) => x.issueId), ["t16"], "the next pass picks the row up again");
+});

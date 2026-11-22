@@ -122,6 +122,23 @@ test("/v1/checks/:task: only the check's module; ok and reopen only resolve a ho
   assert.deepEqual(facts, ["finish.held", "finish.verdict:ok"]);
 });
 
+test("/v1/checks/:task: a resolve names the state its decision was made on, and a task moved on since is refused", async (t) => {
+  const { k, writes, issue, finish } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
+  const resolve = (body) => k.v1("POST", `/v1/checks/${TASK}`, body, "judge-tok");
+  await finish({ status: "done" });
+  // The owner cancels the task while the grader was deciding: the close it decided on is refused, not applied over the cancel.
+  issue.status = "cancelled";
+  const r = await resolve({ verdict: "ok", comment: "Graded: satisfied.", expectStatus: "in_review" });
+  assert.equal(r.status, 409);
+  assert.match(r.json.error.message, /WOR-1 is cancelled, not in_review/);
+  assert.deepEqual(writes, [{ as: "board-key", body: { status: "in_review", labelIds: ["lbl-x", "lbl-held"], executionPolicy: { mode: "normal", monitor: { nextCheckAt: "2026-11-17T12:00:00.000Z", notes: "r" } } } }], "the refusal moves nothing");
+  assert.equal(issue.status, "cancelled");
+  // A resolve with no expectation still applies: the precondition is only what a caller names.
+  const ok = await resolve({ verdict: "ok", comment: "Graded: satisfied." });
+  assert.equal(ok.status, 200);
+  assert.equal(writes.at(-1).body.status, "done");
+});
+
 test("an undecided approval card of the task refuses the close, whatever the checks say; once decided or run, the same finish passes", async (t) => {
   const card = { sentence: "Post the note.", changes: "", reads: "", cost: "", details: "" };
   const file = (k, state, task = TASK) => k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "post", arguments: { note: state } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 1, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task, state });

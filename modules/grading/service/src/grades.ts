@@ -18,7 +18,7 @@ export { uncheckableAbsence };
  * the MAX_LOOPS-th rejected version, settle the row satisfied: the task closes done, ungraded, and its parent hears why. not_graded: the task was cancelled or otherwise closed before
  * the grader settled it, so there is nothing left to grade.
  */
-export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
+export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "closing" | "needs_revision" | "grading_failed" | "not_graded";
 export interface Deliverable {
   kind: "pr" | "app" | "apply" | "file" | "report" | "issue";
   ref: string;
@@ -44,6 +44,11 @@ export interface Grade {
    * to the same words: the contents alone cannot tell a pass on A from a pass on B that was amended back to A.
    */
   revision: number;
+  /**
+   * The grading round this row is on: 0 when filed, +1 at every restart and every verdict, so a close decided on one round is
+   * told apart from a later submission that left the filing (and its hash) unchanged.
+   */
+  round: number;
   /** Distinct deliverable versions rejected so far. */
   attempts: number;
   state: GradeState;
@@ -80,6 +85,7 @@ interface Row {
   resume: number;
   resumed_at: string | null;
   revision: number;
+  round: number;
 }
 
 /** Rejected versions before the grade gives up and closes the task done, ungraded (fail open: never parked on anyone). */
@@ -162,7 +168,7 @@ export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), revision: r.revision ?? 0, attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume), resumedAt: r.resumed_at ?? null });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), revision: r.revision ?? 0, round: r.round ?? 0, attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume), resumedAt: r.resumed_at ?? null });
 
 export class Grades {
   private events?: { emit: (topic: string, id: string) => void };
@@ -190,6 +196,9 @@ export class Grades {
       // The filing this row holds, +1 on every restart: a verdict names it, so a pass on a filing that was later amended back to
       // the same words is still stale. A row written before this column existed is its first filing.
       if (!columns.includes("revision")) db.exec("ALTER TABLE grades ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+      // The round a close is bound to: +1 on every restart and every verdict. A re-filed submission keeps the filing hash but
+      // starts a new round, so a close queued on the satisfied pass before it never lands on the submission after it.
+      if (!columns.includes("round")) db.exec("ALTER TABLE grades ADD COLUMN round INTEGER NOT NULL DEFAULT 0");
       // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
       db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
       // Who filed each row's rubric, in its own table rather than a column on `grades`. A fresh start, not a migration: a row
@@ -249,6 +258,7 @@ export class Grades {
           this.db.exec("COMMIT");
           return { created: false, grade: have };
         }
+        if (have.state === "closing") throw new Conflict("this task's grade is being closed right now: its rubric is not replaced, and the close stands or is retried on its own");
         if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
         // Between a task closing and the sweep settling its row, the row still reads open: the task's own status decides.
         if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
@@ -284,7 +294,7 @@ export class Grades {
    */
   private restart(issueId: string, rubric: string, deliverable?: string, { resume = false }: { resume?: boolean } = {}): void {
     const now = new Date().toISOString();
-    const reset = `rubric = ?, revision = revision + 1, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, resumed_at = ${resume ? "?" : "NULL"}, updated_at = ?`;
+    const reset = `rubric = ?, revision = revision + 1, round = round + 1, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, resumed_at = ${resume ? "?" : "NULL"}, updated_at = ?`;
     // The deliverable is written only when it is re-bound (a differing re-file); an amendment leaves it as filed.
     const args = resume ? [now] : [];
     if (deliverable === undefined) this.db.prepare(`UPDATE grades SET ${reset} WHERE issue_id = ?`).run(rubric, ...args, now, issueId);
@@ -319,6 +329,7 @@ export class Grades {
         this.db.exec("COMMIT");
         return have;
       }
+      if (have.state === "closing") throw new Conflict("this task's grade is being closed right now: its rubric is not replaced, and the close stands or is retried on its own");
       if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
       if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
       // The row restarts exactly as a differing re-file does: open, no attempts, no verdicts. Work already submitted (the task
@@ -354,6 +365,7 @@ export class Grades {
    * needs_revision   settles: there is nothing left to revise.
    * grading_failed   settles: the retry ladder has no task to retry.
    * satisfied        never swept: a real verdict stands, and a settled row keeps its `satisfied` (the close did not undo it).
+   * closing          swept only to finish the close it claimed: the verdict stands as `satisfied` (never `not_graded`).
    * not_graded       never swept: already terminal, and the first reason is kept.
    *
    * So the sweep takes everything except the two settled states, which is what the query says. It reads each task's status
@@ -370,6 +382,11 @@ export class Grades {
    */
   settle(issueId: string, reason: string, now = Date.now()): Grade | undefined {
     const g = this.get(issueId);
+    // A `closing` row is a satisfied one whose close was in flight: the task is done, so the close landed and the verdict stands.
+    if (g?.state === "closing") {
+      this.closed(issueId);
+      return this.get(issueId);
+    }
     if (!g || g.state === "satisfied" || g.state === "not_graded") return g;
     // A row closed this way is no longer the restarted one the runner had to pick up: its resume ends with it.
     this.db.prepare("UPDATE grades SET state = 'not_graded', closed_reason = ?, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?").run(reason.slice(0, 300), new Date(now).toISOString(), issueId);
@@ -377,10 +394,42 @@ export class Grades {
     return this.get(issueId);
   }
 
+  /**
+   * Binds a close to the satisfied round it was decided on, atomically: a row still satisfied on that round is marked `closing`
+   * in the same statement, so an amendment or a new submission landing after the close's last read cannot interleave between
+   * the check and the kernel's write. Any other row (amended, re-filed, restarted) is left alone and the close is refused.
+   * A claimed row that never closes is released by the next sweep, which settles it as a task that closed elsewhere.
+   */
+  claimClose(issueId: string, round?: unknown): boolean {
+    // A legacy close (queued before steps carried a round) names none: the row's satisfied state is the whole claim it can
+    // make, and its filing was checked against that same row just before. A named round must match exactly.
+    const n = round === undefined || round === null ? undefined : Number(round);
+    if (n !== undefined && !Number.isInteger(n)) return false;
+    const q = n === undefined
+      ? "UPDATE grades SET state = 'closing', updated_at = ? WHERE issue_id = ? AND state = 'satisfied'"
+      : "UPDATE grades SET state = 'closing', updated_at = ? WHERE issue_id = ? AND state = 'satisfied' AND round = ?";
+    const args = n === undefined ? [new Date().toISOString(), issueId] : [new Date().toISOString(), issueId, n];
+    return Number(this.db.prepare(q).run(...args).changes) === 1;
+  }
+
+  /** The close did not land (a refusal, or an error): the row goes back to satisfied, its round untouched, so the next pass retries it. */
+  releaseClose(issueId: string): void {
+    this.db.prepare("UPDATE grades SET state = 'satisfied', updated_at = ? WHERE issue_id = ? AND state = 'closing'").run(new Date().toISOString(), issueId);
+    this.events?.emit("grades", issueId);
+  }
+
+  /** The close landed: the row is settled satisfied, which is where a satisfied row already stood. */
+  closed(issueId: string): void {
+    this.db.prepare("UPDATE grades SET state = 'satisfied', updated_at = ? WHERE issue_id = ? AND state = 'closing'").run(new Date().toISOString(), issueId);
+    this.events?.emit("grades", issueId);
+  }
+
   private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
     this.db
       // A pass settling the row ends the amendment's resume: the row is no longer the restarted one the runner had to pick up.
-      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?")
+      // Every verdict starts a new round: a close decided on the round before it is stale, even when the filing's words and
+      // hash are the same (a re-filed submission is graded again, and its close must be its own).
+      .prepare("UPDATE grades SET state = ?, round = round + 1, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?")
       .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
@@ -410,6 +459,9 @@ export class Grades {
     // longer the one asked for. Every outcome is dropped alike, leaving the row as it is (open), so the next pass grades what
     // the row now holds. A verdict naming no filing at all is dropped the same way: nothing shows it read what the row holds,
     // and an unnamed wait would park an amended row for work it never looked at.
+    // A close in flight has claimed the row: a verdict landing now is for work it already settled, and applying it would
+    // restart a round the close is bound to.
+    if (g.state === "closing") return g;
     const current = rubricHash(g.rubric, g.deliverable, g.revision);
     if (v.rubric !== current) return g;
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
@@ -451,7 +503,11 @@ export async function settleClosedGrades(grades: Grades, issue: (id: string) => 
     const i = await Promise.resolve()
       .then(() => issue(g.issueId))
       .catch(() => undefined);
-    if (!i || (i.status !== "done" && i.status !== "cancelled")) continue;
+    if (!i) continue;
+    // A close that claimed the row but never landed (its write failed, or the task was reopened under it): the row goes back to
+    // satisfied so the next pass retries the close, rather than sitting `closing` and refusing every amendment.
+    if (g.state === "closing" && i.status !== "done" && i.status !== "cancelled") { grades.releaseClose(g.issueId); continue; }
+    if (i.status !== "done" && i.status !== "cancelled") continue;
     const row = grades.settle(g.issueId, `the task was ${i.status} before the grader settled it`, now);
     if (row) settled.push(row);
   }
@@ -476,7 +532,7 @@ export type GateResult = { pass: true } | { pass: false; state: "pending" | "awa
 export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false }: { done?: boolean } = {}): GateResult {
   const g = grades.get(issueId);
   // Settled rows: satisfied (graded) and not_graded (closed before the grader settled it) pass a task that is already done.
-  if (!g || (done && (g.state === "satisfied" || g.state === "not_graded"))) return { pass: true };
+  if (!g || (done && (g.state === "satisfied" || g.state === "closing" || g.state === "not_graded"))) return { pass: true };
   if (g.state === "pending" || g.state === "awaiting_evidence" || g.state === "grading_failed") return { pass: false, state: g.state, label: "grading" };
   if (g.state === "needs_revision") {
     // Unmet criteria are never a close: wait for the runner to grade a new deliverable version.
