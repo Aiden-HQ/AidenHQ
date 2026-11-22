@@ -204,12 +204,19 @@ else
 fi
 # A user timer's unit must run the applied checkout's script, not the one ~/.config/aidenhq-checkout.env recorded at install
 # time: the apply writes the unit's last EnvironmentFile= on every apply, and systemd reads it after that file. `service` is
-# the unit, `name` its script's stem (ops/<name>.sh) and the stem of that per-apply environment file.
-unit_runs_applied() { # service, name
-  local service="$1" name="$2" line path argv_text executable program script applied i
+# the unit, `name` its script's stem (ops/<name>.sh), and `env` (default: the same stem) the stem of that per-apply
+# environment file -- a unit that runs more than one script (prune-docker) has one file for the unit, not one per script.
+unit_runs_applied() { # service, name [env]
+  local service="$1" name="$2" env="${3:-$2}" line path argv_text executable program script applied i
   local -a argv
   line="$(systemctl --user show "$service" -p ExecStart --value 2>/dev/null)" \
     || { echo "could not read $service's ExecStart"; return 1; }
+  # A unit with several ExecStart= lines (prune-docker) prints them one per line: the check reads the one that runs this
+  # script, whichever position it has. A unit with one line is unchanged.
+  if [ "$(printf '%s\n' "$line" | grep -c 'argv\[\]=')" -gt 1 ]; then
+    line="$(printf '%s\n' "$line" | grep "argv\[\]=.*ops/$name\.sh" | head -1)"
+    [ -n "$line" ] || { echo "$service runs no ops/$name.sh"; return 1; }
+  fi
   # systemd prints the executable it starts and its argv. Check that argv[0] is that executable, not only a name in
   # front of arguments that look right; then follow env to the program it runs and take a shell's first script
   # argument rather than any later path that happens to end in ops/<name>.sh. A command string is refused.
@@ -217,7 +224,7 @@ unit_runs_applied() { # service, name
   argv_text="$(sed -n 's/.*argv\[\]=\([^;]*\).*/\1/p' <<< "$line")"
   # systemd shows ${AIDENHQ_DIR} unexpanded: resolve it as the unit does (its default, then its environment files in order).
   local dir="$HOME/aidenhq" f v
-  for f in "$HOME/.config/aidenhq-checkout.env" "$HOME/.config/aidenhq-$name.env"; do
+  for f in "$HOME/.config/aidenhq-checkout.env" "$HOME/.config/aidenhq-$env.env"; do
     v="$(sed -n 's/^AIDENHQ_DIR=//p' "$f" 2>/dev/null | tail -1)"
     [ -z "$v" ] || dir="$v"
   done
@@ -271,10 +278,11 @@ unit_runs_applied() { # service, name
   [ "$script" = "$applied" ] || { echo "the unit runs $script, not $applied"; return 1; }
 }
 
-# The Docker prune runs ops/prune-docker.sh from the checkout the last apply applied (its last EnvironmentFile= names it),
+# The Docker prune runs the unit's scripts from the checkout the last apply applied (its last EnvironmentFile= names it),
 # not the one ~/.config/aidenhq-checkout.env recorded at install time.
 if [ -e "$HOME/.config/systemd/user/prune-docker.timer" ]; then
-  check "docker prune timer runs the applied checkout" unit_runs_applied prune-docker.service prune-docker
+  check "docker prune timer runs the applied checkout's container step" unit_runs_applied prune-docker.service prune-docker-containers prune-docker
+  check "docker prune timer runs the applied checkout's verification" unit_runs_applied prune-docker.service prune-docker-verify prune-docker
 else
   printf '  skip  docker prune (timer not installed)\n'
 fi

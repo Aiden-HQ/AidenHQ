@@ -700,7 +700,8 @@ switchOver() {
 
   # The Docker prune (prune-docker.timer, every four hours): setup installed it once, so a changed unit reaches the host
   # here. Its last EnvironmentFile= names the checkout this apply applied, written every apply like the host-metrics
-  # unit's: the script it runs (ops/prune-docker.sh) must be the one that was applied, not the one setup recorded.
+  # unit's: the scripts it runs (ops/prune-docker-containers.sh, ops/prune-docker-verify.sh) must be the ones the applied
+  # checkout has, not the ones setup recorded.
   local u
   local prune_env="$HOME/.config/aidenhq-prune-docker.env"
   printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$prune_env.tmp" && mv -f "$prune_env.tmp" "$prune_env"
@@ -777,12 +778,14 @@ switchOver() {
   # start (ops/ci-runner-units.sh).
   ops/ci-runner-units.sh "${AIDENHQ_DATA_DIR:-$PWD/data}"
   lap units
-  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling), build cache and disposable
-  # containers behind: the same reclaim prune-docker.timer runs, ops/prune-docker.sh (images unused for 48 h, the cache
-  # capped at 20 GB least recently used first in both builder flag forms, one-offs stopped over a day). It runs every step
-  # whatever the ones before did, so a failing builder prune never skips the image prune; `|| true` keeps a degraded
-  # reclaim from failing an apply that already switched over (the timer's own run is what pages through UnitFailed).
-  bash ops/prune-docker.sh || true
+  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling), build cache and one-off
+  # containers behind: the same reclaim prune-docker.timer runs (images unused for 48 h, the cache capped at 20 GB least
+  # recently used first in both builder flag forms, one-offs stopped over a day). Each step is independent (`|| true`, the
+  # shell's form of the unit's `-` prefix): a failing builder prune must not skip the image prune on every apply.
+  docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
+  docker builder prune -f --keep-storage 20GB >/dev/null 2>&1 || true
+  docker image prune -af --filter until=48h >/dev/null 2>&1 || true
+  bash ops/prune-docker-containers.sh || true
   lap prune
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"

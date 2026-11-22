@@ -119,29 +119,47 @@ test("the security-sbom check passes when the unit runs this checkout's script",
   assert.match(r.out, /^  ok    security sbom timer runs the applied checkout$/m, r.out);
 });
 
-test("the docker prune check fails when the unit runs another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
-  const dir = checkout({ name: "prune-docker", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
-  const other = join(dir, "old-checkout/ops/prune-docker.sh");
+// prune-docker.service has several ExecStart= lines; systemd prints them one per line, and the check must read the ones
+// that run the applied checkout's scripts.
+const pruneExecStart = (dir, { container, verify }) => [
+  `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker builder prune -f --max-used-space 20GB ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker image prune -af --filter until=48h ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${container} ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${verify} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+].join("\n") + "\n";
+
+test("the docker prune check fails when the container step is another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
+  const dir = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(dir, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  const other = join(dir, "old-checkout/ops/prune-docker-containers.sh");
   mkdirSync(dirname(other), { recursive: true });
   writeFileSync(other, "#!/usr/bin/env bash\n");
   // No per-apply file yet: ~/.config/aidenhq-checkout.env's checkout is what the unit resolves to.
   writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
-  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/prune-docker.sh") + "\n");
+  writeFileSync(join(dir, "execstart"), pruneExecStart(dir, {
+    container: join(dir, "old-checkout/ops/prune-docker-containers.sh"),
+    verify: "${AIDENHQ_DIR}/ops/prune-docker-verify.sh",
+  }));
   const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("docker prune timer runs the applied checkout"));
+  const line = r.out.split("\n").find((l) => l.includes("container step"));
   assert.ok(line, r.out);
-  assert.match(line, /^  FAIL  docker prune timer runs the applied checkout  /, line);
+  assert.match(line, /^  FAIL  docker prune timer runs the applied checkout's container step  /, line);
   assert.ok(line.includes(realpathSync(other)), line);
-  assert.ok(line.includes(join(realpathSync(dir), "ops/prune-docker.sh")), line);
+  assert.ok(line.includes(join(realpathSync(dir), "ops/prune-docker-containers.sh")), line);
 });
 
-test("the docker prune check passes when the apply's per-unit file names this checkout", async () => {
-  const dir = checkout({ name: "prune-docker", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+test("the docker prune check passes when both steps run this checkout, through the apply's per-unit file", async () => {
+  const dir = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(dir, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
   writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
   writeFileSync(join(dir, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${dir}\n`);
-  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/prune-docker.sh") + "\n");
+  writeFileSync(join(dir, "execstart"), pruneExecStart(dir, {
+    container: "${AIDENHQ_DIR}/ops/prune-docker-containers.sh",
+    verify: "${AIDENHQ_DIR}/ops/prune-docker-verify.sh",
+  }));
   const r = await run(dir);
-  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
 });
 
 const services = [

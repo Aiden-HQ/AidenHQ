@@ -2,11 +2,31 @@
 Description=AidenHQ Docker cleanup (build cache over 20 GB, images unused for two days, one-off containers stopped over a day)
 
 [Service]
-# Every deploy rebuilds images; old ones and the build cache filled the VM disk. The steps live in ops/prune-docker.sh:
-# it runs each one whatever the ones before it did (a buildx flag or plugin problem must never skip the image prune — that
-# is the shape of the 45 h with no drop on 2026-11-20/21), and it fails once they are all attempted when any of them did
-# not do its work, so a degraded prune is a failed unit (UnitFailed) rather than a silent success.
+# Every deploy rebuilds images; old ones and the build cache filled the VM disk. Keep two days of images for rollbacks;
+# images a container still uses are never removed. The build cache is capped by size, least recently used first: an
+# `until` filter freed nothing on the containerd image store (104 GB of cache on the EX44, 2026-11-18), so the size cap
+# is the thing that has to hold.
 #
+# Each prune is independent: the `-` prefix makes systemd ignore that command's exit status, so a failed builder prune
+# (a buildx flag or plugin problem, a 20 s status timeout) never skips the image or container prune below.
+#
+# The cap is attempted in both flag forms because which one the CLI knows depends on whether the buildx plugin is
+# installed (2026-11-21: a deploy logged `buildx Docker CLI plugin not found: falling back to the classic builder`).
+# `--max-used-space` is buildx's; the classic fallback only knows `--keep-storage`. Where one is accepted it caps at
+# 20 GB and the other is a no-op (buildx's `--keep-storage` is its deprecated alias, a floor, never a wider retention).
+ExecStart=-/usr/bin/docker builder prune -f --max-used-space 20GB
+ExecStart=-/usr/bin/docker builder prune -f --keep-storage 20GB
+ExecStart=-/usr/bin/docker image prune -af --filter until=48h
+# A one-off that dies without --rm keeps its whole writable layer forever, and nothing else prunes stopped containers. Only
+# containers that are stopped AND over a day old go; container prune never removes a volume, so no data is touched. The
+# script (ops/prune-docker-containers.sh) checks `State.FinishedAt` — `docker container prune --filter until=` filters on
+# created time, so it could remove a compose service an apply's generation snapshot had just stopped.
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
+# Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, cache under 20 GB,
+# no one-off stopped over a day still there — so a prune that did nothing at all is a failed unit (UnitFailed), not a
+# silent success, while each step above still ran whatever the ones before it did.
+ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-verify.sh
+
 # The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
 Environment=AIDENHQ_DIR=%h/aidenhq
 EnvironmentFile=-%h/.config/aidenhq-checkout.env
@@ -16,7 +36,6 @@ Type=oneshot
 # A 100 GB build cache takes longer than systemd's 90 s default to prune; a start timeout would kill it mid-run and mark
 # the unit failed while it was working.
 TimeoutStartSec=30min
-ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker.sh
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
