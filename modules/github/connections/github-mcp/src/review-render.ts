@@ -75,7 +75,17 @@ export const SKIP_REASONS = {
   ignored: "every changed file is ignored by this repository's review settings",
   no_access: "the pull request can't be read",
 } as const;
-/** A command's answer, in fixed words (`aiden review help|always|focus: …|status` with no review yet). */
+/**
+ * Why a review that ran was not posted: its approval record was refused (closed as stale, rejected, or failed in the
+ * executor). Fixed words, so a notice carries no text a model or an author wrote.
+ */
+export const REFUSED_REASONS = {
+  post_refused: "its post was refused or did not go through",
+} as const;
+/** Every reason a notice may carry: a skip's, or a refusal's. */
+const NOTICE_REASONS = { ...SKIP_REASONS, ...REFUSED_REASONS };
+type NoticeReason = keyof typeof NOTICE_REASONS;
+/** A command's answer, in fixed words (`@aiden review help|always|focus: …|status` with no review yet). */
 export const ANSWERS = {
   help: `commands (a comment that starts with one): ${COMMANDS}`,
   always: "every push to this pull request will be reviewed",
@@ -89,7 +99,7 @@ export const NoticeArgsSchema = z.object({
   head: z.string().regex(SHA),
   phase: z.enum(["queued", "running", "done", "skipped", "failed", "answered"]),
   engine: ENGINE.optional(), model: MODEL.optional(), effort: EFFORT.optional(),
-  reason: z.enum(Object.keys(SKIP_REASONS) as [keyof typeof SKIP_REASONS, ...(keyof typeof SKIP_REASONS)[]]).optional(),
+  reason: z.enum(Object.keys(NOTICE_REASONS) as [NoticeReason, ...NoticeReason[]]).optional(),
   answer: z.enum(Object.keys(ANSWERS) as [keyof typeof ANSWERS, ...(keyof typeof ANSWERS)[]]).optional(),
   important: z.number().int().min(0).max(9999).optional(),
   nit: z.number().int().min(0).max(9999).optional(),
@@ -100,6 +110,11 @@ export const NoticeArgsSchema = z.object({
   ack: z.number().int().min(1).optional(),
   /** The posted review a done notice links. */
   review: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\/pull\/\d{1,9}#pullrequestreview-\d{1,15}$/).optional(),
+}).superRefine((n, ctx) => {
+  // Each phase's reasons are its own: a skip's words never say a post was refused, and a refusal never reads as a skip.
+  const refused = n.reason != null && n.reason in REFUSED_REASONS;
+  if (refused && n.phase !== "failed") ctx.addIssue({ code: "custom", path: ["reason"], message: "a refused-post reason goes on the failed phase" });
+  if (n.reason != null && !refused && n.phase !== "skipped") ctx.addIssue({ code: "custom", path: ["reason"], message: "a skip reason goes on the skipped phase" });
 });
 export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
 /** An agent's answer to an important finding, replied on its thread (`comment`: the thread's first comment). */
@@ -156,6 +171,9 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
+/** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then the bold title on
+ * the next line. A comment that merely quotes a notice carries the marker further down, so it never matches. */
+export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n\\*\\*Aiden review\\*\\*`);
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;
@@ -231,11 +249,12 @@ export function modelName(model: string): string {
   return name || model;
 }
 
-/** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. `at`: where the
- * comment sits when that isn't the finding's own line (the nearest diff line, or the file). */
-export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file", scale = 1): string {
+/** One finding as an inline comment: its run's and its finding's markers (the run's is what names the comment again when GitHub
+ * can't list the review's comments), severity and title; the reasoning and a fix brief collapsed. `at`: where the comment sits
+ * when that isn't the finding's own line (the nearest diff line, or the file). `run`: the review's run, whose marker it carries. */
+export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file", scale = 1, run?: string): string {
   const where = `${f.path}:${f.line}${f.end_line && f.end_line > f.line ? `-${f.end_line}` : ""}`;
-  const head = [`<!-- ${MARK.finding}: ${f.id} -->`, `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, scale ? 200 : 100)}`, ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : [])];
+  const head = [...(run ? [RUN_MARK(run)] : []), `<!-- ${MARK.finding}: ${f.id} -->`, `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, scale ? 200 : 100)}`, ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : [])];
   // A review too large for the AI reviewer's card keeps every finding and its thread, with shorter texts (scale), at the least
   // its title alone.
   if (!scale) return head.join("\n");
@@ -299,7 +318,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
-    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale) };
+    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale, run) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale, run) };
   });
   const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
   const listed = ranked.filter((f) => f.severity !== "nit" && !threaded(f));
@@ -348,9 +367,11 @@ export function renderNotice(n: NoticeArgs): string {
     case "queued": return `${head}: queued${who} for ${sha}. ${help}`;
     case "running": return `${head}: reviewing ${sha}${who}…`;
     case "done": return `${head}: reviewed ${sha}${who}: ${countLine(c)}${usd(n.cost_usd)}. ${help}`;
-    case "skipped": return `${head}: skipped ${sha}: ${SKIP_REASONS[n.reason ?? "unchanged"]}. ${help}`;
+    case "skipped": return `${head}: skipped ${sha}: ${NOTICE_REASONS[(n.reason ?? "unchanged") as NoticeReason]}. ${help}`;
     case "answered": return `${head}: ${ANSWERS[n.answer ?? "help"]}.${n.answer === "help" ? "" : ` ${help}`}`;
-    case "failed": return `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`aiden review\` to try again. ${help}`;
+    case "failed": return n.reason && n.reason in REFUSED_REASONS
+      ? `${head}: the review of ${sha}${who} was not posted (${REFUSED_REASONS[n.reason as keyof typeof REFUSED_REASONS]}${n.run ? `, run ${n.run}` : ""}). Ask again with \`@aiden review\`. ${help}`
+      : `${head}: the review of ${sha}${who} failed${n.run ? ` (run ${n.run})` : ""}. Say \`@aiden review\` to try again. ${help}`;
   }
 }
 

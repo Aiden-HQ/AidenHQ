@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readConfig } from "../service/src/config.ts";
 import { createEngine, DEBOUNCE } from "../service/src/engine.ts";
 import { parseCommand } from "../service/src/commands.ts";
+import { reasonOf } from "../service/src/adapters.ts";
 
 const sha = (c) => c.repeat(40);
 const REPO = "acme/payments";
@@ -22,16 +23,17 @@ function world(settings = {}) {
   // A post this fake refuses directly (the executor's answer), by the run it is for: { state: "refused", why, need }.
   const refusals = new Map();
   const threads = new Map(), commits = new Map(), patches = new Map(), bases = new Map();
-  const { db: _db, ...rest } = settings;
+  const readsDown = settings.readsDown ?? [];
+  const { db: _db, readsDown: _rd, ...rest } = settings;
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
   const db = settings.db ?? new DatabaseSync(":memory:");
-  const engine = createEngine({
+  const deps = {
     db,
     config: () => cfg,
     now: () => t,
     source: {
       open: async () => [...prs.values()].filter((p) => p.open),
-      get: async (_r, n) => prs.get(n),
+      get: async (_r, n) => { const f = readsDown.shift(); if (f) throw Object.assign(new Error(`github-mcp pr: ${f}`), { status: f }); return prs.get(n); },
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
@@ -48,19 +50,22 @@ function world(settings = {}) {
       result: async (c) => results.get(c) ?? { state: "running" },
     },
     // A post lands at once unless the test makes it wait (`posts.pending`): only a posted finding gates.
-    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
+    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => { if (w.ackErr) throw Object.assign(new Error(w.ackErr), w.ackStatus ? { status: w.ackStatus } : {}); if (w.acksDown) { w.acksDown--; throw new Error("kernel 502"); } acks.push(a); return w.ackPending ? { state: "pending" as const, write: w.ackPending } : undefined; }, reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
       notify: async (n) => { if (perms.notifyDown) throw new Error("kernel 502"); notes.push(n); return n.task && perms.taskClosed ? "closed" : "sent"; },
     },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
     emit: (f) => facts.push(f),
-  });
+  };
+  const engine = createEngine(deps);
   const review = (s, o = {}) => ({ version: 1, repo: REPO, pr: s.number, base: s.merge_base, head: s.head, ...s.combo, incremental_from: s.incremental_from, full: s.full,
     coverage: { reviewed: ["a.ts"], excluded: [], incomplete: null }, findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }],
     withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0.3, stale_guidance: [], ...o });
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
+  const w = { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
+  // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
+  return w;
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
@@ -218,6 +223,524 @@ test("a run is charged what the kernel billed (never what the box says), and a r
   for (const p of w.posted) assert.deepEqual(p.target, { repo: REPO, number: 1, head: sha("1"), once: false });
   assert.equal(w.posted.find((p) => p.review.engine === "codex").review.cost_usd, 0.7);
   await assert.rejects(w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/1`, combos: [{ ...CLAUDE, effort: "minimal" }] }), /effort for claude-code/);
+});
+
+test("a refused post is not silent: the run keeps the reason and the pull request is told, in fixed words, that its head's review was not posted", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await w.tick();
+  w.later(1000);
+  w.pr(2, sha("2"));
+  await w.tick();
+  w.finish(0); // the review ran and the post was filed
+  w.later(5000);
+  await w.tick();
+  assert.equal(w.posted.length, 1);
+  // The kernel refuses the post: stale (its approval changed under it), rejected by the reviewer, or failed in the executor.
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale: what it acts on changed since it was approved" });
+  await w.tick();
+  const [run] = w.engine.runs({ repo: REPO });
+  assert.deepEqual([run.status, run.why], ["failed", "not posted: write k-1 stale: what it acts on changed since it was approved"]);
+  // The notice is on the pull request, as the failed phase with the refused-post reason (the PR's task is quiet, not loud).
+  const refused = w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:"));
+  assert.equal(refused.length, 1);
+  assert.deepEqual([refused[0].number, refused[0].head, refused[0].run], [2, sha("2"), run.id]);
+  // Whichever way the kernel refused it, the notice is the run's own failed phase; the poster files that as the fixed
+  // refused-post reason (adapters.ts reasonOf). A rejection's words stay on the run row, never on the pull request.
+  assert.equal(reasonOf(refused[0].why), "post_refused");
+  assert.equal(reasonOf("not posted: write k-1 rejected: the review widens what it posts"), "post_refused");
+  // Filed once: a later tick settles nothing new (posted is set, so the pending scan leaves it).
+  await w.tick();
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
+});
+
+test("a refused post's notice the kernel can't take now is retried on later ticks, so the pull request is never left silent", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // the post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale: what it acts on changed since it was approved" });
+  // The kernel answers the notice write with a 502: a transient failure, never a reason to leave the PR silent.
+  w.acksDown = 1;
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.deepEqual([run.status, run.posted], ["failed", "refused"]);
+  assert.equal(w.acks.length, 0);
+  // The next tick files it again, and the notice lands.
+  w.later(1000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
+  assert.equal(w.acks[0].run, run.id);
+  // Sent is sent: a third tick files nothing new.
+  w.later(1000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 1);
+});
+
+test("a refused post's notice is asked again for as long as its pull request is open, never given up on, and stops once it closed", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // the post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale: what it acts on changed since it was approved" });
+  // The kernel can't take the notice: every attempt fails. The old bound gave up after eight; waiting is not failing, so it keeps
+  // asking (each failure waits longer, not forever on a dead kernel, but with no count at which the pull request is abandoned).
+  w.acksDown = 40;
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.deepEqual([run.status, run.posted], ["failed", "refused"]);
+  assert.equal(w.acks.length, 0);
+  for (let i = 0; i < 12; i++) {
+    w.later(20 * 60_000); // past every backoff, so each tick asks again
+    await w.tick({ github: false });
+  }
+  assert.equal(w.acks.length, 0);
+  // Still pending after far more than eight failures: never marked failed, never given up on.
+  const row = w.db.prepare("SELECT notice, notice_tries FROM runs WHERE id = ?").get(run.id);
+  assert.equal(row.notice, "pending");
+  assert.ok(row.notice_tries > 8, `tries ${row.notice_tries}`);
+  // Once the kernel answers, the next tick files it.
+  w.acksDown = 0;
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:")).length, 1);
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
+});
+
+test("an acknowledgement queued behind a refused post's notice goes when that delivery fails, never parked on an answer that will not come", async () => {
+  // A notice already holds the PR's slot (filed, its comment's id still unknown), so the answer to `aiden review` waits behind it
+  // in the queue. The notice's own write then comes back refused: the delivery gives the slot up, and the queued answer must go
+  // now — never wait for an `acked()` that the failing path will not reach.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // the post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // its notice is filed; the comment's id isn't known yet, so the write holds the PR's slot
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1, "the notice's own write");
+  // Someone asks for a review: its answer wants the same acknowledgement comment, so it queues behind the notice.
+  w.db.prepare("UPDATE runs SET notice_due = ? WHERE notice_write = 'k-9'").run(w.now() + 3_600_000);
+  const before = w.acks.length;
+  w.later(1000);
+  w.say(3, "alice", "aiden review");
+  await w.tick();
+  assert.equal(w.acks.length, before, "the answer waits for the notice's slot");
+  // The notice's write is refused (a stale record, which may post when filed again): its delivery gives up and retries later.
+  w.outcomes.set("k-9", { state: "refused", why: "write k-9 stale", retry: true });
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE notice_write = 'k-9'").run();
+  w.later(1000);
+  await w.tick({ github: false });
+  // The queued answer went on the same tick, not on some later answer.
+  assert.equal(w.acks.length, before + 1);
+  assert.equal(w.acks.at(-1).state, "queued");
+});
+
+test("a notice is not marked sent unless its comment's id was recorded with it: the id is never lost, and no second acknowledgement is made", async () => {
+  // The acknowledgement comment is made and its write is read back as done with its id, but writing that id fails (a crash, a
+  // full disk). Marking the notice sent while the id is lost is what would make the next notice file a second comment: the two
+  // land together, and a lost write leaves the notice pending with the write's id so its next tick learns the id instead.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // the notice's write is filed and its comment's id isn't known yet
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.acks.length, 1);
+  // Its write is read back as done with the comment it made, but recording that id fails.
+  w.outcomes.set("k-9", { state: "posted", ack: 424 });
+  w.db.exec("CREATE TRIGGER no_ack BEFORE UPDATE OF ack ON prs BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  w.later(1000);
+  await w.tick({ github: false });
+  // Neither half landed: the notice is still pending and still names the write that made the comment.
+  const row = w.db.prepare("SELECT notice, notice_write FROM runs WHERE id = ?").get(run.id);
+  assert.deepEqual([row.notice, row.notice_write], ["pending", "k-9"]);
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, null);
+  // The write can be recorded again: the notice learns the id and is marked sent, and no second comment is ever made.
+  w.db.exec("DROP TRIGGER no_ack");
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, 424);
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
+  assert.equal(w.acks.length, 1);
+});
+
+test("the PR's slot is held while a posted acknowledgement's id is unsaved: the acknowledgement queued behind it cannot start a second one", async () => {
+  // The first acknowledgement is on the pull request and its write is read back with its comment's id, but recording that id
+  // fails. If the delivery released the PR's slot on that failure, the answer queued behind it (someone's `aiden review`) would
+  // start a second acknowledgement whose comment no record names, and no later notice could edit it in place.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // the notice's write is filed; its comment's id isn't known yet, so it holds the PR's slot
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1);
+  // The notice waits out a backoff, so the next look is the command's: its answer queues behind the notice's write.
+  w.db.prepare("UPDATE runs SET notice_due = ? WHERE notice_write = 'k-9'").run(w.now() + 3_600_000);
+  w.later(1000);
+  w.say(3, "alice", "aiden review");
+  await w.tick();
+  assert.equal(w.acks.length, 1, "the answer waits for the notice's slot");
+  // Its write is done with the comment it made, but recording the id fails: the slot must not be given up.
+  w.outcomes.set("k-9", { state: "posted", ack: 424 });
+  w.db.exec("CREATE TRIGGER no_ack BEFORE UPDATE OF ack ON prs BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE notice_write = 'k-9'").run();
+  w.later(1000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1, "no second acknowledgement while the first one's id is unrecorded");
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, null);
+  // The id can be recorded again: the notice is marked sent, and the queued answer then edits that same comment (it carries its id).
+  w.db.exec("DROP TRIGGER no_ack");
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, 424);
+  assert.equal(w.acks.length, 2);
+  assert.equal(w.acks[1].ack, 424);
+});
+
+test("a refusal's retry state and its deadline are written together, and a retry row a restart left without one is filed again, never stranded", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // the post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 failed: GitHub 503", retry: true });
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  const row = w.db.prepare("SELECT posted, post_tries, post_due FROM runs WHERE id = ?").get(run.id);
+  assert.deepEqual([row.posted, row.post_tries], ["retry", 1]);
+  assert.ok(row.post_due > w.now(), "the deadline is written with the state that says to file it again");
+  // A restart in the moment between the two (what a row written before they landed together holds): it says to file the post
+  // again, and no deadline went with it. It is due now, never due: filed again, not stranded with nothing polling it.
+  w.db.prepare("UPDATE runs SET post_due = NULL WHERE id = ?").run(run.id);
+  w.restart();
+  await w.tick({ github: false });
+  assert.equal(w.posted.length, 2, "filed again");
+});
+
+test("a refused post's notice waits for a pull request that closed before it landed", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.acksDown = 40;
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "pending");
+  // The pull request is closed: the next look records it closed, and the notice is not asked for on a closed PR.
+  w.prs.get(3).open = false;
+  w.later(20 * 60_000);
+  await w.tick();
+  assert.equal(w.acks.length, 0);
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "failed");
+});
+
+test("a refused post's notice stops once its pull request is closed, even where nothing polls that PR", async () => {
+  // A one-off on a repo the watcher doesn't poll: its PR row (written when the review was asked for) stays `open` on the
+  // service's side forever, so the row alone can never say the PR closed. Reading the PR from GitHub does, and ends the retries.
+  const w = world();
+  w.posts.pending = true;
+  await w.tick();
+  const OTHER = "acme/other";
+  w.prs.set(11, { repo: OTHER, number: 11, head: sha("c"), base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: "" });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${OTHER}/pull/11`, combos: [CODEX] });
+  w.later(1000); await w.tick({ github: false });
+  w.finish(0, { repo: OTHER, pr: 11 });
+  await w.tick({ github: false });
+  assert.equal(w.posted.length, 1);
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  // Every delivery fails for now (the kernel's record can't be read), so the notice stays pending, asking again.
+  w.acksDown = 40;
+  await w.tick({ github: false });
+  const pending = w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(r!.id);
+  assert.equal(pending.notice, "pending");
+  // The author pushed a newer head: the unwatched repo is never polled, so only GitHub's own head says A's notice is superseded.
+  w.prs.get(11)!.head = sha("d");
+  w.acksDown = 40;
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(r!.id).notice, "failed");
+  assert.equal(w.acks.length, 0, "no acknowledgement is posted for a head the pull request has moved past");
+  // The pull request closed unmerged on GitHub; the unwatched repo is never polled, so only a fresh read of it can say so.
+  w.prs.get(11)!.open = false;
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(r!.id).notice, "failed");
+  assert.equal(w.acks.length, 0);
+});
+
+test("a notice the executor refuses because its pull request isn't open ends the retries instead of asking forever", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  // GitHub's answer for a PR that closed (or merged elsewhere) before the notice landed: it can never be taken, so it is the end.
+  w.ackErr = "acme/payments#3 isn't open or merged";
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  const row = w.db.prepare("SELECT notice, notice_tries FROM runs WHERE id = ?").get(run.id);
+  assert.equal(row.notice, "failed");
+  assert.equal(row.notice_tries, 0); // not a failure to wait out: no retry was scheduled
+  w.ackErr = "";
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 0);
+});
+
+test("a refused post's notice still lands on a merged pull request, and a row from before merges were recorded doesn't call it closed", async () => {
+  // A merged PR still takes its notice (a review of merged code is useful and paid for, and the notice is the only place that
+  // says it wasn't posted). Its row says `open = 0` — and one written before this service recorded merges says nothing of a merge
+  // — so the row alone can never end the retries; GitHub's answer can, and it says merged.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.acksDown = 1;
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "pending");
+  // Merged elsewhere: the poll records the close, and then the row has no merge recorded (as one written before it would not).
+  w.prs.set(3, { ...w.prs.get(3), open: false, merged: true });
+  await w.tick();
+  w.db.prepare("UPDATE prs SET merged = 0 WHERE repo = ? AND number = 3").run(REPO);
+  w.later(60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
+  assert.equal(w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:")).length, 1);
+});
+
+test("a watched PR that leaves the open list while its detail read fails never has its notice dropped on the guess", async () => {
+  // The merge happened as GitHub's own detail read timed out: `poll` writes `open = 0` with `merged` never confirmed. A merged PR
+  // still takes its notice, so that row is not proof of a close. GitHub is asked once more, and a read that fails leaves the notice
+  // where it is (never `failed`); once GitHub answers "merged", it lands rather than being dropped.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.acksDown = 40; // the notice can't land yet
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "pending");
+  // It leaves the open list; the detail read times out, so the row says closed with no merge state recorded, and so does the
+  // notice's own fresh read.
+  w.prs.set(3, { ...w.prs.get(3), open: false, merged: false });
+  w.readsDown.push(1, 1);
+  w.later(60_000);
+  await w.tick();
+  assert.notEqual(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "failed");
+  // GitHub answers that it was merged: the notice lands there.
+  w.acksDown = 0;
+  w.prs.set(3, { ...w.prs.get(3), merged: true });
+  w.later(60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
+  assert.equal(w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:")).length, 1);
+});
+
+test("a delayed refusal notice for an older head never reaches the pull request after a newer head arrives", async () => {
+  // The notice for head A backs off (the kernel can't take it now) and the author pushes B. A's notice asks for a review of a head
+  // nobody is looking at any more, and editing the one acknowledgement with it would wipe whatever the newer head's review put
+  // there. It is dropped where it is; a refusal at B has its own notice.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // A's post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.acksDown = 40; // A's notice can't land yet
+  await w.tick({ github: false });
+  const a = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "pending");
+  // B arrives: A's head is no longer the pull request's.
+  w.acksDown = 0;
+  w.acks.length = 0;
+  w.pr(3, sha("4"));
+  await w.tick();
+  // A's notice comes due: it is dropped, never filed against the pull request's new head.
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "failed");
+  assert.deepEqual(w.acks.filter((x) => x.head === sha("3")), []);
+});
+
+test("two deliveries of the same notice can't both file one: the in-flight guard is taken before the first await", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  // Both ticks see the run pending and ask for its notice at once: the second must not read "no notice filed yet" and file a
+  // second acknowledgement comment.
+  await Promise.all([w.tick({ github: false }), w.tick({ github: false })]);
+  assert.equal(w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:")).length, 1);
+});
+
+test("a notice the kernel refuses outright is asked again a few times, then ends with its reason instead of every fifteen minutes", async () => {
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  // The kernel refuses the notice itself with a 4xx (a schema or plan refusal is the same however often it is asked): a few tries,
+  // then done, rather than a poll every fifteen minutes for as long as the PR stays open.
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 rejected: the review widens what it posts" });
+  w.ackErr = "notice k-9 not posted: write k-9 refused";
+  w.ackStatus = 422;
+  for (let i = 0; i < 6; i++) {
+    w.later(20 * 60_000);
+    await w.tick({ github: false });
+  }
+  const run = w.engine.runs({ repo: REPO })[0];
+  const row = w.db.prepare("SELECT notice, notice_tries FROM runs WHERE id = ?").get(run.id);
+  assert.equal(row.notice, "failed");
+  assert.equal(row.notice_tries, 3);
+  // Its reason stays on the run row, and no later tick files anything.
+  assert.match(w.engine.runs({ repo: REPO })[0].why, /not posted: write k-1/);
+  w.ackErr = "";
+  w.ackStatus = 0;
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.filter((a) => a.state === "failed").length, 0);
+});
+
+test("a notice dropped for a newer head keeps a write it already filed, so its outcome is still read and no second acknowledgement is made", async () => {
+  // A's notice is filed (its write is live on GitHub) when the author pushes B. A's notice then comes due and is dropped, because
+  // the write it speaks for is gone. The write itself can't be cancelled, so its record stays on the row and holds the PR's slot
+  // until its outcome is read: were it cleared at the drop, B's notice could make the one acknowledgement first, and A's still-live
+  // write would edit it afterwards to say A's review was not posted.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // A's notice write is filed; its comment's id isn't known yet
+  await w.tick({ github: false });
+  const a = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9");
+  // B arrives, and A's notice comes due: it is dropped, but its filed write stays on the row (and its slot is kept).
+  w.ackPending = "";
+  w.acks.length = 0;
+  w.pr(3, sha("4"));
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE id = ?").run(a.id);
+  await w.tick();
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "failed");
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9", "a filed write is still tracked after its notice is dropped");
+  // A restart in between: the write's slot is rebuilt from the row (not only from rows still `pending`), so its outcome is still read.
+  w.restart();
+  w.pr(3, sha("4"));
+  // Its outcome lands: the comment's id is recorded, and only then is the record given up.
+  w.outcomes.set("k-9", { state: "posted", ack: 424 });
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, 424);
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, null);
+  assert.deepEqual(w.acks.filter((x) => x.head === sha("3")), []);
+});
+
+test("a dropped notice whose write is refused gives up its record, so a restart never restores a terminal write or its slot", async () => {
+  // A's notice is filed (its write is live) when the author pushes B, so A's notice is dropped and its write's record kept: the
+  // write may still land. It settles refused instead (a stale record), which is terminal — nothing will read it again. Its record
+  // is given up there, or every restart would restore its slot from the row and poll a record that is already done, holding the
+  // pull request's acknowledgement slot forever.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9";
+  await w.tick({ github: false });
+  const a = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9");
+  // B arrives: A's notice is dropped, its filed write still tracked.
+  w.ackPending = "";
+  w.pr(3, sha("4"));
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE id = ?").run(a.id);
+  await w.tick();
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "failed");
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9");
+  // Its write settles refused (not posted): terminal, so the record is given up. A restart then has nothing to restore, and no
+  // tick reads that record again.
+  w.outcomes.set("k-9", { state: "refused", why: "write k-9 stale" });
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, null, "a terminal refusal gives the dropped notice's record up");
+  w.restart();
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, null);
+  assert.equal(w.acks.filter((x) => x.state === "failed").length, 1, "no notice is filed again for the dropped row");
+});
+
+test("a restart between filing a notice and learning its comment's id does not make a second acknowledgement", async () => {
+  // Two reviewers on the PR, both posts refused: each run wants a notice. The first notice's write is filed and still pending
+  // (its comment's id isn't known yet), and it is waiting out a backoff, so only the second run's notice is due this tick. If the
+  // service restarted meanwhile, its memory of that write is gone but its run row still names it: the second run must still wait
+  // behind it. Two in flight would each make their own acknowledgement comment, and the one without a comment id could never be
+  // edited in place.
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX, CLAUDE] }] });
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.finish(1);
+  w.later(5000);
+  await w.tick(); // both posts are filed
+  assert.equal(w.posted.length, 2);
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.outcomes.set("k-2", { state: "refused", why: "write k-2 stale" });
+  w.ackPending = "k-9";
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1);
+  // The run whose notice is filed holds the PR's slot while it waits its turn.
+  w.db.prepare("UPDATE runs SET notice_due = ? WHERE notice_write = 'k-9'").run(w.now() + 3_600_000);
+  w.restart();
+  // The other run's notice is due now: the pending write still holds the PR's slot, so no second comment is made.
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1);
+  // Its outcome is read by the delivery that owns it, and the comment it made is recorded: the other run's notice then goes
+  // into that same comment (edited in place), never a second one.
+  w.ackPending = "";
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE notice_write = 'k-9'").run();
+  w.outcomes.set("k-9", { state: "posted", ack: 555 });
+  w.later(1000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 2);
+  assert.equal(w.acks[1].ack, 555); // an edit of the first comment, not a new one
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM runs WHERE notice = 'sent'").get().n, 2);
 });
 
 test("a one-off only where a review can post; a refused read passes the comment over, a transient one is asked again", async () => {

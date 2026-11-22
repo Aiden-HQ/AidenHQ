@@ -694,14 +694,14 @@ export function createService(o: Options) {
   /**
    * The kernel's `setup` op (kernel/src/codehost.ts: the grant and the shape of every field are checked there): files this code
    * host's own `github.setup` record on the caller's task and waits for its outcome, so the push only ever runs approved and bound
-   * to the repo, branch, tip and files the reviewer read. Still waiting after five minutes: { pending, write }; ask again and the
+   * to the repo, default-branch head and files the reviewer read. Still waiting after five minutes: { pending, write }; ask again and the
    * same open record is found.
    */
   async function setupOp(b: Record<string, any>): Promise<{ status: number; json: unknown }> {
     log("ops", { op: "setup", module: String(b.module ?? ""), repo: String(b.repo ?? "") });
     const task = String(b.task ?? "");
     if (!task) throw fail(400, "name the task the setup's approval belongs to");
-    const args = { repo: slugOf(b.repo).slug, branch: b.branch, expected_tip: b.expected_tip ?? null, files: b.files, allow: b.allow, title: b.title, body: b.body };
+    const args = { repo: slugOf(b.repo).slug, files: b.files, allow: b.allow, title: b.title, body: b.body };
     let rec = await kernel("POST", "/v1/writes", { kind: "github.setup", args, task }) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
     for (const t0 = Date.now(); !["done", "failed", "rejected", "stale", "cancelled", "unknown"].includes(rec.state); ) {
       if (Date.now() - t0 > 5 * 60_000) return { status: 202, json: { pending: true, write: rec.id } };
