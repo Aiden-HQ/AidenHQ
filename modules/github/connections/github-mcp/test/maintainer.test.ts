@@ -1065,13 +1065,13 @@ const OTHER = "acme/widgets";
 
 it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain or write refuses the list", () => {
   expect(parseRepos("")).toEqual([]);
-  expect(parseRepos(`${PRODUCT},${OTHER}`).map((r) => [r.repo, r.label, r.trusted, r.after_merge])).toEqual([
-    [PRODUCT, "agent-fix", ["admin", "maintain"], "done"],
-    [OTHER, "agent-fix", ["admin", "maintain"], "done"],
+  expect(parseRepos(`${PRODUCT},${OTHER}`).map((r) => [r.repo, r.label, r.trusted])).toEqual([
+    [PRODUCT, "agent-fix", ["admin", "maintain"]],
+    [OTHER, "agent-fix", ["admin", "maintain"]],
   ]);
-  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, after_merge: "product-pin" }, { repo: OTHER, label: "fix-me", trusted: ["write"] }])).map((r) => [r.repo, r.label, r.trusted, r.after_merge])).toEqual([
-    [PRODUCT, "agent-fix", ["admin", "maintain"], "product-pin"],
-    [OTHER, "fix-me", ["write"], "done"],
+  expect(parseRepos(JSON.stringify([{ repo: PRODUCT }, { repo: OTHER, label: "fix-me", trusted: ["write"] }])).map((r) => [r.repo, r.label, r.trusted])).toEqual([
+    [PRODUCT, "agent-fix", ["admin", "maintain"]],
+    [OTHER, "fix-me", ["write"]],
   ]);
   // Duties are opt-in (issues aside), and a quiet PR waits a week.
   expect(parseRepos(PRODUCT)[0]).toMatchObject({ issues: true, features: false, dependabot: false, contributor_prs: false, stale_days: 7 });
@@ -1084,7 +1084,7 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [{ repo: PRODUCT, trusted: ["triage"] }],
     [{ repo: PRODUCT, trusted: ["read"] }],
     [{ repo: PRODUCT, trusted: [] }],
-    [{ repo: PRODUCT, after_merge: "deploy" }],
+    [{ repo: PRODUCT, after_merge: "done" }],
     [{ repo: "not-a-repo" }],
     [{ repo: PRODUCT }, { repo: PRODUCT.toUpperCase() }],
     [{ repo: PRODUCT, extra: 1 }],

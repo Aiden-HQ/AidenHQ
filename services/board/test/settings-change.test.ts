@@ -18,7 +18,7 @@ const dir = mkdtempSync(join(tmpdir(), "settings-change-"));
 writeFileSync(
   join(dir, "paperclip.yaml"),
   stringify({
-    settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false }, maintainer_repos: { value: [{ repo: "acme/product", after_merge: "product-pin" }], set: true } },
+    settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false }, maintainer_repos: { value: [{ repo: "acme/product" }], set: true } },
     agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "instance" }, "team-eng": { name: "Engineer", profile: "engineer", team: { name: "engineering", members: ["kai"] } }, kai: { name: "Kai", profile: "engineer", member_of: "team-eng" } },
     mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } },
     routines: { digest: { title: "Digest" } },

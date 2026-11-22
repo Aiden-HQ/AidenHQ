@@ -3,8 +3,7 @@
 ## What it does
 
 Looks after the GitHub repos you list in `maintainer_repos`. It validates each issue labelled for a fix (default
-`agent-fix`), hands the fix to an engineer and sees it through to a merged PR and whatever the repo's `after_merge` says
-follows. Per repo it can also label feature requests and build those you mark `agent-build`, and nudge then close quiet
+`agent-fix`), hands the fix to an engineer and sees it through to a merged PR that closes the issue. Per repo it can also label feature requests and build those you mark `agent-build`, and nudge then close quiet
 contributor PRs.
 
 ## Connect

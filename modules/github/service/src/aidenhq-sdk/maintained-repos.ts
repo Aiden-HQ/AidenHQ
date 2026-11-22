@@ -9,10 +9,7 @@ export const BUILD_LABEL = "agent-build";
 // from it (default admin and maintain); triage, read and custom roles never count.
 export const TRUST_ROLES = ["admin", "maintain", "write"] as const;
 const DEFAULT_TRUSTED = ["admin", "maintain"];
-// What follows a fix's merge: `done` (the merged PR is the fix), or `product-pin` (this instance's product pin bump, its
-// apply and the generation's health, for the AidenHQ product repo this instance runs).
-export const AFTER_MERGE = ["done", "product-pin"] as const;
-const KEYS = ["repo", "label", "trusted", "after_merge", "issues", "features", "dependabot", "contributor_prs", "stale_days"];
+const KEYS = ["repo", "label", "trusted", "issues", "features", "dependabot", "contributor_prs", "stale_days"];
 const DUTIES = ["issues", "features", "dependabot", "contributor_prs"] as const;
 
 export interface MaintainedRepo {
@@ -21,7 +18,6 @@ export interface MaintainedRepo {
   name: string;
   label: string;
   trusted: string[];
-  after_merge: (typeof AFTER_MERGE)[number];
   /** Validate `label` issues, hand fixes over and see them through (default on). */
   issues: boolean;
   /** Triage feature requests, and build the ones carrying BUILD_LABEL (default off). */
@@ -45,14 +41,14 @@ export function parseRepos(raw: string): MaintainedRepo[] {
   try {
     list = raw.trim().startsWith("[") ? JSON.parse(raw) : raw.split(",").map((x) => x.trim());
   } catch {
-    throw new Error("maintainer_repos is not a list of { repo, label, trusted, after_merge, issues, features, dependabot, contributor_prs, stale_days }");
+    throw new Error("maintainer_repos is not a list of { repo, label, trusted, issues, features, dependabot, contributor_prs, stale_days }");
   }
   if (!Array.isArray(list)) throw new Error("maintainer_repos is not a list");
   const seen = new Set<string>();
   return list.map((entry: any, i) => {
     const where = `maintainer_repos[${i}]`;
     const e = typeof entry === "string" ? { repo: entry } : entry;
-    if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error(`${where}: an entry is { repo, label, trusted, after_merge, issues, features, dependabot, contributor_prs, stale_days }`);
+    if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error(`${where}: an entry is { repo, label, trusted, issues, features, dependabot, contributor_prs, stale_days }`);
     const unknown = Object.keys(e).filter((k) => !KEYS.includes(k));
     if (unknown.length) throw new Error(`${where}: unknown key ${unknown.join(", ")}`);
     const m = String(e.repo ?? "").trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
@@ -65,8 +61,6 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     const trusted = e.trusted === undefined ? DEFAULT_TRUSTED : e.trusted;
     if (!Array.isArray(trusted) || !trusted.length || trusted.some((r) => !(TRUST_ROLES as readonly string[]).includes(r)))
       throw new Error(`${where}: trusted must be one or more of ${TRUST_ROLES.join(", ")}`);
-    const after = e.after_merge === undefined ? "done" : e.after_merge;
-    if (!(AFTER_MERGE as readonly string[]).includes(after)) throw new Error(`${where}: after_merge must be ${AFTER_MERGE.join(" or ")}`);
     const duty = (k: (typeof DUTIES)[number], dflt: boolean) => {
       if (e[k] === undefined) return dflt;
       if (typeof e[k] !== "boolean") throw new Error(`${where}: ${k} must be true or false`);
@@ -75,7 +69,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     const stale = e.stale_days === undefined ? 7 : e.stale_days;
     if (!Number.isInteger(stale) || stale < 1 || stale > 90) throw new Error(`${where}: stale_days must be a whole number of days, 1 to 90`);
     return {
-      repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!, label, trusted: [...new Set(trusted as string[])], after_merge: after,
+      repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!, label, trusted: [...new Set(trusted as string[])],
       issues: duty("issues", true), features: duty("features", false), dependabot: duty("dependabot", false), contributor_prs: duty("contributor_prs", false), stale_days: stale,
     };
   });
@@ -84,6 +78,6 @@ export function parseRepos(raw: string): MaintainedRepo[] {
 /** Whether `slug` (owner/name, any case) is one of the listed repos. */
 export const inMaintained = (repos: MaintainedRepo[], slug: string): boolean => repos.some((r) => r.repo.toLowerCase() === slug.toLowerCase());
 
-/** One line per repo, for tool descriptions: what the Maintainer may act on and what follows a merge there. */
+/** One line per repo, for tool descriptions: what the Maintainer may act on there. */
 export const describeRepos = (repos: MaintainedRepo[]) =>
-  repos.length ? repos.map((r) => `${r.repo} (label ${r.label}, trusted ${r.trusted.join("/")}, after merge: ${r.after_merge})`).join("; ") : "none configured (setting maintainer_repos)";
+  repos.length ? repos.map((r) => `${r.repo} (label ${r.label}, trusted ${r.trusted.join("/")})`).join("; ") : "none configured (setting maintainer_repos)";
