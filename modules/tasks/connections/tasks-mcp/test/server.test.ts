@@ -212,6 +212,17 @@ test("task_search does not call an exhausted short result set incomplete", async
   assert.equal(out.out.incomplete, undefined, "the set was read to its end, not cut short");
 });
 
+test("task_list(mine) reads past pages whose candidates all fail the filter", async () => {
+  // Two full pages of assigned work that is not waiting; the waiting task is on the third. No owner chats: the merge sees one
+  // source, and a page without matches must not be taken for the end of it.
+  const rows = [...Array.from({ length: 400 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me" })), { ...row("waits-1", "todo"), assigneeAgentId: "me" }];
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "waits-1" ? "waiting" : "working")]));
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_list", { mine: true, state: "waiting", limit: 5 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["waits-1"], JSON.stringify(out));
+  assert.equal(out.out?.incomplete, undefined);
+});
+
 test("task_list(mine) caps both sources on Paperclip's own createdAt order, the order it returns", async () => {
   // The chat is newer by createdAt and only touched later on the assigned one: the list is Paperclip's newest-first, so the
   // newer chat is the one `limit: 1` keeps.

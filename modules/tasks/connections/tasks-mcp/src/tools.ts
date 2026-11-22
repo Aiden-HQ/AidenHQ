@@ -1098,7 +1098,8 @@ const TOOLS: Record<string, Tool> = {
           const rowsA = pa.done ? [] : pa.value.rows.slice(ia);
           const rowsB = pb.done ? [] : pb.value.rows.slice(ib);
           const headA = rowsA[0], headB = rowsB[0];
-          if (!headA && !headB) return;
+          // A page can hold candidates that all fail the filter: it is not the source's end, so read on rather than stop.
+          if (!headA && !headB) continue;
           // A tie keeps the assigned (b) snapshot: the one read last.
           const fromB = !headA || (Boolean(headB) && at(headB) >= at(headA));
           const row = (fromB ? headB : headA)!;
