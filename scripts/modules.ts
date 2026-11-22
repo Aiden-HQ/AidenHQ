@@ -298,6 +298,7 @@ function settingRules(name: string, def: Obj) {
       if (typeof d.when !== "object" || Array.isArray(d.when) || !Object.keys(d.when).length) fail(`${where}: when is { <setting>: <value> }`);
       for (const k of Object.keys(d.when)) if (!(k in def.settings)) fail(`${where}: when names ${k}, which is not one of the module's settings`);
     }
+    if (d?.entry != null && !/^[a-z][a-z0-9_]{0,40}$/.test(String(d.entry))) fail(`${where}: entry is the map field its list entries are checked by (a-z, 0-9, _)`);
   }
 }
 
@@ -709,10 +710,16 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       // `pattern` (anchored): what a text value looks like, where its `when` mode holds. Observe mode: a value that fails it warns and is
       // dropped for the default, so an upgrade that worked before keeps compiling without the bad value reaching a service; the board and MCP check a new value strictly
       // where it is set (the settings-change path).
-      // A list's entries are each checked; an entry that is a map (maintainer_repos) by its `repo`.
+      // A list's entries are each checked; an entry that is a map only where the setting declares its `entry` field (maintainer_repos's
+      // `repo`), and then by that field. Any other setting's list holds strings: a map would reach its service as JSON that its
+      // reader takes for text.
       const applies = Object.entries(d?.when ?? {}).every(([w, v]) => String(settings[w]) === String(v));
       if (d?.pattern && settings[k] !== "" && settings[k] != null && applies) {
-        const bad = [settings[k]].flat().find((x) => { const v = x && typeof x === "object" ? (x as Obj).repo : x; return typeof v === "object" || !new RegExp(d.pattern).test(String(v)); });
+        const bad = [settings[k]].flat().find((x) => {
+          if (d.entry == null && x && typeof x === "object") return true;
+          const v = d.entry != null && x && typeof x === "object" ? (x as Obj)[d.entry] : x;
+          return typeof v === "object" || !new RegExp(d.pattern).test(String(v));
+        });
         if (bad !== undefined) {
           // Never passed on: the value falls back to the setting's default (or is unset) until the owner fixes it.
           warnings.push(`settings.${k}: ${typeof bad === "string" ? bad : JSON.stringify(bad)} doesn't match ${d.pattern}; using the default until it is fixed`);
