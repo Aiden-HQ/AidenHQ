@@ -206,7 +206,7 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
 // remains no PATCH is issued at all: the head is pushed and the PR stays as it is. A real body still replaces it, footered once.
 test("an open PR keeps its description when a republish sends a blank body; a real body still replaces it once", async (t) => {
   const url = "https://github.com/acme-agents/widget/pull/7";
-  const open = "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature";
+  const open = "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main";
   const { sha, outcomes, ghCalls, call } = await setup(t, {
     routes: (m, p) =>
       m === "GET" && p === open ? { status: 200, body: [{ number: 7, html_url: url, head: { sha } }] }
@@ -250,7 +250,7 @@ test("a new PR with a blank body still opens with the asking agent's footer", as
   const url = "https://github.com/acme-agents/widget/pull/8";
   const { sha, outcomes, ghCalls, call } = await setup(t, {
     routes: (m, p) =>
-      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature" ? { status: 200, body: [] }
+      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main" ? { status: 200, body: [] }
         : m === "POST" && p === "/repos/acme-agents/widget/pulls" ? { status: 201, body: { number: 8, html_url: url, head: { sha } } }
           : undefined,
   });
@@ -261,6 +261,25 @@ test("a new PR with a blank body still opens with the asking agent's footer", as
   const post = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme-agents/widget/pulls");
   assert.equal(post?.body.title, "fix(widget): new PR");
   assert.equal(post?.body.body.split("[AidenHQ](https://aidenhq.ai)").length - 1, 1, "the new PR carries one footer");
+});
+
+// The same head may have an open PR into another base (a release branch); that one is not what this publish planned, so a
+// publish into the default branch asks GitHub for a PR into `main` only, and opens one rather than editing the release PR.
+test("an open PR into another base is not reused by a publish into the default branch", async (t) => {
+  const url = "https://github.com/acme-agents/widget/pull/9";
+  const { sha, outcomes, ghCalls, call } = await setup(t, {
+    routes: (m, p) =>
+      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main" ? { status: 200, body: [] }
+        : m === "POST" && p === "/repos/acme-agents/widget/pulls" ? { status: 201, body: { number: 9, html_url: url, head: { sha } } }
+          : undefined,
+  });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }], text: { title: "fix(widget): main only", body: "Why." } };
+  await call("/aidenhq/v1/executor/execute", { id: "k-0000000000000124", kind: "github.pr", args, digest: "d", idempotency_key: "base" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.ok(ghCalls.some((c) => c.method === "GET" && c.path.endsWith("&base=main")), "the lookup is filtered by base at GitHub");
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false, "nothing is edited");
+  assert.equal(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme-agents/widget/pulls")?.body.base, "main");
 });
 
 // The CLI now sends `text` without `body` when there is no --body-file; the kernel's strict args schema must accept it, or
@@ -300,6 +319,9 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   assert.equal(plan.json.raise, undefined); // an ordinary branch of an agents-org repo: Tier 0
   assert.equal(plan.json.targets["acme-agents/widget feature"].commit, sha);
+  // The plan names the base its publish will use: a default-branch switch after approval makes the record stale (not an edit of
+  // the PR into the new base).
+  assert.equal(plan.json.targets["acme-agents/widget feature"].base_branch, "main");
   const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdef", kind: "github.push", args, digest: "d", idempotency_key: "i" });
   assert.deepEqual(ex.json, { accepted: true });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));

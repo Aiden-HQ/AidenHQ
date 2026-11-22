@@ -52,25 +52,61 @@ const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
   process.exit(code);
 };
-// Help is answered here: asking how a command works never reaches the kernel as a request.
-if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w === "-h" || w === "--help")) {
+// Help is answered here: asking how a command works never reaches the kernel as a request. A `--help` after a command is
+// read by the parser below, so only one in option position (never one that is an option's value) shows it.
+if (!command || ["help", "-h", "--help"].includes(command)) {
   console.log(usage);
   process.exit(0);
 }
 if (!COMMANDS.includes(command)) fail(usage, 2);
-const { AIDENHQ_GATEWAY_URL: gateway, AIDENHQ_RUN_TOKEN: token, AIDENHQ_TASK_WORKTREE: workspace } = process.env;
-if (!gateway || !token || !workspace) fail("only available inside a job's computer", 2);
 
 const flags = {};
 const words = [];
 const fixes = [];
+// Each command's own options: one used by another command is refused, so `publish --file body.md` can never look like
+// a body it doesn't send.
+const TAKES = { publish: ["--title", "--body-file", "--fixes"], review: ["--title", "--body-file", "--fixes"], advise: ["--file"], clone: ["--keep"] };
+const allowed = (opt) => (TAKES[command] ?? []).includes(opt);
+// A value may itself start with `--` (a file named --notes.md); only a missing one, or an option this command takes, is
+// refused. `--opt=value` is recognised the same way, so `--body-file --title=x` is "needs a value", not a filename.
+const OPTION = /^(--fixes|--title|--body-file|--file|--keep)(=|$)/;
+const named = (opt, v) => {
+  if (v === undefined || v === "") fail(`${opt} needs a value\n${usage}`, 2);
+  return v;
+};
+const value = (i) => {
+  const v = rest[i + 1];
+  // In a value position a help flag is a missing value, never help: exiting 0 would tell a script its publish ran. A file
+  // named --help is named with `--body-file=--help`.
+  if (v === "-h" || v === "--help") fail(`${rest[i]} needs a value (name a file called ${v} as ${rest[i]}=${v})\n${usage}`, 2);
+  if (v === undefined || OPTION.test(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
+  return named(rest[i], v);
+};
 for (let i = 0; i < rest.length; i++) {
-  if (rest[i] === "--fixes") fixes.push(rest[++i]);
-  else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
-  else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
-  else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
-  else words.push(rest[i]);
+  const arg = rest[i];
+  // `--opt=value` names a value unambiguously, even one spelled like this CLI's own option (`--body-file=--help`).
+  const eq = arg.indexOf("=");
+  const inline = eq > 0 && ["--fixes", "--title", "--body-file", "--file"].includes(arg.slice(0, eq)) ? [arg, arg.slice(0, eq), arg.slice(eq + 1)] : null;
+  if (arg === "-h" || arg === "--help") {
+    console.log(usage);
+    process.exit(0);
+  } else if (inline) {
+    if (!allowed(inline[1])) fail(`${inline[1]} isn't an option of aidenhq ${command}\n${usage}`, 2);
+    if (inline[1] === "--fixes") fixes.push(named(inline[1], inline[2]));
+    else flags[inline[1].slice(2)] = named(inline[1], inline[2]);
+  } else if (arg === "--fixes" || ["--title", "--body-file", "--file"].includes(arg)) {
+    if (!allowed(arg)) fail(`${arg} isn't an option of aidenhq ${command}\n${usage}`, 2);
+    if (arg === "--fixes") fixes.push(value(i)), i++;
+    else flags[arg.slice(2)] = value(i), i++;
+  } else if (arg === "--keep") {
+    if (!allowed(arg)) fail(`--keep isn't an option of aidenhq ${command}\n${usage}`, 2);
+    flags.keep = true;
+  } else if (arg.startsWith("--")) fail(`unknown option ${arg}\n${usage}`, 2);
+  else words.push(arg);
 }
+// Help is answered above, before this: `aidenhq publish --help` works outside a job's computer.
+const { AIDENHQ_GATEWAY_URL: gateway, AIDENHQ_RUN_TOKEN: token, AIDENHQ_TASK_WORKTREE: workspace } = process.env;
+if (!gateway || !token || !workspace) fail("only available inside a job's computer", 2);
 
 async function call(path, body, auth = { authorization: `Bearer ${token}` }) {
   const res = await fetch(new URL(path, gateway), {
@@ -238,8 +274,11 @@ if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
   // A publish without --body-file names no description: an existing PR keeps its own (never a body generated here), so
   // --fixes (whose whole output is generated text) needs the body file that carries the whole description it belongs in.
-  const supplied = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "";
-  if (fixes.length && !supplied.trim()) fail(`--fixes needs --body-file: a publish without one keeps the existing description, so pass the whole body with its Fixes line (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
+  const supplied = flags["body-file"] !== undefined ? readFileSync(flags["body-file"], "utf8") : "";
+  // An explicit empty file is a broken body, not "keep the description": refuse it rather than push a head whose PR text
+  // (and its Evidence) silently stays stale.
+  if (flags["body-file"] !== undefined && !supplied.trim()) fail(`--body-file ${flags["body-file"]} is empty: pass the whole description with its Evidence section, or omit --body-file to keep an existing PR's description (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
+  if (fixes.length && flags["body-file"] === undefined) fail(`--fixes needs --body-file: a publish without one keeps the existing description, so pass the whole body with its Fixes line (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
   const body = withFixes(supplied, fixes);
   if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {

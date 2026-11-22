@@ -97,20 +97,24 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         if (c.meta.branch !== branch || c.state !== "open") continue;
         // A push moves the head only: the recorded opening base (`opened`) stays the commit the change was opened against, as
         // GitHub's baseRefOid does, and `base` keeps tracking the tip the merge is checked against.
-        const lines = [`update refs/changes/${n}/head ${head}`, `update refs/changes/${n}/base ${tip}`];
+        // A repo with no default-branch commit yet has no base ref to move (as the creation path below says): git refuses an
+        // update to an empty object id.
+        const lines = [`update refs/changes/${n}/head ${head}`, ...(tip ? [`update refs/changes/${n}/base ${tip}`] : [])];
         // A republish that names no text, or only blank text, keeps the change's title and description (as on GitHub): a blank
         // body must never replace the one a reader depends on.
         const named = { ...(text?.title?.trim() ? { title: text.title } : {}), ...(text?.body?.trim() ? { body: text.body } : {}) };
         if (Object.keys(named).length) lines.push(`update refs/changes/${n}/meta ${await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...c.meta, ...named }) })}`);
         await refs(repo, lines);
-        return { url: changeUrl(repo, n), title: String(text?.title ?? c.meta.title ?? branch), before: c.head };
+        // The title returned is the one the change now has: a blank one kept the stored title, so report that.
+        return { url: changeUrl(repo, n), title: String(named.title ?? c.meta.title ?? branch), before: c.head };
       }
       const n = ((await numbers(repo)).at(-1) ?? 0) + 1;
-      const m = await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ title: text?.title ?? branch, body: text?.body ?? "", branch, base: into, task, opened_at: new Date().toISOString(), draft: false }) });
+      const first = { title: text?.title?.trim() ? text.title : branch, body: text?.body ?? "" };
+      const m = await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...first, branch, base: into, task, opened_at: new Date().toISOString(), draft: false }) });
       // `opened` is written once and never moved: it is the commit the change was opened against, which a push leaves alone (as
       // GitHub's baseRefOid does). A repo with no default-branch commit yet has none to record, so neither ref is written then.
       await refs(repo, [`create refs/changes/${n}/head ${head}`, ...(tip ? [`create refs/changes/${n}/base ${tip}`, `create refs/changes/${n}/opened ${tip}`] : []), `create refs/changes/${n}/meta ${m}`]);
-      return { url: changeUrl(repo, n), title: String(text?.title ?? branch), before: undefined as string | undefined };
+      return { url: changeUrl(repo, n), title: first.title, before: undefined as string | undefined };
     });
   }
 
@@ -277,7 +281,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
             fact({ type: "pr.checks_started", subject: `${subject(b.repo, n)}@${b.sha}`, version: `${b.sha}:1`, at, task: a.workspace, data: { head: b.sha } });
             // Its checks start now, so the merge rarely waits.
             const main = await rev(b.repo, `refs/heads/${await defaultBranch(b.repo)}`);
-            if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha]), true).catch(() => {});
+            // A default branch that shares no history with the head (it got its first commit elsewhere after the change
+            // opened) has no merge base: read it as readChange does, "" rather than failing the publish that already moved the refs.
+            if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha]).catch(() => ""), true).catch(() => {});
           } else done.push(`${b.repo} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
         return { ok: true, text: `${action === "pr" ? "Change requests" : "Pushed"}: ${done.join(", ")}` };

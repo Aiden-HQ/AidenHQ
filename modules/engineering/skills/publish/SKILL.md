@@ -22,9 +22,11 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
    `aidenhq publish` takes only a head self-review ran on, so run it after every new commit.
 2. **Title:** a Conventional Commit (`fix(scope): …`): the branch's first commit, or `--title` on every publish when the
    PR's title differs from it.
-3. **Body:** facts about the change, starting with why. Each publish replaces the description, so keep your body file and
-   pass all of it with `--body-file` every time (on GitHub, `gh pr view <url> --json title,body` prints the current
-   one), and `--fixes <owner>/<repo>#<n>` for each issue it fixes. It ends with `## Evidence`:
+3. **Body:** facts about the change, starting with why. A publish with `--body-file` replaces the description with that
+   file whole, so pass all of it every time (on GitHub, `gh pr view <url> --json title,body` prints the current one). A
+   publish with no `--body-file` keeps an existing PR's description as it is: use that only when the description needs
+   no change (a title-only republish), and pass the file whenever there is anything new to say. `--fixes
+   <owner>/<repo>#<n>` puts each closing line in the body and needs `--body-file`. The body ends with `## Evidence`:
    - every `self-review:` line, for each branch;
    - the commands you ran and their results;
    - before/after screenshots of a visible change (from `.aidenhq/out/`), numbers for performance work;
