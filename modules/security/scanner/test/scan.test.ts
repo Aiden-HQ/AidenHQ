@@ -60,6 +60,10 @@ function fakeStore(failIngestInsert = { value: false }) {
       if (r) Object.assign(r, { present: false, resolved_at: p[3], resolved_reason: p[4] });
     }
     if (sql.includes("SELECT package, version, vuln_id, url FROM src_security.finding")) return { rows: all.filter((r) => r.target === p[0] && r.tool === "grype" && r.present).map((r) => ({ package: r.package, version: r.version, vuln_id: r.vuln_id, url: r.url ?? null })) };
+    if (sql.includes("SET epss")) for (const r of all) {
+      const i = r.target === p[0] && r.tool === p[1] ? (p[2] as string[]).findIndex((pkg, j) => pkg === r.package && p[3][j] === r.version && p[4][j] === r.vuln_id) : -1;
+      if (i >= 0) Object.assign(r, { epss: p[5][i], epss_percentile: p[6][i] });
+    }
     if (sql.includes("SET last_seen")) for (const r of all) if (r.target === p[0] && r.tool === p[1] && r.present) r.last_seen = p[2];
     if (sql.includes("DISTINCT target")) return { rows: [...new Set(all.filter((r) => r.present).map((r) => r.target))].map((target) => ({ target })) };
     return { rows: all.filter((r) => r.target === p[0] && r.tool === p[1] && r.present) };
@@ -227,4 +231,34 @@ it("src_security: DDL single-quoted literals stay closed (a bare apostrophe in t
     const bare = DDL.slice(0, m.index! + 2) + DDL.slice(m.index! + 3);
     expect(() => assertLiteralsClosed(bare)).toThrow(/unterminated single-quoted literal at line \d+, offset \d+/);
   }
+});
+
+it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on the related CVE), EPSS moves without re-delivering the row", async () => {
+  const { store, rows } = fakeStore();
+  const kev = { cve: "CVE-2024-0002", dateAdded: "2026-10-26", knownRansomwareCampaignUse: "Unknown" };
+  const grypeJson = (epss: number) => ({
+    matches: [
+      { ...match("openssl", "3.0.1", "CVE-2024-0002", "/a"), vulnerability: { ...match("x", "1", "CVE-2024-0002", "/a").vulnerability, knownExploited: [kev], epss: [{ cve: "CVE-2024-0002", epss, percentile: 0.97, date: "2026-11-22" }] } },
+      { ...match("lodash", "4.17.20", "GHSA-aaaa-bbbb-cccc", "/b"), relatedVulnerabilities: [{ id: "CVE-2021-23337", knownExploited: [{ cve: "CVE-2021-23337", dateAdded: "2025-01-02" }, kev], epss: [{ epss: 0.2, percentile: 0.9 }, { epss: 0.5, percentile: 0.95 }] }] },
+      match("zlib", "1.2.11", "CVE-2022-37434", "/c"),
+    ],
+  });
+  let epss = 0.4;
+  const deps = {
+    dbUpdate: async () => undefined,
+    readBatch: async () => ({ finishedAt: new Date(Date.now() - 1000), targets: parseTargets("image:x\tx.json\t\t", "/sbom") }),
+    grype: async () => grypeJson(epss),
+  };
+  expect(await scanPass(store, deps)).toBe(3);
+  expect(rows.get("image:x|openssl|3.0.1|CVE-2024-0002")).toMatchObject({ kev: true, kev_added: "2026-10-26", epss: 0.4, epss_percentile: 0.97 });
+  expect(rows.get("image:x|lodash|4.17.20|GHSA-aaaa-bbbb-cccc")).toMatchObject({ kev: true, kev_added: "2025-01-02", epss: 0.5, epss_percentile: 0.95 });
+  expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")).toMatchObject({ kev: null, kev_added: null });
+  epss = 0.45; // a daily EPSS move updates the score but is not a change worth re-delivering
+  expect(await scanPass(store, deps)).toBe(0);
+  expect(rows.get("image:x|openssl|3.0.1|CVE-2024-0002")?.epss).toBe(0.45);
+});
+
+it("src_security: the DDL adds the exploitation columns additively and the view exposes them", () => {
+  for (const c of ["kev boolean", "kev_added date", "epss real", "epss_percentile real"]) expect(DDL).toContain(`ADD COLUMN IF NOT EXISTS ${c}`);
+  expect(DDL).toContain("f.kev, f.kev_added, f.epss, f.epss_percentile");
 });

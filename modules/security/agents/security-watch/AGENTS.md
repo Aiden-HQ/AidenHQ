@@ -25,7 +25,7 @@ A scanner (code, no model) inventories the host, images, repos and apps daily, m
 
 ## The data
 
-- `src_security.findings`: one row per (target, package, version, vuln_id). `target` is `host`, `image:<ref>`, `repo:product`, `repo:instance` or `app:<name>`. `tool` is `grype` (a known CVE or GHSA) or `app-auditor` (AppSec's App Auditor vibe audit of an app repo). `severity` is the database's; `fixed_version`, `fix_state` (`fixed`, `not-fixed`, `wont-fix`, `unknown`); `finding_id` is a short stable id; `present = false` means the latest scan no longer finds it (`resolved_at`). `verdict`, `verdict_reason`, `verdict_by`, `verdict_at` hold a review recorded with `finding_verdict`; null means not reviewed, or the finding changed since.
+- `src_security.findings`: one row per (target, package, version, vuln_id). `target` is `host`, `image:<ref>`, `repo:product`, `repo:instance` or `app:<name>`. `tool` is `grype` (a known CVE or GHSA) or `app-auditor` (AppSec's App Auditor vibe audit of an app repo). `severity` is the database's; `fixed_version`, `fix_state` (`fixed`, `not-fixed`, `wont-fix`, `unknown`); `finding_id` is a short stable id; `present = false` means the latest scan no longer finds it (`resolved_at`). `kev` (CISA lists it as exploited; null otherwise), `kev_added`, `epss` and `epss_percentile` (FIRST's exploitation odds, from the scanner's database; null on `app-auditor` rows), `verdict`, `verdict_reason`, `verdict_by`, `verdict_at` hold a review recorded with `finding_verdict`; null means not reviewed, or the finding changed since.
 - `src_security.changes`: one row per changed field of a finding seen before. Columns: `seq`, `entity` (always `finding`), `entity_id` (`<target>/<package>/<version>/<vuln_id>`), `scope` (the target), `field` (`severity`, `fixed_version`, `fix_state` or `present`), `old_value`, `new_value`, `url`, `observed_at`, `baseline` (always false here). Unlike `findings`, it has no `target` or `vulnerability_id` column: filter by `scope` or `entity_id`, or join on `entity_id`.
 - `src_meta.ingest_run` with `source in ('security', 'app-auditor')`: one row per target per pass; `error` says why a target couldn't be scanned, `commit` is the git HEAD a `repo:product` or `repo:instance` target was read at, scope `sbom-batch` that the host inventory is stale or missing.
 
@@ -39,8 +39,12 @@ the host's OS packages and upstream images).
 or base-image bump; a repo or app is one dependency upgrade change. So file at most one open fix task per target (marker
 `security:target:<target>`), listing its confirmed findings; later findings for that target are comments on it. File at
 most 10 new tasks a run; the rest wait for the next run (say how many are left in the run's summary). Verify individually
-(step 4) only critical findings and those in CISA's KEV catalog; for the rest of a target, the target task says
+(step 4) only critical findings and those with `kev` or a high `epss`; for the rest of a target, the target task says
 "N high, M medium: cleared by the same upgrade" without per-CVE research.
+
+**Exploited first.** Before the severity order, take every finding that is KEV-listed, on Cloudflare's Zero Wire or has `epss >= 0.1` (any severity, new or old, even one with an earlier `not-affected` verdict) and file it as an urgent fix task (priority `high`, "exploited" in the title), ahead of the plain-severity ones and outside the 10-task cap:
+   - `warehouse_query`: `SELECT finding_id, target, package, version, vuln_id, severity, fixed_version, kev, epss FROM src_security.findings WHERE present AND (kev OR epss >= 0.1) AND verdict IS DISTINCT FROM 'confirmed'`, each verified as in step 4.
+   - Zero Wire (Cloudflare Radar, entries by Cloudforce One): `web_view https://radar.cloudflare.com/security/zero-wire/rss`. It lists critical CVEs; an entry counts as exploited when its text reports exploitation or a KEV listing (not "no exploitation reported"). Match each such CVE id against `vuln_id` and `aliases` (`warehouse_query`); for an entry with no CVE id or no match, compare its product with our inventory (`package ILIKE`, `app_list`). A hit in something we run is urgent; say so in the task.
 
 1. **Read what is new:** `source_new` on `src_security.findings` until `more` is false, then `src_security.changes`. Ack each view's cursor with `source_ack` only once `source_new` has returned `more: false`, passing the highest `seq` it returned; a cursor left below rows you already triaged re-delivers them next run and doubles the work. Never ack the cursor you started with.
 2. **Resolved rows** (`present = false`): find the fix task by marker (`task_search` for `security:finding:<finding_id>`); if it is open and yours, comment "the scan no longer finds it on <date>" and set it done.
@@ -50,7 +54,7 @@ most 10 new tasks a run; the rest wait for the next run (say how many are left i
    - `low`, `negligible`, `unknown`: weekly summary only.
 4. **Verify** each one, in this order, and write down the evidence (links):
    - **Fix available?** `fixed_version` / `fix_state`, the advisory page (`url`, or the NVD/GHSA page for the id).
-   - **Exploited in the wild?** CISA's Known Exploited Vulnerabilities catalog (search the CVE id), the EPSS score (`https://api.first.org/data/v1/epss?cve=<CVE>` with `web_view`), vendor or researcher reports of active exploitation.
+   - **Exploited in the wild?** The row's `kev` and `epss`, Zero Wire, vendor or researcher reports of active exploitation.
    - **Reachable in our usage?** What the target is and how the package is used: a dev-only or build-only dependency, a CLI that never sees untrusted input, a vulnerable function the advisory names that our kind of use doesn't touch, a kernel module we don't load, a package in an image whose service has no inbound traffic. For an app, `app_status` gives its repo, sha and handbook (what it does and who reaches it); you can't read app code. Say "unknown" when you can't tell; unknown is not "not affected".
    - **Already fixed in the release we run?** Packages inside an upstream image often carry an internal workspace
      version (e.g. `@paperclipai/server` 0.3.1) that the scanner compares with the advisory's release version. Compare

@@ -23,8 +23,10 @@ export const FINDING: Table = {
     target: "text", package: "text", version: "text", vuln_id: "text", finding_id: "text", target_kind: "text", tool: "text",
     pkg_type: "text", purl: "text", locations: "text[]", severity: "text", cvss: "real", fixed_version: "text", fix_state: "text",
     aliases: "text[]", title: "text", description: "text", url: "text", present: "boolean", resolved_at: "timestamptz", resolved_reason: "text", last_seen: "timestamptz",
+    // grype's CISA KEV flag (true or null, never false: unlisted stays null) and EPSS (score, percentile).
+    kev: "boolean", kev_added: "date", epss: "real", epss_percentile: "real",
   },
-  tracked: ["severity", "fixed_version", "fix_state", "present"],
+  tracked: ["severity", "fixed_version", "fix_state", "present", "kev"],
   scope: "target",
   url: "url",
   search: ["package", "vuln_id", "title", "description"],
@@ -33,6 +35,10 @@ export const FINDING: Table = {
 const common = "baseline, first_seen_at, ingested_at, seq";
 export const DDL = `${tableDdl("src_security", FINDING)}
 ALTER TABLE src_security.finding ADD COLUMN IF NOT EXISTS resolved_reason text;
+ALTER TABLE src_security.finding ADD COLUMN IF NOT EXISTS kev boolean;
+ALTER TABLE src_security.finding ADD COLUMN IF NOT EXISTS kev_added date;
+ALTER TABLE src_security.finding ADD COLUMN IF NOT EXISTS epss real;
+ALTER TABLE src_security.finding ADD COLUMN IF NOT EXISTS epss_percentile real;
 CREATE INDEX IF NOT EXISTS finding_present ON src_security.finding (target, tool) WHERE present;
 -- Security Watch's verdicts (apps-mcp finding_verdict writes them as the warehouse superuser). at_* is the finding as the
 -- verdict saw it: the view shows the verdict only while severity, fix and presence still match, so a changed finding is open again.
@@ -43,15 +49,15 @@ CREATE TABLE IF NOT EXISTS src_security.verdict (
 CREATE OR REPLACE VIEW src_security.findings AS
   SELECT f.finding_id, target, target_kind, tool, package, version, pkg_type, purl, locations, vuln_id, aliases, severity, cvss, fixed_version, fix_state,
     title, description, url, present, resolved_at, last_seen, first_seen_at AS first_seen, ${common}, tsv,
-    d.verdict, d.reason AS verdict_reason, d.by_agent AS verdict_by, d.decided_at AS verdict_at, f.resolved_reason
+    d.verdict, d.reason AS verdict_reason, d.by_agent AS verdict_by, d.decided_at AS verdict_at, f.resolved_reason, f.kev, f.kev_added, f.epss, f.epss_percentile
   FROM src_security.finding f LEFT JOIN src_security.verdict d ON d.finding_id = f.finding_id
     AND d.at_severity IS NOT DISTINCT FROM f.severity AND d.at_fixed_version IS NOT DISTINCT FROM f.fixed_version
     AND d.at_fix_state IS NOT DISTINCT FROM f.fix_state AND d.at_present IS NOT DISTINCT FROM f.present
     AND (d.verdict <> 'not-affected' OR d.decided_at > now() - interval '30 days');
-COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found by a scan of that same target or settled when the target was retired (resolved_at; resolved_reason names the target''s replacement when retired); a target absent from a pass keeps present = true with an ingest_run row saying its findings are unverified, unless it is a known retired target whose replacement was scanned cleanly (then its ingest_run row says retired). first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. Changes (severity, fix, present): src_security.changes.';
+COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found by a scan of that same target or settled when the target was retired (resolved_at; resolved_reason names the target''s replacement when retired); a target absent from a pass keeps present = true with an ingest_run row saying its findings are unverified, unless it is a known retired target whose replacement was scanned cleanly (then its ingest_run row says retired). first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. kev = CISA lists it as exploited in the wild (true, else null; kev_added = the date CISA added it); epss = FIRST''s probability (0 to 1) it is exploited in the next 30 days and epss_percentile its rank among all CVEs (both refresh daily; an epss of 0.1 or more is high). Both come from grype''s database; null on app-auditor rows. Changes (severity, fix, present, kev): src_security.changes.';
 CREATE OR REPLACE VIEW src_security.changes AS
   SELECT seq, entity, entity_id, scope, field, old_value, new_value, url, observed_at, false AS baseline FROM src_security.change;
-COMMENT ON VIEW src_security.changes IS 'Finding changes after first sight: field severity, fixed_version, fix_state or present (false = resolved, true = back). scope = the target; entity_id = target/package/version/vuln_id.';
+COMMENT ON VIEW src_security.changes IS 'Finding changes after first sight: field severity, fixed_version, fix_state, kev or present (false = resolved, true = back). scope = the target; entity_id = target/package/version/vuln_id.';
 GRANT SELECT ON src_security.findings, src_security.changes TO agents_open;`;
 
 export const findingId = (target: string, pkg: string, version: string, vuln: string) =>
@@ -60,6 +66,23 @@ export const findingId = (target: string, pkg: string, version: string, vuln: st
 const kindOf = (target: string) => (target === "host" ? "host" : target.split(":")[0] ?? "other");
 const SEVERITIES = ["critical", "high", "medium", "low", "negligible", "unknown"];
 const severity = (s: unknown) => (SEVERITIES.includes(String(s ?? "").toLowerCase()) ? String(s).toLowerCase() : "unknown");
+
+type Exploitation = { kev: true | null; kev_added: string | null; epss: number | null; epss_percentile: number | null };
+
+/** KEV and EPSS from a match's vulnerability and its related ones (a GHSA match carries them on the CVE): earliest KEV date, highest EPSS with its percentile. */
+function exploitation(vulns: any[]): Exploitation {
+  const kevs = vulns.flatMap((x) => (Array.isArray(x?.knownExploited) ? x.knownExploited : []));
+  const dates = kevs.map((k) => String(k?.dateAdded ?? "").slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const epss = vulns.flatMap((x) => (Array.isArray(x?.epss) ? x.epss : [])).filter((e) => Number.isFinite(Number(e?.epss ?? NaN)));
+  const top = epss.sort((a, b) => Number(b.epss) - Number(a.epss))[0];
+  return { kev: kevs.length ? true : null, kev_added: dates[0] ?? null, epss: top ? Number(top.epss) : null, epss_percentile: top && Number.isFinite(Number(top.percentile)) ? Number(top.percentile) : null };
+}
+
+function mergeExploitation(a: Exploitation, b: Exploitation): Exploitation {
+  const dates = [a.kev_added, b.kev_added].filter(Boolean).sort() as string[];
+  const hi = (b.epss ?? -1) > (a.epss ?? -1) ? b : a;
+  return { kev: a.kev || b.kev, kev_added: dates[0] ?? null, epss: hi.epss, epss_percentile: hi.epss_percentile };
+}
 
 /** grype's JSON (`-o json`) as finding rows for one target, one per key (a package matched at several paths is one row). */
 export function parseGrype(target: string, out: any): Row[] {
@@ -73,12 +96,14 @@ export function parseGrype(target: string, out: any): Row[] {
     const version = String(a.version ?? "");
     const key = `${pkg}|${version}|${v.id}`;
     const paths: string[] = (a.locations ?? []).map((l: any) => String(l?.path ?? "")).filter(Boolean);
+    const related: any[] = Array.isArray(m.relatedVulnerabilities) ? m.relatedVulnerabilities : [];
+    const x = exploitation([v, ...related]);
     const prev = rows.get(key);
     if (prev) {
+      Object.assign(prev, mergeExploitation(prev as unknown as Exploitation, x));
       prev.locations = [...new Set([...(prev.locations as string[]), ...paths])].sort().slice(0, 20);
       continue;
     }
-    const related: any[] = Array.isArray(m.relatedVulnerabilities) ? m.relatedVulnerabilities : [];
     const scores = [v, ...related].flatMap((x) => (x?.cvss ?? []).map((c: any) => Number(c?.metrics?.baseScore))).filter(Number.isFinite);
     rows.set(key, {
       target, package: pkg, version, vuln_id: String(v.id), finding_id: findingId(target, pkg, version, String(v.id)), target_kind: kindOf(target), tool: "grype",
@@ -86,7 +111,7 @@ export function parseGrype(target: string, out: any): Row[] {
       cvss: scores.length ? Math.max(...scores) : null, fixed_version: (v.fix?.versions ?? []).join(", ") || null, fix_state: v.fix?.state ?? null,
       aliases: [...new Set(related.map((r) => String(r?.id ?? "")).filter((id) => id && id !== v.id))].sort(), title: null,
       description: capText(v.description || related.find((r) => r?.description)?.description || null, 1000).text,
-      url: v.dataSource || v.urls?.[0] || related[0]?.dataSource || null, present: true, resolved_at: null, resolved_reason: null,
+      url: v.dataSource || v.urls?.[0] || related[0]?.dataSource || null, present: true, resolved_at: null, resolved_reason: null, ...x,
     });
   }
   return [...rows.values()];
@@ -99,10 +124,20 @@ export function parseGrype(target: string, out: any): Row[] {
 export async function syncTarget(store: SourceStore, target: string, tool: string, rows: Row[], now = new Date()): Promise<number> {
   let written = 0;
   const seen = new Set<string>();
-  for (const r of rows) {
+  for (const { epss: _e, epss_percentile: _p, ...r } of rows) {
     seen.add(`${r.package}|${r.version}|${r.vuln_id}`);
     if ((await store.upsert(FINDING, r, { baseline: false })) !== "same") written++;
   }
+  // EPSS moves daily: written outside upsert (like last_seen) so it doesn't re-deliver every row to source_new each day.
+  const scored = rows.filter((r) => r.epss != null);
+  if (scored.length)
+    await store.pool.query(
+      `UPDATE src_security.finding f SET epss = n.epss, epss_percentile = n.pct
+       FROM unnest($3::text[], $4::text[], $5::text[], $6::real[], $7::real[]) AS n(package, version, vuln_id, epss, pct)
+       WHERE f.target = $1 AND f.tool = $2 AND f.package = n.package AND f.version = n.version AND f.vuln_id = n.vuln_id
+         AND (f.epss IS DISTINCT FROM n.epss OR f.epss_percentile IS DISTINCT FROM n.pct)`,
+      [target, tool, scored.map((r) => r.package), scored.map((r) => r.version), scored.map((r) => r.vuln_id), scored.map((r) => r.epss), scored.map((r) => r.epss_percentile)],
+    );
   written += await resolveGone(store, target, tool, seen, now);
   await store.pool.query(`UPDATE src_security.finding SET last_seen = $3 WHERE target = $1 AND tool = $2 AND present`, [target, tool, now]);
   return written;
