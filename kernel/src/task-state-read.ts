@@ -1,5 +1,5 @@
-// GET /v1/tasks/state's read: the state (task-state.ts) of a batch of tasks (`ids`, ids or identifiers) or of every open one,
-// from the fact log on the reader's own read-only connection, in one snapshot (one transaction), with the fleet's counts.
+// GET /v1/tasks/state's read: the state (task-state.ts) of a batch of tasks (`ids`, ids or identifiers) or of every open one
+// (with those closed after `closed_since`, the board's Done), from the fact log on the reader's own read-only connection, in one snapshot (one transaction), with the fleet's counts.
 import { DatabaseSync } from "node:sqlite";
 import type { FactRow } from "./facts.ts";
 import type { Stage } from "./flow-stages.ts";
@@ -34,10 +34,11 @@ export function createTaskStateRead({ file, stages, agent, polled = () => true, 
     return out;
   };
 
-  function openIds(): string[] {
-    const rows = db.prepare(`SELECT subject, json_extract(data, '$.to') AS st FROM (SELECT subject, data, ROW_NUMBER() OVER (PARTITION BY subject ORDER BY at DESC, seq DESC) AS n
-      FROM facts WHERE type = 'task.status_changed') WHERE n = 1`).all() as { subject: string; st: string }[];
-    return rows.filter((r) => r.subject.startsWith("task:") && !CLOSED.has(r.st)).map((r) => r.subject.slice(5));
+  /** Every open task, and each closed at or after `closedSince` (its latest status fact, by kernel time). */
+  function openIds(closedSince?: number): string[] {
+    const rows = db.prepare(`SELECT subject, at, json_extract(data, '$.to') AS st FROM (SELECT subject, at, data, ROW_NUMBER() OVER (PARTITION BY subject ORDER BY at DESC, seq DESC) AS n
+      FROM facts WHERE type = 'task.status_changed') WHERE n = 1`).all() as { subject: string; at: string; st: string }[];
+    return rows.filter((r) => r.subject.startsWith("task:") && (!CLOSED.has(r.st) || (closedSince !== undefined && Date.parse(r.at) >= closedSince))).map((r) => r.subject.slice(5));
   }
   /** Identifiers (WOR-1) to ids, from their task.created; anything else is taken as an id. */
   function resolve(xs: string[]): string[] {
@@ -81,13 +82,16 @@ export function createTaskStateRead({ file, stages, agent, polled = () => true, 
       }));
       return { ...r, tasks: r.tasks.map((x) => { const a = x.holder ? known.get(x.holder)?.agent : undefined; return a?.terminated ? { ...x, holder_name: a.name, holder_gone: true as const } : x; }) };
     },
-    /** `ids` (≤ 200, ids or identifiers; an id with no facts has no row) or `open`; rows needing attention first, then by `since`. */
-    read(q: { ids?: string[]; open?: boolean }): StateRead {
+    /**
+     * `ids` (≤ 200, ids or identifiers; an id with no facts has no row) or `open` (with `closed_since`, an instant: the tasks closed
+     * since then too); rows needing attention first, then by `since`.
+     */
+    read(q: { ids?: string[]; open?: boolean; closed_since?: string }): StateRead {
       const t = now();
       db.exec("BEGIN");
       let tasks: StateRow[];
       try {
-        tasks = states(q.open ? openIds() : resolve(q.ids ?? []), t);
+        tasks = states(q.open ? openIds(q.closed_since ? Date.parse(q.closed_since) : undefined) : resolve(q.ids ?? []), t);
         db.exec("COMMIT");
       } catch (e) { db.exec("ROLLBACK"); throw e; }
       tasks.sort((a, b) => Number(b.attention.length > 0) - Number(a.attention.length > 0) || a.since.localeCompare(b.since));

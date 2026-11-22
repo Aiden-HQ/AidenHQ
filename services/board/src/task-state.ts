@@ -11,8 +11,13 @@ export type Reason =
   | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog"
   | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
 export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
+/** The board's column (Agent work), set once by the kernel from all of a task's obligations: the board never derives it. */
+export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
 export type TaskState = {
   kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
+  lane: Lane;
+  /** An open blocker (`task:<id>`), whatever the representative reason. */
+  blocker?: string;
   stage?: string;
   grade?: "pass" | "fail";
   question?: string;
@@ -24,10 +29,15 @@ export type TaskState = {
 export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
 
-/** A row with what its `ref` names, read from where the board already has it (see `shown`): the web's one chip wording reads this. */
-export type ShownState = StateRow & { refLabel?: string };
+/**
+ * A row with what its refs name, read from where the board already has it (see `shown`): `refLabel` for the primary reason's
+ * `ref` (the web's one chip wording reads it), `refs` for each attention entry's and the blocker's (a card's callout reads those).
+ */
+export type ShownState = StateRow & { refLabel?: string; refs?: Record<string, string> };
 
-export type TaskStates = { read(q: { ids?: string[]; open?: boolean }): Promise<StateRead> };
+/** `closed_since` (an ISO instant, with `open`): the tasks closed since then too, in the same snapshot. */
+export type StateQuery = { ids?: string[]; open?: boolean; closed_since?: string };
+export type TaskStates = { read(q: StateQuery): Promise<StateRead> };
 
 /** The most ids one read takes (the kernel refuses more). */
 export const MAX_IDS = 200;
@@ -45,6 +55,7 @@ export function kernelStates(k: { url: string; token: string }): TaskStates {
   return {
     read: (q) => {
       if (!q.open) return get(`ids=${(q.ids ?? []).map(encodeURIComponent).join(",")}`);
+      if (q.closed_since) return get(`open=1&closed_since=${encodeURIComponent(q.closed_since)}`);
       if (!open || Date.now() - open.at > OPEN_FRESH_MS) {
         const mine = { at: Date.now(), read: get("open=1") };
         open = mine;
@@ -88,13 +99,22 @@ export interface RefSources {
 
 const JOB_ENDED: Record<string, string> = { timeout: "timed out", lost: "lost", failed: "run failed" };
 
+/** What one ref names: a card's sentence, a task's identifier, how a job ended. */
+function labelOf(ref: string, src: RefSources): string | undefined {
+  if (ref === "no_reply") return "ended without a reply";
+  const [kind, id] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
+  if (kind === "record") return src.card(id);
+  if (kind === "task") return src.identifier(id);
+  if (kind === "job") { const j = src.job(id); return j ? ((j.error ?? "").split("\n")[0]!.trim().slice(0, 100) || (JOB_ENDED[j.state] ?? j.state)) : undefined; }
+  return undefined;
+}
+
 export function shown(row: StateRow, src: RefSources): ShownState {
-  const ref = row.ref?.replace(/^(job|record|task):/, "");
-  const label =
-    row.reason === "failed" && ref === "no_reply" ? "ended without a reply"
-    : row.reason === "failed" && ref ? (() => { const j = src.job(ref); return j ? ((j.error ?? "").split("\n")[0]!.trim().slice(0, 100) || (JOB_ENDED[j.state] ?? j.state)) : undefined; })()
-    : row.reason === "blocked" && ref ? src.identifier(ref)
-    : (row.reason === "card_owner" || row.reason === "card_review") && ref ? src.card(ref)
-    : undefined;
-  return label ? { ...row, refLabel: label } : row;
+  const named = ["failed", "blocked", "card_owner", "card_review"].includes(row.reason) && row.ref ? labelOf(row.ref, src) : undefined;
+  const refs: Record<string, string> = {};
+  for (const ref of [...row.attention.map((a) => a.ref), ...(row.blocker ? [row.blocker] : [])]) {
+    const l = labelOf(ref, src);
+    if (l) refs[ref] = l;
+  }
+  return { ...row, ...(named ? { refLabel: named } : {}), ...(Object.keys(refs).length ? { refs } : {}) };
 }
