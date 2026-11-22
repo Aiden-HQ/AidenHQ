@@ -85,9 +85,8 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
    email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in the brief's body, title and evidence too
    (name things by role, leave task ids out): the `github_product_issue` card's reviewer holds the post to the brief's text,
    so a literal value there loops the filing.
-3. Log `log · <time> · product-bug · <slug> · <task id>`. GitHub connected but no Maintainer: `github_issue_link` with fingerprint,
-   title, body and `evidence`, send the owner the link, log `link sent` (never resent; digest lists it as waiting). No GitHub
-   module: log the report on Fleet issues with the same fields, as the internal record.
+3. Log `log · <time> · product-bug · <slug> · <task id>`. No Maintainer, or GitHub signed out (the tool still works): `github_issue_link` with fingerprint,
+   title, body and `evidence`, send the owner the link, log `link sent` (never resent; digest lists it as waiting). Only without the `github_issue_link` tool: log the report on Fleet issues with the same fields, as the internal record.
 
 > ## Ask
 > File one GitHub issue on the product repository `Aiden-HQ/AidenHQ` with `github_product_issue`: fingerprint `product-bug:<slug>`, the title and body below, and the evidence fields given. Nothing else is asked for; do not fix it in this task.
