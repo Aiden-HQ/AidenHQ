@@ -33,8 +33,9 @@
 //   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
 import { execFileSync, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deepsec } from "./deepsec.ts";
@@ -448,24 +449,17 @@ export function gitEnv(): Record<string, string> {
     GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.attributesFile", GIT_CONFIG_VALUE_0: "/dev/null" };
 }
 /** git over such a checkout (gitEnv), without textconv or external diff drivers when diffing. */
-export function gitSafe(cwd: string, args: string[], extraEnv?: Record<string, string>, timeout?: number): string;
-export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> | undefined, timeout: number | undefined, raw: true): Buffer;
-export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> = {}, timeout?: number, raw = false): string | Buffer {
-  return execFileSync("git", args, { cwd, timeout, encoding: raw ? "buffer" : "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv(), ...extraEnv }, stdio: ["ignore", "pipe", "ignore"] });
+export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> = {}, timeout?: number) {
+  return execFileSync("git", args, { cwd, timeout, encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv(), ...extraEnv }, stdio: ["ignore", "pipe", "ignore"] });
 }
 
 /** The review's time was used up before it began to ask (the one allowance covers preparing the patch and the copy too). */
 export const PREP_TIMEOUT = "preparing the review ran out of time";
-/** A path that isn't valid UTF-8 can't be written under its own name into the review's copy. */
-export const NAMES = "the commit has file names that are not valid UTF-8, so its copy for the reviewer can't be made";
 /** The milliseconds left until `deadline`; throws when none are. */
 const timeLeft = (deadline: number) => { const ms = deadline - Date.now(); if (ms <= 0) throw new Error(PREP_TIMEOUT); return ms; };
 /** A git call within the deadline: a call cut off by it is the same timeout. */
-function gitBy(deadline: number, root: string, args: string[], extraEnv?: Record<string, string>): string;
-function gitBy(deadline: number, root: string, args: string[], extraEnv: Record<string, string> | undefined, raw: true): Buffer;
-function gitBy(deadline: number, root: string, args: string[], extraEnv?: Record<string, string>, raw?: boolean): string | Buffer {
-  const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined;
-  try { return raw ? gitSafe(root, args, extraEnv, ms, true) : gitSafe(root, args, extraEnv, ms); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
+function gitBy(deadline: number, root: string, args: string[]) {
+  try { return gitSafe(root, args, {}, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
 }
 
 /** How many characters of patch one request carries. */
@@ -508,61 +502,22 @@ export function patchGroups(root: string, base: string, files: string[], budget 
 }
 
 /**
- * The regular files of commit `head` written into `dir`, as the commit's blobs hold them: read with ls-tree and cat-file, so no
- * checkout filter, attribute or hook of the clone runs on them. Links and submodules are left out.
+ * The files of commit `head` extracted into `dir` (`git archive | tar -x`), within the review's deadline: a failure or a timeout throws.
+ * The copy is context for the reviewer; the patch it reviews is made by diff, so coverage doesn't depend on it.
  */
 export async function snapshot(root: string, head: string, dir: string, deadline = Infinity) {
   mkdirSync(dir, { recursive: true });
-  // The tree as bytes: a path that doesn't survive being text can't be written under its own name, so the copy isn't made (named).
-  const mangled: string[] = [];
-  const entries = gitBy(deadline, root, ["ls-tree", "-r", "-z", "--full-tree", head], undefined, true).toString("latin1").split("\0").filter(Boolean)
-    .flatMap((l) => {
-      const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l);
-      if (!m) return [];
-      const raw = Buffer.from(m[3]!, "latin1"), path = raw.toString("utf8");
-      if (!Buffer.from(path, "utf8").equals(raw)) { mangled.push(JSON.stringify(path)); return []; }
-      return [{ exec: m[1] === "100755", sha: m[2]!, path }];
-    });
-  if (mangled.length) throw new Error(`${NAMES}: ${mangled.slice(0, 5).join(", ")}${mangled.length > 5 ? ", …" : ""}`);
-  if (!entries.length) return;
-  const bad = () => new Error("the commit's files could not be read");
-  const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined; // checked before the process starts
-  const child = spawn("git", ["cat-file", "--batch"], { cwd: root, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "pipe", "ignore"] });
-  child.stdin.on("error", () => {});
-  const timer = ms === undefined ? undefined : setTimeout(() => child.kill(), ms); // the copy is within the review's time too
-  child.stdin.end(`${entries.map((x) => x.sha).join("\n")}\n`);
-  // The answers as they stream in, each checked (object id, type, size) and written to its file: nothing is held but a chunk.
-  let buf = Buffer.alloc(0), i = 0, fd = -1, left = 0, nl = false;
-  const shut = () => { if (fd >= 0) { const f = fd; fd = -1; closeSync(f); } }; // exactly once, whichever path gets there first
-  await new Promise<void>((ok, fail) => {
-    child.stdout.on("data", (d: Buffer) => {
-      try {
-        buf = Buffer.concat([buf, d]);
-        for (;;) {
-          if (nl) { if (!buf.length) return; buf = buf.subarray(1); nl = false; i++; }
-          if (fd < 0) {
-            if (i >= entries.length) { if (buf.length) throw bad(); return; }
-            const end = buf.indexOf(10);
-            if (end < 0) return;
-            const x = entries[i]!, h = buf.subarray(0, end).toString().split(" ");
-            if (h[0] !== x.sha || h[1] !== "blob" || !/^\d+$/.test(h[2] ?? "")) throw bad();
-            buf = buf.subarray(end + 1);
-            left = Number(h[2]);
-            mkdirSync(dirname(join(dir, x.path)), { recursive: true });
-            fd = openSync(join(dir, x.path), "w", x.exec ? 0o755 : 0o644);
-          }
-          const n = Math.min(left, buf.length);
-          writeSync(fd, buf, 0, n);
-          buf = buf.subarray(n);
-          left -= n;
-          if (left > 0) return;
-          shut();
-          nl = true;
-        }
-      } catch (err) { child.kill(); shut(); fail(err); }
-    });
-    child.on("close", (code) => (clearTimeout(timer), shut(), Date.now() >= deadline ? fail(new Error(PREP_TIMEOUT)) : code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
-  });
+  const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined; // checked before anything starts
+  const git = spawn("git", ["archive", "--format=tar", head], { cwd: root, env: { ...process.env, ...gitEnv() }, stdio: ["ignore", "pipe", "ignore"] });
+  const tar = spawn("tar", ["-x", "-C", dir], { stdio: ["pipe", "ignore", "ignore"] });
+  tar.stdin.on("error", () => {});
+  git.stdout.pipe(tar.stdin);
+  const timer = ms === undefined ? undefined : setTimeout(() => { git.kill(); tar.kill(); }, ms);
+  const ended = (c: ChildProcess) => new Promise<number | null>((ok) => { c.on("close", ok); c.on("error", () => ok(null)); });
+  const codes = await Promise.all([ended(git), ended(tar)]);
+  clearTimeout(timer);
+  if (Date.now() >= deadline) throw new Error(PREP_TIMEOUT);
+  if (codes.some((c) => c !== 0)) throw new Error("the commit's files could not be copied");
 }
 
 /**
@@ -582,9 +537,7 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
     // Engineer may still be editing; its findings' paths are relative to that copy.
     if (head) { cwd = join(scratch, "tree"); await snapshot(root, head, cwd, deadline); }
   } catch (err) {
-    if ((err as Error).message === PREP_TIMEOUT) return { message: "", read: true, cause: PREP_TIMEOUT };
-    if ((err as Error).message.startsWith(NAMES)) return { message: "", read: true, cause: (err as Error).message };
-    throw err;
+    return { message: "", read: true, cause: (err as Error).message }; // out of time, or the files could not be copied
   }
   const roots = [cwd.replace(/\/$/, ""), realpathSync(cwd)];
   const findings: ReturnType<typeof nativeFindings> = [];

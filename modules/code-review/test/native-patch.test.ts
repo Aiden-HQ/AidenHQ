@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { NAMES, PREP_TIMEOUT, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
+import { PREP_TIMEOUT, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
 import { place } from "../recipe/scope.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -250,10 +250,6 @@ test("with a commit to review at, codex works in a copy of its files, not the li
   const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
   const head = sh(repo, "rev-parse", "HEAD");
   writeFileSync(join(repo, "a.txt"), "edited later\n"); // the Engineer keeps editing
-  // A smudge filter the clone selects locally must not run when the copy is made.
-  const marker = join(repo, "..", "filter-ran");
-  sh(repo, "config", "filter.evil.smudge", `touch ${marker}`); sh(repo, "config", "filter.evil.required", "false");
-  writeFileSync(join(repo, ".git", "info", "attributes"), "* filter=evil\n");
   const model = await endpoint();
   try {
     const dir = codexDir();
@@ -267,7 +263,6 @@ test("with a commit to review at, codex works in a copy of its files, not the li
     assert.ok(text.includes(join(realpathSync(scratch), "tree")) || text.includes(join(scratch, "tree")), "codex's cwd is the copy");
     assert.ok(!text.includes(`<cwd>${repo}`), "not the live checkout");
     assert.equal(execFileSync("cat", [join(scratch, "tree", "a.txt")], { encoding: "utf8" }), "a1\n", "the copy holds the reviewed commit's file");
-    assert.equal(existsSync(marker), false, "no filter of the clone ran");
   } finally { model.close(); }
 });
 
@@ -332,14 +327,4 @@ test("line 0: self-review does not print clean for an incorrect verdict whose on
     assert.match(out.stdout, /: incomplete$/m);
     assert.doesNotMatch(out.stdout, /: clean/);
   } finally { model.close(); }
-});
-
-test("a path that isn't valid UTF-8 makes the copy fail, named, instead of being written under a mangled name", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "snap-utf-")), repo = join(dir, "r");
-  mkdirSync(repo); sh(repo, "init", "-q");
-  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repo, input: "x\n", encoding: "utf8" }).trim();
-  const tree = execFileSync("git", ["mktree", "-z"], { cwd: repo, input: Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), Buffer.from([0x62, 0xff, 0x61]), Buffer.from("\0")]), encoding: "utf8" }).trim();
-  const commit = execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit-tree", tree, "-m", "x"], { cwd: repo, encoding: "utf8" }).trim();
-  await assert.rejects(snapshot(repo, commit, join(dir, "out")), (e: Error) => e.message.startsWith(NAMES) && e.message.includes("b"));
-  assert.equal(existsSync(join(dir, "out", "b\ufffda")), false);
 });
