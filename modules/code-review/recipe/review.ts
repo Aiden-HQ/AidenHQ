@@ -28,16 +28,16 @@
 // (deepsec: setup files and scan, spec.setup_files) return `setup`, the files to commit. Every finding carries the spec's option
 // and lens.
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
 import { brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
-import type { Cleaned, Excluded, Severity } from "./brief.ts";
+import type { Cleaned, Excluded, Placed, Severity } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { changed, guidePaths, scope } from "./scope.ts";
+import { changed, guidePaths, place, scope } from "./scope.ts";
 import type { Changed } from "./scope.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
@@ -58,7 +58,6 @@ export interface Spec {
   /** deepsec's spend cap (the run's remaining budget), and, when a setup branch is pending, its files as JSON text (path to text). */
   budget_usd?: number | string; setup_files?: string;
 }
-type Placed = Cleaned & { id: string; option?: string; lens?: string };
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
@@ -235,34 +234,6 @@ export function answer(message: unknown) {
   try { const j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; }
 }
 
-
-/** The head file's lines for a tracked regular file the review read (never a link out of the tree), else undefined. */
-function linesOf(root: string, path: string, reviewed: Set<string>) {
-  if (!reviewed.has(path) && !existsSync(join(root, path))) return undefined;
-  if (path.split("/").includes(".git") || !plain(root, path)) return undefined;
-  const t = readSmall(join(root, path), 8 << 20);
-  return t === undefined ? undefined : t.split("\n");
-}
-
-/**
- * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
- * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
- * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
- * out (`left`) is dropped.
- */
-export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>()) {
-  const out: Placed[] = [];
-  for (const f of findings) {
-    if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
-    const lines = linesOf(root, f.path, reviewed);
-    if (!lines || f.line > lines.length) continue;
-    const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
-    const anchor = lines[f.line - 1]!.trim();
-    const id = createHash("sha256").update(`${f.path}\n${f.title.toLowerCase().replace(/\W+/g, " ").trim()}\n${anchor}`).digest("hex").slice(0, 16);
-    out.push({ id, ...f, severity, ...(f.end_line && f.end_line > lines.length ? { end_line: lines.length } : {}) });
-  }
-  return out;
-}
 
 const words = (t: string) => new Set(t.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
 /** One finding per problem (same file and either the same line and severity, or lines within 3 and titles mostly alike: the

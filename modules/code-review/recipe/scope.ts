@@ -1,7 +1,10 @@
 // Which files a review covers: the changed files of a change and the scope's decision on each. One definition for the PR check
 // (review.ts) and an Engineer's own review before it publishes (self-review.ts), so both cover the same files.
-import { posix } from "node:path";
-import type { Excluded } from "./brief.ts";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join, posix } from "node:path";
+import type { Cleaned, Excluded, Placed } from "./brief.ts";
+import { plain, readSmall } from "./proc.ts";
 import { globRe } from "./review-checklist.ts";
 
 type Git = (args: string[]) => string;
@@ -49,3 +52,33 @@ export function guidePaths(paths: string[]) {
   for (const p of paths) for (let d = posix.dirname(p); d !== "." && d !== "/"; d = posix.dirname(d)) dirs.add(d);
   return [...new Set([...dirs].sort().flatMap((d) => GUIDES.map((g) => (d === "." ? g : `${d}/${g}`))))];
 }
+
+/** The head file's lines for a tracked regular file the review read (never a link out of the tree), else undefined. */
+function linesOf(root: string, path: string, reviewed: Set<string>) {
+  if (!reviewed.has(path) && !existsSync(join(root, path))) return undefined;
+  if (path.split("/").includes(".git") || !plain(root, path)) return undefined;
+  const t = readSmall(join(root, path), 8 << 20);
+  return t === undefined ? undefined : t.split("\n");
+}
+
+
+/**
+ * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
+ * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
+ * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
+ * out (`left`) is dropped.
+ */
+export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>()) {
+  const out: Placed[] = [];
+  for (const f of findings) {
+    if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
+    const lines = linesOf(root, f.path, reviewed);
+    if (!lines || f.line > lines.length) continue;
+    const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
+    const anchor = lines[f.line - 1]!.trim();
+    const id = createHash("sha256").update(`${f.path}\n${f.title.toLowerCase().replace(/\W+/g, " ").trim()}\n${anchor}`).digest("hex").slice(0, 16);
+    out.push({ id, ...f, severity, ...(f.end_line && f.end_line > lines.length ? { end_line: lines.length } : {}) });
+  }
+  return out;
+}
+

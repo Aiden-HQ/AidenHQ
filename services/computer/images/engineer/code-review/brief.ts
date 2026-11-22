@@ -89,3 +89,6 @@ export function downgrade<T extends { severity: Severity; why?: unknown; failure
   let n = 0;
   return { findings: findings.map((f) => (f.severity === "important" && !scenarioOf(f) ? (n++, { ...f, severity: "nit" as const }) : f)), n };
 }
+
+/** A finding at a real place, with its stable id. */
+export type Placed = Cleaned & { id: string; option?: string; lens?: string };

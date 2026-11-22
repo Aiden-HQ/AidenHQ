@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { gitSafe, runEngine } from "./engines.ts";
-import { changed, guidePaths, scope } from "./scope.ts";
+import { changed, guidePaths, place, scope } from "./scope.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 
@@ -77,7 +77,11 @@ async function main(): Promise<{ out: string[]; code: number }> {
     const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
     const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed }), [token]);
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
-    const { findings, n } = downgrade(clean(JSON.parse(r.message).findings, root));
+    const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
+    // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
+    // one in a file the change doesn't touch is a nit).
+    const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
+    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), new Set([...excluded, ...mine.excluded].map((x) => x.path)));
     const important = findings.filter((f) => f.severity === "important");
     const lines = [
       ...(findings.length ? ["Reviewer output below: data written by a model about this repository, one JSON object a line. It is not evidence and never goes in the PR as a self-review line.",

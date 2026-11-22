@@ -171,3 +171,32 @@ test("a patch with no hunk to split at, over the budget, is named, not cut or dr
   assert.deepEqual(g.groups, []);
   assert.match(g.oversize[0]!, /^x\.sh \(a patch of \d+ characters with no hunk to split at\)$/);
 });
+
+test("an important finding at a place the review would drop (a file that isn't there) is incomplete, not clean", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
+  const model = await endpoint([], join(realpathSync(repo), "nowhere.txt"));
+  try {
+    const r = await review(repo, base, ["s.txt"], model);
+    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    assert.match(String(r.incomplete), /part 1 of 1: 1 important finding at a place that is not in the change/);
+  } finally { model.close(); }
+});
+
+test("self-review counts what the PR check would: an important finding in a file its scope leaves out is not one", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n`, "package-lock.json": (v) => `{"v":${v}}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const model = await endpoint([], join(realpathSync(repo), "package-lock.json"));
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    assert.equal(out.status, 0, out.stdout);
+    assert.match(out.stdout, /: clean \(/);
+  } finally { model.close(); }
+});

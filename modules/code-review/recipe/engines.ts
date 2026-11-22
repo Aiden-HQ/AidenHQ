@@ -39,6 +39,9 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deepsec } from "./deepsec.ts";
 import { run, stopped } from "./proc.ts";
+import { clean, downgrade } from "./brief.ts";
+import type { Severity } from "./brief.ts";
+import { place } from "./scope.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Each engine's efforts (what it accepts), and whether it answers our prompts (verify, recheck) or only reviews. */
@@ -367,7 +370,7 @@ export function nativeFindings(v: NativeReview, roots: string[]) {
     if (typeof p !== "string" || !Number.isInteger(start)) return [];
     const root = roots.find((r) => p.startsWith(`${r}/`));
     return [{
-      severity: [0, 1, 2].includes(f.priority as number) ? "important" : "nit", path: root ? p.slice(root.length + 1) : p, line: start!,
+      severity: ([0, 1, 2].includes(f.priority as number) ? "important" : "nit") as Severity, path: root ? p.slice(root.length + 1) : p, line: start!,
       ...(Number.isInteger(end) && end! > start! ? { end_line: end! } : {}),
       title: String(f.title ?? "").replace(/^\s*\[P\d\]\s*/, ""), why: String(f.body ?? ""), evidence: "", fix_brief: "",
     }];
@@ -520,6 +523,11 @@ async function codexNative({ instructions, model, effort, root, files, minutes, 
       const got = nativeFindings(v!, roots), said = v!.findings?.length ?? 0;
       findings.push(...got);
       // A verdict of "incorrect" with nothing usable to show for it, or findings that couldn't be placed, is not a clean part.
+      // Findings the review's validation would drop (a path or a line that isn't in the files): an important one lost that way is not a clean part.
+      const important = (fs: { severity: string }[]) => fs.filter((f) => f.severity === "important").length;
+      const cleaned = downgrade(clean(got, root)).findings; // every path is "own" here: a finding in a file the change doesn't touch is a nit in the check, not a drop
+      const lost = important(downgrade(got).findings) - important(place(cleaned, root, new Set(files), new Set(cleaned.map((f) => f.path))));
+      if (lost > 0) failed.push(`part ${i + 1} of ${groups.length}: ${lost} important finding${lost === 1 ? "" : "s"} at a place that is not in the change`);
       if (v!.overall_correctness === "patch is incorrect" && !got.length) failed.push(`part ${i + 1} of ${groups.length}: the verdict says the patch is incorrect, with no finding that could be read`);
       else if (got.length < said) failed.push(`part ${i + 1} of ${groups.length}: ${said - got.length} finding${said - got.length === 1 ? "" : "s"} without a usable location`);
       continue;

@@ -26,7 +26,8 @@ import { pathToFileURL } from "node:url";
 import { LENSES, OUTPUTS } from "./catalog.ts";
 import type { Lens, ToolSpec } from "./catalog.ts";
 import { adapt, MAX_PER_OPTION } from "./sarif.ts";
-import { bound, place } from "./review.ts";
+import { bound } from "./review.ts";
+import { place } from "./scope.ts";
 import { clean, scrub } from "./brief.ts";
 
 /** The tools job's spec ($AIDENHQ_SPEC): the commit, its base, and the selected tool entries as JSON text. */
