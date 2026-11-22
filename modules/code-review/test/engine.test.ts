@@ -1499,8 +1499,10 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "" }), /reason says/);
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed now", reason: "" }), /word is one of/);
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is one of/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)" }), /fix isn't on the PR yet: its head is still 2222222/);
+  w.pr(2, sha("3")); await w.tick();
   assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" }), { resolved: "f1" });
-  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  assert.ok(!codes(w.engine.verdict(REPO, 2, sha("3"))).includes("findings"), "no open finding holds the new head");
   // The reply is posted for the agent (the important finding only, once its thread is known); a nit gets none.
   w.engine.resolve({ repo: REPO, number: 2, id: "n1", word: "won't fix", reason: "style only, left as is" });
   await w.tick({ github: false });
@@ -1513,7 +1515,7 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "again, for no reason" }), /isn't open/);
   const f = w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get();
   assert.deepEqual({ ...f }, { outcome: "fixed", claim: "fixed: moved the lock into pay.ts (abc1234)" });
-  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]).sort(), [["f1", "fixed: moved the lock into pay.ts (abc1234)"], ["n1", "won't fix: style only, left as is"]]);
 });
 

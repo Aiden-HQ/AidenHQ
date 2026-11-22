@@ -1546,7 +1546,10 @@ export function createEngine(d: EngineDeps) {
     if (!/\p{L}{2,}/u.test(reason) || reason.length > 1500) throw new RequestError("reason says what changed or why (letters, at most 1500 characters)");
     const p = prRow(repo, n);
     if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
-    const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
+    const open = one<{ severity: string; head: string }>("SELECT f.severity, r.head FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.outcome IS NULL ORDER BY f.rowid DESC LIMIT 1", repo, n, id);
+    // A fix isn't a fix until it is on the PR: while the head is still the commit the finding was raised on, `fixed` would close it for an unfixed head.
+    if (open && /^fixed$/i.test(word) && open.head === p.head) throw new RequestError(`the fix isn't on the PR yet: its head is still ${p.head.slice(0, 7)}, the commit this finding was raised on; publish the fix, then say fixed`);
+    const severity = open?.severity;
     if (!answer(p, id, word, reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
     // An important finding's answer is also replied on its thread (so it shows closed): queued here (a newer answer replaces an older queued one), posted by `replies` and never holding the outcome. A nit gets none.
     if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't")}: ${reason}`.slice(0, 1600), now());
