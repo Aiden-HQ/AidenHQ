@@ -76,11 +76,9 @@ const named = (opt, v) => {
 };
 const value = (i) => {
   const v = rest[i + 1];
-  // A standalone help flag is help wherever it stands, never a filename: a file named --help is named with `=`.
-  if (v === "-h" || v === "--help") {
-    console.log(usage);
-    process.exit(0);
-  }
+  // In a value position a help flag is a missing value, never help: exiting 0 would tell a script its publish ran. A file
+  // named --help is named with `--body-file=--help`.
+  if (v === "-h" || v === "--help") fail(`${rest[i]} needs a value (name a file called ${v} as ${rest[i]}=${v})\n${usage}`, 2);
   if (v === undefined || OPTION.test(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
   return named(rest[i], v);
 };
