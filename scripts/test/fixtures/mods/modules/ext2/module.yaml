@@ -1,0 +1,4 @@
+name: ext2
+description: also extends the board
+generated_secrets: [s2]
+board_env: { B: "2", S2_FILE: "${secrets.s2}" }

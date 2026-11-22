@@ -5,16 +5,7 @@
   },
   "description": "Test fixture modules",
   "organisations": [
-    {
-      "id": "acme",
-      "name": "Acme",
-      "domains": [
-        "acme.example.com"
-      ],
-      "clients": {
-        "flowok_client_id": "1234.5678"
-      }
-    }
+    { "id": "acme", "name": "Acme", "domains": ["acme.example.com"], "clients": { "flowok_client_id": "1234.5678" } }
   ],
   "plugins": [
     {
@@ -22,20 +13,68 @@
       "source": "./a"
     },
     {
+      "name": "appmod",
+      "source": "./appmod"
+    },
+    {
       "name": "b",
       "source": "./b"
+    },
+    {
+      "name": "badtool",
+      "source": "./badtool"
     },
     {
       "name": "board",
       "source": "./board"
     },
     {
+      "name": "boxeng",
+      "source": "./boxeng"
+    },
+    {
       "name": "core",
       "source": "./core"
     },
     {
+      "name": "cyc1",
+      "source": "./cyc1"
+    },
+    {
+      "name": "cyc2",
+      "source": "./cyc2"
+    },
+    {
+      "name": "dup1",
+      "source": "./dup1"
+    },
+    {
+      "name": "dup2",
+      "source": "./dup2"
+    },
+    {
       "name": "eng",
       "source": "./eng"
+    },
+    {
+      "name": "engdup",
+      "source": "./engdup"
+    },
+    {
+      "name": "engrunner",
+      "source": "./engrunner"
+    },
+    {
+      "name": "ext1",
+      "source": "./ext1"
+    },
+    {
+      "name": "ext2",
+      "source": "./ext2"
+    },
+    {
+      "name": "signbad",
+      "source": "./signbad"
     },
     {
       "name": "flowbad",
@@ -50,8 +89,32 @@
       "source": "./flowok"
     },
     {
+      "name": "flowstray",
+      "source": "./flowstray"
+    },
+    {
       "name": "glean",
       "source": "./glean"
+    },
+    {
+      "name": "jc",
+      "source": "./jc"
+    },
+    {
+      "name": "jcpriv",
+      "source": "./jcpriv"
+    },
+    {
+      "name": "jcunknown",
+      "source": "./jcunknown"
+    },
+    {
+      "name": "needy",
+      "source": "./needy"
+    },
+    {
+      "name": "orphan",
+      "source": "./orphan"
     },
     {
       "name": "roleopt",
@@ -66,12 +129,24 @@
       "source": "./rolez"
     },
     {
+      "name": "runnerheartbeat",
+      "source": "./runnerheartbeat"
+    },
+    {
       "name": "shady",
       "source": "./shady"
     },
     {
       "name": "sloppy",
       "source": "./sloppy"
+    },
+    {
+      "name": "typo",
+      "source": "./typo"
+    },
+    {
+      "name": "untagged",
+      "source": "./untagged"
     },
     {
       "name": "wild",

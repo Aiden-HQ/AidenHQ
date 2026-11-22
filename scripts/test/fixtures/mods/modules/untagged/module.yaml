@@ -1,0 +1,4 @@
+name: untagged
+description: a connection whose tools are not tagged
+connections:
+  u: { url: "http://u:1/mcp", auth: u_service_key }

@@ -1,0 +1,4 @@
+name: jcunknown
+description: an unknown jobcap
+agents:
+  lost: { profile: engineer, jobcaps: [ nope-read ] }

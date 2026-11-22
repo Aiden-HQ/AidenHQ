@@ -1,0 +1,6 @@
+name: flowstray
+description: its pair_url names a host that is not one of its services
+requires: [board]
+contributes:
+  board.setup_flows:
+    - { order: 10, title: Phone, why: Aiden on your phone., effort: about 2 minutes, steps: "1. Pair.", pair_url: "http://board:3121/pair" }
