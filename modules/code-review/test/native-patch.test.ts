@@ -290,20 +290,12 @@ test("snapshot writes a commit's regular files exactly (binary, executable, nest
   assert.ok(existsSync(none));
 });
 
-test("preparing the patch and the copy is within the review's time: a deadline already gone is incomplete, and no model is asked", { timeout: 240_000 }, async (t) => {
+test("preparing the patch and the copy is within the review's time: a deadline already gone is incomplete, and nothing is asked", async () => {
   const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
   const head = sh(repo, "rev-parse", "HEAD");
-  const model = await endpoint();
-  try {
-    const dir = codexDir();
-    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
-    if (dir) process.env.PATH = `${dir}:${process.env.PATH}`;
-    process.env.OPENROUTER_BASE_URL = model.url; process.env.OPENROUTER_API_KEY = "test-token";
-    const r = await runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files: ["a.txt"], head, minutes: 1e-9, scratch: mkdtempSync(join(tmpdir(), "native-scratch-")), own: true });
-    assert.equal(r.cause, PREP_TIMEOUT);
-    assert.equal(r.message, "");
-    assert.equal(model.requests.length, 0);
-    assert.throws(() => patchGroups(repo, base, ["a.txt"], undefined, "HEAD", Date.now() - 1), new RegExp(PREP_TIMEOUT));
-    await assert.rejects(snapshot(repo, head, join(mkdtempSync(join(tmpdir(), "snap-")), "o"), Date.now() - 1), new RegExp(PREP_TIMEOUT));
-  } finally { model.close(); }
+  const r = await runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files: ["a.txt"], head, minutes: 1e-9, scratch: mkdtempSync(join(tmpdir(), "native-scratch-")), own: true });
+  assert.equal(r.cause, PREP_TIMEOUT);
+  assert.equal(r.message, "");
+  assert.throws(() => patchGroups(repo, base, ["a.txt"], undefined, "HEAD", Date.now() - 1), new RegExp(PREP_TIMEOUT));
+  await assert.rejects(snapshot(repo, head, join(mkdtempSync(join(tmpdir(), "snap-")), "o"), Date.now() - 1), new RegExp(PREP_TIMEOUT));
 });

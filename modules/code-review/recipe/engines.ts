@@ -510,9 +510,10 @@ export async function snapshot(root: string, head: string, dir: string, deadline
     .flatMap((l) => { const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l); return m ? [{ exec: m[1] === "100755", sha: m[2]!, path: m[3]! }] : []; });
   if (!entries.length) return;
   const bad = () => new Error("the commit's files could not be read");
+  const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined; // checked before the process starts
   const child = spawn("git", ["cat-file", "--batch"], { cwd: root, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "pipe", "ignore"] });
   child.stdin.on("error", () => {});
-  const timer = Number.isFinite(deadline) ? setTimeout(() => child.kill(), Math.ceil(timeLeft(deadline))) : undefined; // the copy is within the review's time too
+  const timer = ms === undefined ? undefined : setTimeout(() => child.kill(), ms); // the copy is within the review's time too
   child.stdin.end(`${entries.map((x) => x.sha).join("\n")}\n`);
   // The answers as they stream in, each checked (object id, type, size) and written to its file: nothing is held but a chunk.
   let buf = Buffer.alloc(0), i = 0, fd = -1, left = 0, nl = false;
@@ -542,9 +543,9 @@ export async function snapshot(root: string, head: string, dir: string, deadline
           fd = -1;
           nl = true;
         }
-      } catch (err) { child.kill(); fail(err); }
+      } catch (err) { child.kill(); if (fd >= 0) closeSync(fd); fail(err); }
     });
-    child.on("close", (code) => (clearTimeout(timer), Date.now() >= deadline ? fail(new Error(PREP_TIMEOUT)) : code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
+    child.on("close", (code) => (clearTimeout(timer), fd >= 0 && closeSync(fd), Date.now() >= deadline ? fail(new Error(PREP_TIMEOUT)) : code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
   });
 }
 
