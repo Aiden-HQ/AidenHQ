@@ -63,6 +63,10 @@ test("a not-planned or duplicate close counts only on the exact reason line, nea
   assert.equal(await counts(at("Not fixing: x", "2026-11-19T10:04:50Z", "NONE")), false);
   // Another owner's line is not the closer's: only the one who closed it gives the reason.
   assert.equal(await counts({ ...at("Not fixing: x"), author: { login: "other-owner" } }), false);
+  // An unknown closer (a deleted user, no actor) never matches an author-less comment.
+  const ghost = { ...at("Not fixing: x"), author: null };
+  assert.equal(await counts(ghost, { closedEvents: { nodes: [{ actor: null, closer: null }] } }), false);
+  assert.equal(await counts(ghost, { closedEvents: { nodes: [] } }), false);
   // Far from the close (an hour before, a day after) it does not count.
   for (const createdAt of ["2026-11-19T09:00:00Z", "2026-11-20T10:05:00Z"]) assert.equal(await counts(at("Not fixing: x", createdAt)), false);
   // A reopen less than two minutes after an earlier close: that close's line predates the reopen and doesn't count.

@@ -715,7 +715,7 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // (the fleet acts as the owner), within two minutes of the close, since the latest reopen, carries the line `Not fixing: <reason>`
   // or `Duplicate of <owner>/<repo>#<n>`. No other comment is a reason.
   const REASON = /^(?:Not fixing: \S.*|Duplicate of [\w.-]+\/[\w.-]+#\d+)\s*$/m;
-  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && comments.some((c) => owned(c) && c.author?.login === closer && REASON.test(String(c.body ?? "")) && Date.parse(c.createdAt) >= reopened && Math.abs(Date.parse(c.createdAt) - Date.parse(i.closedAt)) <= 120_000);
+  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && Boolean(closer) && comments.some((c) => owned(c) && c.author?.login === closer && REASON.test(String(c.body ?? "")) && Date.parse(c.createdAt) >= reopened && Math.abs(Date.parse(c.createdAt) - Date.parse(i.closedAt)) <= 120_000);
   const trusted = Boolean(keywordPr) || lines.length > 0 || reasoned;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
