@@ -858,18 +858,17 @@ kernelTimeoutWhy() {
   elif [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
   elif [ -n "$out" ]; then why+="; unit $out"
   else why+="; unit state unavailable, systemctl printed nothing"; fi
-  journal="$(kernelRead journalctl "_SYSTEMD_USER_UNIT=$unit" -n 20 --no-pager 2>/dev/null)" || jsrc=$?
+  journal="$(kernelRead journalctl "_SYSTEMD_USER_UNIT=$unit" -n 20 --no-pager -o cat 2>/dev/null)" || jsrc=$?
   journal="${journal//$'\n'/ | }"
   while [ "${journal%" | "}" != "$journal" ]; do journal="${journal%" | "}"; done
   # journalctl prints oldest first: a head cut would drop the error that says why nothing answers, so keep the newest.
-  budget=$(( 1099 - ${#why} - 15 )) # "last journal: " and the separator, inside the 1200 total
-  [ "$budget" -gt 400 ] && budget=400
+  # The whole diagnostic stays one bounded line: the journal gets what the reason's divider and the rest left of 400.
+  budget=$(( 400 - ${#why} - 16 ))
   [ "$budget" -lt 100 ] && budget=100
   [ "${#journal}" -le "$budget" ] || journal="...${journal: -$((budget - 3))}"
   if [ "$jsrc" -eq 124 ]; then why+="; last journal unavailable, journalctl timed out"
   elif [ -n "$journal" ]; then why+="; last journal: $journal"
   else why+="; last journal empty or unavailable"; fi
-  [ "${#why}" -le 1200 ] || why="${why:0:1200}..."
   printf '%s' "$why"
 }
 

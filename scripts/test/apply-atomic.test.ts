@@ -358,7 +358,7 @@ test("a /healthz timeout names the curl exit, the unit's state and its journal t
   assert.ok(!g.reason.includes("\n"), "one line");
   assert.match(w.calls(), /systemctl --user show aidenhq-kernel\.service --property=ActiveState,Result,NRestarts/);
   // The unit is named by its field, which the owner's systemd-journal group can read after a full disk, not only by --user.
-  assert.match(w.calls(), /journalctl _SYSTEMD_USER_UNIT=aidenhq-kernel\.service -n 20 --no-pager/);
+  assert.match(w.calls(), /journalctl _SYSTEMD_USER_UNIT=aidenhq-kernel\.service -n 20 --no-pager -o cat/);
 
   // 28 is a request timeout, not a claim that anything accepted the connection (a dropped SYN times out the same way).
   const hangs = world();
@@ -392,6 +392,8 @@ test("a /healthz timeout keeps the newest journal lines when the journal is long
   // health() wraps the diagnostic in "(...)", so the excerpt is everything after "last journal: " up to that ")".
   const excerpt = /; last journal: (.*)\)$/.exec(g.reason)?.[1] ?? "";
   assert.ok(excerpt.length <= 400, `the excerpt is bounded: ${excerpt.length}`);
+  // health() frames the diagnostic in "(...)", after the fixed timeout sentence; the diagnostic itself stays within 400.
+  assert.ok((g.reason.slice(g.reason.indexOf("(") + 1, -1)).length <= 400, `the diagnostic is bounded: ${g.reason.length}`);
   assert.match(excerpt, /healthz not ready: EACCES mkdir \/srv\/aidenhq\/data\/kernel-scratch/, "the newest line is kept");
   assert.ok(!excerpt.includes("routine startup line 1 "), "the oldest lines give way");
 });
