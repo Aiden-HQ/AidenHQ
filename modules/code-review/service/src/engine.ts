@@ -1756,7 +1756,7 @@ export function createEngine(d: EngineDeps) {
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   /**
    * A repo's snapshot listing, read once and kept for two minutes under its commit. A default-branch read is shared only while it is
-   * in flight: once it finishes it is kept under the commit it resolved, and a new ask for the head reads afresh. A cold read of a
+   * in flight and its commit is not yet resolved: once it finishes it is kept under the commit it resolved, and a new ask for the head reads afresh. A cold read of a
    * big repo can outlast the board's deadline: the request then names the commit (known as soon as the code host answers) so the
    * board asks again for that commit, which finds the same read; before the commit is known, asking again joins the read.
    */
@@ -1766,7 +1766,9 @@ export function createEngine(d: EngineDeps) {
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
-    if (!usable(e)) {
+    // A head read whose commit is already resolved was started for an earlier ask, and the branch may have moved since: only one
+    // not yet resolved is joined.
+    if (!usable(e) || (ref === "HEAD" && e.sha)) {
       // `at` is when the read settled: one still under way never expires.
       const entry: TreeRead = { p: undefined as never, at: Infinity };
       entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD" && !usable(treeReads.get(`${repo}@${entry.sha}`))) treeReads.set(`${repo}@${entry.sha}`, entry); });
