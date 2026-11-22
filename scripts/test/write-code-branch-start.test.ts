@@ -30,9 +30,10 @@ function branchStartBullet() {
 test("the branch start refreshes the code host and begins from the task's remote head", () => {
   const rule = branchStartBullet();
   assert.match(rule, /Before your first commit[^.]*refresh the code host's branches with `aidenhq clone <org\/repo>`/, "the refresh comes before the first commit");
-  assert.match(rule, /When the refresh names `origin\/<branch>`, start from its remote head/, "the refresh output is the source for the branch");
   assert.match(rule, /`git switch --create <branch> --track origin\/<branch>`/, "a new local branch starts at the remote tip");
-  assert.match(rule, /The refresh keeps a\s+deleted branch's old ref, so treat `origin\/<branch>` as absent unless its `origin\/<branch> is at …` line is in the\s+refresh's output, and then start a new branch/, "a deleted branch's stale ref is absent");
+  assert.match(rule, /A first clone prints\s+`cloned into` and holds exactly the code host's branches/, "a first clone has the code host's branches");
+  assert.match(rule, /a refresh of an existing clone prints an\s+`origin\/<branch> is at …` line for each branch and keeps a deleted branch's old ref, so after a refresh treat\s+`origin\/<branch>` as present only when its line is in the output/, "a deleted branch's stale ref is absent after a refresh");
+  assert.match(rule, /When it is absent, start a new branch unless a\s+local branch of that name already exists, in which case use it as it is/, "an absent remote branch starts fresh or keeps the local branch");
 });
 
 test("an existing local branch keeps its unpushed commits", () => {
