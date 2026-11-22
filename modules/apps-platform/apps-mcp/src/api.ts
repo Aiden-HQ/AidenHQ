@@ -133,7 +133,8 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
     throw new Error(hide(`${app.name} API call failed: ${String((e as Error).message ?? e)}`));
   }
   audit(res.status);
-  const responseHeaders: ResponseHeaders = {};
+  // A null prototype: a header named `constructor` or `__proto__` is data, never an inherited property.
+  const responseHeaders: ResponseHeaders = Object.create(null);
   for (const [k, v] of Object.entries(res.headers ?? {})) {
     const key = k.toLowerCase();
     if (SESSION_HEADERS.has(key)) continue;
@@ -149,4 +150,4 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
 }
 
 /** The one-shot request inside the app's network: reads the request JSON on stdin (never argv), prints only {status, headers, body}. */
-export const SEND_SCRIPT = `let s="";process.stdin.on("data",c=>s+=c).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(r.url,{method:r.method,headers:r.headers,body:r.body,redirect:"manual",signal:AbortSignal.timeout(r.timeout||${TIMEOUT_MS})});const t=await res.text();process.stdout.write(JSON.stringify({status:res.status,headers:(()=>{const h={};for(const [k,v] of res.headers){(h[k]??=[]).push(v)}return h})(),body:t.slice(0,${BODY_CAP * 2})}))}catch(e){process.stdout.write(JSON.stringify({status:0,headers:{},body:String(e&&e.message||e)}))}})`;
+export const SEND_SCRIPT = `let s="";process.stdin.on("data",c=>s+=c).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(r.url,{method:r.method,headers:r.headers,body:r.body,redirect:"manual",signal:AbortSignal.timeout(r.timeout||${TIMEOUT_MS})});const t=await res.text();process.stdout.write(JSON.stringify({status:res.status,headers:(()=>{const h=Object.create(null);for(const [k,v] of res.headers){(h[k]??=[]).push(String(v).slice(0,8192))}return h})(),body:t.slice(0,${BODY_CAP * 2})}))}catch(e){process.stdout.write(JSON.stringify({status:0,headers:{},body:String(e&&e.message||e)}))}})`;

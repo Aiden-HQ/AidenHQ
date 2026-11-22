@@ -215,6 +215,16 @@ describe("callApi", () => {
     expect(r).toEqual({ status: 429, headers: { "retry-after": "37", "x-multi": ["a", "b"], "content-type": "text/plain" }, body: "slow down" });
     expect(JSON.stringify(r)).not.toContain("sid=live");
   });
+  it("treats a header named like an inherited property as data, not a crash", async () => {
+    // JSON.parse makes `__proto__` an own key (an object literal would set the prototype instead).
+    const headers = JSON.parse('{"constructor":"x","__proto__":"y","x-real":"z"}') as ResponseHeaders;
+    const { d } = await setup(() => ({ status: 201, headers, body: "ok" }));
+    const r = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/intake/feedback", role: "member" }, d);
+    // Not status 0 (which is what a throwing accumulator would have produced): the app's real answer.
+    expect(r.status).toBe(201);
+    expect(Object.keys(r.headers).sort()).toEqual(["__proto__", "constructor", "x-real"]);
+    expect(r.headers["constructor"]).toBe("x");
+  });
   it("rejects a role other than admin or member instead of signing one", async () => {
     const { d } = await setup(() => ({ status: 200, headers: {}, body: "{}" }));
     await expect(callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap", role: "owner" as never }, d)).rejects.toThrow(/role must be admin or member/);

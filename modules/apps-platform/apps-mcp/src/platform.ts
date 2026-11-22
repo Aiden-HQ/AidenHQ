@@ -16,7 +16,7 @@ import { pickService, scriptCommand } from "./run.js";
 import { posix } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { EDGE_CONTAINER, edgeTarget, exposes, tailnetNode, writeServeConfig, type EdgeTarget } from "./tailnet.js";
-import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "./identity.js";
+import { agentSigner, forgedIdentity, IDENTITY_HEADER, memberScope } from "./identity.js";
 import { readonlyPool, type WarehouseDeps } from "./sources.js";
 import { parseChecks, probeFailure, PROBE, withoutSamples, type Quality } from "./quality.js";
 import { previewApp } from "./previews.js";
@@ -393,7 +393,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const browser = p.render.length ? await haveImage() : false;
     if (p.render.length && !browser) out.push(...p.render.map((x) => probeResult("render", x.path, [{ hard: false, what: `not checked: ${NO_IMAGE}` }])));
     if (p.render.length && browser) {
-      const secret = sign(app.name, "deploy-check", { role: "member", methods: ["GET", "HEAD"] });
+      const secret = sign(app.name, "deploy-check", memberScope());
       const headers = { [IDENTITY_HEADER]: secret };
       let facts: { pages: PageFacts[]; error?: string } = { pages: [] };
       try {
