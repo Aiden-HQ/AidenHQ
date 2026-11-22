@@ -482,6 +482,29 @@ test("a second review request that is refused every time does not hold the merge
   await settle();
 });
 
+test("a delivered second ask never confirms a first marker an older version recorded unconfirmed", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-review-both-"));
+  // The queue as the older version left it after a *second* ask was delivered: one `reviewMarked: 2` flag covered both markers,
+  // though only the second was confirmed. The first is still unconfirmed and must be asked again, not trusted because of it.
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000e6": {
+    id: "k-00000000000000e6", state: "running", said: [], startedAt: new Date().toISOString(),
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending", reviewAsked: HEAD, reviewAskedAgain: HEAD, reviewMarked: 2 }],
+  } } }));
+  const asked = [];
+  const checks = (method, url, b) => {
+    if (method !== "POST" || url !== "/v1/tasks") return undefined;
+    asked.push(b.source);
+    return { __status: 409, already: true };
+  };
+  const { handle, merge, settle } = await setup(t, { prs, cacheDir, checks });
+  await merge("k-00000000000000e6", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(asked, [`design-review:acme-agents/widget/1@${HEAD}`], "the first marker is confirmed against the module, not trusted because the second ask was");
+  await settle();
+});
+
 test("a review marker written before delivery was confirmed is reconciled by asking once more", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
   const cacheDir = mkdtempSync(join(tmpdir(), "codehost-legacy-review-"));
