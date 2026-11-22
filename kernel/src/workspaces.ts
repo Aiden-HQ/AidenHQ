@@ -8,7 +8,7 @@
 //                                        removed, only these per-task homes, which the next job's engineState makes again;
 //   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check.
 // A folder goes when nothing live uses it (no admitted or running job, no box released less than a day ago; no running check
-// of that attempt) and either its task has been done or cancelled for CLOSED_DAYS with no job started since, or it has been
+// of that attempt) and either its task has been done or cancelled for CLOSED_DAYS with no job started since (and the control plane confirms it), or it has been
 // idle (its last job's end, or the folder's mtime when no job names it) for IDLE_DAYS whatever the task's state: an idle task
 // that resumes clones again, and its next job starts a fresh session. When a disk is over PRESSURE used, the limits drop (a
 // day idle, closed at all). What was published is in its repository; what wasn't goes with the folder. Docker's growth is
@@ -34,8 +34,10 @@ const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^
 /** The fraction of each filesystem used (as `df` and the DiskSpaceLow rule count it), the fullest one. */
 export const diskUsed = (paths: string[]) => Math.max(...paths.map((p) => { try { const s = statfsSync(p); return 1 - s.bavail / s.blocks; } catch { return 0; } }));
 
-export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}, now = Date.now, used = () => diskUsed([workDir, stateDir, "/"]), stopping = () => false }: {
+export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, log = () => {}, now = Date.now, used = () => diskUsed([workDir, stateDir, "/"]), stopping = () => false }: {
   db: DatabaseSync; workDir: string; stateDir: string;
+  /** The control plane's word that a task is done or cancelled now (the closed rule's last check; false when unsure). */
+  stillClosed: (task: string) => Promise<boolean>;
   /** The kernel is draining (main.ts): its pass stops, so only the next kernel's sweep runs beside its admissions. */
   stopping?: () => boolean;
   /** The engine kinds that keep a home per task (config/engines.json `state: task`). */
@@ -91,17 +93,28 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
         if (name.startsWith(".")) continue;
         const dir = join(root, name);
         // Synchronous from the check to the rename: no job is admitted in between.
-        let st;
-        try { st = lstatSync(dir); } catch { continue; }
-        if (!st.isDirectory()) continue;
-        const u = use(name);
-        if (busy(name, u)) continue;
-        const last = Math.max(u?.last ?? 0, st.mtimeMs);
-        const closed = (u?.pairs ?? []).map(({ task }) => closedAt(task));
-        // Closed: every task of it closed for the grace, and no job started since (the job that closed it may end after the
-        // close; work after a reopen is only ever the idle rule's).
-        const why = now() - last > idleMs ? "idle" : u && closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs && c >= u.started) ? "closed" : undefined;
-        if (!why) continue;
+        const decide = () => {
+          let st;
+          try { st = lstatSync(dir); } catch { return undefined; }
+          if (!st.isDirectory()) return undefined;
+          const u = use(name);
+          if (busy(name, u)) return undefined;
+          const last = Math.max(u?.last ?? 0, st.mtimeMs);
+          const closed = (u?.pairs ?? []).map(({ task }) => closedAt(task));
+          // Closed: every task of it closed for the grace, and no job started since (the job that closed it may end after the
+          // close; work after a reopen is only ever the idle rule's).
+          const why = now() - last > idleMs ? "idle" : u && closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs && c >= u.started) ? "closed" : undefined;
+          return why && { why, u };
+        };
+        let d = decide();
+        if (d?.why === "closed") {
+          // The facts log can lag a reopen: the control plane confirms every task is still closed, then the step runs again.
+          const tasks = [...new Set(d.u!.pairs.map((p) => p.task))];
+          if (!(await Promise.all(tasks.map((t) => stillClosed(t).catch(() => false)))).every(Boolean)) continue;
+          d = decide();
+        }
+        if (!d) continue;
+        const { why, u } = d;
         // One folder that can't be moved (its parent's mode, a race) is logged and skipped; the rest of the pass goes on.
         try {
           mkdirSync(trash, { recursive: true });
