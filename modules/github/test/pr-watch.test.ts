@@ -256,6 +256,13 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await mixedRetry.watch.tick(); await mixedRetry.watch.tick();
   assert.equal(mixedRetry.gh.filter((g) => g === "PUT /repos/acme/app/pulls/16/update-branch rebase").length, 1, "a 5xx on the fallback keeps it retryable");
   assert.equal(mixedRetry.woke.length, 0, "no wake while it retries");
+  // And the reverse: a 5xx on the rebase followed by a permanent refusal on the merge fallback stays retryable. The 5xx says
+  // nothing about whether asking again works, so a conflict on the fallback alone cannot make the attempt final.
+  const mixedReverse = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 502, body: {} }, merge: { status: 422, body: { message: "merge conflict between base and head" } } } });
+  mixedReverse.set([mixedReverse.agentPr(17, redPr(17))]);
+  await mixedReverse.watch.tick(); await mixedReverse.watch.tick();
+  assert.equal(mixedReverse.gh.filter((g) => g === "PUT /repos/acme/app/pulls/17/update-branch rebase").length, 1, "asked once, then backed off");
+  assert.equal(mixedReverse.woke.length, 0, "a 5xx on the rebase is retryable: no wake and no final cache");
   // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
   const conflict = await rig(t, { behind: 2, update: 422 });
   conflict.set([conflict.agentPr(13, redPr(13))]);

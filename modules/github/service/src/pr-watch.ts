@@ -260,6 +260,12 @@ export function startPrWatch(o: PrWatchOptions) {
         if (r.status === 403) return !/rate limit|abuse/i.test(message);
         return r.status === 404 || (r.status === 422 && /conflict/i.test(message));
       };
+      // An answer is GitHub's word about this branch: a 422, or a 403/404 (a 403 worded as a rate limit is a "try later", not an
+      // answer). A 5xx, a timeout or a rate limit is no answer at all, and it leaves the branch's state unknown however the other
+      // method answered: a 5xx on the rebase is never made final by a conflict on the merge fallback, and the next tick asks again.
+      const answered = (r: { status: number; body?: any }) =>
+        r.status === 422 || r.status === 404 || (r.status === 403 && !/rate limit|abuse/i.test(String(r.body?.message ?? "")));
+      let unanswered = false;
       let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
         const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
@@ -270,11 +276,12 @@ export function startPrWatch(o: PrWatchOptions) {
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
+        if (!answered(r)) unanswered = true;
         last = r;
       }
-      // Neither method could: the merge fallback's own answer decides. A conflict (or no permission) on it is terminal; a 5xx,
-      // a rate-limited 403 or any other 422 ends on a retry, so the next tick asks again.
-      if (!last || !permanent(last)) return retryLater(key);
+      // No answer on some method: retry after the backoff, never final for that head. Otherwise the merge fallback's own answer
+      // decides: a conflict (or no permission) on it is terminal, any other 422 ends on a retry.
+      if (unanswered || !last || !permanent(last)) return retryLater(key);
       state.updated[key] = "final";
       save();
       return false;
