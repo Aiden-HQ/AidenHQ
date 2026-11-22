@@ -760,7 +760,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       try {
         for (poke(); ; ) {
           const read = rd.read();
-          const got = await Promise.race([read, late]);
+          // A cut (or the idle cut) while looking is passed through like a late first output: the stream loop settles it.
+          const got = await Promise.race([read, late]).catch(() => "late" as const);
           if (got === "late") return { chunks, text, pending: read };
           if (got.done) {
             const d = dataOf(buf); // a last event without its blank line
