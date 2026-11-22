@@ -270,6 +270,9 @@ function writtenFiles(segment: string, body?: string): Written[] {
   const stdinOf = (text: string) => [...text.matchAll(/(?<![0-9<])(?:0<|<)(?![<&])\s*([^\s<>&|;]+)/g)].map((n) => n[1]!).at(-1);
   // The command whose stdout reaches this element: the last of a `&&` chain (`a && b | tee f` pipes b's stdout, and
   // `echo x > log && cat | tee f` reads from `cat`, not the earlier command's redirect).
+  // A Dockerfile `RUN` keeps its verb in the text; strip it so the command itself is what gets classified. Dockerfile
+  // instructions are case-insensitive, so `run`, `Run` and `RUN` are the same.
+  const stripVerb = (t: string) => t.replace(/^\s*RUN\s+/i, "");
   const lastCommand = (part: string) => part.split(/&&|\|\|/).filter((x) => x.trim()).at(-1) ?? "";
   // What a command reads as its stdin: a here-document, its own fd-0 redirect, else the previous pipeline stage.
   const stdinContent = (piece: string, i: number): Pick<Written, "content" | "text"> => {
@@ -303,7 +306,7 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // command reads — a `cat` or `tee` passes its input through, and anything else writes its own `deb` line.
   const flow = (i: number): Pick<Written, "content" | "text"> => {
     if (i < 0 || parts[i]!.op !== "|") return { content: "empty" };
-    const piece = lastCommand(parts[i]!.text).replace(/^\s*(?:RUN|run)\s+/, "");
+    const piece = stripVerb(lastCommand(parts[i]!.text));
     // Its own stdout redirect sends the bytes elsewhere, whatever it reads: `tee /tmp/log >/dev/null | tee f` feeds f
     // nothing. Only fd 1 (a bare `>` or `1>`) takes it, though: `echo … 3> /tmp/log | tee f` still feeds f.
     if (!stdoutFeedsPipe(piece, unmask)) return { content: "empty" };
@@ -334,10 +337,8 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const [cStart, cEnd] = commandSpan(part, m.index!);
     const finalTarget = stdoutTarget(code.slice(cStart, cEnd), unmask);
     const takes = finalTarget !== "pipe" && cStart + finalTarget === m.index!;
-    // A Dockerfile `RUN` keeps its verb in the text: strip it so the command itself is what is classified.
-    const verb = (t: string) => t.replace(/^\s*(?:RUN|run)\s+/, "");
-    const cmdText = verb(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0))));
-    const whole = verb(lastCommand(code.slice(cStart, cEnd)));
+    const cmdText = stripVerb(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0))));
+    const whole = stripVerb(lastCommand(code.slice(cStart, cEnd)));
     // What the command writes: a `cat`/`tee` passes its input through, and anything else writes its own `deb` line — its
     // own text, so another command on the same line logging a different repository is not credited to this file.
     const own = writtenKind(expand(cmdText));

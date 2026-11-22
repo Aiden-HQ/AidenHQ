@@ -850,6 +850,9 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
   // A `cat` option is not a file operand: `-n /dev/null` still writes nothing, while an unreadable file is still unknown.
   for (const operands of ["-n /dev/null", "-A /dev/null", "--number /dev/null"])
     assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat ${operands} > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, [], operands);
+  // Dockerfile instructions are case-insensitive, so `run`/`Run` classify the same as `RUN` and `cat` is still a `cat`.
+  for (const verb of ["run", "Run", "rUn"])
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${verb} cat -n /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, [], verb);
   // `-` names stdin even when its own `<` redirect makes that empty.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat - < /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
   // Two commands are not one: bash opens each pipeline stage's redirects just before that stage runs, left to right, so
