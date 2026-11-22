@@ -195,14 +195,32 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
             // hand-back that lands between this read and the kernel's write is refused there, not overwritten. The kernel
             // re-reads the status as late as it can, immediately before its own PATCH.
             await pc.setStatus(task, "done", why, { expectStatus: s.status });
-            // The kernel's ok releases only its own hold: another check can still keep the task in review, and the parent must
-            // not hear "done" until the task is. The step stays queued otherwise, and the next pass asks again.
+            // The kernel's ok resolved this check's hold in the same step, so the close is never replayed: a task another
+            // check still holds is waited out by the notice below, which reads the task before it speaks. Asking the kernel to
+            // close it again would be refused (this hold is gone) and the step could never land.
             const after = await pc.issue(task).then((i: Json) => i.status, () => "");
-            if (after !== "done") return;
+            if (after !== "done") {
+              // The close is resolved; only the notice is still owed, and it waits for the task to be done.
+              steps.shift();
+              state.set(`owed:${task}`, steps.length ? JSON.stringify(steps) : "");
+              return;
+            }
           }
         }
         else if (s.do === "block") await pc.block(task, s.note);
-        else if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
+        else if (s.do === "tell") {
+          // The parent hears "done" only when the task is: another check can still hold it after the grading hold was
+          // resolved. The notice waits, queued, and never replays the close. A task the owner stopped after the close is
+          // resolved is not told as done at all.
+          const now = await pc.issue(task).then((i: Json) => i.status, () => "");
+          if (now === "cancelled") {
+            steps.length = 0;
+            state.set(`owed:${task}`, "");
+            return;
+          }
+          if (now !== "done") return;
+          if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
+        }
       } catch (err: Json) {
         const status = Number(err?.status);
         if (!(status >= 400 && status < 500 && status !== 429)) {
@@ -225,7 +243,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // it up. A refused close that is simply waiting on the gate keeps its queue entry either way.
           if (status === 409) {
             try {
-              await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(verified ? { rubric: verified } : {}) });
+              // The reset names the round this close was decided on: a re-submission that landed since is a different round,
+              // and its own `pending` row must stand for its own grading pass rather than be parked as this close's wait.
+              // A legacy close names no round and is applied as it was (its filing was verified against this row just now).
+              await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(verified ? { rubric: verified } : {}), ...(typeof s.round === "number" ? { round: s.round } : {}) });
             } catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
           }
           steps.length = 1;

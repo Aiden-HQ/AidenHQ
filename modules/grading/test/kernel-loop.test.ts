@@ -577,13 +577,43 @@ test("a graded close refused because the owner handed the task back is requeued,
   assert.deepEqual(grades.due().map((x) => x.issueId), ["t18"], "the next pass grades the handed-back work again");
 });
 
-test("the parent is told the task is done only once it actually is", async () => {
-  // The kernel's ok releases only the grading check's hold: another finish check can still hold the task in review. The parent
-  // must not hear "done" on a task that is still in review, and the notice stays queued until the task really is done.
+test("a refused close's reset never parks a newer submission's row", async () => {
+  // The close is refused (409) after the assignee submitted again: the row is `pending` on a new round. The reset that requeues
+  // a refused close names the round it was decided on, so the store drops it and the new submission's own pass keeps its row.
+  const issue = { id: "t20", identifier: "WOR-20", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t20", filed, deliverable);
+  const g = grades.record("t20", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  // The close is refused, and by then the assignee has submitted again: a new round, still pending.
+  const busy = async (m, p, b) => {
+    if (m === "POST" && p === "/v1/checks/t20" && b?.verdict === "ok") {
+      completionGate(grades, "t20", "finish_turn");
+      throw Object.assign(new Error("WOR-20 is todo, not in_review"), { status: 409 });
+    }
+    return kernel(m, p, b);
+  };
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel: busy, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t20', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
+  await loop.runGrades();
+  assert.equal(grades.get("t20").state, "pending", "the new submission's own row stands, not this close's wait");
+  assert.equal(grades.get("t20").round, g.round + 1, "and its round is the submission's");
+  assert.deepEqual(grades.due().map((x) => x.issueId), ["t20"], "its own pass grades it");
+});
+
+test("the parent is told the task is done only once it actually is, and the close is never replayed", async () => {
+  // The kernel's ok resolves the grading check's hold in the same step, so a task another check still holds cannot be closed
+  // again: replaying the close would be refused (the hold is gone) and could never land. The close resolves once; the parent's
+  // notice waits, queued, until the task is actually done.
   const issue = { id: "t19", identifier: "WOR-19", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
   const calls = { resolve: [], wake: [] };
   const { kernel } = heldKernel(issue, calls);
-  // The resolve answers ok but another check still holds the task: it stays in review.
+  // The resolve answers ok, releases the grading hold, but another check keeps the task in review.
   const held = async (m, p, b) => {
     if (m === "POST" && p === "/v1/checks/t19" && b?.verdict === "ok") return calls.resolve.push(b.verdict), {};
     return kernel(m, p, b);
@@ -598,12 +628,16 @@ test("the parent is told the task is done only once it actually is", async () =>
   const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
   db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t19', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }, { do: "tell", issue: { id: "t19", parentId: "p1" }, kind: "done", who: "WOR-19 (Dana)", title: "report", identifier: "WOR-19" }]));
   await loop.runGrades();
-  assert.deepEqual(calls.resolve, ["ok"], "the close was accepted");
+  assert.deepEqual(calls.resolve, ["ok"], "the close was accepted once");
   assert.deepEqual(calls.wake, [], "the parent is not told while another check still holds the task");
+  // Only the notice is left owed: the close is resolved and must not be sent again (the kernel would refuse it).
   const left = JSON.parse(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t19'").get()?.v ?? "[]");
-  assert.deepEqual(left.map((x) => x.do), ["done", "tell"], "the close and its notice stay queued for the next pass");
+  assert.deepEqual(left.map((x) => x.do), ["tell"], "the close is not replayed; only the notice waits");
+  const n = calls.resolve.length;
+  await loop.runGrades();
+  assert.equal(calls.resolve.length, n, "a replay never re-sends the resolved close");
 
-  // The other check releases: the task is done, and the same queued close now lands and tells the parent.
+  // The other check releases: the task is done, and the queued notice now goes out.
   issue.status = "done";
   await loop.runGrades();
   assert.deepEqual(calls.wake.map((w) => w.task), ["p1"], "the parent hears it once the task is done");
