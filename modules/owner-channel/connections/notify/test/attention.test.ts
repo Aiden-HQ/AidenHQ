@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { dropQueuedNeeds, flushDigest, flushNeeds, queueDigest } from "../src/attention.js";
+import { dropQueuedNeeds, flushDigest, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
@@ -106,24 +106,6 @@ it("a digest that fails partway does not resend the connection lines already del
   expect(all.split("Google isn't connected").length - 1).toBe(1);
 });
 
-it("with no digest hours the broken connections go once a day, an unchanged set not again (8c62942d)", async () => {
-  const store = openStore(":memory:");
-  const cfg = { digestHours: [] as number[] };
-  const day1 = Date.UTC(2026, 10, 17, 9), day2 = Date.UTC(2026, 10, 18, 9), day3 = Date.UTC(2026, 10, 19, 9);
-  const sent: string[] = [];
-  const send = async (t: string) => (sent.push(t), true);
-  expect(await flushNeeds(store, cfg, send, day1, async () => ["GitHub isn't connected"])).toBe(true);
-  expect(await flushNeeds(store, cfg, send, day1 + 3600_000, async () => ["GitHub isn't connected", "Google isn't connected"])).toBe(false);
-  expect(await flushNeeds(store, cfg, send, day2, async () => ["GitHub isn't connected"])).toBe(false);
-  expect(await flushNeeds(store, cfg, send, day3, async () => ["GitHub isn't connected", "Google isn't connected"])).toBe(true);
-  expect(sent).toHaveLength(2);
-  // A recovery the same day is observed, so the failure returning later is sent again.
-  const day4 = Date.UTC(2026, 10, 20, 9);
-  expect(await flushNeeds(store, cfg, send, day4, async () => [])).toBe(false);
-  expect(await flushNeeds(store, cfg, send, day4 + 86400_000, async () => ["GitHub isn't connected", "Google isn't connected"])).toBe(true);
-  expect(await flushNeeds(store, { digestHours: [9] }, send, day3 + 86400_000, async () => ["x"])).toBe(false);
-});
-
 it("queued connection lines from before the digest pulled them are dropped at startup (1099443c)", () => {
   const store = openStore(":memory:");
   queueDigest(store, { agent: "AidenHQ", text: "GitHub isn't connected (not connected): http://board/connect/github", source: "kernel" });
@@ -131,24 +113,6 @@ it("queued connection lines from before the digest pulled them are dropped at st
   queueDigest(store, { agent: "Worker", text: "other" });
   dropQueuedNeeds(store);
   expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other"]);
-});
-
-it("the daily connections message is split under the transport limit; a failed chunk resends the whole list (88df70a2)", async () => {
-  const store = openStore(":memory:");
-  const cfg = { digestHours: [] as number[] };
-  const lines = Array.from({ length: 24 }, (_, n) => `Google (user${n}@x.com) isn't connected ${"x".repeat(250)}`);
-  const sent: string[] = [];
-  let calls = 0;
-  const day = Date.UTC(2026, 10, 17, 9);
-  expect(await flushNeeds(store, cfg, async (t) => (++calls === 3 ? false : (sent.push(t), true)), day, async () => lines)).toBe(false);
-  expect(sent.length).toBe(2);
-  sent.length = 0;
-  expect(await flushNeeds(store, cfg, async (t) => (sent.push(t), true), day + 60_000, async () => lines)).toBe(true);
-  expect(sent.length).toBeGreaterThan(2);
-  expect(sent.every((t) => t.length <= 3500)).toBe(true);
-  const all = sent.join("\n");
-  for (const l of lines) expect(all.split(l).length - 1).toBe(1);
-  expect(await flushNeeds(store, cfg, async () => true, day + 86400_000, async () => [...lines].reverse())).toBe(false);
 });
 
 it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", async () => {
@@ -159,15 +123,4 @@ it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", 
   let out = "";
   await flushDigest(store, cfg, async (t) => ((out = t), true), Date.UTC(2026, 10, 17, 9), async () => [`GitHub isn't connected (acme needs SSO authorization): ${link}`]);
   expect(out).toContain(link);
-});
-
-it("the connections message is not marked delivered while no channel is set up, and delivered lines are in the ledger", async () => {
-  const store = openStore(":memory:");
-  const cfg = { digestHours: [] as number[] };
-  const day = Date.UTC(2026, 10, 17, 9);
-  const lines = ["GitHub isn't connected: http://board/connect/github"];
-  expect(await flushNeeds(store, cfg, async () => "off", day, async () => lines)).toBe(false);
-  expect(store.recentTold(3, 50, day)).toHaveLength(0);
-  expect(await flushNeeds(store, cfg, async () => true, day + 60_000, async () => lines)).toBe(true);
-  expect(store.recentTold(3, 50, day + 60_000).map((r) => r.text)).toEqual(lines);
 });

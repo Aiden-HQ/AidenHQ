@@ -60,17 +60,6 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 const DIGEST_MAX = 3000;
 /** A connection line carries its reconnect link whole: clipping would cut off the URL the owner needs. */
 const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.id?.startsWith("need:") ? i.text : clip(i.text, 300)}`;
-/** Consecutive pieces of `items`, each rendering under DIGEST_MAX. */
-function chunks<T>(items: T[], render: (t: T) => string): T[][] {
-  const out: T[][] = [];
-  for (const i of items) {
-    const b = out.at(-1);
-    if (b && [...b, i].map(render).join("\n").length <= DIGEST_MAX) b.push(i);
-    else out.push([i]);
-  }
-  return out;
-}
-
 /**
  * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
  * message's items leave the queue (and are told) only once it went; a failed send keeps the rest for the next tick.
@@ -87,7 +76,12 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   const done = JSON.parse(store.getKv("digest:needs-sent") || "{}") as { slot?: string; ids?: string[] };
   const delivered = new Set(done.slot === slot ? done.ids : []);
   const items = [...q, ...(asked ?? (q.length ? ["couldn't check connections"] : [])).map(extra).filter((i) => !delivered.has(i.id!))];
-  const batches = chunks(items, line);
+  const batches: Item[][] = [];
+  for (const i of items) {
+    const b = batches.at(-1);
+    if (b && [...b, i].map(line).join("\n").length <= DIGEST_MAX) b.push(i);
+    else batches.push([i]);
+  }
   for (const [n, b] of batches.entries()) {
     const head = `Digest${batches.length > 1 ? ` (${n + 1}/${batches.length})` : ""}: ${b.length} update${b.length > 1 ? "s" : ""}`;
     const out = await send(`${head}\n\n${b.map(line).join("\n")}`);
@@ -101,33 +95,6 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   }
   store.setKv("digest:slot", slot);
   return items.length > 0;
-}
-
-/**
- * With no digest hours there is no digest to list the broken connections in: once a day, one message carries them, and an unchanged
- * set is not sent again (a set that clears starts over).
- */
-export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "digestHours">, send: (text: string) => Promise<boolean | "off">, now = Date.now(), needs?: () => Promise<string[]>): Promise<boolean> {
-  if (cfg.digestHours.length || !needs) return false;
-  const day = new Date(now).toISOString().slice(0, 10);
-  const lines = await needs().then((l) => l, () => undefined);
-  if (!lines) return false;
-  const sig = [...lines].sort().join("\n");
-  if (!sig) {
-    store.setKv("needs:sig", ""); // a recovery is always observed, so the same failure returning tomorrow is new
-    return false;
-  }
-  if (store.getKv("needs:day") === day) return false;
-  if (store.getKv("needs:sig") === sig) return false;
-  // Sent in chunks under the transport limit. The signature is recorded only once every chunk went, so a failed chunk resends the whole list.
-  for (const b of chunks(lines, (l) => `- ${l}`)) {
-    const out = await send(`Connections that need you:\n\n${b.map((l) => `- ${l}`).join("\n")}`);
-    if (out !== true) return false; // down, or no channel set up yet: not delivered, so nothing is marked
-    for (const l of b) store.told({ source: "kernel", kind: "fyi", text: clip(l, 300) }, now);
-  }
-  store.setKv("needs:sig", sig);
-  store.setKv("needs:day", day);
-  return true;
 }
 
 /** Digest lines the kernel's connection state used to queue (before the digest pulled them): dropped, so none repeats or goes stale. */

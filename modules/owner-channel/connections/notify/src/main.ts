@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { dropQueuedNeeds, flushDigest, flushNeeds } from "./attention.js";
+import { dropQueuedNeeds, flushDigest } from "./attention.js";
 import { kernelClient } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { KINDS, notify, retry, sendDigest, type Deps, type Kind } from "./notify.js";
@@ -145,7 +145,6 @@ setInterval(() => {
   if (flushing) return;
   flushing = true;
   void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds())
-    .then(() => flushNeeds(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()))
     .catch(() => undefined)
     .finally(() => { flushing = false; });
 }, 5 * 60_000).unref();
