@@ -240,6 +240,22 @@ test("a verdict computed on a rubric since amended is dropped, leaving the row o
   assert.equal(fresh.state, "satisfied");
 });
 
+test("the verdict route carries the round the pass read, and refuses a round that is not a round", async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
+  const filing = rubricHash(RUBRIC, PR, 0);
+  const round = h.grades.get("t1").round;
+  // The loop sends the round it read: the route must accept it (it is a field of the verdict, not an unknown key), and the row
+  // records the verdict it names.
+  const ok = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: filing, round });
+  assert.equal(ok.state, "satisfied");
+  // A malformed round is refused, never silently ignored: a close would otherwise be bound to no round at all.
+  await assert.rejects(
+    () => h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: filing, round: "2" }),
+    /round: a non-negative integer/,
+  );
+});
+
 test("a verdict computed on a deliverable since re-bound is dropped, even when the rubric did not change", async (t) => {
   const h = await harness(t);
   assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);

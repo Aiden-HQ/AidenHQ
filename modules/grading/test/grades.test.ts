@@ -34,6 +34,38 @@ describe("graded done", () => {
 
 });
 
+describe("a verdict is bound to the round it read", () => {
+  const rubric = ["merged into main", "checks green", "tests cover it"], deliverable = { kind: "pr", ref: "" };
+  const filing = rubricHash(rubric, deliverable, 0);
+  it("a verdict on a round the row has moved past is dropped, whatever its outcome", () => {
+    const { grades } = new Store();
+    grades.file("t", rubric, deliverable, "agent:cos");
+    const read = grades.get("t").round;
+    // The row moves on while the pass runs: a re-file, an amendment or another submission bumps the round.
+    grades.pend("t");
+    const moved = grades.get("t").round;
+    assert.notEqual(moved, read);
+    for (const outcome of ["satisfied", "needs_revision", "awaiting_evidence", "cannot_judge", "grading_failed", "error"]) {
+      const after = grades.record("t", { version: "v1", outcome, model: "m", criteria: [{ id: "1", met: "no", evidence: "x" }], rubric: filing, round: read });
+      // The dropped verdict leaves the row exactly as it was: still waiting on the new round, no attempt spent.
+      assert.equal(after.state, "pending", outcome);
+      assert.equal(after.round, moved, outcome);
+      assert.equal(after.attempts, 0, outcome);
+      assert.equal(after.verdicts.length, 0, outcome);
+    }
+    // The pass that read the current round applies as usual.
+    const applied = grades.record("t", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "x" }], rubric: filing, round: moved });
+    assert.equal(applied.state, "needs_revision");
+  });
+
+  it("a verdict naming no round still applies (an older runner's call)", () => {
+    const { grades } = new Store();
+    grades.file("t", rubric, deliverable, "agent:cos");
+    const g = grades.record("t", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: filing });
+    assert.equal(g.state, "satisfied");
+  });
+});
+
 describe("prRefAllowed", () => {
   it("the product repo and the agents org are allowed; another org's repo is refused", () => {
     const t = { agentsOrgs: ["acme-agents"], product: "acme/aidenhq", orgs: ["partner"], maintained: ["other/tool"] };

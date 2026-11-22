@@ -177,9 +177,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
               for (const x of steps) if (x.do === "tell") x.ungraded = unreadable;
               state.set(`owed:${task}`, JSON.stringify(steps));
             }
-            // The checks above take time (evidence, presence, children, cards): an amendment can land between the first look and
-            // the close. The filing is read once more, immediately before the close, so the task is not closed on a rubric that
-            // was replaced while this pass was deciding.
+            // The checks above take time (evidence, presence, children, cards): an amendment or a re-submission can land
+            // between the first look and the close. The filing and the round are read once more, immediately before the close,
+            // so the task is not closed on a filing that was replaced, or on a round the row has moved past, while this pass
+            // was deciding.
             const still = await stillFiled(task, s.filing, s);
             if (still.verdict === "unknown") return;
             if (still.verdict === "stale") {
@@ -188,23 +189,16 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
               state.set(`owed:${task}`, "");
               return;
             }
-            // The read above and the write are not one step: an amendment or a new submission can land between them. The store
-            // claims the exact round the close was decided on, and refuses it if the row moved on in that window.
-            if (!(await api.post(`/internal/grades/${encodeURIComponent(task)}/claim`, { round: s.round }))) {
-              log("a satisfied verdict is stale: the round moved on before the close", { issue: task });
-              steps.length = 0;
-              state.set(`owed:${task}`, "");
-              return;
-            }
-            // The task's status is expected to be the one the verdict was decided on: a cancel or a hand-back that lands
-            // between this read and the kernel's write is refused there, not overwritten.
-            try {
-              await pc.setStatus(task, "done", why, { expectStatus: s.status });
-            } catch (err) {
-              await api.post(`/internal/grades/${encodeURIComponent(task)}/release`, {}).catch(() => {});
-              throw err;
-            }
-            await api.post(`/internal/grades/${encodeURIComponent(task)}/closed`, {}).catch(() => {});
+            // That read and the write are still not one step: a re-submission landing after it is caught by the row it leaves
+            // `pending` (the next pass grades that submission instead of closing the one before it), and by the task's own
+            // status precondition below. The task's status is expected to be the one the verdict was decided on: a cancel or a
+            // hand-back that lands between this read and the kernel's write is refused there, not overwritten. The kernel
+            // re-reads the status as late as it can, immediately before its own PATCH.
+            await pc.setStatus(task, "done", why, { expectStatus: s.status });
+            // The kernel's ok releases only its own hold: another check can still keep the task in review, and the parent must
+            // not hear "done" until the task is. The step stays queued otherwise, and the next pass asks again.
+            const after = await pc.issue(task).then((i: Json) => i.status, () => "");
+            if (after !== "done") return;
           }
         }
         else if (s.do === "block") await pc.block(task, s.note);
@@ -226,10 +220,13 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         }
         // A refused close (the task is already done, or moved on): "is done" is told only when it is done.
         if (s.do === "done" && now !== "done") {
-          // An ungraded close the kernel refuses (its change request is still open): the row goes back to waiting, so the next pass tries again.
-          if (s.ungraded && status === 409) {
-            try { await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(verified ? { rubric: verified } : {}) }); }
-            catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
+          // A refusal that left the task open (its change request is still open, or the owner handed it back) must be graded
+          // again: the row goes back to waiting, or — for a graded close — its own round is requeued, so the next pass picks
+          // it up. A refused close that is simply waiting on the gate keeps its queue entry either way.
+          if (status === 409) {
+            try {
+              await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(verified ? { rubric: verified } : {}) });
+            } catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
           }
           steps.length = 1;
         }
@@ -363,7 +360,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     // The row's filing this pass graded, by hash: the store drops the verdict if its rubric was amended or its deliverable
     // re-bound while the pass ran. The row's own list (g.rubric) and deliverable, not the template the pass falls back to, are
     // what the store compares against.
-    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, round: g.round, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });

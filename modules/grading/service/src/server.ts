@@ -177,14 +177,6 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       const g = grades.get(decodeURIComponent(one[1]!));
       return g ? { state: g.state, filing: rubricHash(g.rubric, g.deliverable, g.revision), revision: g.revision, round: g.round, rubric: g.rubric, deliverable: g.deliverable } : { state: null };
     }
-    const claim = /^\/internal\/grades\/([^/]+)\/(claim|release|closed)$/.exec(path);
-    if (method === "POST" && claim) {
-      const id = decodeURIComponent(claim[1]!);
-      // The claim's own answer (true/false), so a caller's `if (await post(...))` reads the store's decision directly.
-      if (claim[2] === "claim") return grades.claimClose(id, (body as { round?: unknown })?.round);
-      if (claim[2] === "release") return grades.releaseClose(id), { released: true };
-      return grades.closed(id), { closed: true };
-    }
     const m = /^\/internal\/grades\/([^/]+)\/verdict$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");
     const issue = await kernel.issue(decodeURIComponent(m[1]!));

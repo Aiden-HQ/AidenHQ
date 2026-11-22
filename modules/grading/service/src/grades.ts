@@ -18,7 +18,7 @@ export { uncheckableAbsence };
  * the MAX_LOOPS-th rejected version, settle the row satisfied: the task closes done, ungraded, and its parent hears why. not_graded: the task was cancelled or otherwise closed before
  * the grader settled it, so there is nothing left to grade.
  */
-export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "closing" | "needs_revision" | "grading_failed" | "not_graded";
+export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
 export interface Deliverable {
   kind: "pr" | "app" | "apply" | "file" | "report" | "issue";
   ref: string;
@@ -32,6 +32,8 @@ export interface Verdict {
   criteria: { id: string; met: "yes" | "no" | "unknown"; evidence: string }[];
   /** The rubric this pass graded (rubricHash), so a verdict from a rubric since amended is never applied to the new one. */
   rubric?: string;
+  /** The round the pass began on (Grade.round): a row that moved on since is a different round, and this verdict is dropped. */
+  round?: number;
 }
 export interface Grade {
   issueId: string;
@@ -139,15 +141,17 @@ export function parseAmendment(b: unknown): { issue: string; rubric: string[] } 
  */
 export const rubricHash = (rubric: string[], deliverable?: Deliverable, revision?: number) => createHash("sha256").update(JSON.stringify([rubric, deliverable ?? null, revision ?? null])).digest("hex").slice(0, 16);
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
-export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string };
+export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string; round?: number };
 /** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
 export function parseVerdict(b: unknown): VerdictInput {
   if (!isMap(b)) return bad("send {version, outcome}");
-  only(b, ["version", "outcome", "model", "criteria", "reason", "rubric"], "");
+  only(b, ["version", "outcome", "model", "criteria", "reason", "rubric", "round"], "");
   const criteria = b.criteria === undefined ? [] : Array.isArray(b.criteria) && b.criteria.length <= 8 ? b.criteria : bad("criteria: at most 8");
   return {
     reason: typeof b.reason === "string" ? b.reason.slice(0, 300) : undefined,
     rubric: b.rubric === undefined ? undefined : str(b.rubric, 32, "rubric"),
+    // The round the pass began on: a non-negative integer, or none (a caller that never read the row has no round to name).
+    round: b.round === undefined ? undefined : Number.isInteger(b.round) && (b.round as number) >= 0 ? (b.round as number) : bad("round: a non-negative integer"),
     version: str(b.version, 200, "version"), outcome: oneOf(b.outcome, OUTCOMES, "outcome"), model: b.model === undefined ? "" : str(b.model, 100, "model"),
     criteria: criteria.map((c, i) => { const m = isMap(c) ? c : bad(`criteria.${i}`); only(m, ["id", "met", "evidence"], `criteria.${i}.`); return { id: str(m.id, 20, `criteria.${i}.id`), met: oneOf(m.met, ["yes", "no", "unknown"] as const, `criteria.${i}.met`), evidence: str(m.evidence, 1000, `criteria.${i}.evidence`) }; }),
   };
@@ -258,7 +262,6 @@ export class Grades {
           this.db.exec("COMMIT");
           return { created: false, grade: have };
         }
-        if (have.state === "closing") throw new Conflict("this task's grade is being closed right now: its rubric is not replaced, and the close stands or is retried on its own");
         if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
         // Between a task closing and the sweep settling its row, the row still reads open: the task's own status decides.
         if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
@@ -329,7 +332,6 @@ export class Grades {
         this.db.exec("COMMIT");
         return have;
       }
-      if (have.state === "closing") throw new Conflict("this task's grade is being closed right now: its rubric is not replaced, and the close stands or is retried on its own");
       if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
       if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
       // The row restarts exactly as a differing re-file does: open, no attempts, no verdicts. Work already submitted (the task
@@ -365,7 +367,6 @@ export class Grades {
    * needs_revision   settles: there is nothing left to revise.
    * grading_failed   settles: the retry ladder has no task to retry.
    * satisfied        never swept: a real verdict stands, and a settled row keeps its `satisfied` (the close did not undo it).
-   * closing          swept only to finish the close it claimed: the verdict stands as `satisfied` (never `not_graded`).
    * not_graded       never swept: already terminal, and the first reason is kept.
    *
    * So the sweep takes everything except the two settled states, which is what the query says. It reads each task's status
@@ -382,46 +383,11 @@ export class Grades {
    */
   settle(issueId: string, reason: string, now = Date.now()): Grade | undefined {
     const g = this.get(issueId);
-    // A `closing` row is a satisfied one whose close was in flight: the task is done, so the close landed and the verdict stands.
-    if (g?.state === "closing") {
-      this.closed(issueId);
-      return this.get(issueId);
-    }
     if (!g || g.state === "satisfied" || g.state === "not_graded") return g;
     // A row closed this way is no longer the restarted one the runner had to pick up: its resume ends with it.
     this.db.prepare("UPDATE grades SET state = 'not_graded', closed_reason = ?, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?").run(reason.slice(0, 300), new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId);
-  }
-
-  /**
-   * Binds a close to the satisfied round it was decided on, atomically: a row still satisfied on that round is marked `closing`
-   * in the same statement, so an amendment or a new submission landing after the close's last read cannot interleave between
-   * the check and the kernel's write. Any other row (amended, re-filed, restarted) is left alone and the close is refused.
-   * A claimed row that never closes is released by the next sweep, which settles it as a task that closed elsewhere.
-   */
-  claimClose(issueId: string, round?: unknown): boolean {
-    // A legacy close (queued before steps carried a round) names none: the row's satisfied state is the whole claim it can
-    // make, and its filing was checked against that same row just before. A named round must match exactly.
-    const n = round === undefined || round === null ? undefined : Number(round);
-    if (n !== undefined && !Number.isInteger(n)) return false;
-    const q = n === undefined
-      ? "UPDATE grades SET state = 'closing', updated_at = ? WHERE issue_id = ? AND state = 'satisfied'"
-      : "UPDATE grades SET state = 'closing', updated_at = ? WHERE issue_id = ? AND state = 'satisfied' AND round = ?";
-    const args = n === undefined ? [new Date().toISOString(), issueId] : [new Date().toISOString(), issueId, n];
-    return Number(this.db.prepare(q).run(...args).changes) === 1;
-  }
-
-  /** The close did not land (a refusal, or an error): the row goes back to satisfied, its round untouched, so the next pass retries it. */
-  releaseClose(issueId: string): void {
-    this.db.prepare("UPDATE grades SET state = 'satisfied', updated_at = ? WHERE issue_id = ? AND state = 'closing'").run(new Date().toISOString(), issueId);
-    this.events?.emit("grades", issueId);
-  }
-
-  /** The close landed: the row is settled satisfied, which is where a satisfied row already stood. */
-  closed(issueId: string): void {
-    this.db.prepare("UPDATE grades SET state = 'satisfied', updated_at = ? WHERE issue_id = ? AND state = 'closing'").run(new Date().toISOString(), issueId);
-    this.events?.emit("grades", issueId);
   }
 
   private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
@@ -459,9 +425,9 @@ export class Grades {
     // longer the one asked for. Every outcome is dropped alike, leaving the row as it is (open), so the next pass grades what
     // the row now holds. A verdict naming no filing at all is dropped the same way: nothing shows it read what the row holds,
     // and an unnamed wait would park an amended row for work it never looked at.
-    // A close in flight has claimed the row: a verdict landing now is for work it already settled, and applying it would
-    // restart a round the close is bound to.
-    if (g.state === "closing") return g;
+    // The pass read this round when it began. A re-file, an amendment or a submission that moved the row on since then is a
+    // different round, and this verdict graded the one before it: applying it would settle or park work nobody asked about.
+    if (v.round !== undefined && Number(v.round) !== g.round) return g;
     const current = rubricHash(g.rubric, g.deliverable, g.revision);
     if (v.rubric !== current) return g;
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
@@ -504,9 +470,6 @@ export async function settleClosedGrades(grades: Grades, issue: (id: string) => 
       .then(() => issue(g.issueId))
       .catch(() => undefined);
     if (!i) continue;
-    // A close that claimed the row but never landed (its write failed, or the task was reopened under it): the row goes back to
-    // satisfied so the next pass retries the close, rather than sitting `closing` and refusing every amendment.
-    if (g.state === "closing" && i.status !== "done" && i.status !== "cancelled") { grades.releaseClose(g.issueId); continue; }
     if (i.status !== "done" && i.status !== "cancelled") continue;
     const row = grades.settle(g.issueId, `the task was ${i.status} before the grader settled it`, now);
     if (row) settled.push(row);
@@ -532,7 +495,7 @@ export type GateResult = { pass: true } | { pass: false; state: "pending" | "awa
 export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false }: { done?: boolean } = {}): GateResult {
   const g = grades.get(issueId);
   // Settled rows: satisfied (graded) and not_graded (closed before the grader settled it) pass a task that is already done.
-  if (!g || (done && (g.state === "satisfied" || g.state === "closing" || g.state === "not_graded"))) return { pass: true };
+  if (!g || (done && (g.state === "satisfied" || g.state === "not_graded"))) return { pass: true };
   if (g.state === "pending" || g.state === "awaiting_evidence" || g.state === "grading_failed") return { pass: false, state: g.state, label: "grading" };
   if (g.state === "needs_revision") {
     // Unmet criteria are never a close: wait for the runner to grade a new deliverable version.

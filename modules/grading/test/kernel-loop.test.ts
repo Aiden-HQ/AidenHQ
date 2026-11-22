@@ -547,6 +547,69 @@ test("a close queued for a task cancelled meanwhile is dropped, not applied", as
   assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t15'").get()?.v ?? "", "", "the close and its notice are dropped together");
 });
 
+test("a graded close refused because the owner handed the task back is requeued, not left satisfied", async () => {
+  // The owner moves the task from in_review back to todo while the close is being decided. The kernel refuses the close (the
+  // state it was decided on is gone), and the row must go back to grading: left satisfied, the new submission is never picked
+  // up and the task sits in review forever.
+  const issue = { id: "t18", identifier: "WOR-18", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t18", filed, deliverable);
+  const g = grades.record("t18", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  // The hand-back lands after the close read the task and before the kernel writes: the kernel's status precondition refuses it.
+  const handed = async (m, p, b) => {
+    if (m === "POST" && p === "/v1/checks/t18" && b?.verdict === "ok" && b.expectStatus === "in_review") {
+      issue.status = "todo";
+      throw Object.assign(new Error("WOR-18 is todo, not in_review"), { status: 409 });
+    }
+    return kernel(m, p, b);
+  };
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel: handed, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t18', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "todo", "the hand-back stands");
+  assert.equal(grades.get("t18").state, "awaiting_evidence", "the row is requeued for grading, not left satisfied");
+  assert.deepEqual(grades.due().map((x) => x.issueId), ["t18"], "the next pass grades the handed-back work again");
+});
+
+test("the parent is told the task is done only once it actually is", async () => {
+  // The kernel's ok releases only the grading check's hold: another finish check can still hold the task in review. The parent
+  // must not hear "done" on a task that is still in review, and the notice stays queued until the task really is done.
+  const issue = { id: "t19", identifier: "WOR-19", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  // The resolve answers ok but another check still holds the task: it stays in review.
+  const held = async (m, p, b) => {
+    if (m === "POST" && p === "/v1/checks/t19" && b?.verdict === "ok") return calls.resolve.push(b.verdict), {};
+    return kernel(m, p, b);
+  };
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t19", filed, deliverable);
+  const g = grades.record("t19", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel: held, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t19', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }, { do: "tell", issue: { id: "t19", parentId: "p1" }, kind: "done", who: "WOR-19 (Dana)", title: "report", identifier: "WOR-19" }]));
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve, ["ok"], "the close was accepted");
+  assert.deepEqual(calls.wake, [], "the parent is not told while another check still holds the task");
+  const left = JSON.parse(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t19'").get()?.v ?? "[]");
+  assert.deepEqual(left.map((x) => x.do), ["done", "tell"], "the close and its notice stay queued for the next pass");
+
+  // The other check releases: the task is done, and the same queued close now lands and tells the parent.
+  issue.status = "done";
+  await loop.runGrades();
+  assert.deepEqual(calls.wake.map((w) => w.task), ["p1"], "the parent hears it once the task is done");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t19'").get()?.v ?? "", "", "nothing is left owed");
+});
+
 test("a legacy close whose evidence changed is requeued, not left satisfied", async () => {
   // A close saved before steps carried a filing matches a satisfied revision-zero row, but the assignee added evidence since.
   // The stale close resets the row to be graded again; without the verified row's filing hash the reset is dropped by the
@@ -570,9 +633,10 @@ test("a legacy close whose evidence changed is requeued, not left satisfied", as
 });
 
 test("a re-submission landing between the close's last read and its write still stops the close", async () => {
-  // The read and the write are not one step: the assignee can submit again in the window between them, which sends the row
-  // from satisfied back to pending without changing the filing's words. The close claims the exact round it was decided on,
-  // and the store refuses the claim once the re-submission has moved the row on.
+  // The close decides on a satisfied row, then spends several awaits (the task, its evidence, its children, its cards) before
+  // it writes. The assignee can submit again in that window, which sends the row from satisfied back to pending without
+  // changing the filing's words. The row is read once more immediately before the write, and the re-submission's own round is
+  // what refuses the close: nothing is left to claim, so nothing can be left claimed.
   const issue = { id: "t17", identifier: "WOR-17", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
   const calls = { resolve: [], wake: [] };
   const { kernel } = heldKernel(issue, calls);
@@ -582,14 +646,13 @@ test("a re-submission landing between the close's last read and its write still 
   const deliverable = { kind: "report", ref: "" };
   grades.file("t17", filed, deliverable);
   const g = grades.record("t17", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
-  // The re-submission lands after the close's last read and before its claim is applied: the window the close cannot close
-  // by reading. The claim sees the row the re-submission moved on.
-  let again = false;
+  // The re-submission lands in the window the close spends gathering: the row is read once when the close starts deciding, and
+  // once more immediately before the write. The second read is where the new round is seen.
+  let reads = 0, again = false;
   const read = async (m, p, b) => {
-    if (m === "POST" && /\/claim$/.test(p) && !again) {
+    if (m === "GET" && p === "/internal/grades/t17" && ++reads === 2 && !again) {
       again = true;
       completionGate(grades, "t17", "finish_turn");
-      return false;
     }
     return runner(m, p, b);
   };

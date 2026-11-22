@@ -30,7 +30,7 @@ async function setup(t, verdict, { agentsScope, checks, checkResolver, graded = 
   const issues = { [TASK]: issue, [DELEGATED]: delegated, ...extra };
   const byRef = (ref: string) => issues[ref] ?? Object.values(issues).find((i) => i.identifier === ref);
   const writes = [];
-  const ctl = { failPatch: 0, failLabels: 0, labeled: 0 }; // PATCHes the control plane answers 502 to, and label reads it counts
+  const ctl = { failPatch: 0, failLabels: 0, labeled: 0, onLabel: undefined }; // PATCHes the control plane answers 502 to, label reads it counts, and a hook at one
   let k;
   const todo = await moduleServer(t, { key: "todo-key", tools: ["task_finish"], answer: async (msg, req) => {
     const r = await fetch(`${k.url}/v1/cp/agent/api/issues/${msg.params.arguments.task}`, { method: "PATCH", headers: { authorization: "Bearer todo-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: JSON.stringify(msg.params.arguments.body) });
@@ -50,6 +50,7 @@ async function setup(t, verdict, { agentsScope, checks, checkResolver, graded = 
       if (req.method === "GET" && ref && byRef(decodeURIComponent(ref))) return { body: byRef(decodeURIComponent(ref)) };
       if (req.method === "GET" && req.url === "/api/companies/co/labels") {
         ctl.labeled++;
+        if (ctl.onLabel) ctl.onLabel();
         if (ctl.failLabels) { ctl.failLabels--; return { status: 503, body: {} }; }
         return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }, { id: "lbl-grading", name: "grading" }] };
       }
@@ -137,6 +138,22 @@ test("/v1/checks/:task: a resolve names the state its decision was made on, and 
   const ok = await resolve({ verdict: "ok", comment: "Graded: satisfied." });
   assert.equal(ok.status, 200);
   assert.equal(writes.at(-1).body.status, "done");
+});
+
+test("/v1/checks/:task: a cancel landing during the resolve's own awaits is still refused", async (t) => {
+  // The expectation is checked in the same step as the PATCH, not when the resolve starts: between those two there are reads
+  // of the company's labels and of the task itself, and the owner's cancel can land in that window. A check made early would
+  // read `in_review` and then write `done` over the cancel.
+  const { k, writes, issue, finish, ctl } = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }));
+  await finish({ status: "done" });
+  const before = writes.length;
+  // The label read is the resolve's first await after it read the task: the cancel lands there.
+  ctl.onLabel = () => { issue.status = "cancelled"; ctl.onLabel = undefined; };
+  const r = await k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok", comment: "Graded: satisfied.", expectStatus: "in_review" }, "judge-tok");
+  assert.equal(r.status, 409);
+  assert.match(r.json.error.message, /WOR-1 is cancelled, not in_review/);
+  assert.equal(writes.length, before, "the cancel is never overwritten");
+  assert.equal(issue.status, "cancelled");
 });
 
 test("an undecided approval card of the task refuses the close, whatever the checks say; once decided or run, the same finish passes", async (t) => {
