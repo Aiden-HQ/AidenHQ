@@ -174,8 +174,12 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     if (!ready) return;
     void loadRuns();
     void loadRepos();
-    void loadEngines();
-  }, [ready, loadRuns, loadRepos, loadEngines]);
+  }, [ready, loadRuns, loadRepos]);
+  // The engine catalog needs only the module: a repo review reads its code host, not GitHub's PR connection.
+  const moduleOn = Boolean(setup?.module);
+  useEffect(() => {
+    if (moduleOn) void loadEngines();
+  }, [moduleOn, loadEngines]);
   // A run under way: the list follows it.
   const anyLive = (runs?.some(live) ?? false) || batches.some(live);
   useEffect(() => {
@@ -201,15 +205,15 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
   if ("create" in route) {
     if (engines) return <RepoReviewPage config={config} engines={engines} />;
-    const retry = () => { setError(""); void loadSetup(); if (ready) { void loadRuns(); void loadRepos(); void loadEngines(); } };
+    const retry = () => { setError(""); void loadSetup(); if (moduleOn) void loadEngines(); if (ready) { void loadRuns(); void loadRepos(); } };
     return (
       <Page className="rv-page" label="New repo review">
         <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
         {error ? (
           <Banner tone="danger">Couldn't load what a repo review needs: {error} <Button onClick={retry}>Retry</Button></Banner>
-        ) : setup && !ready ? (
-          <EmptyState action={<LinkButton variant="primary" href={setup.module ? "#/settings/connections?connect=github" : "#/modules/code-review"}>{setup.module ? "Connect GitHub" : "Open the Code review module"}</LinkButton>}>
-            {setup.module ? "Connect GitHub to review a repo." : "Code review is off on this instance. Turn on the Code review module to review a repo."}
+        ) : setup && !setup.module ? (
+          <EmptyState action={<LinkButton variant="primary" href="#/modules/code-review">Open the Code review module</LinkButton>}>
+            Code review is off on this instance. Turn on the Code review module to review a repo.
           </EmptyState>
         ) : (
           <div className="rv-loading" aria-busy="true" />
