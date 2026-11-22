@@ -10,7 +10,7 @@
 //   it resolved; a pending deepsec setup branch's files) and the deepsec setup PR (`setup`: github files its own Tier 1 write).
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -272,7 +272,7 @@ const SETUP_BODY = "deepsec's own set-up files (`.deepsec/`), written by `deepse
  * streams (never held whole): `tree` lists its paths, `setupBranch` takes only deepsec's allowlisted files from the setup branch
  * (absent: no such branch). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
  */
-export function kernelCodeHost(kernelUrl: string, token: () => string, fetcher: typeof fetch = fetch): CodeHost {
+export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: KernelClient, fetcher: typeof fetch = fetch): CodeHost {
   const op = (name: string, body: unknown) => fetcher(`${kernelUrl.replace(/\/+$/, "")}/v1/codehost/${name}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
   /** The snapshot of repo@ref through `tar args`; undefined when the code host has no such ref (404). */
   const snapshot = async <T>(repo: string, ref: string, args: string[], read: (out: string) => T): Promise<{ sha: string; value: T } | undefined> => {
@@ -282,45 +282,58 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, fetcher: 
     const sha = r.headers.get("x-aidenhq-commit") ?? "";
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`the snapshot of ${repo} named no commit`);
     const out = await new Promise<string>((resolve, reject) => {
-      let text = "", err = "";
+      // Bytes, decoded once (a multi-byte character can straddle two chunks); more than the cap is an error, never a silent cut.
+      const chunks: Buffer[] = [];
+      let bytes = 0, err = "";
       const t = spawn("tar", args, { stdio: ["pipe", "pipe", "pipe"] });
-      t.stdout.on("data", (b: Buffer) => { if (text.length < 64_000_000) text += b.toString("utf8"); });
+      t.stdout.on("data", (b: Buffer) => { bytes += b.length; if (bytes <= 64_000_000) chunks.push(b); });
       t.stderr.on("data", (b: Buffer) => (err = (err + b.toString("utf8")).slice(0, 1000)));
       t.stdin.on("error", () => {}); // tar ended early: its close says why
       t.on("error", reject);
       // GNU tar exits 2 when a pattern matched nothing: no files, not a failure.
-      t.on("close", (code) => (code === 0 || /Not found in archive/.test(err) ? resolve(text) : reject(new Error(`the snapshot of ${repo} didn't unpack: ${err.trim().slice(0, 200) || `tar ${code}`}`))));
+      t.on("close", (code) => {
+        if (bytes > 64_000_000) return reject(new Error(`the snapshot of ${repo} has more than 64 MB of output`));
+        if (code === 0 || /Not found in archive/.test(err)) resolve(Buffer.concat(chunks).toString("utf8"));
+        else reject(new Error(`the snapshot of ${repo} didn't unpack: ${err.trim().slice(0, 200) || `tar ${code}`}`));
+      });
       Readable.fromWeb(r.body as never).on("error", reject).pipe(t.stdin);
     });
     return { sha, value: read(out) };
   };
   return {
     async tree(repo, ref) {
-      const s = await snapshot(repo, ref, ["-tzf", "-"], (out) => out.split("\n").filter((l) => l && !l.endsWith("/")).slice(0, 200_000).map((l) => l.replace(/^\.\//, "")));
+      const s = await snapshot(repo, ref, ["-tzf", "-"], (out) => {
+        const paths = out.split("\n").filter((l) => l && !l.endsWith("/")).map((l) => l.replace(/^\.\//, ""));
+        if (paths.length > 200_000) throw new Error(`${repo} has more than 200,000 files: a review reads at most that many`);
+        return paths;
+      });
       if (!s) throw Object.assign(new Error(`${repo} has no ${ref.slice(0, 40)}`), { status: 404 });
       return { sha: s.sha, paths: s.value };
     },
     async setupBranch(repo, branch) {
+      // A first pass lists the branch; only its regular, allowlisted files are then unpacked, by exact name, from the commit the
+      // listing named. A link member is never unpacked, so nothing a link points at can be written through.
+      const listed = await snapshot(repo, branch, ["-tvzf", "-"], (out) => out.split("\n").flatMap((l) => {
+        const m = /^-\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+(\.deepsec\/\S+)$/.exec(l);
+        return m && SETUP_PATH.test(m[2]!) && Number(m[1]) <= 2_000_000 ? [m[2]!] : [];
+      }));
+      if (!listed) return undefined;
+      const files: Record<string, string> = {};
+      if (!listed.value.length) return { tip: listed.sha, files };
       const dir = mkdtempSync(join(tmpdir(), "deepsec-setup-"));
       try {
-        const s = await snapshot(repo, branch, ["-xzf", "-", "-C", dir, "--no-same-owner", "--wildcards", ".deepsec/*"], () => undefined);
-        if (!s) return undefined;
-        const files: Record<string, string> = {};
-        const walk = (rel: string) => {
-          for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
-            const p = `${rel}/${e.name}`;
-            if (e.isDirectory()) walk(p);
-            else if (e.isFile() && SETUP_PATH.test(p) && statSync(join(dir, p)).size <= 2_000_000) files[p] = readFileSync(join(dir, p), "utf8");
-          }
-        };
-        try { walk(".deepsec"); } catch {}
-        return { tip: s.sha, files };
+        if (!(await snapshot(repo, listed.sha, ["-xzf", "-", "-C", dir, "--no-same-owner", "--", ...listed.value], () => undefined))) return undefined;
+        for (const p of listed.value) files[p] = readFileSync(join(dir, p), "utf8");
+        return { tip: listed.sha, files };
       } finally { rmSync(dir, { recursive: true, force: true }); }
     },
     async setup(b) {
-      const r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY });
+      // The setup's approval lands on a quiet task of its own (the kernel's setup op names one), closed once the PR is filed.
+      const t = await kernel.call("POST", "/v1/tasks", { title: `Code review: deepsec setup for ${b.repo}`, description: `${b.repo}\n\nCode review's deepsec setup PR is approved here.`, role: ROLE, source: `code-review:setup:${b.repo}`, quiet: true });
+      const r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY, task: String(t.id) });
       const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
       if (!r.ok) throw new Error(`the deepsec setup PR: ${r.status} ${JSON.stringify(j).slice(0, 300)}`);
+      await kernel.call("POST", `/v1/tasks/${String(t.id)}/close`, { status: "done", body: "The setup PR is filed." }).catch(() => {});
       return j;
     },
   };

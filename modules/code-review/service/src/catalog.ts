@@ -7,7 +7,7 @@ export type Mode = "one_off" | "continuous";
 export type Option = {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string; harness?: string; skill?: string; engine?: string };
+  run: { cmd?: string; harness?: string; skill?: string; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[] };
   when: string[]; output: "sarif" | "knip" | "jscpd" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
 };
 
@@ -57,7 +57,7 @@ export function detect(paths: string[], catalog: Option[], mode: Mode): { availa
 }
 
 /** What a tools check carries per selected tool option (its `options` spec field, by id): just what the recipe runs. */
-export type ToolSpec = Record<string, { lens: Lens; cmd: string; output: Exclude<Option["output"], "findings">; severity?: "nit" }>;
+export type ToolSpec = Record<string, { lens: Lens; cmd: string; output: Exclude<Option["output"], "findings">; severity?: "nit"; exits?: number[]; runs_code: boolean }>;
 export function toolSpec(options: Option[]): ToolSpec {
-  return Object.fromEntries(options.filter((o) => o.kind === "tool").map((o) => [o.id, { lens: o.lens, cmd: o.run.cmd!, output: o.output as ToolSpec[string]["output"], ...(o.severity ? { severity: o.severity } : {}) }]));
+  return Object.fromEntries(options.filter((o) => o.kind === "tool").map((o) => [o.id, { lens: o.lens, cmd: o.run.cmd!, output: o.output as ToolSpec[string]["output"], runs_code: o.runs_code, ...(o.run.exits ? { exits: o.run.exits } : {}), ...(o.severity ? { severity: o.severity } : {}) }]));
 }

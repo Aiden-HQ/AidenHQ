@@ -34,7 +34,7 @@ const engine = createEngine({
   source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token),
   runner: kernelRunner(kernel),
   poster: kernelPoster(kernel, log),
-  codehost: kernelCodeHost(kernelUrl, token),
+  codehost: kernelCodeHost(kernelUrl, token, kernel),
   // The option catalog (catalog.json beside this file), read when a repo review asks for it.
   catalog: () => loadCatalog(readFileSync(new URL("./catalog.json", import.meta.url), "utf8")),
   // Primer: the report as a primer.publish write record, one document per repo, a version per review.
