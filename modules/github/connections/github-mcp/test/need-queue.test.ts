@@ -49,6 +49,22 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(k.seen[0]!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
   });
 
+  // The code host's workflow-scope refusal is told to the owner through this queue (main.ts's reportNeed): a kernel that is
+  // restarting when the push fails must not lose it, so the scope need is kept and sent again on the next flush.
+  it("a workflow-scope need the kernel couldn't take is kept and retried", async () => {
+    const k = replies([busy(), ok()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
+    const need = new GitHubNeed({ cause: "scope", scope: "workflow" }, "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)");
+    await q.tell(need);
+    expect(q.pending()).toBe(1);
+    await q.flush();
+    expect(q.pending()).toBe(0);
+    expect(k.seen.map((s) => s.body)).toEqual([
+      { connection: "github", need: { cause: "scope", detail: need.message, scope: "workflow" } },
+      { connection: "github", need: { cause: "scope", detail: need.message, scope: "workflow" } },
+    ]);
+  });
+
   it("a permanent refusal (a 4xx) is dropped, not retried on every request", async () => {
     const k = replies([bad()]);
     const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });

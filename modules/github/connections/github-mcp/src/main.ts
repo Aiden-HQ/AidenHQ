@@ -699,13 +699,16 @@ const http = createServer(async (req, res) => {
   }
 });
 
+/** A need met outside a tool call, reported through the queue that keeps and retries what the kernel couldn't take. */
+export type ReportNeed = (need: { cause: "scope"; scope: string }, detail: string) => Promise<void>;
+
 /**
- * Starts both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP and the sign-in) and hands back the owner's access: the
- * GitHub process's code host (modules/github/service/src/main.ts) runs on the same sign-in.
+ * Starts both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP and the sign-in) and hands back the owner's access and the
+ * need queue: the GitHub process's code host (modules/github/service/src/main.ts) runs on the same sign-in.
  */
-export async function startGithubMcp(): Promise<GitHubAccess> {
+export async function startGithubMcp(): Promise<{ access: GitHubAccess; reportNeed: ReportNeed }> {
   http.listen(port, "0.0.0.0", () => log.info({ port }, "github-mcp listening"));
   official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(); });
-  return access;
+  return { access, reportNeed: (need, detail) => needs.tell(new GitHubNeed(need, detail)) };
 }

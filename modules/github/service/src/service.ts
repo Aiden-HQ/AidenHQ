@@ -62,6 +62,8 @@ export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
   /** GitHub as the owner (github-mcp client.ts): the one sign-in, limiter and typed needs. */
   access: GitHubAccess; remoteUrl?: (slug: string) => string;
+  /** github-mcp's retrying need queue (main.ts): a need met outside a tool call is kept and retried, never a one-shot POST. */
+  reportNeed?: (need: { cause: "scope"; scope: string }, detail: string) => Promise<void>;
   /** True while the merge queue must hold (the App migration, migrate.ts): approved merges wait like a disconnect. */
   holdMerges?: () => boolean;
   /** Why merges are held while GitHub is connected (the App migration): the record's own reason, never the reconnect's. */
@@ -104,9 +106,7 @@ const fail = (status: number, message: string) => Object.assign(new Error(messag
  */
 const WORKFLOW_SCOPE = "workflow";
 const WORKFLOW_MESSAGE = "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)";
-const WORKFLOW_NEED = { cause: "scope", scope: WORKFLOW_SCOPE } as const;
-/** A path whose commit GitHub refuses without the scope: any file under `.github/workflows/` (a rename counts at both paths). */
-export const WORKFLOW_PATH = /(^|\/)\.github\/workflows\//;
+const WORKFLOW_NEED: { cause: "scope"; scope: string } = { cause: "scope", scope: WORKFLOW_SCOPE };
 /** GitHub's own words for the refusal, as a git child prints them on stderr. */
 export const workflowRefusal = (e: unknown) => /create or update workflow[\s\S]*without [`'"]?workflow[`'"]? scope/i.test(String((e as { message?: unknown } | undefined)?.message ?? e));
 /** The push's typed need: a 403 (the status ops.ts's need map gives a scope) carrying the need, never a bare git failure. */
@@ -139,58 +139,21 @@ export function createService(o: Options) {
   /** The owner's token, for one git child's env only. */
   const token = () => access.token();
   /**
-   * A sign-in whose known scopes lack `workflow`: only a non-empty list can say a scope is absent (an empty one means the scopes
-   * could not be read), the same rule ops.ts's missingRunnerScope follows.
-   */
-  const missingWorkflowScope = () => {
-    const have = access.scopes();
-    return have.length > 0 && !have.includes(WORKFLOW_SCOPE);
-  };
-  /**
-   * The typed need is also told to the kernel as the connection's need, so the owner hears it and the board shows it (the
-   * code host holds kernel.owner-notice). Never fails the write that found it: the error below is the caller's answer.
-   */
-  async function noteWorkflowNeed() {
-    await kernel("POST", "/v1/connections/need", { connection: "github", need: { cause: "scope", scope: WORKFLOW_SCOPE, detail: WORKFLOW_MESSAGE } })
-      .catch((e: Error) => log("workflow scope need not reported", { err: String(e.message ?? e).slice(0, 200) }));
-  }
-  /**
-   * One push with the owner's token: GitHub's `workflow`-scope refusal is the owner's typed need, reported to the kernel and
-   * thrown as one (never a bare git failure). Any other failure is git's own and stays as it was.
+   * One push with the owner's token: GitHub's `workflow`-scope refusal is the owner's typed need. It is handed to github-mcp's
+   * need queue (which keeps and retries a report the kernel couldn't take) and thrown typed, never as a bare git failure. The push
+   * is always attempted: GitHub permits a workflow file that already exists unchanged, so its answer is the only authority on
+   * whether the scope is needed. Any other failure is git's own and stays as it was.
    */
   async function push(dir: string, args: string[]): Promise<string> {
     try {
       return await git(dir, args, await token());
     } catch (e) {
       if (!workflowRefusal(e)) throw e;
-      await noteWorkflowNeed();
-      throw workflowNeedError();
+      const need = workflowNeedError();
+      await o.reportNeed?.(WORKFLOW_NEED, need.message)
+        .catch((report: Error) => log("workflow scope need not reported", { err: String(report.message ?? report).slice(0, 200) }));
+      throw need;
     }
-  }
-  /**
-   * A branch's changed files against its repo's default branch, as plan.ts reads them (no renames, so a file moved out of
-   * `.github/workflows/` still counts). The base is the one the plan already fetched into the cache (no network here); undefined
-   * when it isn't there, so the pre-check never counts an old file as this branch's change.
-   */
-  async function branchFiles(dir: string, sha: string, def: string): Promise<string[] | undefined> {
-    const base = await git(dir, ["rev-parse", "--verify", `refs/remote/${def}^{commit}`]).catch(() => "");
-    if (!base) return undefined;
-    const mb = await git(dir, ["merge-base", sha, base]).catch(() => "");
-    if (!mb) return undefined;
-    return (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb, sha])).split("\0").filter(Boolean);
-  }
-  /**
-   * Before a push, a branch that touches `.github/workflows/` and a known sign-in scope list without `workflow` is refused with
-   * the typed need instead of spending a git round trip on a push GitHub is certain to reject.
-   */
-  async function guardWorkflowPush(dir: string, s: ReturnType<typeof slugOf>, b: { sha: string }, def: string) {
-    if (!missingWorkflowScope()) return;
-    // The plan fetched this base; an execute without one (a held write reclaimed) reads it rather than guessing.
-    if (!(await git(dir, ["rev-parse", "--verify", `refs/remote/${def}^{commit}`]).catch(() => ""))) await fetchRemote(s, def, "ws").catch(() => undefined);
-    const files = await branchFiles(dir, b.sha, def);
-    if (!files?.some((f) => WORKFLOW_PATH.test(f))) return;
-    await noteWorkflowNeed();
-    throw workflowNeedError();
   }
   /** The owner's login, or undefined: a Flow fact never fails the write it describes. */
   const ownerLogin = () => access.identity().then((i) => i.login, () => undefined);
@@ -436,7 +399,6 @@ export function createService(o: Options) {
           const { s, dir } = await fromWorkspace(a.workspace, b);
           // A task branch may be rewritten; the default branch only ever moves forward.
           const def = await defaultBranch(s.slug);
-          await guardWorkflowPush(dir, s, b, def);
           await push(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`]);
           notePushed(s.slug, b.sha);
           objects.push(`${ref(s.slug)}@${b.sha}`);
