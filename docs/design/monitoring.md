@@ -53,8 +53,10 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   `aidenhq_gateway_inflight`. Labels are agent keys.
 - Kernel jobs (relayed by the Fleet Steward's `/metrics`, role `kernel.work-read`): `aidenhq_kernel_jobs_running`, `_oldest_seconds`,
   `_duration_seconds` (histogram over every job on record).
-- Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps
-  running, so `CiRunnerUnitMissing` ignores a retired unit), `aidenhq_fleet_draining`,
+- Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_backoff{scope="user",unit}` (a CI runner's persisted wait
+  after a refused registration token, seconds; absent when none, and never for a runner systemd no longer declares),
+  `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps running, so `CiRunnerUnitMissing` ignores a
+  retired unit), `aidenhq_fleet_draining`,
   `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`, `aidenhq_apply_failed{n,reason,log,health}`,
   the Docker disk breakdown `aidenhq_docker_{images,containers,build_cache,volumes}_{size,reclaimable}_bytes` (from
   `docker system df`, capped at 10 s) and `aidenhq_docker_collect_ok`. `docker system df` walks every image, container and
@@ -67,8 +69,10 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   is not a failure: nothing cached means the 20 GB cap holds.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
-  maintenance. Both also need a fresh `units.prom` (written within 3 minutes), so a dead exporter is a freshness alert and
-  never reads as "0 active" or "16 failed".
+  maintenance. They and `CiRunnerRestartLooping` (a unit flipping out of `active` over and over, which `Restart=always`
+  makes invisible to `UnitFailed`; a refused registration token backs off in `ExecStartPre`, so a refusal across every
+  runner also leaves `CiRunnersDown` nothing active long enough to fire) also need a fresh `units.prom` (written within 3
+  minutes), so a dead exporter is a freshness alert and never reads as "0 active" or "16 failed".
 
 No secrets or ids in labels.
 
@@ -78,14 +82,26 @@ Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, o
 (over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `HostMetricsExporterStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq-project container other than `ci-runner`, the `aidenhq-runner` or `aidenhq-gateway` user unit, or
 the board not answering Prometheus, for 5 minutes, **critical**), `ApplyFailed` (the newest apply generation failed its health
-check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerUnitMissing` (a runner unit seen in
+check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerRestartLooping` (a runner unit that
+keeps dropping out of `active` and isn't staying up: `Restart=always` never makes `UnitFailed`, and a unit backing off a
+refused registration is `activating` rather than `active`, so the loop is named by unit; a refusal across every runner also
+empties `CiRunnersDown`'s active count), `CiRunnerBackoff` (a runner whose persisted wait is at the 60-second cap and has
+held it for ten minutes: the wait is the loop's own state, so it fires even when a scrape misses every brief active
+interval between backoffs, while a wait that has since cleared breaks the condition and raises nothing), `CiRunnerUnitMissing` (a runner unit seen in
 the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`, `CiReviewSpendNearCap` and `AppsCpuStarved` (an
 `app-*` container's own CPU pressure over 20% while the host's is over 15%; the alert names the app's project, and host
 pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `ApplyFailed` are critical.
 
 The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only spike fires nothing, an `app-*` match carries its
-project, an app at its own limit with an idle host does not fire), run by promtool in CI's `rules` job. Locally, with the
-module's own image:
+project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, one going
+job to job, or one whose fleet is draining, doesn't; a runner backing off at the cap fires `CiRunnerBackoff`, and a first
+refusal, eight minutes at the cap, a backoff that has since cleared, a runner with no backoff and a drain do not). The
+`checks` job of `.github/workflows/ci.yml` runs `promtool check rules rules.yml` and `promtool test rules
+rules.test.yml` on every pull request head and push to main, with the image
+`modules/monitoring/prometheus/Dockerfile` pins at the commit the change is based on (a PR's base, main for a merge train,
+main's own tree on a push to main), never the head's: the step runs the image's code, so a PR that could choose the image
+could point `promtool` at something that exits 0. It must be digest-pinned, and the workflow holds no version of its own.
+Locally it is the same image:
 `docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06 check rules rules.yml`
 (and `test rules rules.test.yml`).
 

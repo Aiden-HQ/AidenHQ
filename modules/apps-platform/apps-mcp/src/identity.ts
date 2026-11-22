@@ -1,12 +1,15 @@
 // Agents' identity at apps (docs/design/app-identity.md): app_api and app_view send X-AidenHQ-Identity, a short-lived Ed25519
 // JWT apps-mcp signs with its own key (the vault's identity/apps.pem; issuer aidenhq-apps, which apps accept only for
-// `agent:<key>` subjects). Each token names exactly what it may do: app_api one method on one path, app_view reads.
+// `agent:<key>` subjects). Each token names exactly what it may do: app_api one method on one path (admin by default, or
+// the member identity app_view uses), app_view reads.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 
 export const IDENTITY_HEADER = "x-aidenhq-identity";
 export const TTL_S = 300;
 export interface Scope { role: "admin" | "member"; methods: string[]; path?: string }
+/** The signed-in member identity app_view uses; app_api's member role reuses it for one request. */
+export const memberScope = (methods: string[] = ["GET", "HEAD"]): Scope => ({ role: "member", methods });
 /** Signs an agent's token for one app. */
 export type Sign = (app: string, agent: string, scope: Scope) => string;
 

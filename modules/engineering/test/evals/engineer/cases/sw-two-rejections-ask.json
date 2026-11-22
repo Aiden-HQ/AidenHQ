@@ -1,0 +1,37 @@
+{
+ "name": "sw-two-rejections-ask",
+ "routine": "software",
+ "why": "A second AI-reviewer rejection of the same change that names nothing still wrong with the current head stops the republish: the Engineer names both rejection ids in the wait's question, asks the delegator to clarify, and waits instead of opening a third head. A `Not reviewed` note is a code refusal, whose reason is fixed before filing; a reviewer failure is retried by the kernel and is never refiled by the Engineer.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-23 -> {\"title\":\"Add an index on acme-agents/ledger's orders.created_at\",\"description\":\"Add a b-tree index on orders(created_at) in db/migrations, and name the migration.\"}\nworkspace: /workspace/ledger (acme-agents/ledger at 5d2c9e1), one commit on fix/orders-index, tests pass.\nThe AI reviewer rejected your first card (approval k-4a11c0d2): 'The migration is not reversible; add a down migration.' You added the down migration and published again.\nOne earlier card (approval k-9f02de77) came back **Not reviewed**: 'the diff no longer matches the head', a code refusal, so you published a fresh diff before filing again.\nThe AI reviewer rejected your second card (approval k-b7e93f18) with the same note: 'The migration is not reversible; add a down migration.' The second head already has the down migration.",
+ "expect": [
+  {
+   "tool": "reply",
+   "text": "k-4a11c0d2"
+  },
+  {
+   "tool": "reply",
+   "text": "k-b7e93f18"
+  },
+  {
+   "tool": "reply",
+   "text": "clarify"
+  },
+  {
+   "tool": "task_wait",
+   "text": "k-4a11c0d2"
+  },
+  {
+   "tool": "task_wait",
+   "text": "k-b7e93f18"
+  },
+  {
+   "tool": "task_wait",
+   "text": "clarify"
+  }
+ ],
+ "forbid": [
+  {
+   "tool": "aidenhq_publish"
+  }
+ ]
+}

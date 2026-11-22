@@ -743,12 +743,20 @@ switchOver() {
   fi
   # The monitoring module's host metrics (ops/host-metrics.sh): its timer runs while compile made the textfile directory
   # (the module is on), and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
-  # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env
-  # recorded at install time.
+  # applied and the data dir, written every apply: an unchanged unit would otherwise keep running whatever
+  # ~/.config/aidenhq-checkout.env recorded at install time.
   if grep -q '^  monitoring-node-exporter:' compose.modules.yaml 2>/dev/null; then
     local host_metrics_env="$HOME/.config/aidenhq-host-metrics.env"
     mkdir -p "$(dirname "$host_metrics_env")"
-    printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$host_metrics_env.tmp" && mv -f "$host_metrics_env.tmp" "$host_metrics_env"
+    # The host's settings this exporter needs, from the apply's own .env: the unit starts ops/host-metrics.sh, which reads no
+    # settings file of its own (ops/lib/data-dir.sh takes the environment only). Both absolute, so the unit never resolves a
+    # relative path: the data dir is the same path the CI runner's marker uses, so aidenhq_unit_backoff reads the file the
+    # unit wrote.
+    local data_dir="${AIDENHQ_DATA_DIR:-$product_dir/data}"
+    case "$data_dir" in /*) ;; *) data_dir="$product_dir/$data_dir" ;; esac
+    local state_dir="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
+    case "$state_dir" in /*) ;; *) state_dir="$product_dir/$state_dir" ;; esac
+    printf 'AIDENHQ_DIR=%s\nAIDENHQ_DATA_DIR=%s\nAIDENHQ_STATE_DIR=%s\n' "$(realpath "$product_dir")" "$data_dir" "$state_dir" > "$host_metrics_env.tmp" && mv -f "$host_metrics_env.tmp" "$host_metrics_env"
     if ! cmp -s ops/units/aidenhq-host-metrics.service "$units/aidenhq-host-metrics.service" || ! cmp -s ops/units/aidenhq-host-metrics.timer "$units/aidenhq-host-metrics.timer"; then
       cp ops/units/aidenhq-host-metrics.service ops/units/aidenhq-host-metrics.timer "$units/" && systemctl --user daemon-reload && echo "host metrics timer installed/updated"
     fi
@@ -772,6 +780,25 @@ switchOver() {
   elif [ -e "$units/aidenhq-security-sbom.timer" ]; then
     systemctl --user disable --now --quiet aidenhq-security-sbom.timer
     rm -f "$units/aidenhq-security-sbom.service" "$units/aidenhq-security-sbom.timer" "$HOME/.config/aidenhq-security-sbom.env" && systemctl --user daemon-reload && echo "security sbom timer removed (security off)"
+  fi
+  # The data dir the runner's backoff marker goes under, from the apply's own .env: the unit starts ops/ci-runner.sh, which
+  # reads no settings file of its own (ops/lib/data-dir.sh takes the environment only). The template's last EnvironmentFile=
+  # is this file, so the marker and the exporter's read are the same path. Written every apply, even before the runner units
+  # are enabled (ops/setup.sh enables them after this apply on a fresh host), so the first start already has the host's dir.
+  local runner_env="$HOME/.config/aidenhq-ci-runner.env"
+  mkdir -p "$(dirname "$runner_env")"
+  local runner_data="${AIDENHQ_DATA_DIR:-$product_dir/data}"
+  case "$runner_data" in /*) ;; *) runner_data="$product_dir/$runner_data" ;; esac
+  printf 'AIDENHQ_DATA_DIR=%s\n' "$runner_data" > "$runner_env.tmp" && mv -f "$runner_env.tmp" "$runner_env"
+  # The runner template the enabled units run (ops/setup.sh installs it on a fresh host): an apply keeps it in step with the
+  # checkout, so a rollout lands the ExecStartPre backoff with the scripts it calls and a rollback (or a checkout without the
+  # new helper) never leaves a unit whose ExecStartPre names a file that isn't there; the next start picks it up. Only while
+  # the instance declares runner units, so a host without them keeps nothing.
+  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then
+    if ! cmp -s ops/units/aidenhq-ci-runner@.service "$units/aidenhq-ci-runner@.service"; then
+      cp ops/units/aidenhq-ci-runner@.service "$units/"
+      systemctl --user daemon-reload && echo "ci runner unit template installed/updated"
+    fi
   fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
   # drain stopped (data/fleet-paused.json, modules/ci): running again after an apply, each start limit cleared before its
