@@ -97,7 +97,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         if (c.meta.branch !== branch || c.state !== "open") continue;
         // A push moves the head only: the recorded opening base (`opened`) stays the commit the change was opened against, as
         // GitHub's baseRefOid does, and `base` keeps tracking the tip the merge is checked against.
-        const lines = [`update refs/changes/${n}/head ${head}`, `update refs/changes/${n}/base ${tip}`];
+        // A repo with no default-branch commit yet has no base ref to move (as the creation path below says): git refuses an
+        // update to an empty object id.
+        const lines = [`update refs/changes/${n}/head ${head}`, ...(tip ? [`update refs/changes/${n}/base ${tip}`] : [])];
         // A republish that names no text, or only blank text, keeps the change's title and description (as on GitHub): a blank
         // body must never replace the one a reader depends on.
         const named = { ...(text?.title?.trim() ? { title: text.title } : {}), ...(text?.body?.trim() ? { body: text.body } : {}) };

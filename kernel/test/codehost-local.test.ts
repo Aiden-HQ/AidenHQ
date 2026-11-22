@@ -176,6 +176,35 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   await assert.rejects(writes.request(job, { kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 1 }, { repo: "acme/app", number: 2 }] } }), /more than one code host/);
 });
 
+// A repo whose default branch has no commit yet: the first publish records no base ref, and a republish (which would try to
+// move `base` to an empty object id) must still succeed.
+test("a republish of a local change works before the default branch has its first commit", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codehost-local-empty-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const tasks = join(dir, "tasks");
+  for (const d of [join(tasks, "TASK-1"), join(dir, "scratch")]) mkdirSync(d, { recursive: true });
+  const host = localHost({ root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch") });
+  // An empty bare repo with `main` as its HEAD, as the host's own create leaves one before its README commit exists.
+  const bareRepo = join(dir, "codehost", "local", "empty.git");
+  mkdirSync(join(dir, "codehost", "local"), { recursive: true });
+  git(dir, "init", "--quiet", "--bare", "-b", "main", bareRepo);
+  const ws = join(tasks, "TASK-1", "empty");
+  git(dir, "init", "--quiet", "-b", "feat", ws);
+  writeFileSync(join(ws, "a.txt"), "one\n"); git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "a");
+  const bundle = (sha) => (mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true }), git(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha), git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`));
+  const first = git(ws, "rev-parse", "HEAD");
+  bundle(first);
+  const pr = (sha) => host.executor.execute({ id: `k-${sha.slice(0, 8)}`, kind: "codehost-local.pr", args: { workspace: "TASK-1", only: [{ repo: "local/empty", branch: "feat", sha }], text: { title: "a", body: "b" } } });
+  assert.equal((await pr(first)).ok, true);
+  writeFileSync(join(ws, "a.txt"), "two\n"); git(ws, "commit", "--quiet", "-am", "b");
+  const second = git(ws, "rev-parse", "HEAD");
+  bundle(second);
+  const again = await pr(second);
+  assert.equal(again.ok, true, again.text);
+  assert.equal(git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/head"), second);
+  assert.throws(() => git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/base"), "no base ref exists yet, and nothing tried to move one");
+});
+
 test("a local merge's refusals, through the real host: a moved head, a check missing or not green on that head, and a base that conflicts", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "codehost-local-refuse-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
