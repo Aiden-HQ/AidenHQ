@@ -710,7 +710,9 @@ test("a bypass recorded on a merge confirmed by a later poll (the PUT went unans
   const gh = async (m, p, b) => {
     const r = await github.gh(m, p, b);
     const pull = r.body?.data?.repository?.pullRequest;
-    if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40) };
+    // The PR merged by this queue's own PUT: its commit carries the message the PUT sent, so the queue's nonce is in it. (Keep it:
+    // an empty message would be a merge no call of ours can prove, which is the foreign-merge case, not this one.)
+    if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40), message: String(prs["acme-agents/widget"].message ?? "") };
     if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
     return r;
   };
