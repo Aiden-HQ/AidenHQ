@@ -190,6 +190,9 @@ test("a dash-only variant never hides the cited repo: the job is looked for ther
   const r = await resolveCitation(job!, deps, ["acme/myapp"]);
   assert.deepEqual(seen, ["acme/myapp", "acme/my-app"]);
   assert.equal(r.repo, "acme/my-app");
+  seen.length = 0;
+  await resolveCitation(job!, deps, ["Acme/My-App"]);
+  assert.equal(seen.length, 1, "the same repo in another case is looked up once");
 });
 
 test("a repo listed twice is not ambiguous; a bare citation refused everywhere is shown once as unreadable", async () => {

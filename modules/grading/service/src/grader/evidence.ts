@@ -711,7 +711,7 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
   const exact = repos.find((r) => c.repo && lower(r) === lower(c.repo));
   const variants = [...new Set(repos.filter((r) => c.repo && nodash(r) === nodash(c.repo)).map(lower))];
   const known = exact ?? (variants.length === 1 ? repos.find((r) => lower(r) === variants[0]) : undefined);
-  const candidates = c.repo ? [...new Set([known ?? c.repo, c.repo])] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  const candidates = c.repo ? [...new Map([known ?? c.repo, c.repo].map((r) => [lower(r), r])).values()] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
   let refused: { repo: string; message: string } | undefined;
   for (const repo of candidates) {
     let j: any;
