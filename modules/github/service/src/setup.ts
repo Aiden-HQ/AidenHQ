@@ -114,7 +114,12 @@ export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promi
     const tree = await api("POST", `/repos/${a.repo}/git/trees`, { base_tree: base.commit.tree.sha, tree: s.missing.map((path) => ({ path, mode: "100644", type: "blob", content: a.files[path] })) });
     const commit = await api("POST", `/repos/${a.repo}/git/commits`, { message: withTrailer(`Add the setup files (${s.missing.join(", ")})`, signedAs), tree: tree.sha, parents: [s.parent] });
     tip = String(commit.sha);
-    // Never forced: a branch that moved since the read refuses here, not over the other change.
+    // GitHub's ref update has no compare-and-swap, and a non-forced update still accepts a reset to an ancestor of the new commit:
+    // read the tip again right before it and refuse any other, so only the window of these two calls stays open.
+    if (s.tip) {
+      const now = String((await api("GET", `/repos/${a.repo}/branches/${enc(a.branch)}`)).commit?.sha ?? "");
+      if (now !== s.tip) throw fail(409, `${a.branch} moved from ${s.tip.slice(0, 12)} to ${now.slice(0, 12)} while the setup ran: ask again`);
+    }
     if (s.tip) await api("PATCH", `/repos/${a.repo}/git/refs/heads/${a.branch}`, { sha: tip });
     else await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${a.branch}`, sha: tip });
   } else if (!tip || (!into && !s.carried.length)) return { ok: true, text: JSON.stringify({ pr_url: null, tip, nothing_to_add: true }) };
