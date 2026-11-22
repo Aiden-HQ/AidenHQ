@@ -144,9 +144,10 @@ it("owners: every page of search_owners, active or not, by owner id, checkpointe
   seen.length = 0;
 
   const { store, writes } = fakeStore();
-  await syncReference(store, call, ["contacts"], Date.now() - 1); // a spent budget stops the writes too: nothing moves
-  expect(writes).toEqual([]);
-  expect((await store.scope("owners")).cursor).toBeNull();
+  const spent = fakeStore();
+  await syncReference(spent.store, call, ["contacts"], Date.now() - 1); // a spent budget stops the writes too: nothing is written
+  expect(spent.writes).toEqual([]);
+  expect((await spent.store.scope("owners")).cursor).toBe("11"); // and the next pass starts at the first owner not written
   let clock = 1000; // a controlled clock: each write takes 20 ms
   const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
   const slowStore = { ...store, upsert: async (...a: Parameters<typeof store.upsert>) => ((clock += 20), store.upsert(...a)) } as unknown as SourceStore;
@@ -154,6 +155,15 @@ it("owners: every page of search_owners, active or not, by owner id, checkpointe
   now.mockRestore();
   expect(writes.map((w) => w.row.user_id)).toEqual(["11", "12"]);
   expect((await store.scope("owners")).cursor).toBe("20");
+  // ...and one that runs out inside a page keeps the id of the first owner not written, which is where the next pass starts.
+  const mid = fakeStore();
+  clock = 1000;
+  const now2 = vi.spyOn(Date, "now").mockImplementation(() => clock);
+  const slowMid = { ...mid.store, upsert: async (...a: Parameters<typeof store.upsert>) => ((clock += 20), mid.store.upsert(...a)) } as unknown as SourceStore;
+  await syncReference(slowMid, call, ["contacts"], 1010);
+  now2.mockRestore();
+  expect(mid.writes.map((w) => w.row.user_id)).toEqual(["11"]);
+  expect((await mid.store.scope("owners")).cursor).toBe("12");
   writes.length = 0;
   seen.length = 0;
   await syncReference(store, call, ["contacts"]); // the next pass resumes there and, reaching the end, clears it
