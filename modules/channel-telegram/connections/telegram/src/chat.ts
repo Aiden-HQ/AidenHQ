@@ -49,7 +49,7 @@ export function fromTelegram(update: unknown, ownerChatId: string): ChatMessage 
 
 /** How often one unpaired chat is told how to pair again: enough to help a stranger, not enough to spam one. */
 export const UNPAIRED_NOTICE_MS = 10 * 60_000;
-export const UNPAIRED_NOTICE = "This bot isn't paired with AidenHQ yet. Open the board, then Settings, then Telegram, and tap Pair.";
+export const UNPAIRED_NOTICE = "This bot isn't paired with AidenHQ yet. Open the board, then Settings, then the Telegram setup step, and tap its pairing link.";
 
 /**
  * When the bot isn't paired, a private text message is answered once with how to pair it (and logged); nothing on this path
@@ -70,6 +70,8 @@ export async function answerUnpaired(
   const chatId = String(chat.id);
   const last = sent.get(chatId);
   if (last !== undefined && now - last < UNPAIRED_NOTICE_MS) return false;
+  // Forget chats whose window has passed, so a stranger writing once from many chats can't grow the map forever.
+  for (const [id, at] of sent) if (now - at >= UNPAIRED_NOTICE_MS) sent.delete(id);
   sent.set(chatId, now);
   log.info({ chatId }, "unpaired chat messaged the bot; told how to pair");
   await send(chatId, UNPAIRED_NOTICE).catch(() => undefined);
@@ -152,6 +154,8 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
   const tg = (method: string, body: unknown) =>
     fetch(`${base}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null);
   log.info("telegram polling started");
+  // One rate limiter for the whole poll: a fresh map per update would let every update through.
+  const unpairedSent = new Map<string, number>();
   // The "/" menu in Telegram.
   if (extras) await tg("setMyCommands", { commands: COMMANDS });
   for (;;) {
@@ -169,7 +173,7 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
           continue;
         }
         // Unpaired: a private chat is told how to pair (rate-limited), and nothing goes to the kernel.
-        if (!cfg.telegramChatId) await answerUnpaired(u, (chat_id, text) => tg("sendMessage", { chat_id, text }), log);
+        if (!cfg.telegramChatId) await answerUnpaired(u, (chat_id, text) => tg("sendMessage", { chat_id, text }), log, unpairedSent);
         const m = fromTelegram(u, cfg.telegramChatId);
         const stopping = m && !m.forward && m.text.trim() === "/stop" && extras?.stop ? await extras.stop(m.replyTo) : null;
         // An exact typed reply decides the one card held for that task (typed here, never a voice note or a forward).

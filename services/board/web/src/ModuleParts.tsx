@@ -1,31 +1,36 @@
 // Shared by the Modules list and a module's page: the on/off switch with its turn-off confirm, the Turn on card, a
 // module's state in one word, its facts, and which modules need setup.
 import { useEffect, useState, type ReactNode } from "react";
-import { flows } from "./SetupButton";
+import { useEvents } from "./events";
+import { flows, forgetFlows, pairingNext } from "./SetupButton";
 import { ChangePreview, IN_FLIGHT, useChanges, useFiled } from "./settings-ui";
 import type { Advisory, BrowseModule, FiledChange, ModuleRow } from "./types";
 import { StatusDot, Switch, type StatusTone } from "./ui";
 
-/** Installed modules whose setup flow isn't done (GET /api/setup-flows; absent or failing: none). */
+/** Installed modules whose setup flow isn't done (GET /api/setup-flows; absent or failing: none). Read again when one is paired. */
 export function useSetupNeeded(): Set<string> {
   const [needed, setNeeded] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    void flows().then((l) => setNeeded(new Set(l.filter((f) => !f.done).map((f) => f.module))));
-  }, []);
-  return needed;
-}
-
-/** The unfinished flows that finish by pairing a phone (Telegram): a module switched on with one of these isn't simply on. */
-export function useSetupPairing(): Set<string> {
-  const [needed, setNeeded] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    void flows().then((l) => setNeeded(new Set(l.filter((f) => !f.done && f.paired === false).map((f) => f.module))));
-  }, []);
+  useEvents(["connections"], () => (forgetFlows(), void read(() => flows().then((l) => l.filter((f) => !f.done).map((f) => f.module))).then(setNeeded)));
+  useEffect(() => void read(() => flows().then((l) => l.filter((f) => !f.done).map((f) => f.module))).then(setNeeded), []);
   return needed;
 }
 
 /** What an enabled but unpaired module's action says: pair the phone, then its setup is done. */
 export const PAIR_ACTION = "Pair your phone";
+
+/**
+ * The unfinished flows whose next step is pairing: saved secrets and every sign-in behind them are done, so pairing is all
+ * that is left. A flow still asking for a secret or a sign-in needs that first, not "Pair your phone".
+ */
+export function useSetupPairing(): Set<string> {
+  const [needed, setNeeded] = useState<Set<string>>(new Set());
+  const pairing = () => flows().then((l) => l.filter((f) => !f.done && pairingNext(f)).map((f) => f.module));
+  useEvents(["connections"], () => (forgetFlows(), void read(pairing).then(setNeeded)));
+  useEffect(() => void read(pairing).then(setNeeded), []);
+  return needed;
+}
+
+const read = <T,>(f: () => Promise<T[]>): Promise<Set<T>> => f().then((l) => new Set(l));
 
 type Toggled = Pick<ModuleRow, "name" | "agents" | "routines" | "neededBy" | "state">;
 

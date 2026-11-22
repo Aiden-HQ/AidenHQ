@@ -12,7 +12,7 @@ import { makeChat, startTelegramPoll } from "./chat.js";
 import { quickCommand } from "./commands.js";
 import { kernelClient } from "./kernel.js";
 import { openStore } from "./store.js";
-import { botUsername, createPairing, handleStart, seedOwnerChat } from "./pair.js";
+import { CODE_TTL_MS, botUsername, createPairing, handleStart, seedOwnerChat } from "./pair.js";
 import { buttonsMarkup } from "./telegram.js";
 import { editTelegram, postTelegram, transportSend, type TgConfig } from "./send.js";
 import { transcribe, voiceOn } from "./voice.js";
@@ -71,7 +71,8 @@ async function pair(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const username = await botUsername(cfg.telegramToken);
     const code = pairing.mint();
-    return json(res, 200, { code, link: `https://t.me/${username}?start=${code}` });
+    // expires_in is this service's own code lifetime, so the board times its screen by the live value, not a copy.
+    return json(res, 200, { code, link: `https://t.me/${username}?start=${code}`, expires_in: CODE_TTL_MS });
   } catch (err) {
     return json(res, 502, { error: (err as Error).message });
   }

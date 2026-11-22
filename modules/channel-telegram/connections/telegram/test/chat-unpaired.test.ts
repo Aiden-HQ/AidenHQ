@@ -42,4 +42,15 @@ describe("an unpaired private message", () => {
     expect(await answerUnpaired(privateText(4), send, log, at)).toBe(false); // the failed send still holds the window
     expect(UNPAIRED_NOTICE).not.toMatch(/[A-Za-z0-9_-]{20,}/);
   });
+
+  it("forgets chats whose window has passed, so one limiter held for the whole poll can't grow without bound", async () => {
+    const { sent, log, send } = setup();
+    const at = new Map<string, number>();
+    await answerUnpaired(privateText(1), send, log, at, 1_000);
+    await answerUnpaired(privateText(2), send, log, at, 1_500);
+    expect([...at.keys()]).toEqual(["1", "2"]);
+    await answerUnpaired(privateText(3), send, log, at, 1_000 + UNPAIRED_NOTICE_MS + 1);
+    expect([...at.keys()]).toEqual(["2", "3"]); // chat 1's window has passed and it is forgotten
+    expect(sent.map(([c]) => c)).toEqual(["1", "2", "3"]);
+  });
 });

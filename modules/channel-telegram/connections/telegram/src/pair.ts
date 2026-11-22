@@ -38,7 +38,8 @@ export function createPairing(store: PairStore, now: () => number = Date.now) {
         wrong.delete(chatId);
         return "paired";
       }
-      wrong.set(chatId, [...recent, t]);
+      // Only a code that matched nothing is a wrong try: a right code past its 15 minutes isn't a guess.
+      if (took === "wrong") wrong.set(chatId, [...recent, t]);
       return took;
     },
     paired: (): boolean => Boolean(store.ownerChat()),

@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { CODE_TTL_MS, Pairing } from "../../web/src/SetupFlow";
+import { Pairing } from "../../web/src/SetupFlow";
 import type { SetupFlowView } from "../../web/src/api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -32,10 +32,12 @@ describe("a pair code's expiry", () => {
     vi.useFakeTimers({ now: 1_000_000 });
     let mints = 0;
     let polls = 0;
+    // The channel says how long each code lives: the first 15 minutes, the second only 1.
+    const ttl = [900, 1];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_path: string, init?: RequestInit) => {
-        const body = init?.method === "POST" ? { code: `CODE-${++mints}`, minted_at: Date.now() } : (polls++, { paired: false });
+        const body = init?.method === "POST" ? { code: `CODE-${++mints}`, minted_at: Date.now(), expires_in: ttl[mints - 1] } : (polls++, { paired: false });
         return { ok: true, status: 200, text: async () => JSON.stringify(body) };
       }),
     );
@@ -52,7 +54,7 @@ describe("a pair code's expiry", () => {
     expect(el.textContent).toContain("It works once, for 15 minutes.");
 
     // Still waiting a minute before the code's life ends; then it has.
-    await advance(CODE_TTL_MS - 60_000);
+    await advance(15 * 60_000 - 60_000);
     expect(el.textContent).toContain("CODE-1");
     expect(el.textContent).not.toContain("That code expired");
     await advance(60_000);
@@ -70,5 +72,8 @@ describe("a pair code's expiry", () => {
     await flush();
     expect(el.textContent).toContain("CODE-2");
     expect(el.textContent).not.toContain("That code expired");
+    // This one lives a second, as its channel said: not the 15 minutes of the one before.
+    await advance(1_100);
+    expect(el.textContent).toContain("That code expired. Get a new one.");
   });
 });

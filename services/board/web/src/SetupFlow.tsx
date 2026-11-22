@@ -313,40 +313,33 @@ export function Steps({ text }: { text: string }) {
 /** A pairing time (the service's ISO string, or ms) as ms. */
 const ms = (t: string | number | undefined) => (typeof t === "number" ? (t < 1e12 ? t * 1000 : t) : t ? Date.parse(t) : NaN);
 
-/** A pair code lives 15 minutes (the channel's CODE_TTL_MS): after that the board stops waiting and offers a new one. */
-export const CODE_TTL_MS = 15 * 60_000;
-
 export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void }) {
   // `was`: paired already when minted. Then only a pairing time after the mint shows the re-pair; with no time, keep waiting.
-  const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number; was: boolean } | null>(null);
+  // `ends`: when this code dies by this browser's clock, from the lifetime the channel gave; `minted_at` stays the board's
+  // clock, to compare with the service's `paired_at`.
+  const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number; ends: number; was: boolean } | null>(null);
   const [expired, setExpired] = useState(false);
   const live = pair !== null && !expired;
   useEffect(() => {
     if (!live) return;
-    // Paired by this code: a pairing after it was minted, or, from unpaired, any pairing when the service gives no time.
-    const t = setInterval(
-      () =>
-        api.setupPaired(flow.module).then(
-          (r) => {
-            if (r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was)) {
-              setPair(null);
-              setExpired(false);
-              void reload();
-            }
-          },
-          () => {},
-        ),
-      2000,
-    );
-    return () => clearInterval(t);
+    // A pairing the service now reports is this code's if it happened after the mint, or, from unpaired, when it gives no time.
+    const check = (): Promise<boolean> =>
+      api.setupPaired(flow.module).then(
+        (r) => {
+          if (!(r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was))) return false;
+          setPair(null);
+          setExpired(false);
+          void reload();
+          return true;
+        },
+        () => false,
+      );
+    // The last check runs when the code dies: one made at the end of its life is shown as paired, not expired.
+    const last = setTimeout(() => void check().then((pairedNow) => !pairedNow && setExpired(true)), Math.max(0, pair.ends - Date.now()));
+    const t = setInterval(() => void check(), 2000);
+    return () => (clearInterval(t), clearTimeout(last));
   }, [live, pair, flow.module, reload]);
-  // The same 15 minutes the channel keeps a code: once they pass, stop asking and say so.
-  useEffect(() => {
-    if (!live) return;
-    const t = setTimeout(() => setExpired(true), Math.max(0, pair.minted_at + CODE_TTL_MS - Date.now()));
-    return () => clearTimeout(t);
-  }, [live, pair]);
-  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), setPair({ ...r, was: flow.paired })), fail);
+  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), setPair({ ...r, ends: Date.now() + (r.expires_in ?? 15 * 60) * 1000, was: flow.paired })), fail);
   if (pair && expired) {
     return (
       <div className="setup-actions">
