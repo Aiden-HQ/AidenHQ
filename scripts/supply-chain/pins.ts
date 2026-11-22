@@ -331,13 +331,19 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // before this redirect: `cat > f </dev/null` names the stdin override after the write.
     const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
     const catInput = passThrough ? stdinOf(catText) : undefined;
-    // A bare `cat` with a file operand reads that file, not the pipe: `echo a | cat /tmp/v.list > vendor.list` copies
-    // /tmp/v.list, so the upstream `a` does not reach vendor.list.
-    const catOperand = passThrough && !catInput ? /^\s*cat\s+([^\s<>|;&]+)/.exec(catText)?.[1] : undefined;
+    // `cat`'s file operands, with redirects and options removed. `-` is stdin by name, so it is dropped here and the
+    // pipe is used only when some operand actually reads it. `echo a | cat /tmp/v.list > vendor.list` copies
+    // /tmp/v.list, so the upstream `a` does not reach vendor.list; `cat /dev/null /tmp/v.list` writes the second file,
+    // not nothing.
+    const catFiles = passThrough
+      ? words(catText.replace(/^\s*cat\b/, "").replace(/(?<!\d)(?:\d+)?(?:<|>|>>?)\s*\S+/g, " ")).map(unmask).filter((a) => a !== "-" && !a.startsWith("-"))
+      : [];
+    const stdinByName = passThrough && /(?:^|\s)-(?:\s|$)/.test(catText.replace(/(?<!\d)(?:\d+)?(?:<|>|>>?)\s*\S+/g, " "));
     const through: Pick<Written, "content" | "text"> | undefined = passThrough
-      ? catOperand ? { content: unmask(strip(catOperand)) === "/dev/null" ? "empty" : "unknown" }
-        : catInput ? { content: unmask(strip(catInput)) === "/dev/null" ? "empty" : "unknown" }
-        : flow(part - 1)
+      ? catFiles.length === 1 && catFiles[0] === "/dev/null" ? { content: "empty" }
+        : catFiles.length ? { content: "unknown" }
+        : (stdinByName || !catInput) ? flow(part - 1)
+        : catInput === "/dev/null" ? { content: "empty" } : { content: "unknown" }
       : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand(code.slice(cStart, cEnd))) } : undefined;
     const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with

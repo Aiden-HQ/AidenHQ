@@ -839,6 +839,12 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2 >/dev/null\nRUN apt-get install -y foo\n`).problems.length, 1);
   // A `cat` with its own file operand reads that file, not the pipe.
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /tmp/vendor.list > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // Every operand counts, not just the first: `-` is stdin, and one readable file among `/dev/null`s still writes
+  // that file's content.
+  for (const operands of ["-", "/dev/null /tmp/vendor.list", "/tmp/vendor.list /dev/null", "- /tmp/vendor.list"])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat ${operands} > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1, operands);
+  // Only `/dev/null` as the sole operand writes nothing.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
   // Its fd 0 is read over the whole command, so a `</dev/null` after the write still empties the file.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat > /etc/apt/sources.list.d/vendor.list </dev/null\nRUN apt-get install -y foo\n`).problems, []);
   // `>|` is noclobber, not the end of `tee`'s operand list: the file after it is still written.
