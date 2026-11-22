@@ -62,6 +62,31 @@ describe("the Pair step while the bot restarts", () => {
     expect(calls).toEqual(["POST", "POST", "POST"]);
   });
 
+  it("ends the restart wait once a mint succeeds, so a later 409 is a real conflict", async () => {
+    vi.useFakeTimers();
+    const answers: ("409" | "ok")[] = ["409", "ok", "409"];
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      const a = answers.shift()!;
+      if (a === "ok") return answer(200, { code: "ABCD-1234", minted_at: Date.now(), expires_in: 1 });
+      return answer(409, { error: "Save the bot token first." });
+    }));
+    const fail = vi.fn();
+    const el = await render(WINDOW, fail);
+    await act(async () => button(el).click());
+    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    expect(el.textContent).toContain("Restarting the bot…");
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2500)));
+    expect(el.textContent).toContain("ABCD-1234");
+    // Let the short-lived code expire, then mint again: the module answered with a code, so its token is loaded and this 409 is
+    // a genuine conflict, not another wait on the window the save opened.
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+    const again = [...el.querySelectorAll("button")].find((b) => b.textContent?.includes("Get a new pairing code"))!;
+    await act(async () => again.click());
+    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    expect(fail).toHaveBeenCalledWith(expect.objectContaining({ status: 409 }));
+    expect(el.textContent).not.toContain("Restarting the bot…");
+  });
+
   it("reports a 409 at once when no restart was reported", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer(409, { error: "Save the bot token first." })));
     const fail = vi.fn();

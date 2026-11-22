@@ -142,7 +142,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
     const res = await doFetch(url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(PAIR_TIMEOUT_MS) }).catch((e: unknown) => {
       throw new AccountError((e as Error)?.name === "TimeoutError" ? 504 : 503, (e as Error)?.name === "TimeoutError" ? `${f.module} didn't answer in time` : `${f.module} isn't reachable yet`);
     });
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    // The body is part of the answer: a response cut off mid-body (the module restarted while sending it) is a timeout too,
+    // so the page neither reads it as an empty success nor retries it as a second mint.
+    const data = (await res.json().catch((e: unknown) => {
+      throw new AccountError((e as Error)?.name === "TimeoutError" ? 504 : 502, (e as Error)?.name === "TimeoutError" ? `${f.module} didn't answer in time` : `${f.module} sent a bad answer`);
+    })) as Record<string, unknown>;
     // 409 is the module's conflict (for pairing, a token it does not have yet): keep it, so the page can decide whether a
     // reported restart makes it retryable. Every other refusal is the board's 502.
     if (!res.ok) throw new AccountError(res.status === 409 ? 409 : 502, String(data.error ?? `${f.module} answered ${res.status}`));

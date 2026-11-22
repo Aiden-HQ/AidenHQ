@@ -328,6 +328,11 @@ export function Pairing({ flow, reload, fail, restartFor }: { flow: SetupFlowVie
     if (!restartFor) return;
     setRestartUntil(Date.now() + restartFor);
   }, [restartFor]);
+  /** End the wait: the module answered, so its old token-less process is gone and a later 409 is a real conflict. */
+  const restartOver = () => {
+    setRestartUntil(undefined);
+    setRestarting(false);
+  };
   // `was`: paired already when minted. Then only a pairing time after the mint shows the re-pair; with no time, keep waiting.
   // `ends`: when this code dies by this browser's clock, from the lifetime the channel gave; `minted_at` stays the board's
   // clock, to compare with the service's `paired_at`.
@@ -399,7 +404,7 @@ export function Pairing({ flow, reload, fail, restartFor }: { flow: SetupFlowVie
           if (!mounted.current) return;
           const r = await api.setupPair(flow.module);
           if (!mounted.current) return;
-          setRestarting(false);
+          restartOver();
           setExpired(false);
           minted.current++;
           setPair({ ...r, ends: Date.now() + (r.expires_in ?? PAIR_TTL_S) * 1000, was: flow.paired });

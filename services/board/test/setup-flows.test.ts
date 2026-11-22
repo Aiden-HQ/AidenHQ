@@ -30,11 +30,22 @@ const google = {
 let paired = false;
 let pairRefusal: { status: number; error: string } | null = null;
 let pairUnreachable: boolean | "timeout" = false;
+// The module's headers arrive but its body is cut off (it restarted while answering): the read itself times out.
+let pairBodyTimeout = false;
 const pairCalls: { method: string; auth: string }[] = [];
 const fakePair = (async (_url: string, init: RequestInit) => {
   pairCalls.push({ method: String(init.method), auth: String((init.headers as Record<string, string>).authorization) });
   if (pairUnreachable === "timeout") throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
   if (pairUnreachable) throw new TypeError("fetch failed");
+  if (pairBodyTimeout) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+      },
+    } as unknown as Response;
+  }
   if (init.method === "POST" && pairRefusal) return new Response(JSON.stringify({ error: pairRefusal.error }), { status: pairRefusal.status });
   return new Response(JSON.stringify(init.method === "POST" ? { code: "ABCD-1234", link: "https://t.me/bot?start=ABCD" } : { paired, ...(paired ? { paired_at: "2026-11-17T10:00:00.000Z" } : {}) }), { status: 200 });
 }) as unknown as typeof fetch;
@@ -167,6 +178,15 @@ describe("setup flows", () => {
     expect(await admin("GET", "/api/setup-flows/phone/pair")).toMatchObject({ status: 503, json: { error: "phone isn't reachable yet" } });
     expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 503, json: { error: "phone isn't reachable yet" } });
     pairUnreachable = false;
+  });
+
+  it("a module whose answer is cut off mid-body is a 504 too, not an empty 200", async () => {
+    pairBodyTimeout = true;
+    try {
+      expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 504, json: { error: "phone didn't answer in time" } });
+    } finally {
+      pairBodyTimeout = false;
+    }
   });
 
   it("a module that doesn't answer in time is a 504, not a 503 the page could repeat as a second mint", async () => {
