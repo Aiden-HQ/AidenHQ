@@ -174,6 +174,7 @@ const http = createServer(async (req, res) => {
         return send(res, 200, codehost ? { prs: local } : {});
       }
       const ours = await fleetPrs(kernelUrl, serviceKey);
+      if (!ours.length) return send(res, 200, { prs: local }); // no GitHub PR to look up (a local-code-host install may have no GitHub sync)
       const r = await d.pool.query("SELECT i.repo, i.number, i.created_at_src AS opened_at, i.draft FROM src_github.issues i WHERE i.kind = 'pr' AND i.state = 'open' AND lower(i.repo) = ANY($1::text[])", [[...new Set(ours.map((o) => o.repo))]]);
       r.rows = fleetOnly(r.rows, ours);
       return send(res, 200, { prs: [...r.rows.map((x: { repo: string; number: number }) => ({ ...x, ...previewOf(x.repo, x.number) })), ...local] });
