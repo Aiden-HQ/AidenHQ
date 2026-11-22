@@ -1,5 +1,5 @@
 [Unit]
-Description=AidenHQ Docker cleanup (build cache and images nothing has used for two days)
+Description=AidenHQ Docker cleanup (stopped containers over a day old, build cache and images nothing has used for two days)
 
 [Service]
 Type=oneshot
@@ -7,8 +7,14 @@ Type=oneshot
 # images a container still uses are never removed. Computer images are rebuilt by apply-config when missing. The build
 # cache is capped by size, least recently used first: an `until` filter freed nothing on the containerd image store
 # (104 GB of cache on the EX44, 2026-11-18).
-ExecStart=/usr/bin/docker builder prune -f --max-used-space 20GB
-ExecStart=/usr/bin/docker image prune -af --filter until=48h
+#
+# Each prune is independent: the `-` prefix makes systemd ignore that command's exit status, so a failed builder prune
+# (a buildx flag or plugin problem, a 20 s status timeout) never skips the image or container prune below.
+ExecStart=-/usr/bin/docker builder prune -f --max-used-space 20GB
+ExecStart=-/usr/bin/docker image prune -af --filter until=48h
+# A one-off that dies without --rm keeps its whole writable layer forever, and nothing pruned stopped containers. Only
+# containers that are stopped AND over a day old go; container prune never removes a volume, so no data is touched.
+ExecStart=-/usr/bin/docker container prune -f --filter until=24h
 
 [Install]
 WantedBy=default.target

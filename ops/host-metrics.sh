@@ -101,3 +101,58 @@ gens="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
     echo "aidenhq_apply_failed 0"
   fi
 } | write generations.prom
+
+# Docker's own disk usage: which consumer is filling `/` (images, containers, build cache, local volumes), so DiskSpaceLow
+# can name it from a query instead of an inference. `docker system df` walks every image, container and volume, so it is
+# capped; when it errors or times out this run writes nothing and docker.prom goes stale (HostMetricsStale says the size
+# is unknown) rather than writing a zero that would read as "Docker holds nothing".
+# Each row is flat JSON ({"Active":...,"Reclaimable":...,"Size":...,"TotalCount":...,"Type":...}); one gauge per type.
+docker_sizes() { # the rows on stdin -> the gauges; a row it cannot read is skipped, never guessed
+  awk '
+    function field(key,  re, s) {
+      re = "\"" key "\":\"([^\"]*)\""
+      if (!match($0, re)) return ""
+      s = substr($0, RSTART, RLENGTH)
+      sub("^\"" key "\":\"", "", s); sub("\"$", "", s)
+      return s
+    }
+    function nbytes(s,  n, u) {
+      sub(/[[:space:]].*$/, "", s) # "23.7GB (94%)" -> "23.7GB"
+      if (!match(s, /^[0-9]+(\.[0-9]+)?/)) return ""
+      n = substr(s, 1, RLENGTH) + 0
+      u = substr(s, RLENGTH + 1)
+      if (u == "PB") return n * 1000000000000000
+      if (u == "TB") return n * 1000000000000
+      if (u == "GB") return n * 1000000000
+      if (u == "MB") return n * 1000000
+      if (u == "kB") return n * 1000
+      if (u == "B" || u == "") return n
+      return ""
+    }
+    function gauge(t) {
+      if (t == "Images") return "images"
+      if (t == "Containers") return "containers"
+      if (t == "Build Cache") return "build_cache"
+      if (t == "Local Volumes") return "volumes"
+      return ""
+    }
+    {
+      g = gauge(field("Type")); if (g == "") next
+      s = nbytes(field("Size")); if (s == "") next
+      printf "aidenhq_docker_%s_size_bytes %.0f\n", g, s
+      r = nbytes(field("Reclaimable")); if (r != "") printf "aidenhq_docker_%s_reclaimable_bytes %.0f\n", g, r
+    }'
+}
+if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ] \
+  && gauges="$(printf '%s\n' "$df" | docker_sizes)" && [ -n "$gauges" ]; then
+  {
+    for g in images containers build_cache volumes; do
+      case "$g" in images) what="Docker images" ;; containers) what="Docker containers' writable layers" ;; build_cache) what="the Docker build cache" ;; volumes) what="local Docker volumes" ;; esac
+      echo "# HELP aidenhq_docker_${g}_size_bytes Disk used by $what (docker system df)."
+      echo "# TYPE aidenhq_docker_${g}_size_bytes gauge"
+      echo "# HELP aidenhq_docker_${g}_reclaimable_bytes Disk Docker reports reclaimable for $what (docker system df)."
+      echo "# TYPE aidenhq_docker_${g}_reclaimable_bytes gauge"
+    done
+    printf '%s\n' "$gauges"
+  } | write docker.prom
+fi

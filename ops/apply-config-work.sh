@@ -775,7 +775,8 @@ switchOver() {
   lap units
   # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling) and build cache behind: drop
   # images older than 48 hours and cap the cache at 20 GB (least recently used first; prune-docker.service says why).
-  # Images a container uses and volumes are never touched.
+  # Images a container uses and volumes are never touched. Each prune is independent (`|| true`, the shell's form of the
+  # unit's `-` prefix): a failing builder prune must not skip the image prune on every apply.
   docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
   docker image prune -af --filter until=48h >/dev/null 2>&1 || true
   lap prune
