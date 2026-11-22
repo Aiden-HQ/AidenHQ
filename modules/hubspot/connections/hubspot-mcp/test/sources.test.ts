@@ -139,14 +139,44 @@ it("owners: every page of search_owners, active or not, by owner id (HubSpot sen
   };
   const seen: unknown[] = [];
   const call = async (tool: string, args: Record<string, any>) => (expect(tool).toBe("search_owners"), seen.push(args.offset), json(pages[String(args.offset ?? "")]));
-  expect(await listOwners(call)).toEqual([{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }, { id: "20", name: "Grace Hopper" }]);
+  expect(await listOwners(call)).toEqual({ owners: [{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }, { id: "20", name: "Grace Hopper" }] });
   expect(seen).toEqual([undefined, 20]);
 
   seen.length = 0;
-  expect((await listOwners(call, Date.now() - 1)).length).toBe(2); // a spent budget stops after the page in hand
-  expect(seen).toEqual([undefined]);
+  const part = await listOwners(call, Date.now() - 1); // a spent budget stops after the page in hand and says where to resume
+  expect(part.owners.length).toBe(2);
+  expect(part.next).toBe(20);
+  expect((await listOwners(call, Infinity, 20)).owners.map((o) => o.id)).toEqual(["20"]);
 
   const { store, writes } = fakeStore();
+  await syncReference(store, call, ["contacts"], Date.now() - 1); // budget spent after page one: the offset is kept
+  expect(writes.map((w) => w.row.user_id)).toEqual(["11", "12"]);
+  expect((await store.scope("owners")).cursor).toBe("20");
+  seen.length = 0;
+  await syncReference(store, call, ["contacts"]); // the next pass resumes there and, reaching the end, clears it
+  expect(seen).toEqual([20]);
+  expect((await store.scope("owners")).cursor).toBe("");
+  writes.length = 0;
   await syncReference(store, call, ["contacts"]);
   expect(writes.map((w) => [w.table, w.row.user_id, w.row.display_name])).toEqual([["users", "11", "Ada Lovelace"], ["users", "12", null], ["users", "20", "Grace Hopper"]]);
+});
+
+it("a budget spent right after the first page of a bulk-edit time still saves the switch to id paging", async () => {
+  const TIE = "2026-09-01T04:00:00.000Z";
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const data = Array.from({ length: 450 }, (_, i) => ({ id: i + 1, time: TIE }));
+  const { store, scopes } = fakeStore();
+  scopes.set("contacts", { baselined: true, cursor: TIE });
+  await syncObject(store, searchOver(data, contact), "contacts", opts({ deadline: Date.now() - 1 }));
+  expect(scopes.get("contacts")?.cursor).toBe(`${TIE}#0`);
+});
+
+it("a bulk edit that is recent when its id scan finishes is read again next pass, for records HubSpot indexes late", async () => {
+  const T = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { lastmodifieddate: time } });
+  const data = Array.from({ length: 450 }, (_, i) => ({ id: i + 1, time: T }));
+  const { store, scopes } = fakeStore();
+  scopes.set("contacts", { baselined: true, cursor: T });
+  await syncObject(store, searchOver(data, contact), "contacts", opts());
+  expect(scopes.get("contacts")?.cursor).toBe(T); // not T + 1 ms: the lookback is clamped to where the pass began
 });

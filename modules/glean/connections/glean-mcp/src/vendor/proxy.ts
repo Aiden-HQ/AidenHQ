@@ -89,7 +89,8 @@ export type VendorProxy = HttpServer & {
 
 // The upstream refused the token: refresh once and retry. A refresh that failed (AuthError) already marked what it meant
 // (refused: expired; the vendor's 5xx: not), so it is never retried here.
-const isAuthFailure = (err: unknown) => !(err instanceof AuthError) && /401|unauthori[sz]ed|unauthenticated|invalid_token|not_authenticated/i.test(String(err));
+// HubSpot answers an expired token with a bare 401 (no text), so the transport error's status counts too.
+const isAuthFailure = (err: unknown) => !(err instanceof AuthError) && ((err as { code?: unknown })?.code === 401 || /401|unauthori[sz]ed|unauthenticated|invalid_token|not_authenticated/i.test(String(err)));
 const refusal = (text: string): CallToolResult => ({ isError: true, content: [{ type: "text", text }] });
 // Reads run unattended in Codex as read-only, closed-world tools. Every other tool is a write the kernel files as a record and
 // its tier decides before anything runs; these hints only keep the harness from stopping to ask a person who isn't there.

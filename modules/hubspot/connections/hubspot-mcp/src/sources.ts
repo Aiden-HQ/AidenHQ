@@ -179,8 +179,9 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         if (Date.now() >= deadline) return void (state.ended = false);
         continue;
       }
-      if (Date.now() >= deadline) return void (state.ended = false);
       afterId = "0";
+      state.tieId = afterId; // saved with the cursor, so a spent budget still switches the next pass to id paging
+      if (Date.now() >= deadline) return void (state.ended = false);
     }
     let id = afterId;
     for (;;) {
@@ -252,7 +253,11 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
 export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[], deadline = Infinity): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
-  for (const o of await listOwners(call, deadline)) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
+  // The owner scan resumes where the last pass's budget ran out (its cursor is the next offset; empty once it reached the end).
+  const from = (await store.scope("owners")).cursor || undefined;
+  const { owners, next } = await listOwners(call, deadline, from === undefined ? undefined : Number(from));
+  for (const o of owners) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
+  await store.saveScope("owners", next === undefined ? "" : String(next));
   if (kinds.includes("deals"))
     for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
