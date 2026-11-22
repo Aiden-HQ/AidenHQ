@@ -324,10 +324,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
     }
     return [start, end];
   };
-  // A command's stdout goes wherever fd 1 finally lands, and every other `>` truncates its own file. The shell opens
-  // every destination before it runs the command, so a truncation applies before any write to the same path:
+  // A command's stdout goes wherever fd 1 finally lands, and every other `>` truncates its own file. The shell opens all
+  // of one command's destinations before it runs it, so a truncation applies before any write to the same path:
   // `> vendor.list 3>&1 > vendor.list 1>&3` truncates vendor.list and then writes the line to it through the first one.
-  interface Entry { path: string; append: boolean; takes: boolean; content: Pick<Written, "content" | "text"> }
+  interface Entry { path: string; append: boolean; takes: boolean; cmd: number; content: Pick<Written, "content" | "text"> }
   const entries: Entry[] = [...clean.matchAll(REDIRECT)].map((m) => {
     const append = m[2] === ">>";
     const part = parts.findIndex((q) => m.index! >= q.start && m.index! < q.end);
@@ -349,15 +349,16 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // which we can't read, so its file is unknown rather than claimed empty; a stdout redirect that lost fd 1 is empty.
     const stdoutFd = m[1] === "" || m[1] === "1";
     const content = takes ? written : { content: stdoutFd ? (append ? "none" as const : "empty" as const) : "unknown" as const };
-    return { path: unmask(strip(m[3]!)), append, takes, content };
+    return { path: unmask(strip(m[3]!)), append, takes, cmd: cStart, content };
   });
-  // Within one path a truncation comes before the write that takes stdout, whatever order the redirects were written:
-  // the shell opens a pipeline's destinations for every stage before it runs any of them, so a later stage's truncation
-  // still precedes an earlier stage's write (`a > f | b > f > log` leaves a's line in f).
+  // Within one command a truncation comes before the write that takes stdout, whatever order its redirects were written:
+  // the shell opens all of a command's destinations before it runs it. Two commands are separate — bash opens each
+  // pipeline stage's redirects just before that stage runs, left to right, so `a > f | b > f` ends with f empty (b's
+  // truncation follows a's write) — so entries only reorder within one command span.
   const rank = (e: Entry) => (e.takes ? 2 : e.append ? 1 : 0);
   entries
     .map((e, i) => ({ e, i }))
-    .sort((a, b) => (a.e.path === b.e.path ? rank(a.e) - rank(b.e) || a.i - b.i : a.i - b.i))
+    .sort((a, b) => (a.e.path === b.e.path && a.e.cmd === b.e.cmd ? rank(a.e) - rank(b.e) || a.i - b.i : a.i - b.i))
     .forEach(({ e }) => add(e.path, e.append, e.content));
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
