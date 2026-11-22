@@ -35,8 +35,9 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   // A review's own line comments (review-post.ts records their ids).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}/comments$`) },
-  // One review comment by id: whether it is on this pull request, and (a reply) which comment it answers.
-  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}$`) },
+  // One review comment by id (repository-scoped, as GitHub documents it): whether it is on a pull request, and (a reply)
+  // which comment it answers.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/comments/${NUM}$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
   // A PR's commits (code-review-read.ts messages: the agents its trailers name).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/commits$`) },
@@ -105,6 +106,11 @@ const resolveDoc = (n: number) => `mutation(${Array.from({ length: n }, (_, i) =
 const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveDoc(i + 1))]);
 
 export class GitHubRefused extends Error {}
+
+/** GitHub's non-2xx answer to a request: `status` lets a caller tell a not-found from an outage. */
+export class GitHubHttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
 
 /**
  * A review comment's id from `fullDatabaseId` (a BigInt, sent as a JSON string; GitHub's `databaseId` is 32-bit and deprecated),
@@ -261,7 +267,7 @@ export class GitHub {
       // Through the owner's client: its rate limiter, and a typed need (client.ts) for what the owner must fix.
       const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body, this.identity ? { as: this.identity } : {});
       // GitHub answers 404 for private repositories the account can't see.
-      if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${errorDetail(r.body)}`);
+      if (r.status >= 300) throw new GitHubHttpError(r.status, `GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${errorDetail(r.body)}`);
       // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
       return (r.body ?? {}) as T;
     }
@@ -470,12 +476,13 @@ export class GitHub {
    */
   private async threadRoot(ref: Ref, comment: number): Promise<number> {
     type Comment = { id: number; pull_request_url: string; in_reply_to_id?: number | null };
-    const base = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`;
     const read = async (id: number): Promise<Comment> => {
       try {
-        return await this.request<Comment>("GET", `${base}/${id}`);
+        return await this.request<Comment>("GET", `/repos/${ref.owner}/${ref.repo}/pulls/comments/${id}`);
       } catch (e) {
-        throw new GitHubRefused(`comment ${id} isn't a review comment of ${ref.owner}/${ref.repo}#${ref.number} (${(e as Error).message.slice(0, 240)}): there is no thread to reply on`);
+        // A 404 is the answer "no such comment here"; a rate limit, a 5xx or a lost connection is not, and is passed on as it is.
+        if (e instanceof GitHubHttpError && e.status === 404) throw new GitHubRefused(`comment ${id} isn't a review comment of ${ref.owner}/${ref.repo} (${e.message.slice(0, 240)}): there is no thread to reply on`);
+        throw e;
       }
     };
     let current = await read(comment);

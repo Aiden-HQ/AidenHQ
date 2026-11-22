@@ -170,7 +170,7 @@ describe("GitHub", () => {
         const method = init?.method ?? "GET";
         calls.push({ method, path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
         if (method === "POST" && /\/pulls\/7\/comments\/\d+\/replies$/.test(url.pathname)) return answer();
-        const m = url.pathname.match(/^\/repos\/a\/b\/pulls\/7\/comments\/(\d+)$/);
+        const m = url.pathname.match(/^\/repos\/a\/b\/pulls\/comments\/(\d+)$/);
         if (method === "GET" && m && comments[Number(m[1])]) return new Response(JSON.stringify(comments[Number(m[1])]), { status: 200 });
         return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
       }) as typeof fetch;
@@ -214,7 +214,7 @@ describe("GitHub", () => {
     it("an id that isn't a review comment of the pull request fails with its reason, and nothing is posted", async () => {
       const { impl, calls } = fakeReplies({});
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(GitHubRefused);
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't a review comment of a\/b#7/);
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't a review comment of a\/b/);
       expect(posts(calls)).toHaveLength(0);
     });
 
@@ -228,6 +228,21 @@ describe("GitHub", () => {
       const { impl, calls } = fakeReplies({ 100: reply(100, 101), 101: reply(101, 100) });
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden")).rejects.toThrow(/broken reply chain/);
       expect(posts(calls)).toHaveLength(0);
+    });
+
+    it("a lookup that fails upstream (not a 404) is passed on, not reported as a missing comment", async () => {
+      const calls: { method: string; path: string }[] = [];
+      const impl = (async (input: URL | string, init?: RequestInit) => {
+        const url = new URL(String(input));
+        calls.push({ method: init?.method ?? "GET", path: url.pathname });
+        if ((init?.method ?? "GET") === "GET" && /^\/repos\/a\/b\/pulls\/comments\/\d+$/.test(url.pathname)) return new Response(JSON.stringify({ message: "Server Error" }), { status: 503 });
+        return new Response("Not Found", { status: 404 });
+      }) as typeof fetch;
+      const err = await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden").catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(GitHubRefused);
+      expect(String(err.message)).toMatch(/GitHub 503/);
+      expect(calls.some((c) => c.method === "POST")).toBe(false);
     });
 
     it("a 422 surfaces GitHub's errors[] field and code", async () => {
