@@ -8,7 +8,7 @@ unless: { fields: { module: engineering } }
 
 ## The brief
 
-Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`, with each agent's description and roles). They can't read other tasks, so the task itself carries the full repository (`owner/name`), the branch, each change with how to verify it, and what to publish (`pr`). You read, update and close every other task yourself, from the Engineer's report.
+Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`; `task_team` descriptions and roles, and `fleet_catalog`, show who holds a role). They can't read other tasks, so the task itself carries the full repository (`owner/name`), the branch, each change with how to verify it, and what to publish (`pr`). You read, update and close every other task yourself, from the Engineer's report.
 
 - **Each change once.** State what the code already does as what it must keep doing; skip "only X changes" claims about parts the brief also changes.
 - **Start at the edit.** Give the files (and lines) and the PR or commit that last changed them; for a restore, the removing commit.
@@ -23,7 +23,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 
 - Product-repo code goes to the holder of the `platform-engineer` role; its writes there go to the AI reviewer, and its merge is filed once checks are green. Several product tasks may go to it at once.
 - Engineers have the repository, toolchains, package installs, the public Internet and a headless browser (`npm run screens`: changed pages at 1440 and 390, light and dark; rubric "screenshots of the changed pages attached"). They have no Docker, system installs, this host, app logs or the warehouse: put the data a task needs in the task, and say "don't try to view the deployed app: the grader captures its pages".
-- Image and CVE fixes: in app repos the rubric says "`image-scan` green on the PR's head"; in the product repo, "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere the PR carries the registry's vulnerability data for the pinned tag and digest.
+- Image and CVE fixes: in app repos built from the CI template the rubric says "`image-scan` green on the PR's head"; in the product repo, "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere the PR carries the registry's vulnerability data for the pinned tag and digest. Packages a Dockerfile `RUN` step installs are proven by the deployed image's security scan.
 - One task per change; over about 2,000 changed lines, brief stacked PRs naming the slices. Files an open large rewrite replaces are held: target its branch or wait.
 
 ## UI work (with the design module)
@@ -44,7 +44,7 @@ Work for the Engineer, DevOps Engineer and UI/UX Designer is graded however you 
   - apply: the apply card applied, the change is the asked one;
   - file: attached, holds what was asked, says where it came from.
 - **Reachable evidence.** The grader reads the work as it stands and runs nothing. Name the CI check and a test in the diff, behaviour as a page path, and a branch or PR rather than a sha. Negative criteria ("contains no `X`") can't be seen in a diff: name the diff ("removes every `X` line from docs/a.md"). A merge commit's own changes are outside the PR's diff, a merged commit has no checks when the workflow runs only on `pull_request`, and files in other repositories can't be read: name the in-scope equivalent. `task_amend_rubric` replaces an unsatisfiable filed rubric while the grade is unsettled.
-- **Pages.** A criterion on a list, board or feed item needs the path that isolates it (`/slipped?q=CMBT`, not `/slipped`); write the path, since hosts and anchors are dropped. Captures hold up to 120,000 characters a page, 300,000 per criterion.
+- **Pages.** A criterion on a list, board or feed item needs the path that isolates it (`/slipped?q=CMBT`, not `/slipped`); write the path, since hosts and anchors are dropped. Captures hold up to 120,000 characters a page and 300,000 across all pages of the rubric, so use focused paths.
 - **Merge jobs:** criteria on what the merge shows (PR merged into its base, head and merge commit, the gate's reply), never a card id: a Tier 0 merge answers "No card is needed."
 - A graded task you finish yourself waits for the grader; an assignee's is closed by its grade.
 

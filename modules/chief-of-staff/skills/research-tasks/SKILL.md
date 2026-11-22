@@ -6,7 +6,7 @@ when: { fields: { name: Researcher } }
 
 # A task assigned to you
 
-1. Read `task_current`, `task_comments` (the user's instructions and earlier work) and `task_files` (attached files are context).
+1. Read `task_current`, `task_comments` (the user's instructions and earlier work) and `task_files`, reading each attachment with `task_file_read` (attached files are context).
    - A task Aiden delegated says so on its first line; its `parent` is Aiden's, the description is your brief with its done condition, and you close it with `task_finish`.
    - Otherwise a `parent` means this task is your part of the user's task; others may work on it too. The parent is context, your instructions are this task's description and the user's comments here. Post on this task and end with `task_handoff` (never `task_finish`): the user replies here and closes it.
    - Other agents' work or tasks the user mentions: read it where it is (`task_comments` on the parent and the `parts` `task_current` lists, `task_files` on their part, `task_search`) before saying you can't find it.
