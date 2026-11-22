@@ -59,6 +59,16 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 /** One digest message stays under every transport's limit (Telegram cuts at 3,500 characters). */
 const DIGEST_MAX = 3000;
 const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`;
+/** Consecutive pieces of `items`, each rendering under DIGEST_MAX. */
+function chunks<T>(items: T[], render: (t: T) => string): T[][] {
+  const out: T[][] = [];
+  for (const i of items) {
+    const b = out.at(-1);
+    if (b && [...b, i].map(render).join("\n").length <= DIGEST_MAX) b.push(i);
+    else out.push([i]);
+  }
+  return out;
+}
 
 /**
  * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
@@ -76,12 +86,7 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   const done = JSON.parse(store.getKv("digest:needs-sent") || "{}") as { slot?: string; ids?: string[] };
   const delivered = new Set(done.slot === slot ? done.ids : []);
   const items = [...q, ...(asked ?? (q.length ? ["couldn't check connections"] : [])).map(extra).filter((i) => !delivered.has(i.id!))];
-  const batches: Item[][] = [];
-  for (const i of items) {
-    const b = batches.at(-1);
-    if (b && [...b, i].map(line).join("\n").length <= DIGEST_MAX) b.push(i);
-    else batches.push([i]);
-  }
+  const batches = chunks(items, line);
   for (const [n, b] of batches.entries()) {
     const head = `Digest${batches.length > 1 ? ` (${n + 1}/${batches.length})` : ""}: ${b.length} update${b.length > 1 ? "s" : ""}`;
     const out = await send(`${head}\n\n${b.map(line).join("\n")}`);
@@ -108,12 +113,19 @@ export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "diges
   if (!lines) return false;
   const sig = lines.join("\n");
   if (!sig) {
+    store.setKv("needs:done", "[]");
     store.setKv("needs:sig", ""); // a recovery is always observed, so the same failure returning tomorrow is new
     return false;
   }
   if (store.getKv("needs:day") === day) return false;
   if (store.getKv("needs:sig") === sig) return false;
-  if ((await send(`Connections that need you:\n\n${lines.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
+  // Sent in chunks under the transport limit; a failed chunk leaves the lines already delivered marked, so a retry sends the rest.
+  const delivered = JSON.parse(store.getKv("needs:done") || "[]") as string[];
+  for (const b of chunks(lines.filter((l) => !delivered.includes(l)), (l) => `- ${l}`)) {
+    if ((await send(`Connections that need you:\n\n${b.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
+    delivered.push(...b);
+    store.setKv("needs:done", JSON.stringify(delivered));
+  }
   store.setKv("needs:sig", sig);
   store.setKv("needs:day", day);
   return true;

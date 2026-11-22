@@ -37,8 +37,8 @@ const DAY = 864e5;
 const FULL_WAIT = 7 * DAY - 60_000;
 /** A need is confirmed (listed in the digest, told to agents) only once its row is this old. */
 const LASTING = 10 * 60_000;
-/** The owner was told directly and a task still waits on the need (alias `s`): it stays until Connect, a success or the wait's end. */
-const ASKED = "(s.told = 1 AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account)))";
+/** The owner was told directly and a task still waits on this very need (its key: cause and scope or account included; alias `s`): it stays until Connect, a success or the wait's end. */
+const ASKED = "(s.told = 1 AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.need = s.key))";
 /** Confirmed for the digest: asked (above), or a background row at least LASTING old. Arg: now - LASTING. A success deletes the row, so a restart's blip never lasts. */
 const CONFIRMED = `(${ASKED} OR (s.told = 0 AND s.since <= ?))`;
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
@@ -80,16 +80,17 @@ export function createConnectionState(o: {
     try {
       db.exec("BEGIN IMMEDIATE");
       db.exec(`CREATE TABLE IF NOT EXISTS connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, account, task));`);
+        CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, need TEXT NOT NULL DEFAULT '', PRIMARY KEY (module, account, task));`);
       const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
       // A table made before accounts keeps its shape under IF NOT EXISTS: add the column ('' = whole module), rebuild the key.
       if (!cols("connection_state").includes("account")) db.exec("ALTER TABLE connection_state ADD COLUMN account TEXT NOT NULL DEFAULT ''");
       if (!cols("connection_waits").includes("account")) {
         db.exec("ALTER TABLE connection_waits RENAME TO connection_waits_before_accounts");
-        db.exec(`CREATE TABLE connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, account, task))`);
+        db.exec(`CREATE TABLE connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, need TEXT NOT NULL DEFAULT '', PRIMARY KEY (module, account, task))`);
         db.exec("INSERT INTO connection_waits (module, account, task, agent, at, full) SELECT module, '', task, agent, at, full FROM connection_waits_before_accounts");
         db.exec("DROP TABLE connection_waits_before_accounts");
       }
+      if (!cols("connection_waits").includes("need")) db.exec("ALTER TABLE connection_waits ADD COLUMN need TEXT NOT NULL DEFAULT ''");
       db.exec("COMMIT");
       break;
     } catch (e) {
@@ -177,7 +178,7 @@ export function createConnectionState(o: {
           });
       });
       // Registered before the wait is armed, so a Connect that lands while it is being armed still finds and wakes this task.
-      q("INSERT INTO connection_waits (module, account, task, agent, at, full) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(module, account, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = MAX(full, excluded.full)").run(connection, n.account ?? "", who.task!, who.agent!, t, full ? 1 : 0);
+      q("INSERT INTO connection_waits (module, account, task, agent, at, full, need) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(module, account, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = MAX(full, excluded.full), need = excluded.need").run(connection, n.account ?? "", who.task!, who.agent!, t, full ? 1 : 0, key);
       try {
         await o.idle.wait({ agent: who.agent!, key: who.key ?? "", task: who.task! }, { reason: `waiting for the ${label} connection`, on: `${connection} connection`, ...(full ? { until: iso(t + FULL_WAIT) } : {}) });
       } catch (e) {

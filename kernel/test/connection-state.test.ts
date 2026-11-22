@@ -143,6 +143,16 @@ test("every account the owner was told about is listed, and the digest line name
   assert.deepEqual(w.s.downFor("a1").map((d) => d.account), ["a@x.com", "b@x.com"]);
   assert.deepEqual(w.s.needs().map((l) => /\((.+)\) isn't connected/.exec(l)?.[1]), ["a@x.com", "b@x.com"]);
 });
+test("a wait keeps only its own need listed: a scope wait does not keep an expired sign-in listed (b9249a74)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "github", { cause: "expired", detail: "" });
+  assert.equal(w.s.needs().length, 1);
+  await w.s.hit(w.who("w3"), "github", { cause: "scope", scope: "admin:org", detail: "" }); // the same task now waits on the scope
+  const lines = w.s.needs();
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /admin:org/);
+});
+
 test("an owner-asked need is listed only while its wait is outstanding (0b7441b1)", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
