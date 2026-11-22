@@ -95,6 +95,15 @@ const imagePin = (ref: string, at: string): Pin => {
 };
 const strip = (s: string) => s.replace(/^["']|["']$/g, "");
 const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
+// The sources.list.d files a command writes: a `>`/`>>` target and each `tee` destination. A path it only reads, as
+// `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write. Only `.list` and `.sources`
+// count, the only names APT loads.
+function writtenFiles(segment: string): string[] {
+  const dests: string[] = [];
+  for (const m of segment.matchAll(/(?:^|[^>])>>?\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g)) dests.push(strip(m[1]!));
+  for (const m of segment.matchAll(/\btee\b([^|;&]*)/g)) dests.push(...words(m[1]!).filter((a) => !a.startsWith("-")));
+  return dests.map((p) => /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(p)?.[1]).filter((f): f is string => !!f && /\.(list|sources)$/.test(f));
+}
 
 // Install commands on one logical line: pins found, problems found.
 function commands(text: string, at: string, state: State, pins: Pin[], problems: string[]): void {
@@ -140,17 +149,18 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   for (const segment of cmd.split(/&&|\|\||;/)) {
     const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
     const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
-    // APT loads only `.list` and `.sources` files: a name it ignores (vendor.list.disabled) is no repository, and the
-    // `deb` line a pipeline feeds to `tee` belongs to the file that pipeline writes.
+    // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
+    // source file it only copies for diagnostics adds no repository.
     const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
-    const files = named.filter((f) => /\.(list|sources)$/.test(f));
+    const files = writtenFiles(segment);
     if (removes) {
       // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
       // removes nothing it loads.
-      if (files.length) files.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
+      const removed = named.filter((f) => /\.(list|sources)$/.test(f));
+      if (removed.length) removed.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
       else if (!named.length) { state.files.clear(); state.entries.clear(); }
       state.added = state.files.size > 0 || state.entries.has(undefined);
-    } else if (/(?:>>?|\btee\b)/.test(segment) && files.length) {
+    } else if (files.length) {
       // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held. Any source file counts as added,
       // Deb822 `.sources` included: its Types/URIs fields carry the repository a `deb` line would.
       const append = />>|\btee\b[^|;&]*\s-a\b/.test(segment);
@@ -159,7 +169,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         state.entries.set(f, append ? [...(state.entries.get(f) ?? []), ...debs] : debs);
       }
       state.added = true;
-    } else if (debs.length && !named.length) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
+    } else if (debs.length) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
     for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
       for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
         const [pkg, ver] = a.split("=") as [string, string | undefined];

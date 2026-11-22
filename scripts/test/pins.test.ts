@@ -260,3 +260,19 @@ test("pins: a piped write files its deb line under the file, and only files APT 
   const disabledRemoved = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN rm /etc/apt/sources.list.d/vendor.list.disabled\nRUN apt-get install -y foo=1.0\n`;
   assert.deepEqual(scanFile("Dockerfile", disabledRemoved).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
 });
+
+test("pins: only a file a pipeline writes counts, not one it copies", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  // Copying the stock configuration for diagnostics writes only /tmp: no repository is added.
+  const diag = `FROM debian:bookworm${d}\nRUN cat /etc/apt/sources.list.d/debian.sources | tee /tmp/apt-sources.log\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", diag).problems, []);
+  // A `deb` line written outside sources.list.d still dates its pin, whether or not the same line names a source file.
+  const untracked = `FROM debian:bookworm${d}\nRUN echo "deb https://one.example/apt bookworm main" >/etc/apt/one.list && apt-get install -y foo=1.0\n`;
+  const [pin] = scanFile("Dockerfile", untracked).pins.filter((p) => p.kind === "apt");
+  assert.deepEqual(pin.sources, ["https://one.example/apt bookworm main"]);
+  // A quoted or `tee`-piped destination is the write; reading another source file in the same line adds nothing for it.
+  const both = `FROM debian:bookworm${d}\nRUN cat /etc/apt/sources.list.d/debian.sources | tee "/etc/apt/sources.list.d/mine.sources"\nRUN apt-get install -y foo\n`;
+  const bothResult = scanFile("Dockerfile", both);
+  assert.equal(bothResult.problems.length, 1);
+  assert.match(bothResult.problems[0], /install foo/);
+});
