@@ -24,7 +24,7 @@
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
 //   modules/github/checks/{tests,history}.sh  a change's tests, in codehost-local's `change` check job
-//   modules/code-review/recipe/{brief,engines,deepsec,proc,self-review}.ts  an Engineer's pre-publish review, in the engineer image
+//   modules/code-review/recipe/{brief,engines,deepsec,proc,review-checklist,self-review}.ts  an Engineer's pre-publish review, in the engineer image
 //   modules/ci/template/.github/{code-review,review-tools,review-checklist}.ts  the review core, in the code review recipe
 //   node scripts/sync-shared.ts
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -127,7 +127,7 @@ export function sharedCopies(root = repo) {
   "scripts/supply-chain/image-scan.ts": ["modules/ci/template/.github/supply-chain/image-scan.ts"],
   // An Engineer's review of its own change before it publishes (self-review.ts) runs the check's codex-native engine and brief from the
   // engineer image: its context is its own folder, so it holds the copy (/opt/aidenhq/code-review).
-  ...Object.fromEntries(["brief.ts", "engines.ts", "deepsec.ts", "proc.ts", "self-review.ts"].map((f) => [`modules/code-review/recipe/${f}`, [`services/computer/images/engineer/code-review/${f}`]])),
+  ...Object.fromEntries(["brief.ts", "engines.ts", "deepsec.ts", "proc.ts", "review-checklist.ts", "self-review.ts"].map((f) => [`modules/code-review/recipe/${f}`, [`services/computer/images/engineer/code-review/${f}`]])),
   // The design system: the app starter vendors its theme (tokens.css, shadcn.css), and the agent computers carry it all at
   // /opt/aidenhq/design-system. components.css and kit.js are the deprecated plain-CSS kit (its README).
   ...Object.fromEntries(

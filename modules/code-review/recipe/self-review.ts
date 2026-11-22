@@ -16,12 +16,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
+import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { runEngine } from "./engines.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"]; // the repository's own, from the merge base (never the branch's)
 
-const git = (...a: string[]) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+const git = (...a: string[]) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "ignore"] }).trim();
 const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
 
 async function main(): Promise<{ out: string[]; code: number }> {
@@ -48,9 +49,12 @@ async function main(): Promise<{ out: string[]; code: number }> {
   delete process.env.AIDENHQ_RUN_TOKEN;
   process.env.PATH = String(process.env.PATH).split(":").filter((d) => !d.startsWith("/opt/aidenhq")).join(":"); // the job's wrappers are not the reviewer's
   const guides = GUIDES.flatMap((p) => { try { return [{ path: p, text: git("show", `${base}:${p}`).slice(0, 20_000) }]; } catch { return []; } });
+  // The base's reliability checklist items the diff triggers, as the gate picks them (code matches, the base's file, never the branch's).
+  let checks = "";
+  try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", from, "HEAD"))); } catch {}
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
-    const instructions = brief({ root, guides, checks: "", focus: "", excluded: [], incremental, addressed: false });
+    const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
     const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true }), [token]);
     if (!r.message) return { out: [`self-review: ${at}: incomplete: ${one(r.cause ?? "no review")}`], code: 2 };
     const { findings, n } = downgrade(clean(JSON.parse(r.message).findings, root));

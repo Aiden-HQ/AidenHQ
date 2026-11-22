@@ -435,10 +435,13 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));
   const r = await run("codex", ["exec", "review", "--base", base, "--ignore-rules", "--json", "-o", join(tmp, "answer.txt")], { cwd: root, minutes, env: codexEnv(home) });
   const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  // It read the change: commands that name the requested base printed the diff of every file the change touches (a lockfile or
+  // It read the change: commands that name the requested base (its sha, the merge base's, or `git merge-base`) printed the diff of every file the change touches (a lockfile or
   // generated file may be left out). `git show HEAD` or a cut-off output doesn't count: that is a part of the change.
   const wanted = (() => { try { return execFileSync("git", ["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", base, "HEAD"], { cwd: root, encoding: "utf8" }).split("\n").filter((p) => p && !/(^|\/)(go\.sum|bun\.lockb)$|[-.]lock(\.json|\.yaml)?$|\.snap$|\.map$|\.min\.(js|css)$/.test(p)); } catch { return undefined; } })();
-  const shown = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution" && String(e.item.command ?? "").includes(base.slice(0, 7))).map((e) => String(e.item!.aggregated_output ?? "")).join("\n");
+  // The base as codex names it: the sha, the merge base's sha, or `git merge-base …` computing it.
+  const names = [base, (() => { try { return execFileSync("git", ["merge-base", base, "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { return ""; } })()].filter(Boolean).map((x) => x.slice(0, 7));
+  const namesBase = (c: unknown) => /git\s+merge-base\b/.test(String(c ?? "")) || names.some((n) => String(c ?? "").includes(n));
+  const shown = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution" && namesBase(e.item.command)).map((e) => String(e.item!.aggregated_output ?? "")).join("\n");
   const read = /^diff --git /m.test(shown) && (wanted === undefined || wanted.every((p) => shown.includes(`diff --git a/${p} b/`)));
   let rollouts: string[] = [];
   try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
