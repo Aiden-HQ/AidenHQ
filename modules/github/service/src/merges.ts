@@ -85,11 +85,10 @@ export function createMerges(d: {
    * only that a merge call *may* have landed, never that the commit was its own: it gets the same check, so an owner's merge after
    * a timed-out call stays skipped, and only a confirmed one is the queue's.
    */
-  async function mergedBy(repo: string, number: number, method: string, sha: string, unanswered: boolean): Promise<string | undefined> {
+  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, unanswered: boolean): string | undefined {
     if (!unanswered || method === "rebase") return undefined;
-    const [owner, name] = repo.split("/");
-    const c = await d.gh("GET", `/repos/${owner}/${name}/commits/${sha}`).catch(() => undefined);
-    return hasTrailer(String(c?.body?.commit?.message ?? "")) ? sha : undefined;
+    // The one PR_QUERY read already says what the commit message is: no second GitHub call, so the queue's writes stay its two.
+    return mergeCommit?.oid === sha && hasTrailer(String(mergeCommit?.message ?? "")) ? sha : undefined;
   }
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
@@ -150,7 +149,7 @@ export function createMerges(d: {
         // is the one such a call would make (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge commit
         // at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
         const sha = String(pull?.mergeCommit?.oid ?? "");
-        const ours = sha ? await mergedBy(p.repo, p.number, mergeMethod(data.repository) ?? "", sha, Boolean(p.unanswered)) : undefined;
+        const ours = sha ? mergedBy(pull?.mergeCommit, mergeMethod(data.repository) ?? "", sha, Boolean(p.unanswered)) : undefined;
         if (sha && !ours && p.unanswered) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });

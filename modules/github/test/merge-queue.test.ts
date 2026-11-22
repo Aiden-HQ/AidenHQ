@@ -31,7 +31,7 @@ function fakeGitHub(prs) {
       if (body.query.includes("pullRequest(number")) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
-          mergedAt: p.mergedAt ?? null, mergeCommit: p.merged ? { oid: p.merged } : null,
+          mergedAt: p.mergedAt ?? null, mergeCommit: p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: "main",
           files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
@@ -381,10 +381,9 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   let timeouts = 1;
+  // The fake's PUT merges the PR with the queue's commit_message (the merge queue trailer), as GitHub does; only the answer is lost.
   const gh = async (m, p, b) => {
     const r = await github.gh(m, p, b);
-    const pull = r.body?.data?.repository?.pullRequest;
-    if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40) };
     if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
     return r;
   };

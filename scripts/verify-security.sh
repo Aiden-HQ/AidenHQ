@@ -785,6 +785,8 @@ rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/m
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"; rdr="modules/github/service/src/design-review.ts"
 [ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
+  && grep -qF 'mergedAt mergedBy { login } mergeCommit { oid message }' "$rm_" \
+  && grep -qF 'return mergeCommit?.oid === sha && hasTrailer(String(mergeCommit?.message ?? "")) ? sha : undefined;' "$rq" \
   && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));' "$rq" \
   && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
   && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
