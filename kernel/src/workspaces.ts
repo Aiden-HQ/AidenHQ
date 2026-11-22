@@ -111,6 +111,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
           // The facts log can lag a reopen: the control plane confirms every task is still closed, then the step runs again.
           const tasks = [...new Set(d.u!.pairs.map((p) => p.task))];
           if (!(await Promise.all(tasks.map((t) => stillClosed(t).catch(() => false)))).every(Boolean)) continue;
+          if (stopping()) break; // drained while it waited: the next kernel's sweep decides
           d = decide();
         }
         if (!d) continue;
