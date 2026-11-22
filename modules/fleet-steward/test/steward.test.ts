@@ -448,6 +448,11 @@ test("a routine whose last 3 jobs failed is paused once and the chief of staff t
   assert.equal(w.paused.length, 1, "paused once");
   status.v = "active"; // resumed: only newer failures count
   assert.deepEqual(await w.c.routine(), []);
+  // Paused by hand, with failures in its window: the owner's choice, so no flag on this check or the next, and nothing to tell.
+  const hand = world({ a1: [...bad, job("j0", "a1", "done", 50)], a2: [job("k1", "a2", "done", 5, null)] }, { v: "paused" });
+  assert.deepEqual(await hand.c.routine(), []);
+  assert.deepEqual(await hand.c.routine(), []);
+  assert.deepEqual([hand.paused, hand.sent], [[], []]);
   // A filing that failed (quiet start, the kernel down) is owed and told on a later check while the routine stays paused.
   const late = world({ a1: [...bad, job("j0", "a1", "done", 50)], a2: [job("k1", "a2", "done", 5, null)] }, { v: "active" });
   let down = true;

@@ -576,6 +576,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       const since: Record<string, string> = JSON.parse(d.kv.get("routine_paused_at") ?? "{}");
       const owed = (): Record<string, number> => JSON.parse(d.kv.get("routine_notice_owed") ?? "{}");
+      // The routines this detector paused itself (`since` is only the failure cutoff, set for a hand-paused one too).
+      const mine = new Set<string>(JSON.parse(d.kv.get("routine_paused_by_detector") ?? "[]"));
+      const justPaused = new Set<string>(); // paused by this check: the rows were read before it
       const out: Incident[] = [];
       for (const { routine, failures } of failingRoutines(jobs, since)) {
         const row = rows.find((r) => r.id === routine);
@@ -586,23 +589,28 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
           await d.pause(routine);
           since[routine] = new Date(t).toISOString();
           d.kv.set("routine_paused_at", JSON.stringify(since));
+          mine.add(routine);
+          justPaused.add(routine);
           // Its id only: a routine's title is an agent's words, and this text is the chief of staff's instruction. Owed until told: a
           // failed filing (quiet start, the kernel down) is tried again below on each check while it stays paused.
           d.kv.set("routine_notice_owed", JSON.stringify({ ...owed(), [routine]: failures }));
         }
         out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
       }
-      // Paused by this detector and still paused: the flag stays open until the owner resumes it (a resume clears it).
-      for (const id of Object.keys(since)) {
+      // Paused by this detector and still paused: the flag stays open until the owner resumes it (a resume clears it). A routine
+      // paused by hand is the owner's choice: no flag.
+      for (const id of [...mine]) {
         const row = rows.find((r) => r.id === id);
-        if (row?.status !== "paused") continue;
-        if (!out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
+        const pausedNow = row?.status === "paused" || justPaused.has(id);
+        if (!pausedNow) { mine.delete(id); continue; }
+        if (row && !out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
       }
+      d.kv.set("routine_paused_by_detector", JSON.stringify([...mine]));
       // The notices this detector owes (routines it paused), each told once; one no longer paused is owed nothing.
       for (const [id, n] of Object.entries(owed())) {
         const left = { ...owed() };
         // Paused now: read so, or paused by this very check (the rows were read before it).
-        if (rows.find((r) => r.id === id)?.status === "paused" || since[id] === new Date(t).toISOString()) {
+        if (rows.find((r) => r.id === id)?.status === "paused" || justPaused.has(id)) {
           const ok = await d.notify?.(`Routine paused: routine ${id} failed ${n} runs in a row (fleet_status names it). Resume it once its cause is fixed.`, `routine-paused:${id}`).then(() => true, () => false);
           if (!ok) continue;
         }
