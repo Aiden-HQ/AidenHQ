@@ -1,4 +1,4 @@
-// An agent's settings as grouped rows (AgentSettings.tsx, the page's Settings tab): how it thinks, when it works, limits and
+// An agent's settings as grouped rows (AgentSettings.tsx, the page's Settings tab): how it thinks, when it works and
 // its recent changes. Each row shows the module default beside the instance value, with Reset to default where the
 // instance overrides it; an edit opens the preview, then the progress. One change per row at a time: while one is filed
 // the row shows its stage instead of the editor.
@@ -9,11 +9,6 @@ import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./
 import { StatusDot } from "./ui";
 
 type Routine = AgentSettings["routines"][number];
-const ALL_CAP_KEYS = ["run_usd", "task_usd", "day_usd"] as const;
-/** A team has one cap: its day cap, over all its members' spend (teams.<t>.caps). */
-const TEAM_CAP_KEYS = ["day_usd"] as const;
-const CAP_NAMES = { run_usd: "a run", task_usd: "a task", day_usd: "an agent-day" };
-const usd = (n: number) => `$${n.toFixed(n % 1 ? 2 : 0)}`;
 const hours = (v: unknown) => (v === true ? "the fleet's heartbeat" : typeof v === "number" ? `every ${v} hour${v === 1 ? "" : "s"}` : "off");
 
 /** One editable row: value (and the module's default beside it), the pending change's stage, the editor, Reset to default. */
@@ -114,7 +109,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
   return (
     <div className="st-agent-settings">
       {a.team && <p className="fleet-empty">The {a.team} team: model, effort and parallel jobs here are every member's default; a member's own setting wins.</p>}
-      {a.memberOf && <p className="fleet-empty">A team member: these settings are this member's own. The team's defaults and day cap are on the team's page.</p>}
+      {a.memberOf && <p className="fleet-empty">A team member: these settings are this member's own. The team's defaults are on the team's page.</p>}
       <Group title="How it thinks">
         <Field title="Model" value={<code>{a.model ? modelShort(a.model) : "the runner's"}</code>} def={dflt("model", a.model, (v) => <code>{modelShort(String(v))}</code>)} filed={fModel}>
           {() => <Edit label="Model" current={a.model} item={(v) => ({ kind: "agent", agent: a.key, field: "model", value: v })} list={data.choices.models} />}
@@ -147,9 +142,6 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           <RoutineField key={r.key} r={r} models={data.choices.models} />
         ))}
         {!routines.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
-      </Group>
-      <Group title="Limits" hint="USD. The gateway refuses a call that would pass a cap and files a Raise card.">
-        {a.memberOf ? <p className="fleet-empty">No cap of its own: its spend counts against the team's day cap.</p> : <CapsField a={a} defaults={data.spend.defaults} />}
       </Group>
       <Recent a={a} />
     </div>
@@ -244,65 +236,6 @@ function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "s
     <button className="btn" type="button" onClick={() => setOn(true)}>
       Reset {field} to default
     </button>
-  );
-}
-
-function CapsField({ a, defaults }: { a: AgentSettings; defaults: Record<string, number> }) {
-  const CAP_KEYS: readonly (typeof ALL_CAP_KEYS)[number][] = a.team ? TEAM_CAP_KEYS : ALL_CAP_KEYS;
-  const filed = useFiled((c) => c.kind === "caps" && c.agent === a.key);
-  const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  const caps = a.caps;
-  const own = !a.team && CAP_KEYS.some((k) => caps[k] !== defaults[k]);
-  const [v, setV] = useState<Record<string, string>>(Object.fromEntries(CAP_KEYS.map((k) => [k, String(caps[k] ?? defaults[k] ?? "")])));
-  const [review, setReview] = useState<"edit" | "reset" | null>(null);
-  const changed = Object.fromEntries(CAP_KEYS.filter((k) => Number(v[k]) !== caps[k]).map((k) => [k, Number(v[k])]));
-  const bad = Object.values(changed).some((n) => !(n > 0) || n > 1000);
-  const back = Object.fromEntries(CAP_KEYS.filter((k) => caps[k] !== defaults[k] && defaults[k] !== undefined).map((k) => [k, defaults[k]!]));
-  return (
-    <Row
-      title={a.team ? "Team day cap" : "Spend caps"}
-      meta={
-        <>
-          {busy && <StatusDot tone="busy">Changing</StatusDot>}
-          <span className={`st-caps${own ? " own" : ""}`}>{CAP_KEYS.map((k) => usd(caps[k] ?? 0)).join(" / ")}</span>
-          <span className="muted"> · {a.team ? "the whole team's day" : "per run / task / agent-day"}{own ? `, fleet default ${CAP_KEYS.map((k) => usd(defaults[k] ?? 0)).join(" / ")}` : ""}</span>
-        </>
-      }
-      details={
-        <>
-          {filed && <ChangeProgress f={filed} after={busy ? <p className="ui-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
-          {!busy && (
-            <>
-              <form className="st-caps-form" onSubmit={(e) => (e.preventDefault(), Object.keys(changed).length && !bad && setReview("edit"))}>
-                {CAP_KEYS.map((k) => (
-                  <label key={k} className="ui-field">
-                    <span className="ui-field-label">Per {CAP_NAMES[k].replace(/^an? /, "")}</span>
-                    <span className="st-money">
-                      $<input inputMode="decimal" value={v[k]} onChange={(e) => (setV({ ...v, [k]: e.target.value }), setReview(null))} aria-label={`Cap per ${CAP_NAMES[k]}`} />
-                    </span>
-                  </label>
-                ))}
-                {!review && (
-                  <>
-                    <button className="btn primary" disabled={!Object.keys(changed).length || bad}>
-                      Review change
-                    </button>
-                    {own && (
-                      <button className="btn" type="button" onClick={() => setReview("reset")}>
-                        Reset to default
-                      </button>
-                    )}
-                  </>
-                )}
-              </form>
-              {bad && <span className="ui-field-error">Each cap is above $0 and at most $1000.</span>}
-              {review === "edit" && <ChangePreview items={[{ kind: "caps", agent: a.key, value: changed }]} was={[Object.fromEntries(Object.keys(changed).map((k) => [k, caps[k]]))]} onCancel={() => setReview(null)} onDone={() => setReview(null)} />}
-              {review === "reset" && <ChangePreview items={[{ kind: "caps", agent: a.key, value: back }]} was={[Object.fromEntries(Object.keys(back).map((k) => [k, caps[k]]))]} onCancel={() => setReview(null)} onDone={() => setReview(null)} />}
-            </>
-          )}
-        </>
-      }
-    />
   );
 }
 

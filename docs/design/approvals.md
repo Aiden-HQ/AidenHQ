@@ -46,7 +46,7 @@ an autonomy he set below full.
   (`files_not_shown`). No other signal in the review path tags a secret-carrying write, so beyond that the rule is the model's:
   a malice verdict rejects, everything else approves.
 - **Tier 2: owner.** A board card plus a message on the owner channel, with no reviewer first: the owner's veto on the task,
-  autonomy off, and the gateway's `kernel.raise_cap` (its code spend limit stays the hard stop). His own signed-in settings
+  autonomy off. His own signed-in settings
   save is his approval at filing.
 
 Code refuses some requests before any review, with the reason to the agent: a request on a cancelled or done task; a product
@@ -75,7 +75,7 @@ Typical git assignments (`plan.ts`; read it for the full rules):
 Fleet applies (`kernel.apply`, floor 1, planned by `apply-tier.ts`): a new trial agent, a handbook or memory change, a
 graduation that adds no tools, a non-sensitive app change, removing an agent or app and a forward product pin are Tier 0 or 1;
 new grants, roles, write connections or credentials, sensitive apps, settings, routine autonomy, a backward pin, unrecognised
-files, loosening autonomy, raising spend caps and an owner-only setting are reviewed too (merit 1 or 2). Module
+files, loosening autonomy, raising spend limits and an owner-only setting are reviewed too (merit 1 or 2). Module
 authority changes come from the authority diff (`scripts/compiler/authority.ts`).
 
 Module write kinds are records too: a tool a module routes into a kind (manifest `writes:`) goes to that module's executor

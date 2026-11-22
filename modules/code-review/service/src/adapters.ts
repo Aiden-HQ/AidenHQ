@@ -55,7 +55,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
-    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
+    previous: JSON.stringify({ findings: s.previous }),
   };
 }
 
@@ -80,8 +80,6 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
 /** A skip's reason as the notice's fixed words name it (seams' `why` starts with its key). */
 export function reasonOf(why: string | undefined): string | undefined {
   const w = String(why ?? "");
-  if (w.startsWith("budget: the instance")) return "budget_instance";
-  if (w.startsWith("budget")) return "budget_repo";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
 }

@@ -120,16 +120,11 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "a kernel-owned job has run over 3 hours"
-      - alert: GatewaySpendNearCap
-        expr: aidenhq_gateway_agent_day_spend_usd / aidenhq_gateway_agent_day_cap_usd > 0.8
+      - alert: GatewaySpendNearLimit
+        expr: aidenhq_gateway_install_limit_usd > 0 and aidenhq_gateway_install_spend_usd / aidenhq_gateway_install_limit_usd > 0.8
         labels: { severity: warning }
         annotations:
-          summary: "agent {{ $labels.agent }} has spent over 80% of its day cap ({{ $value | humanizePercentage }})"
-      - alert: CiReviewSpendNearCap
-        expr: aidenhq_gateway_ci_day_cap_usd > 0 and aidenhq_gateway_ci_spend_usd_today / aidenhq_gateway_ci_day_cap_usd > 0.8
-        labels: { severity: warning }
-        annotations:
-          summary: "app CI code review has spent over 80% of its day cap"
+          summary: "the install has spent over 80% of its {{ $labels.period }} spend limit ({{ $value | humanizePercentage }})"
       # Deployed apps (the app-* compose projects) are starved of CPU: an app container's own cgroup waits over 20% while the
       # host waits over 15% (an app at its own CPU limit alone does not fire). Host CPU pressure alone is not an app alert, and
       # this rule never matches the host series: its summary names the project, which only the app clause carries.

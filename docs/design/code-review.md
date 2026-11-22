@@ -12,14 +12,14 @@ Rules that bind (owner and design):
   once code review's verdict for its head is pass: its mandatory combos reviewed the head whole and none of their important
   findings is open. Elsewhere a review is advice. Nits and pre-existing findings never gate.
 - An outside PR's text never steers the reviewer; a review box holds no credentials.
-- Spend is visible and capped; partial coverage is never presented as clean.
+- Spend is visible and limited by the install's spend limit (`spend_day_usd`, `spend_month_usd`); partial coverage is never presented as clean.
 
 ## Components
 
 | Part | What it does |
 |---|---|
 | State service (`service/`, port 8098) | Watches the listed repos' PRs and comments through github-mcp's internal read (as this module, never `/mcp`), decides which head gets which combos, runs each review as a check job, files posts, records flow facts |
-| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token capped at the run's `run_usd` (`check_jobs:` in `module.yaml`, 45 min timeout) |
+| Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token (`check_jobs:` in `module.yaml`, 45 min timeout) |
 | Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
 | Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `aiden` questions on reviews. Holds no code tools and no delegation |
 | Board Reviews page (`services/board/web/src/Reviews.tsx`, `services/board/src/reviews.ts`) | Tabs Reviews, Repos, Insights |
@@ -28,22 +28,20 @@ Rules that bind (owner and design):
 
 ```yaml
 code_review:
-  day_usd: 200                 # instance-wide daily cap across repos (UTC day)
   repos:
     - repo: acme/payments
       on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium, run_usd: 5 }
+        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium }
       on_push:                   # only the new changes since the last reviewed head
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low, run_usd: 5 }   # mandatory: true gates merges
+        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low }   # mandatory: true gates merges
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
-      day_usd: 200
       ignore: ["**/generated/**"]
       max_nits: 5
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
-claude-code and codegenie low to max), `run_usd` (what one run may spend: its model token's hard cap, never a reservation; default $5 for each engine) and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one at both moments, else it is refused (the service, the board and the compile all say so); a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one at both moments, else it is refused (the service, the board and the compile all say so); a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
 price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
@@ -70,7 +68,7 @@ stream, or its session files outside the writable area (codex-native's review). 
 sandbox, a read-only permission profile with the network on (`default_permissions`; no network namespace, which gVisor can't set
 up); claude-code from Claude Code's sandbox (bubblewrap, `failIfUnavailable`, no network restriction set, never unsandboxed).
 Nothing of the repo is loaded as config: project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off,
-the project never trusted. The run's token (the check's own `check` token: capped at `run_usd`, time-limited) is the box's only
+the project never trusted. The run's token (the check's own `check` token, time-limited) is the box's only
 secret; a command can still read it from the engine's process, which the owner accepted, and every engine's output has it and
 any key-shaped text (`ahq*_`, `sk-`) redacted before it is mapped (`review.ts` scrub).
 
@@ -80,8 +78,8 @@ root and above each changed file, read from the **base** commit, never the PR; g
 
 Config is one authority: the board and Aiden write it through the normal settings change. The owner's own save on the board
 is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
-Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): more spend, outside PRs or drafts reviewed
-automatically, a repo in a new org, any change to a moment's combos (another engine or model, a higher run cap, one more combo)
+Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): outside PRs or drafts reviewed
+automatically, a repo in a new org, any change to a moment's combos (another engine or model, one more combo)
 and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches. `always`, `stop` and `focus` are
 PR state, not config.
 
@@ -93,11 +91,12 @@ queued batch). One trigger is a batch: one run per combo, each posting its own r
 rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR (but a one-off)
 completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
-retries by itself a minute later (a mandatory one up to three times, any other once), each retry on
-what is left of its `run_usd`; a check that failed before it got a computer spent nothing. A run starts only while the day's real spend is under the
-repo's and the instance's day caps (checked in one transaction); a run whose PR moved on or closed while it ran is
-superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
-silent: draft, fork, budget, closed, stopped, superseded.
+retries by itself a minute later (a mandatory one up to three times, any other once); a check that
+failed before it got a computer spent nothing. A run's model calls count against the install's spend limit like any call (the
+gateway's 402 past it: the run waits 30 minutes, its attempt not counted, and a mandatory run waiting on it shows "install spend
+limit reached" in the verdict); a run whose PR moved on or closed while it ran is
+superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason, never
+silent: draft, fork, closed, stopped, superseded.
 
 Commands in a PR comment (`service/src/commands.ts`): a comment whose first word is `aiden` (an `@` before it is accepted, never
 written by us: it would ping a GitHub user). Only the first line counts, and only as a whole command from the table (prose
@@ -225,8 +224,8 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   starts the count over) lets the merge go, recorded as the Flow fact `pr.review_bypassed`
   (the Fleet Steward sees it in its flow report). A repo not on the list never asks, so an install without code review merges as
   before. The owner's own merges on GitHub are not gated.
-- **Fail closed where it counts.** A mandatory run is never skipped for budget (its spend still counts), reviews a fork's PR by
-  itself, and `aiden review stop` never stops it (anyone posting as the owner can write a command).
+- **Fail closed where it counts.** A mandatory run is never skipped, reviews a fork's PR by itself, and `aiden review stop`
+  never stops it (anyone posting as the owner can write a command).
 - **Owner.** The Reviews page shows each gated PR's verdict and reasons on its review, with a Dismiss (and a reason) per open
   gating finding: the owner's signed-in session, through the board's key. Turning a reviewer mandatory is the Reviewer Manager's
   to do (it only adds a gate); turning one off, removing its combo or removing a gated repo is the owner's (`owner:` rules;
@@ -244,7 +243,7 @@ bounded by the Tier 2 rules above and PR text is data, never instructions.
 
 Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
-Only the budget caps reviews (no per-author or per-repo review limits): a run is skipped, with a comment saying why, when the repo's or the instance's `day_usd` is spent. A day's spend (UTC) is real money only: finished runs' billed `cost_usd` plus what each running run's check job has spent so far (the kernel's `billed_usd` on `GET /v1/checks/:id`, read each tick). A running run with no readable figure (not read yet, the kernel unreachable) counts at its whole `run_usd`, never 0. Nothing is reserved; runs in flight may overshoot a cap by at most their own `run_usd` each, so by concurrent runs x `run_usd` in all, which the launcher's computer pool (`computers_max`) bounds.
+Only the install's spend limit bounds reviews (no per-author or per-repo review limits): past it a run's model calls get 402 from the gateway. A run's cost is its billed `cost_usd` (the kernel's `billed_usd` on `GET /v1/checks/:id` while it runs).
 
 For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 1)
 keeps plain columns: `runs` has each run's `engine`, `model`, `effort`, `cost_usd` (the kernel's billing of its model token,
@@ -262,4 +261,4 @@ then one screen with the defaults: each moment's combos as rows of engine, model
 link for a one-off review (the same picker, prefilled with the repo's `on_open` combos; Review again on a review does the same).
 Reviews: open and recent runs per repo (PR, combo, findings by severity, cost, tokens, duration, status), each opening its
 findings, with their outcomes, and links to the GitHub comments.
-Repos: per-repo spend today against its cap. Titles and findings are shown as plain text, never as links.
+Repos: per-repo spend today. Titles and findings are shown as plain text, never as links.

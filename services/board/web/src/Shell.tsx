@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { peek } from "./cache";
 import { prefetchView, QUERIES } from "./queries";
 import { CATEGORIES } from "./Settings";
-import type { Assignee, ChatRow, ModuleRow } from "./types";
+import type { Assignee, ChatRow, ModuleRow, SpendNow } from "./types";
 import { Icon, type IconName } from "./ui/icons";
 import { Ticker } from "./ui/Ticker";
 
@@ -46,13 +46,14 @@ interface Common {
 }
 
 export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAlert, notify, brief, onPalette }: Common & {
-  spend: { spent: number; cap: number } | null | undefined;
+  spend: SpendNow | null | undefined;
   settingsAlert: boolean;
   notify?: () => void;
   brief: boolean;
   onPalette: () => void;
 }) {
-  const share = spend ? Math.min(1, spend.spent / (spend.cap || 1)) : 0;
+  const share = spend ? Math.min(1, Math.max(spend.day.spent / spend.day.cap, spend.month.spent / spend.month.cap)) : 0;
+  const money = (n: number) => `$${n % 1 ? n.toFixed(2) : n}`;
   return (
     <header className="topnav">
       <a className="tn-brand" href="#/c/" onClick={(e) => (e.preventDefault(), onNav("chat"))} title="AidenHQ">
@@ -92,12 +93,12 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
         <kbd>{paletteKey}</kbd>
       </button>
       {spend && (
-        <a className={`tn-spend${spend.spent >= spend.cap ? " over" : ""}`} href="#/costs" onClick={(e) => (e.preventDefault(), onNav("costs"))} title="Today's model spend (UTC day) against the daily cap; change the cap in Settings">
+        <a className={`tn-spend${spend.day.spent >= spend.day.cap || spend.month.spent >= spend.month.cap ? " over" : ""}`} href="#/costs" onClick={(e) => (e.preventDefault(), onNav("costs"))} title={`Model spend against the install's limits: ${money(spend.month.spent)} of ${money(spend.month.cap)} this UTC month; change the limits in Settings`}>
           <span className="tn-spend-row">
             <b>
-              <Ticker value={spend.spent} format={(n) => `$${n.toFixed(2)}`} />
+              <Ticker value={spend.day.spent} format={(n) => `$${n.toFixed(2)}`} />
             </b>
-            <span>of ${spend.cap % 1 ? spend.cap.toFixed(2) : spend.cap} today</span>
+            <span>of {money(spend.day.cap)} today</span>
           </span>
           <span className="tn-meter" aria-hidden>
             <i style={{ width: `${share * 100}%` }} />

@@ -4,7 +4,7 @@
 //
 // The box holds the head tree (the workspace), the merge base's tree at /aidenhq-out/base, the last reviewed head's at
 // /aidenhq-out/incremental_from (an incremental review only) and the spec at $AIDENHQ_SPEC: { repo, head, base (the merge
-// base), incremental_from (= base for a full review), pr, combo (engine, model and effort, JSON), focus, budget_usd }. It makes its own
+// base), incremental_from (= base for a full review), pr, combo (engine, model and effort, JSON), focus }. It makes its own
 // history from them (base, then the last reviewed head, then the head), so the repo tools' diff is exactly the change.
 //
 // A run: the changed files minus excluded ones (the repo's ignore globs, binary, lockfiles and generated files), whatever the

@@ -58,7 +58,7 @@ export const TTL_MS = 7 * 86_400_000;
 /** Decided by the owner: never the reviewer, a stale close, the code (kernel) or a Tier 0 run. */
 export const OWNER_SQL ="decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'stale:%' AND decided_by NOT LIKE 'kernel%'";
 
-/** A kind as people read it: the kernel's and the runner's own by their short names (push, apply, raise_cap), others whole. */
+/** A kind as people read it: the kernel's and the runner's own by their short names (push, apply), others whole. */
 export const actionOf = (kind: string) => kind.replace(/^(runner|kernel)\./, "");
 
 /** JSON with sorted keys: the digest's input. */

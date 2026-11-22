@@ -65,7 +65,6 @@ test("a new write kind, privileged entry, secret, role, write tool, services.gra
     join: with_({ services: { run: { "crm-mcp": { image: IMG, port: 8080, join: ["acme-db"] } } } }),
     egress: with_({ services: { run: { "crm-mcp": { image: IMG, port: 8080, egress: true } } } }),
     "isolation toward trusted": [with_({ isolation: "trusted" }), with_({ isolation: "untrusted" })],
-    "model spend": with_({ services: { ...base.services, models: { day_usd: 5 } } }),
     "unrecognised key": with_({ hooks: ["x"] }),
     "a default grant": with_({ default_grants: [{ tools: ["crm.crm_write"] }] }),
   };

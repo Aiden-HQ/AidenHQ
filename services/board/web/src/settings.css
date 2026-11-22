@@ -180,9 +180,6 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-figure-n { font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .st-figure-n code { font-size: var(--text-lg); }
 .st-figure-l { font-size: var(--text-sm); color: var(--muted); }
-.st-caps { font-size: var(--text-base); color: var(--muted); font-variant-numeric: tabular-nums; }
-.st-caps.own { color: var(--text); font-weight: 600; }
-.st-caps-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
 .st-money { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
 .st-money input { width: 84px; }
 .st-table { display: grid; font-size: var(--text-base); }

@@ -109,10 +109,10 @@ export interface AppOptions {
   reviews?: Reviews;
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
-   * gateway files raise_cap, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
+   * gateway reads its settings, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
    */
   gatewayKey?: string;
-  /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
+  /** The model gateway: its spend summary and usage ledger (costs.ts). */
   gateway?: { url: string; token: string };
   /** The kernel's records, read-only (records.ts): the cards every view shows. Without it, there are none. */
   records?: Records;
@@ -1095,7 +1095,6 @@ export function createApp(opts: AppOptions): Server {
     return settingsView({
       ...readSources(settingsFiles()),
       boardTimezone: opts.timezone,
-      pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
@@ -1256,8 +1255,8 @@ export function createApp(opts: AppOptions): Server {
         const routines = store.allRecurring().size ? new Map((await pc.routines()).map((r) => [r.id, r])) : new Map<string, Routine>();
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => { const v = recurringView(r, routines.get(r.routineId)); return [id, { summary: v.summary, nextRun: v.nextRun, paused: v.paused }]; }));
         const [busy, google, signIns, names, summary] = await extras;
-        // The header's spend line: today against the install cap, when one is set.
-        const spend = summary?.install.cap != null ? { spent: summary.install.spent, cap: summary.install.cap } : null;
+        // The header's spend line: the day and the month against the install's spend limits.
+        const spend = summary?.install ?? null;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map } });
         const cards = [...Object.values(board.buckets).flat(), ...board.recurring];
         const states = await stateRows(cards.map((c) => c.id));

@@ -1,6 +1,6 @@
 // Admission (spec §4.2a): a dispatcher module asks for a job on a wake it claimed; the kernel admits it in one SQLite
 // transaction (the wake still claimed by this module, no live job on the task, a free computer within the pool's fair share
-// setting and the agent's max_parallel, spend caps not used up), freezing the job's authority from its profile and grants at
+// setting and the agent's max_parallel, the task's spend cap and the install's limits not used up), freezing the job's authority from its profile and grants at
 // that instant (the job row's `authority`), and only then gets it a computer and starts it (`launch`, boxes.ts). A grant
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
 import { randomBytes } from "node:crypto";
@@ -90,7 +90,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   capacity: () => number;
   /** The pool's fair share (pool.ts): agent jobs and check jobs are each guaranteed half of `capacity`; this admits within it. */
   pool: Pool;
-  /** The spend caps a new job of this agent on this task would start over (the gateway's `exhausted`). */
+  /** The spend limits a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
   cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null } | undefined> };
@@ -180,7 +180,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
-      if (over.length) throw new JobError(429, "over-cap", `the ${over.map((o) => o.scope).join(", ")} spend cap is used up`);
+      if (over.length) throw new JobError(429, "over-cap", `${over.map((o) => (o.scope === "task" ? "the task's spend cap" : `the install's ${o.scope === "day" ? "daily" : "monthly"} spend limit`)).join(" and ")} is used up`);
       const authority = freeze(g, w.cause, platformTask(t));
       // The last job's `aidenhq engine`: applied when the agent may still run it now, else ignored loudly (refusing would
       // wedge the task: the request would stand at every retry). Never widens `models`.

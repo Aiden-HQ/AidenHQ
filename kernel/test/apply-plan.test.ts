@@ -155,15 +155,14 @@ test("a release move is the reviewer's only as the updater's verified move under
   assert.equal(filed.args.release, "2026.11.3");
   // The reviewer reads both after the diff (its request's diff is the card's details), every authority line whole.
   assert.match(filed.card.details, /Release update \(computed by code\): the kernel's updater moves this instance to release 2026\.11\.3[^\n]*auto-updates are on[\s\S]*Module changes \(the authority diff[^\n]*\nacme: adds write kind post \(owner\)/);
-  // The owner's auto-update takes the official release's new authority and spend (owner, 2026-11-20): under any autonomy the
+  // The owner's auto-update takes the official release's new authority (owner, 2026-11-20): under any autonomy the
   // AI reviewer (never the owner) judges only whether the update is malicious or
-  // compromised; every line reaches it whole, a spend increase marked as one.
+  // compromised; every line reaches it whole.
   const tools = Array.from({ length: 30 }, (_, i) => `primer_tool_number_${i}`);
-  const official = { modules: { acme: { base: { name: "acme", connections: { primer: { tools: { write: [] } } } }, head: { name: "acme", writes: { post: {} }, connections: { primer: { tools: { write: tools } } }, agents: { bot: { connections: { primer: tools }, caps: { day_usd: 50 } } } }, codeChanged: true, official: true } }, marketplaces: [] };
+  const official = { modules: { acme: { base: { name: "acme", connections: { primer: { tools: { write: [] } } } }, head: { name: "acme", writes: { post: {} }, connections: { primer: { tools: { write: tools } } }, agents: { bot: { connections: { primer: tools } } } }, codeChanged: true, official: true } }, marketplaces: [] };
   const taken = await kernel({ texts, verifyRelease: verified, modules: official, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
   assert.deepEqual([taken.tier, taken.rule], [1, "release-update"]);
-  assert.ok(taken.card.reason.length <= 300 && /1 spend increases/.test(taken.card.reason), taken.card.reason);
-  assert.ok(taken.args.authority.some((l) => /^acme: spend increase: agent bot: day_usd up to 50 \(owner\)$/.test(l)), "the spend line says so");
+  assert.ok(taken.card.reason.length <= 300, taken.card.reason);
   const noCode = { modules: { acme: { ...official.modules.acme, codeChanged: false } }, marketplaces: [] };
   const plain = await kernel({ texts, verifyRelease: verified, modules: noCode, autonomy: "tier0" }).writes.fileKernel("kernel.apply", { args: BUMP, task: "TASK-1", requester: UPDATER });
   assert.deepEqual([plain.tier, plain.rule], [1, "release-update"]);

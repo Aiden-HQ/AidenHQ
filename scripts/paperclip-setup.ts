@@ -226,7 +226,7 @@ function agentBody(key: string, a: Obj) {
     role: "general",
     title: a.title ?? null,
     runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false, maxConcurrentRuns: 1 } },
-    // budget: informational, never Paperclip's hard stop (spend caps are the kernel's). 0 = no limit.
+    // Paperclip's own budget stop stays off (0 = no limit): spend limits are the model gateway's.
     budgetMonthlyCents: 0,
     defaultEnvironmentId: null,
     // An Engineer (runnerEngine): the board's picker and the tasks tools' engineer list. `brief: true`: its handbook is the
@@ -494,7 +494,7 @@ function writeCatalog() {
 }
 
 /**
- * An agent's rev: the first 12 hex of sha256(its final handbook + adapter config + its grants entry, models and caps
+ * An agent's rev: the first 12 hex of sha256(its final handbook + adapter config + its grants entry, models
  * included). A run is stamped with it (the model gateway stamps usage rows from the grants table; the run page falls back
  * to revs.jsonl), so a behaviour change can be tied to the apply that caused it.
  */
@@ -519,7 +519,7 @@ function appendRevs(table: Obj) {
 
 /**
  * The grants table the kernel's tool proxy checks every caller against (kernel/src/identity.ts): Paperclip agent id →
- * {key, roles, tools, models, caps, graded} (the last three: grantEntry in scripts/modules.ts). Keyed by id because
+ * {key, roles, tools, models, graded} (the last two: grantEntry in scripts/modules.ts). Keyed by id because
  * Paperclip lets agents edit their own metadata (setupKey, roles). Written in place, never renamed: the board bind-mounts
  * its directory read-only.
  */

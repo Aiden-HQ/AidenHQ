@@ -118,10 +118,12 @@ test("overrides apply to allowed fields only", () => {
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { nope: { model: "m" } } } })), /unknown agent: nope/);
   assert.deepEqual(compile(mods, finst([], base, { overrides: { routines: { daily: { status: "paused" } } } })).paperclip.routines.daily.status, "paused");
 });
-test("grants entry: models, fleet caps under the agent's override, graded off by default; a bad cap fails compile", () => {
-  const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2", caps: { task_usd: 20 } } } } })).paperclip;
-  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { name: "X", models: ["m2", "m3"], caps: { run_usd: 2, task_usd: 20, day_usd: 30 }, graded: false, profile: "crew", reports_to: "boss", engine: "codex-openrouter", model: "m2", max_parallel: 1, routines: { r1: { model: "m3" } } });
-  assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { caps: { month_usd: 5 } } } } })), /x: caps\.month_usd isn't a cap/);
+test("grants entry: models, graded off by default; a removed spend key fails compile naming the replacement", () => {
+  const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2" } } } })).paperclip;
+  assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { name: "X", models: ["m2", "m3"], graded: false, profile: "crew", reports_to: "boss", engine: "codex-openrouter", model: "m2", max_parallel: 1, routines: { r1: { model: "m3" } } });
+  assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { caps: { day_usd: 5 } } } } })), /overrides\.agents\.x\.caps is gone: one install limit, spend_day_usd \/ spend_month_usd/);
+  assert.throws(() => compile(mods, finst(["a"], { ...base, eval_day_usd: 5 })), /settings\.eval_day_usd is gone/);
+  assert.throws(() => compile(mods, finst(["a"], { ...base, code_review: { repos: [{ repo: "a/b", on_open: [{ engine: "codex", model: "m", effort: "low", run_usd: 5 }] }] } })), /code_review\.repos\.0\.on_open: run_usd is gone/);
 });
 test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
   const out = compile(mods, finst(["jc"]));
@@ -226,8 +228,8 @@ test("kernel roles are the kernel's: no module declares one or a write kind's na
   assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.apply, which is the kernel's namespace/);
   roles("  declares: [ github.merge ]");
   assert.doesNotThrow(() => compile(dir, finst(["a"])), "no module here has that kind");
-  roles("  declares: [ kernel.raise_cap ]");
-  assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.raise_cap/);
+  roles("  declares: [ kernel.something ]");
+  assert.throws(() => compile(dir, finst(["a"])), /declares role kernel\.something, which is the kernel.s namespace/);
   roles("  requests: [ kernel.anything ]");
   assert.throws(() => compile(dir, finst(["a"])), /requests role kernel\.anything, which the kernel doesn't define/);
   roles("  requests: [ kernel.apply ]");
@@ -420,12 +422,11 @@ test("a codehost grant is taken literally: settings are refused, the kernel's @ 
   assert.throws(() => kernelModuleTable({ m: { codehost: { token: { repos: ["@instance"], perms: { contents: "read" } } } } }), /no field token/);
 });
 test("teams: any module agent becomes a team record over named members (template, then defaults, then member)", () => {
-  const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, caps: { day_usd: 40 }, routing: { weights: { repo: 2 } },
+  const teams = { research: { template: "chief-of-staff.assistant", defaults: { max_parallel: 2, reasoning_effort: "high", handbook: "Cite every source." }, routing: { weights: { repo: 2 } },
     members: { kai: { name: "Kai", repos: ["acme/*"] }, mina: { name: "Mina", max_parallel: 1, model: "~deepseek/deepseek-flash-latest" } } } };
   const r = compile(product, pinst([], owner, { teams })).paperclip;
   const tpl = r.agents.assistant, kai = r.agents.kai, mina = r.agents.mina;
   assert.deepEqual(tpl.team, { name: "research", members: ["kai", "mina"], weights: { repo: 2, continuity: 1, load: 1 } });
-  assert.equal(grantEntry("assistant", tpl, r.routines).caps.day_usd, 40); // the team's day cap, on its record
   assert.deepEqual([kai.name, kai.member_of, kai.repos, kai.max_parallel, kai.handbook_line, kai.module], ["Kai", "assistant", ["acme/*"], 2, "Cite every source.", "chief-of-staff"]);
   assert.deepEqual([mina.max_parallel, mina.model, mina.description], [1, "~deepseek/deepseek-flash-latest", tpl.description]);
   assert.equal(kai.reasoning_effort, "high"); // the board's typed change on the team record lands in teams.<t>.defaults
@@ -446,16 +447,16 @@ test("code review gates a repo with a mandatory combo at both moments; one at a 
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", mandatory: true }] }), /a repo's mandatory is gone/);
 });
 
-test("check job limits: a recipe may run 180 minutes and its model token may be capped at 100; more fails the compile", () => {
+test("check job limits: a recipe may run 180 minutes; a recipe's own model cap is gone", () => {
   const job = (r) => ({ check_jobs: { big: { argv: ["node", "x.ts"], title: "big", spec: { budget_usd: "usd" }, timeout_min: 180, ...r } } });
   const root = mkdtempSync(join(tmpdir(), "cj-"));
-  assert.equal(checkJobs("m", job({ model: { max_usd: 100 } }), root).big.model.max_usd, 100);
+  assert.equal(checkJobs("m", job({ model: true }), root).big.model, true);
   assert.equal(checkJobs("m", job({}), root).big.timeout_min, 180);
   assert.throws(() => checkJobs("m", job({ timeout_min: 181 }), root), /1 to 180/);
-  assert.throws(() => checkJobs("m", job({ model: { max_usd: 101 } }), root), /0-100/);
+  assert.throws(() => checkJobs("m", job({ model: { max_usd: 100 } }), root), /spend cap is gone/);
   // the real code review module declares both profiles: the tools one with no model
   const real = checkJobs("code-review", YAML.parse(readFileSync(join(here, "../../modules/code-review/module.yaml"), "utf8")), join(here, "../../modules/code-review"));
-  assert.equal(real["code-review"].model.max_usd, 100);
+  assert.equal(real["code-review"].model, true);
   assert.equal(real["code-review-tools"].model, undefined);
   assert.equal(real["code-review-tools"].result, true);
 });

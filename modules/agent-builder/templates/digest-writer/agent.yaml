@@ -4,7 +4,6 @@ name: Digest Writer
 description: Writes a scheduled digest of named sources (Slack channels, GitHub repos, a warehouse query) and posts it to its task; does not triage or act on what it reads.
 reports_to: architect
 model: ~deepseek/deepseek-flash-latest
-budget: 5 # USD per month
 trial: true
 connections:
   slack?: read
