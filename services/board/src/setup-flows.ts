@@ -121,20 +121,35 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
   const changed = () => d.onSetupChange?.();
   /** Each module's last confirmed pairing state: a change (paired, or revoked) is announced to the open boards once. */
   const pairedBefore = new Map<string, boolean>();
+  /** Bumped when a pairing read starts, so a slow, older answer cannot overwrite a newer one. */
+  let pairingReads = 0;
+  /** The read that last confirmed each module's pairing. */
+  const confirmedAt = new Map<string, number>();
   /** The last confirmed pairing as stored, so it still stands after a restart when the module cannot be asked. */
   const rememberedPairing = (module: string): boolean | undefined => {
     const v = d.store.meta(`setup_paired:${module}`);
     return v === "true" ? true : v === "false" ? false : undefined;
   };
-  const notePairing = (module: string, paired: boolean) => {
+  /** What the board believes about a module's pairing: a read that failed says nothing, so the last confirmed state stands. */
+  const confirmedPairing = (module: string, paired: boolean | undefined) => paired ?? pairedBefore.get(module) ?? rememberedPairing(module);
+  /** A read that began now: pass it back with the answer, so a later-started read wins when both are out. */
+  const startPairingRead = () => ++pairingReads;
+  /**
+   * Records a confirmed pairing read and returns the state to show: the one this read confirms, or the newer state when this
+   * read began before it. A real change is announced once, and so is a module's first-ever confirmation (nothing known
+   * before it and now paired); a read that matches the stored state after a restart stays quiet.
+   */
+  const notePairing = (module: string, paired: boolean, at: number): boolean => {
+    const seen = confirmedAt.get(module);
+    if (seen !== undefined && at < seen) return confirmedPairing(module, undefined) ?? paired;
+    confirmedAt.set(module, at);
     // Compare with what the last read or the stored value said (a restart empties the map): only a real change is announced.
     const before = pairedBefore.has(module) ? pairedBefore.get(module) : rememberedPairing(module);
     pairedBefore.set(module, paired);
     d.store.setMeta(`setup_paired:${module}`, String(paired));
-    if (before !== undefined && before !== paired) changed();
+    if (before === undefined ? paired : before !== paired) changed();
+    return paired;
   };
-  /** What the board believes about a module's pairing: a read that failed says nothing, so the last confirmed state stands. */
-  const confirmedPairing = (module: string, paired: boolean | undefined) => paired ?? pairedBefore.get(module) ?? rememberedPairing(module);
   const dismissed = (): string[] => {
     try {
       return JSON.parse(d.store.meta(DISMISSED) ?? "[]");
@@ -207,10 +222,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       d.flows
         .filter((f) => !module || f.module === module)
         .map(async (f) => {
+          const at = startPairingRead();
           const paired = await pairedOf(f);
           // A confirmed read is remembered here too, so a later failed read falls back to it rather than to an older state.
-          if (paired !== undefined) notePairing(f.module, paired);
-          return { module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), confirmedPairing(f.module, paired)), dismissed: gone.has(f.module) };
+          const pairing = paired === undefined ? confirmedPairing(f.module, paired) : notePairing(f.module, paired, at);
+          return { module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), pairing), dismissed: gone.has(f.module) };
         }),
     );
   };
@@ -228,11 +244,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             // A connect path counts only if the board serves it; then its connection's state is the sign-in's.
             const connected = connect_url ? await d.connected(connect_url) : undefined;
             const signedIn = await signedInOf(full, connected);
+            const at = startPairingRead();
             const paired = await pairedOf(full);
-            // A pairing completed while no setup page was open is seen here, by whichever board reads the flows next.
-            if (paired !== undefined) notePairing(f.module, paired);
-            // A read that failed is no answer: keep what the last confirmed read said rather than reporting it unpaired.
-            const pairing = confirmedPairing(f.module, paired);
+            // A pairing completed while no setup page was open is seen here, by whichever board reads the flows next; a read
+            // that failed is no answer, so the last confirmed state stands rather than the flow reading as unpaired.
+            const pairing = paired === undefined ? confirmedPairing(f.module, paired) : notePairing(f.module, paired, at);
             // Basic is done once it is connected (and paired, when the basic flow pairs); advanced once its secrets exist (and paired).
             const scopes = f.signin ? await d.scopeChoice(f.signin) : false;
             // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
@@ -338,12 +354,13 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       handle: async (m) => {
         const f = flow(m[1]!);
         const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
+        const at = startPairingRead();
         const { paired, paired_at } = await pairCall(f, "GET");
         const known = typeof paired === "boolean" ? paired : undefined;
         if (known && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
         // The setup page learns a code was sent by polling here; any change (paired or revoked) tells the other open boards.
-        if (known !== undefined) notePairing(m[1]!, known);
-        return { paired: known ?? confirmedPairing(m[1]!, undefined) ?? false, ...(paired_at != null ? { paired_at } : {}) };
+        const pairing = known === undefined ? (confirmedPairing(m[1]!, undefined) ?? false) : notePairing(m[1]!, known, at);
+        return { paired: pairing, ...(paired_at != null ? { paired_at } : {}) };
       },
     },
   ];

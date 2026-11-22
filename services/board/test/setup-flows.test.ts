@@ -311,6 +311,62 @@ describe("setup flows", () => {
 });
 
 describe("setup flows, MCP status", () => {
+
+  it("an older pairing read that lands late does not overwrite a newer one", async () => {
+    const store = new Store(":memory:");
+    const emit = vi.spyOn(store.events, "emit");
+    // Each GET is held until the test answers it, so the older read can land after the newer one.
+    const held: { answer: (paired: boolean) => void }[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      if (init.method !== "GET") return new Response(JSON.stringify({ code: "ABCD-1234" }), { status: 200 });
+      return new Promise<Response>((resolve) => held.push({ answer: (p) => resolve(new Response(JSON.stringify({ paired: p }), { status: 200 })) }));
+    }) as unknown as typeof fetch;
+    const routes = setupFlowRoutes({
+      flows: [flows[0]!], accounts: {} as never, store, signedIn: async () => true, scopeChoice: async () => false,
+      connected: async () => undefined, boardUrl: () => "http://localhost:3121", redirectUrl: () => undefined,
+      settings: () => undefined, file: async () => ({ identifier: "t-1" }), onSetupChange: () => store.events.emit("setup"), fetchImpl,
+    });
+    try {
+      // The older read starts first, the newer one second; the newer (paired) lands first and is what the board shows.
+      const older = routes.states();
+      const newer = routes.states();
+      held[1]!.answer(true);
+      expect(await newer).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+      // The older read lands last with the state from before the pairing: it must not flip the flow back or announce it.
+      held[0]!.answer(false);
+      expect(await older).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+      expect(store.meta("setup_paired:phone")).toBe("true");
+      // Only the first-ever confirmation announced; the stale unpaired answer announced nothing.
+      expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(1);
+    } finally {
+      store.delMeta("setup_paired:phone");
+      emit.mockRestore();
+    }
+  });
+
+  it("a module's first confirmed pairing announces it once", async () => {
+    const store = new Store(":memory:");
+    const emit = vi.spyOn(store.events, "emit");
+    paired = true;
+    const routes = setupFlowRoutes({
+      flows: [flows[0]!], accounts: {} as never, store, signedIn: async () => true, scopeChoice: async () => false,
+      connected: async () => undefined, boardUrl: () => "http://localhost:3121", redirectUrl: () => undefined,
+      settings: () => undefined, file: async () => ({ identifier: "t-1" }), onSetupChange: () => store.events.emit("setup"), fetchImpl: fakePair,
+    });
+    try {
+      // Nothing known before (no map entry, no stored value): boards that did not make the request learn it happened.
+      expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+      expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(1);
+      // Reading the same state again is not a change.
+      await routes.states();
+      expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(1);
+    } finally {
+      store.delMeta("setup_paired:phone");
+      paired = false;
+      emit.mockRestore();
+    }
+  });
+
   it("records a pairing status confirms, so a later failed read keeps it", async () => {
     const store = new Store(":memory:");
     const emit = vi.spyOn(store.events, "emit");
