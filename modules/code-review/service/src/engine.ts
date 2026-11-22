@@ -204,7 +204,7 @@ export function createEngine(d: EngineDeps) {
     && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["findings", "claimed_at", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
     ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
@@ -439,6 +439,14 @@ export function createEngine(d: EngineDeps) {
   const stillOpen = (repo: string, n: number) => all<Omit<Open, "severity"> & { rank: number }>(
     `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted') gating, MAX(f.claim IS NOT NULL) pending, MAX(f.run) run
      FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
+  /** For an open finding carrying an agent's `fixed` claim that the PR's latest mandatory recheck called still there: what that says,
+   * so the agent can tell whether to fix more or dispute (otherwise the finding just stays open with no reason). */
+  const stillNote = (repo: string, n: number, head: string) => {
+    const v = one<{ head: string; json: string }>("SELECT r.head, v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.head = ? AND r.mandatory = 1 AND r.recheck = 1 AND r.status = 'done' ORDER BY r.ended DESC LIMIT 1", repo, n, head);
+    const list = v ? (JSON.parse(v.json) as { still?: unknown }).still : undefined;
+    const still = new Set<unknown>(Array.isArray(list) ? list : []);
+    return (f: { id: string; pending: number }) => f.pending && still.has(f.id) ? `the recheck at ${v!.head.slice(0, 7)} says it is still there: fix it or answer disputed with the reason` : undefined;
+  };
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
   /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
@@ -1384,7 +1392,7 @@ export function createEngine(d: EngineDeps) {
     if (github) for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
-        if (gated(cfg)) await claims(cfg);
+        if (gated(cfg)) { await claims(cfg); recheckClaims(cfg); }
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
@@ -1542,7 +1550,7 @@ export function createEngine(d: EngineDeps) {
     const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "claimed" : "dismissed";
     // `fixed` is a claim only: the finding stays open and gating, and the next mandatory review (which gets it first) closes it as fixed when it finds the defect gone.
     const changed = tx(() => {
-      const c = run(`UPDATE findings SET ${w === "fixed" ? "claim = ?" : "outcome = 'dismissed', outcome_at = ?, claim = ?"} WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL`, ...(w === "fixed" ? [claim] : [iso(), claim]), at.repo, at.number, id).changes;
+      const c = run(`UPDATE findings SET ${w === "fixed" ? "claim = ?, claimed_at = ?" : "outcome = 'dismissed', outcome_at = ?, claim = ?"} WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL`, ...(w === "fixed" ? [claim, iso()] : [iso(), claim]), at.repo, at.number, id).changes;
       if (c) dispose([id], at, outcome, `${label}: ${claim}`, by, evidence);
       return c;
     });
@@ -1635,6 +1643,25 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
+  /**
+   * A `fixed` claim recorded after its head's mandatory recheck started was never read by it, and with no newer commit no review
+   * ever would: one more mandatory recheck of that head is queued (low effort, the same model). Once per claim, once the head's runs have settled: any mandatory recheck
+   * of the head made since the claim (ended, skipped included) is the one it gets.
+   */
+  function recheckClaims(cfg: Repo) {
+    for (const p of all<{ number: number; head: string; base: string; author: string; draft: number }>("SELECT number, head, base, author, draft FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+      if (p.draft && !cfg.drafts) continue;
+      const ids = openGating(cfg.repo, p.number).filter((f) => f.pending).map((f) => f.id);
+      if (!ids.length) continue;
+      const at = one<{ at: string | null }>(`SELECT MAX(claimed_at) at FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND claim LIKE 'fixed:%' AND id IN (${ids.map(() => "?").join(",")})`, cfg.repo, p.number, ...ids)?.at;
+      // Not while a mandatory run of the head is still queued or running: it settles first (the verdict keeps one run per combo, and it may still report).
+      if (!at || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND status IN ('queued', 'running')", cfg.repo, p.number, p.head)) continue;
+      const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head);
+      if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
+      queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push" });
+    }
+  }
+
   // ---- the merge gate's verdict and the owner's dismissal -----------------------------------------------------------------------
 
   type Reason = { code: string; text: string; unblock?: string };
@@ -1665,8 +1692,8 @@ export function createEngine(d: EngineDeps) {
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
-    const open = openGating(repo, n);
-    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
+    const open = openGating(repo, n), note = stillNote(repo, n, head);
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}${open.filter((f) => note(f)).map((f) => `; ${note(f)} (id ${f.id})`).join("")}`,
       unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
@@ -1743,7 +1770,7 @@ export function createEngine(d: EngineDeps) {
     dismiss,
     resolve,
     /** The PR's open important findings with their ids (what a merge wait's cut text may leave out). */
-    openFindings(repo: string, number: number) { return openGating(repo.toLowerCase(), number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 120) })); },
+    openFindings(repo: string, number: number) { const note = stillNote(repo.toLowerCase(), number, prRow(repo.toLowerCase(), number)?.head ?? ""); return openGating(repo.toLowerCase(), number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 120), ...(note(f) ? { note: note(f) } : {}) })); },
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) {
       const r = runRow(id);

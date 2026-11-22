@@ -1555,6 +1555,36 @@ test("a corrected answer closes a finding that carries a fixed claim, and a rech
   assert.deepEqual(v.engine.verdict(REPO, 2, sha("3")).reasons, [], "reported again by a review that started before the correction: still closed");
 });
 
+test("a pending fixed the latest recheck called still there says so in the wait reason and the open-findings list", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
+  assert.doesNotMatch(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /still there/, "no recheck yet: nothing to say");
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [], still: ["f1"] }); await w.tick();
+  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons[0].text, /the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
+  assert.match(w.engine.openFindings(REPO, 2)[0].note, /still there/);
+});
+
+test("a fixed claim recorded after its head's recheck started gets exactly one more recheck of that head, which can clear it", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "the new head's recheck is running");
+  w.later(1000);
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
+  await w.tick();
+  assert.equal(w.started.length, 2, "not while the head's own run is still going");
+  w.finish(1, { findings: [] }); await w.tick(); await w.tick();
+  assert.deepEqual(w.started.map((x) => x.head).slice(1), [sha("3"), sha("3")], "one more recheck, at the same head");
+  assert.deepEqual(w.started[2].previous.map((x) => x.id), ["f1"], "it reads the claim's finding");
+  w.finish(2, { findings: [], cleared: ["f1"] }); await w.tick(); await w.tick();
+  assert.equal(w.started.length, 3, "no loop: the claim is closed and gets no more");
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+});
+
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));

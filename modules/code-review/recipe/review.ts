@@ -66,7 +66,7 @@ interface Result {
   coverage: { eligible?: string[]; reviewed: string[]; excluded: string[]; incomplete: string | null; counts?: { eligible: number; reviewed: number } };
   /** Files the engine set the repo up with (deepsec): path to text, the allowlisted ones only. */
   setup?: Record<string, string>;
-  findings: Placed[]; fixed: string[]; unsafe?: string[]; cleared?: string[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
+  findings: Placed[]; fixed: string[]; unsafe?: string[]; cleared?: string[]; still?: string[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
   /** Important findings the engine gave without a failure scenario, made nits by code (never posted: the run's record). */
   downgraded: number;
   /** A note on coverage that isn't a gap (an engine that doesn't report what it read); never posted, never incomplete. */
@@ -344,11 +344,15 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !(j.still ?? []).includes(f.id) && seen(f)) fixed.push(f.id);
         for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
         // Open findings it was asked about, looked at and didn't call still there: an agent's pending `fixed` claim on one of them stands.
+        // And the ones it looked at and called still there: shown to the agent who claimed them fixed.
+        result.still = ask.filter((f) => !f.claim && (j.still ?? []).includes(f.id) && seen(f)).map((f) => f.id);
         result.cleared = ask.filter((f) => !f.claim && !(j.still ?? []).includes(f.id) && seen(f)).map((f) => f.id);
       } else {
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
     }
+    // A finding this run's finders restated at the head is still there too.
+    result.still = [...new Set([...(result.still ?? []), ...previous.filter((f) => !f.claim && again.has(f.id)).map((f) => f.id)])];
     result.fixed = fixed;
     result.unsafe = unsafe;
   }

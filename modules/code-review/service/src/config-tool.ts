@@ -129,7 +129,7 @@ export function configTools(d: {
   return [
     {
       name: "code_review_findings",
-      description: "A pull request's open important findings that hold its merge, each with the id code_review_resolve takes: { repo: owner/name, number }. The merge's wait reason lists ids too, but cuts long lists.",
+      description: "A pull request's open important findings that hold its merge, each with the id code_review_resolve takes: { repo: owner/name, number }. The merge's wait reason lists ids too, but cuts long lists. A `note` says when the latest recheck called a finding you claimed fixed still there.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, number: { type: "integer" } }, required: ["repo", "number"], additionalProperties: false },
       run: async (a) => {
         if (typeof a.repo !== "string" || !REPO.test(a.repo) || !Number.isInteger(a.number)) throw new Error("repo is owner/name and number an integer");
