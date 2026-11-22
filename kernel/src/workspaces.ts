@@ -1,4 +1,4 @@
-// The host's disk stays bounded (docs/operations.md "Disk"): what the kernel's jobs and checks leave on disk goes once it is
+// The host's disk stays bounded (docs/operations.md "Task workspaces and disk"): what the kernel's jobs and checks leave on disk goes once it is
 // no longer used, so `/` never grows without bound. One pass, every 15 minutes and soon after start, walks what is ON DISK:
 //   <workDir>/tasks/<identifier>         a task's workspace (boxes.ts), kept between its jobs;
 //   <workDir>/.cache-layers/<identifier> its jobs' copy-on-write build-cache overlays;
@@ -6,7 +6,8 @@
 //                                        engines with per-task state. The stateDir itself (default ~/.local/state/aidenhq-runner,
 //                                        despite the name the kernel's own) is never removed: only these per-task homes;
 //   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left behind by a kernel that died mid-check.
-// A folder goes when nothing live uses it (no admitted or running job on its task; no running check of that attempt) and
+// A folder goes when nothing live uses it (no admitted or running job on it, no box not yet released; no running check of
+// that attempt) and
 // either its task has been done or cancelled for CLOSED_DAYS, or it has been idle (its last job's end, or the folder's own
 // mtime when no job names it) for IDLE_DAYS, whatever the task's state: an idle task that resumes clones again, and its next
 // job starts a fresh session. Over PRESSURE of a disk used, both limits drop (a day idle, closed at all). What was published
@@ -46,9 +47,11 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
     u.pairs.push({ agent, task }); u.last = Math.max(u.last, last);
     m.set(key, u);
   };
-  const LIVE = "state IN ('admitted', 'running')";
-  const liveIdent = (identifier: string) => Boolean(db.prepare(`SELECT 1 FROM jobs WHERE identifier = ? AND ${LIVE} LIMIT 1`).get(identifier));
-  const livePair = (u?: Use) => Boolean(u?.pairs.some(({ agent, task }) => db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND agent = ? AND ${LIVE} LIMIT 1`).get(task, agent)));
+  // In use: a job admitted or running, or one that ended within a day whose box is not released yet (release still reads the
+  // workspace and the box keeps its mounts until then, boxes.ts tend; a release stuck for longer pins nothing).
+  const LIVE = () => `(state IN ('admitted', 'running') OR (box IS NOT NULL AND (released IS NULL OR released < 0) AND COALESCE(ended, at) > ${Math.floor(now() - DAY)}))`;
+  const liveIdent = (identifier: string) => Boolean(db.prepare(`SELECT 1 FROM jobs WHERE identifier = ? AND ${LIVE()} LIMIT 1`).get(identifier));
+  const livePair = (u?: Use) => Boolean(u?.pairs.some(({ agent, task }) => db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND agent = ? AND ${LIVE()} LIMIT 1`).get(task, agent)));
   const closedAt = (task: string) => {
     const r = db.prepare("SELECT json_extract(data, '$.to') AS st, at FROM facts WHERE subject = ? AND type = 'task.status_changed' ORDER BY at DESC, seq DESC LIMIT 1").get(`task:${task}`) as { st?: string; at: string } | undefined;
     return r && CLOSED.has(String(r.st)) ? Date.parse(r.at) : undefined;
@@ -72,7 +75,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
       ...engines().map((kind) => ({
         root: join(stateDir, kind), use: (n: string) => byHome.get(n), busy: (_: string, u?: Use) => livePair(u),
         // Its session went with it: the next job starts fresh instead of resuming one that is gone (boxes.ts lastSession).
-        gone: (u: Use) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = ? AND NOT ${LIVE}`).run(agent, task, kind); },
+        gone: (u: Use) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = ? AND NOT ${LIVE()}`).run(agent, task, kind); },
       })),
     ];
     let removed = 0;
@@ -94,9 +97,15 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
         const closed = (u?.pairs ?? []).map(({ task }) => closedAt(task));
         const why = now() - last > idleMs ? "idle" : closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs) ? "closed" : undefined;
         if (!why) continue;
-        mkdirSync(trash, { recursive: true });
-        renameSync(dir, join(trash, `${name}-${now()}`));
-        if (u && gone) gone(u);
+        // One folder that can't be moved (its parent's mode, a race) is logged and skipped; the rest of the pass goes on.
+        try {
+          mkdirSync(trash, { recursive: true });
+          renameSync(dir, join(trash, `${name}-${now()}`));
+          if (u && gone) gone(u);
+        } catch (e) {
+          log("unused folder not removed", { dir, err: (e as Error).message });
+          continue;
+        }
         removed++;
         log("unused folder removed", { dir, why, ...(pressure ? { pressure: true } : {}) });
         await new Promise((ok) => setImmediate(ok));
