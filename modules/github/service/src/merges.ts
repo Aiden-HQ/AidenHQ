@@ -101,6 +101,21 @@ export function createMerges(d: {
       return false;
     }
   }
+  /**
+   * Whether the pull request itself is really gone, the same way `repoAbsent` asks about the repository: GitHub answers a
+   * NOT_FOUND naming the pull request both for a PR that never existed and for a private one this token lost access to, and
+   * ending an approved merge on the second is the failure this header promises never happens. Reading that PR directly is
+   * GitHub's own answer on the same token: a 404 is the PR absent, any other answer (a 200, a 403, a 5xx) means the merge
+   * waits and the next tick asks again. It is a read, never a write.
+   */
+  async function prAbsent(repo: string, number: number): Promise<boolean> {
+    try {
+      const r = await d.gh("GET", `/repos/${repo}/pulls/${number}`);
+      return r.status === 404;
+    } catch {
+      return false;
+    }
+  }
   async function readPr(repo: string, number: number) {
     const [owner, name] = repo.split("/");
     const r = await d.gh("POST", "/graphql", { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
@@ -109,12 +124,19 @@ export function createMerges(d: {
     const node = data && typeof data === "object" ? data.repository : undefined;
     const pr = node?.pullRequest;
     // The same answer on both shapes: a NOT_FOUND about the repository (never a nested field) with no PR node, or a null
-    // repository node. It is confirmed absent by the repo read before it ends the record, so a token that lost access only
-    // makes the merge wait. Every other answer (an empty body, a partial answer, a nested NOT_FOUND, a 5xx) throws, so the
-    // poll's catch logs it and the next tick asks again rather than ending an approved merge on an answer it can't act on.
-    const repoGone = errors.length > 0 && errors.every((e) => e?.type === "NOT_FOUND" && /repository/i.test(String(e?.message ?? "")));
+    // repository node; and a NOT_FOUND naming the pull request itself. Each is confirmed by a direct read on the same token
+    // before it ends the record — the repo, and for a PR-named NOT_FOUND the PR — so a token that lost access only makes the
+    // merge wait. Every other answer (an empty body, a partial answer, a nested NOT_FOUND, a 5xx) throws, so the poll's catch
+    // logs it and the next tick asks again rather than ending an approved merge on an answer it can't act on.
+    const notFound = errors.length > 0 && errors.every((e) => e?.type === "NOT_FOUND");
+    const repoGone = notFound && errors.every((e) => /repository/i.test(String(e?.message ?? "")));
+    // A NOT_FOUND that names the pull request (not the repository): GitHub never resolved that PR on this query, and nothing
+    // will make a queued merge find it later — but the same answer is what a token that lost access to a private PR gets, so
+    // the PR read decides. A repo read is not asked for it: the answer already says the repository itself resolved.
+    const prGone = notFound && !repoGone && errors.some((e) => /pull request|pullrequest/i.test(String(e?.message ?? "")));
     if (r.status >= 300 || errors.length) {
       if (!pr && (repoGone || node === null) && (await repoAbsent(repo))) throw new Gone();
+      if (!pr && prGone && (await prAbsent(repo, number))) throw new Gone();
       throw new Error(`GitHub GraphQL: ${errors.map((e) => e.message).join("; ") || `HTTP ${r.status}`}`);
     }
     if (!data || typeof data !== "object") throw new Error("GitHub GraphQL: no answer");
