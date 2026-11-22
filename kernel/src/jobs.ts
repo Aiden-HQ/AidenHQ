@@ -13,6 +13,7 @@ import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import { REFUSALS_DDL, busyError, refusalColumns, refusalOf, type Refusal } from "./refusals.ts";
 import type { Facts } from "./facts.ts";
+import { quietRun } from "./quiet.ts";
 import { SESSION, buildJob, ensureStateDirs, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
 /** What the control plane says about a task. */
@@ -258,7 +259,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
             || db.prepare("SELECT 1 FROM records WHERE task = ? AND created_at >= ? LIMIT 1").get(r.task, since));
         } catch { return false; }
       })();
-      extra = { ...sum, model, acted };
+      // quiet: a routine run that only closed or parked its task (quiet.ts); written here and nowhere else.
+      extra = { ...sum, model, acted, quiet: quietRun(db, { id: r.id, task: r.task, at: r.at, routine: r.routine, state: String(data.state), requester: r.agent }) };
     }
     strictFact(facts)({ type, subject: `job:${r.id}`, version: type === "job.started" ? "started" : "ended", at: iso(at), actor: `agent:${agentKey(r.agent)}`, task: r.task, data: { ...data, ...extra } });
   };

@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createJobs, writeLastMessage } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
+import { quietRun } from "../src/quiet.ts";
 
 const HOST = join(import.meta.dirname, "fixtures/jobs-host.ts");
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -233,4 +234,27 @@ test("a job's last message is written even when its logs folder was deleted, and
   writeFileSync(join(root, "file"), "");
   writeLastMessage(join(root, "file", "logs", "x.log"), "done", (msg) => logged.push(msg));
   assert.deepEqual(logged, ["couldn't write the job's last message"]);
+});
+
+test("only-closing routine job is quiet; a write or a created task is not; quiet is in job.ended only", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE records (kind TEXT, args TEXT, requester TEXT, created_at TEXT); CREATE TABLE facts (type TEXT, at TEXT, data TEXT)");
+  const at = Date.parse("2026-11-23T10:00:00Z");
+  const file = (kind: string, args: object, agent = "agent-1", when = "2026-11-23T10:01:00.000Z") => db.prepare("INSERT INTO records VALUES (?, ?, ?, ?)").run(kind, JSON.stringify(args), JSON.stringify({ agent }), when);
+  const job = { id: "j-1", task: "task-1", at, routine: "slack-triage", state: "done", requester: "agent-1" };
+  file("conn.tool", { connection: "paperclip_tasks", tool: "task_finish", arguments: {} });
+  file("conn.tool", { connection: "slack", tool: "slack_send_message", arguments: {} }, "agent-2"); // another agent's
+  file("github.pr", {}, "agent-1", "2026-11-23T09:00:00.000Z"); // before the job started
+  assert.equal(quietRun(db, job), true);
+  assert.equal(quietRun(db, { ...job, routine: null }), false, "not a routine run");
+  assert.equal(quietRun(db, { ...job, state: "failed" }), false, "didn't end done");
+  db.prepare("INSERT INTO facts VALUES ('task.created', '2026-11-23T10:02:00.000Z', ?)").run(JSON.stringify({ parent: "task-1" }));
+  assert.equal(quietRun(db, job), false, "it created a task under its own");
+  db.exec("DELETE FROM facts");
+  file("conn.tool", { connection: "paperclip_tasks", tool: "task_comment", arguments: {} });
+  assert.equal(quietRun(db, job), false, "a write");
+  // quiet is computed only in job.ended's data (jobs.ts jobFact), never a column of the jobs table.
+  const src = readFileSync(join(import.meta.dirname, "../src/jobs.ts"), "utf8");
+  assert.equal(src.match(/quietRun\(/g)?.length, 1);
+  assert.doesNotMatch(src, /ADD COLUMN quiet|quiet INTEGER/);
 });
