@@ -41,6 +41,10 @@ it("a recorded issue's warehouse row rules it out; a repo outside the grant is s
   expect(calls).toEqual([]);
   const denied = async () => { throw Object.assign(new Error("no read grant"), { status: 403 }); };
   expect(await recordedOpenPrs([{ repo: "far/away", number: 1 }], [], denied)).toEqual([]);
+  // A deleted repo: the code host wraps GitHub's 404 as a 502, and one such repo doesn't fail the others.
+  const gone = async (r: string) => { if (r === "gone/repo") throw Object.assign(new Error("the kernel said 502 to read: GitHub GET /repos/gone/repo/pulls: 404 Not Found"), { status: 502 }); return [{ number: 2, created_at: "2026-11-22T08:00:00Z" }]; };
+  expect(await recordedOpenPrs([{ repo: "gone/repo", number: 1 }, { repo: "far/away", number: 2 }], [], gone)).toEqual([{ repo: "far/away", number: 2, opened_at: "2026-11-22T08:00:00Z", draft: false }]);
+  await expect(recordedOpenPrs([{ repo: "far/away", number: 1 }], [], async () => { throw Object.assign(new Error("the kernel said 502 to read: GitHub GET /repos/far/away/pulls: 500 Server Error"), { status: 502 }); })).rejects.toThrow("500");
   await expect(recordedOpenPrs([{ repo: "far/away", number: 1 }], [], async () => { throw Object.assign(new Error("503"), { status: 503 }); })).rejects.toThrow("503");
   const full = Array.from({ length: 500 }, (_, i) => ({ number: 1000 + i, created_at: "2026-11-22T08:00:00Z" }));
   await expect(recordedOpenPrs([{ repo: "far/away", number: 1 }], [], async () => full)).rejects.toThrow("500 or more");

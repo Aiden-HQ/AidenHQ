@@ -67,12 +67,12 @@ writes:
     card: { sentence: "Call {{method}} {{path}} on app {{name}}'s agent API.", changes: "Whatever that path does in {{name}}, as agent {{caller}} ({{role}}).", reads: "The app's answer.", cost: "No model cost.", details: "{{details}}" }
 # The typed code host operations apps-mcp asks the kernel for (POST /v1/codehost/:op, run as the owner inside the github
 # module): fetches of private app repos (the fleet org and github_orgs) and the registry, the registry commit (apps.yaml in
-# the instance repo), the preview comments on app PRs and the open-PR lists of every repo the fleet opens PRs in (the fleet org,
-# github_orgs, the product repo and maintainer_repos: open-prs.ts). @agents, @orgs and @instance resolve from the kernel's own
+# the instance repo), the preview comments on app PRs and the open-PR lists of every repo the fleet opens PRs in (open-prs.ts: the fleet org,
+# github_orgs, the product repo, maintainer_repos and code-review's setup PRs in any repo, hence read on */*, read-only). @agents, @orgs and @instance resolve from the kernel's own
 # configuration.
 codehost:
   fetch: { repos: ["@agents/*", "@orgs", "@instance"] }
-  read: { repos: ["@agents/*", "@orgs", "@product", "@maintained"] }
+  read: { repos: ["*/*"] }
   comment: { repos: ["@agents/*"] }
   commit: { repos: ["@instance"], paths: ["apps.yaml"] }
 generated_secrets:
