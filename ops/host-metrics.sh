@@ -2,7 +2,8 @@
 # The monitoring module's host metrics (docs/design/monitoring.md), as node-exporter textfiles in data/modules/monitoring/textfile:
 #   units.prom       AidenHQ's systemd units, user (runner, gateway, CI runners, computers) and system (aidenhq-ci-net, ...):
 #                    active, failed, and the user units systemd has enabled (declared). No privileges: `systemctl [--user]
-#                    list-units` and `list-unit-files` read them as the owner's user.
+#                    list-units` and `list-unit-files`, and `systemd-analyze --user unit-paths` for the install links of a
+#                    template unit's enabled instances, read them as the owner's user.
 #   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
 #                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
 #   docker.prom      Docker's own disk breakdown (images, containers, build cache, local volumes) and whether this run could
@@ -65,12 +66,29 @@ write() { # name: atomic, so node-exporter never reads half a file
   # changes() can stay at zero; CiRunnerBackoff reads this instead and cannot miss a loop that is backing off.
   echo "# HELP aidenhq_unit_backoff The CI runner unit's wait after a refused registration token, in seconds (0 when there is none)."
   echo "# TYPE aidenhq_unit_backoff gauge"
+  # Enabling an instance of the runner template does not create a unit file: systemd records it as an install link
+  # (`aidenhq-ci-runner@3.service` under `<target>.wants/` in a user unit dir), and `list-unit-files` lists only the
+  # template (`aidenhq-ci-runner@.service`, indirectly enabled), never the instance. `systemd-analyze --user unit-paths`
+  # names the same dirs systemd loads, and a stopped instance keeps its link, so it still counts as enabled. A link whose
+  # template is gone is dangling (`systemctl is-enabled` reads that instance as not-found): it declares nothing, so it is
+  # skipped rather than alerting about a runner systemd can no longer load.
+  enabled_runner_units() { # one enabled runner instance per line
+    local unit_dir link
+    while read -r unit_dir; do
+      for link in "$unit_dir"/*.wants/aidenhq-ci-runner@*.service; do
+        [ -e "$link" ] || continue
+        link="${link##*/}"
+        [ "$link" = aidenhq-ci-runner@.service ] || printf '%s\n' "$link"
+      done
+    done < <(systemd-analyze --user unit-paths 2>/dev/null)
+  }
+  enabled_runners="$(enabled_runner_units | clean | sort -u)"
   # The runner units that are still in play: enabled, or live despite being disabled -- `systemctl --user disable` without
   # `--now` leaves a runner running and retrying under its restart policy, so its wait is still the loop's own state. A marker
   # a retired unit left behind (disabled and stopped just after reaching the cap) is not: it must not keep CiRunnerBackoff
   # pending for its 15-minute life when nothing is retrying any more.
   runners="$( {
-    systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' | awk '{print $1}'
+    printf '%s\n' "$enabled_runners"
     systemctl --user list-units --all --plain --no-legend --no-pager 'aidenhq-ci-runner@*' | awk '$3 == "active" || $3 == "activating" || $3 == "reloading" {print $1}'
   } 2>/dev/null | clean | sort -u)"
   for backoff_dir in "$data"/ci-runner; do
@@ -90,13 +108,17 @@ write() { # name: atomic, so node-exporter never reads half a file
       echo "aidenhq_unit_backoff{scope=\"user\",unit=\"$unit_name\"} $delay"
     done
   done
-  # The declared set: the enabled user units above. A per-unit `is-enabled` reads a unit systemd unloaded after a stop as absent, which
-  # would look like a retirement; `list-unit-files` reads the unit files, so a stopped unit still counts as declared.
-  systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null \
-    | awk '{print $1}' | clean | while read -r unit; do
+  # The declared set: the enabled user units above, with each enabled runner instance under its own name -- the alert joins
+  # on (unit) with an instance's active series, which the template line would never match. The template is not a unit an
+  # apply keeps running, so it is not declared.
+  declared="$( {
+    systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null
+    printf '%s\n' "$enabled_runners"
+  } | awk '$1 != "aidenhq-ci-runner@.service" {print $1}' | clean | sort -u)"
+  while read -r unit; do
       [ -n "$unit" ] || continue
       echo "aidenhq_unit_declared{scope=\"user\",unit=\"$unit\"} 1"
-    done
+  done <<< "$declared"
 } | write units.prom
 
 # Every container, whatever started it: compose services and computer boxes carry labels, other containers only a name, and a

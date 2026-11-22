@@ -3,7 +3,7 @@
 // textfile section runs on the same fakes, so this also pins that an empty runner state writes no backoff line at all.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,18 +17,37 @@ function host() {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
-  // One running runner unit; every other read is empty. The enabled set can be narrowed with $DECLARED (one unit per line),
-  // and the loaded units with $RUNNING, which pin that a retired runner's marker is not exported while a disabled runner that
-  // is still running keeps its own; by default both runner units are declared and only 3 is running.
-  fake("systemctl", `case "$*" in *"list-units"*) if [ -f "$RUNNING" ]; then cat "$RUNNING"; else echo "aidenhq-ci-runner@3.service loaded active running AidenHQ CI runner"; fi ;; *"list-unit-files"*) if [ -f "$DECLARED" ]; then cat "$DECLARED"; else printf 'aidenhq-ci-runner@3.service enabled\naidenhq-ci-runner@4.service enabled\n'; fi ;; esac\nexit 0`);
+  // The user unit dir systemd loads, as `systemd-analyze --user unit-paths` names it.
+  const unitDir = join(root, "systemd/user");
+  mkdirSync(unitDir, { recursive: true });
+  // One running runner unit; every other read is empty. The enabled runner instances are the install links `h.enable` writes
+  // (as `systemctl --user enable` does), and the loaded units come from $RUNNING, which pin that a retired runner's marker is not exported
+  // while a disabled runner that is still running keeps its own; by default instances 3 and 4 are enabled and only 3 is
+  // running. $UNIT_FILES is the general 'aidenhq-*' 'prune-*' listing, where systemd reports an enabled instance only as the
+  // runner template (indirectly enabled), never the instance names; by default it holds that template and one non-runner unit.
+  fake("systemd-analyze", `case "$*" in *unit-paths*) echo "$UNIT_DIR" ;; esac\nexit 0`);
+  fake("systemctl", `case "$*" in
+  *"list-units"*) if [ -f "$RUNNING" ]; then cat "$RUNNING"; else echo "aidenhq-ci-runner@3.service loaded active running AidenHQ CI runner"; fi ;;
+  *"list-unit-files"*) if [ -f "$UNIT_FILES" ]; then cat "$UNIT_FILES"; else printf 'aidenhq-ci-runner@.service enabled\\naidenhq-gateway.service enabled\\n'; fi ;;
+esac
+exit 0`);
   fake("docker", "exit 0");
   const data = join(root, "data");
   mkdirSync(join(data, "modules/monitoring/textfile"), { recursive: true });
-  return { root, bin, data };
+  const wants = join(unitDir, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  // systemd enables an instance by linking the template into a target's .wants dir; the instance has no unit file of its own.
+  writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "");
+  const enable = (units) => {
+    for (const entry of readdirSync(wants)) unlinkSync(join(wants, entry));
+    for (const unit of units) symlinkSync(join(unitDir, "aidenhq-ci-runner@.service"), join(wants, `${unit}.service`));
+  };
+  enable(["aidenhq-ci-runner@3", "aidenhq-ci-runner@4"]);
+  return { root, bin, data, unitDir, wants, enable };
 }
 
 const run = (h, env = {}) => new Promise<string>((resolve, reject) => {
-  execFile("bash", [join(repo, "ops/host-metrics.sh")], { env: { PATH: `${h.bin}:/usr/bin:/bin`, HOME: h.root, AIDENHQ_DATA_DIR: h.data, ...env } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(readFileSync(join(h.data, "modules/monitoring/textfile/units.prom"), "utf8"))));
+  execFile("bash", [join(repo, "ops/host-metrics.sh")], { env: { PATH: `${h.bin}:/usr/bin:/bin`, HOME: h.root, UNIT_DIR: h.unitDir, AIDENHQ_DATA_DIR: h.data, ...env } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(readFileSync(join(h.data, "modules/monitoring/textfile/units.prom"), "utf8"))));
 });
 
 test("a persisted runner backoff is a metric, and a stale or empty one is not", async () => {
@@ -106,8 +125,8 @@ test("a retired runner's marker is not exported", async () => {
   writeFileSync(join(dir, "3.backoff"), "60\n");
   writeFileSync(join(dir, "4.backoff"), "60\n");
   // Only unit 3 is still declared: unit 4's marker is a leftover.
-  writeFileSync(join(h.root, "declared"), "aidenhq-ci-runner@3.service enabled\n");
-  const text = await run(h, { DECLARED: join(h.root, "declared") });
+  h.enable(["aidenhq-ci-runner@3"]);
+  const text = await run(h);
   assert.match(text, /^aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@3\.service"\} 60$/m);
   assert.doesNotMatch(text, /aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@4\.service"/, "a retired unit's marker is not a series");
 });
@@ -121,14 +140,14 @@ test("a disabled runner that is still running keeps its backoff series", async (
   writeFileSync(join(dir, "4.backoff"), "60\n");
   writeFileSync(join(dir, "5.backoff"), "60\n");
   // 3 stays the declared+enabled one; 4 is disabled but activating; 5 is disabled and stopped (a leftover).
-  writeFileSync(join(h.root, "declared"), "aidenhq-ci-runner@3.service enabled\n");
+  h.enable(["aidenhq-ci-runner@3"]);
   writeFileSync(join(h.root, "running"), [
     "aidenhq-ci-runner@3.service loaded active running AidenHQ CI runner",
     "aidenhq-ci-runner@4.service loaded activating start-pre AidenHQ CI runner",
     "aidenhq-ci-runner@5.service loaded inactive dead AidenHQ CI runner",
     "",
   ].join("\n"));
-  const text = await run(h, { DECLARED: join(h.root, "declared"), RUNNING: join(h.root, "running") });
+  const text = await run(h, { RUNNING: join(h.root, "running") });
   assert.match(text, /^aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@4\.service"\} 60$/m, "a disabled runner still activating is still retrying");
   assert.doesNotMatch(text, /aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@5\.service"/, "a disabled and stopped runner's marker is a leftover");
 });
@@ -137,5 +156,42 @@ test("no runner state writes a backoff metric with no series", async () => {
   const h = host();
   const text = await run(h);
   assert.match(text, /^# TYPE aidenhq_unit_backoff gauge$/m);
+  assert.doesNotMatch(text, /^aidenhq_unit_backoff\{/m);
+});
+
+// The declared set is what an apply keeps running, and the runner alert joins it on (unit) with an instance's active series:
+// systemd lists an enabled instance only as the template, so the instance names are read from the enablement links. A
+// non-runner enabled unit still appears as before, and the template is not declared.
+test("the declared set carries each enabled runner instance, not the template", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1", "aidenhq-ci-runner@2"]);
+  const text = await run(h);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@2\.service"\} 1$/m);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m, "a non-runner enabled unit is still declared");
+  assert.doesNotMatch(text, /^aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@\.service"\} 1$/m, "the template is not declared");
+});
+
+// A disabled runner instance is retired: its enablement link is gone and so is its declared series.
+test("a retired runner instance is not declared", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1"]);
+  const text = await run(h);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a disabled runner is not declared");
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
+});
+
+// A cleanup that removes the runner template leaves its enablement links behind, dangling: systemd reads such an instance as
+// not-found, so it declares nothing and must not be exported (a declared series is what lets CiRunnerUnitMissing fire).
+test("a dangling runner enablement link is not declared", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1"]);
+  const template = join(h.unitDir, "aidenhq-ci-runner@.service");
+  unlinkSync(template);
+  symlinkSync(join(h.unitDir, "gone.service"), join(h.wants, "aidenhq-ci-runner@2.service"));
+  const text = await run(h);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@/, "a link with no template behind it declares no runner");
   assert.doesNotMatch(text, /^aidenhq_unit_backoff\{/m);
 });
