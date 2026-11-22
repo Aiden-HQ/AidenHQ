@@ -90,6 +90,9 @@
 //                              down now (a connection that recovered or was removed is absent); the owner channel appends them to each digest
 //   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/{decide,update}, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
+//   POST /v1/memory/:op       (a module with role kernel.memory, serving a job's memory_<op> call in flight) note | forget | read |
+//                              rewrite on the job's own agent's memory (memory.ts); read and a removals-only rewrite of any agent's
+//                              for a librarian. GET /v1/memory/:key (the board, or role kernel.lane) {view, facts, updated}
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
 import { pipeline } from "node:stream/promises";
@@ -125,13 +128,14 @@ import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
 import type { ConnectionState } from "./connection-state.ts";
+import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read (name and model: code review's judge picks a model family other than a PR author's);
  * everything else in the grants table (tools, model lists, caps, images) stays here. */
-const DIRECTORY = ["key", "name", "model", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for"];
+const DIRECTORY = ["key", "name", "model", "roles", "profile", "trial", "description", "delegate_to", "review_log", "graded", "feedback_for"];
 
 /** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
 const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
@@ -215,6 +219,8 @@ export const ROUTES = [
   { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
   { method: "POST", path: "/v1/settings/agent", auth: "module+assertion" },
+  { method: "POST", path: "/v1/memory/:op", auth: "module+assertion" },
+  { method: "GET", path: "/v1/memory/:key", auth: "module|board" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/auth/mcp/:op", auth: "board" },
@@ -282,7 +288,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, memory, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -350,6 +356,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
+  /** Agents' memory documents (memory.ts). */
+  memory?: Memory;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
   boardApi?: BoardApi;
 }) {
@@ -628,6 +636,31 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
         const b = await json(req, 400_000);
         try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+      }
+      if (hit?.path === "/v1/memory/:op") {
+        // A module holding kernel.memory, serving a kernel job's memory_<op> call in flight: the job is read from its own token
+        // and its agent from the grants table, never the body's say-so (a lane turn holds no job, so it never writes memory).
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.memory")) throw fail(403, "forbidden", `${w.module} may not reach agents' memory (role kernel.memory)`);
+        if (!memory) throw fail(503, "unavailable", "memory is off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reaches memory");
+        const op = m[0]!;
+        if (!["note", "forget", "read", "rewrite"].includes(op)) throw fail(404, "not_found", `no memory op ${op}`);
+        if (String(live.caller.tool ?? "").split(".").pop() !== `memory_${op}`) throw fail(403, "forbidden", `memory ${op} is memory_${op}'s only`);
+        const agents = grantsFile().agents ?? {}, row = agents[job.agent!];
+        if (!row?.key) throw fail(403, "forbidden", "the job's agent has no grants row");
+        const keys = Object.values(agents).map((g) => String(g.key ?? "")).filter(Boolean);
+        try { return send(res, 200, memoryOp(memory, op, await json(req, 100_000), { key: row.key, job: job.job, task: job.task, librarian: (row.roles ?? []).includes("librarian") }, keys)); } catch (e) { if (e instanceof MemoryError) throw fail(e.status, "refused", e.message); throw e; }
+      }
+      if (hit?.path === "/v1/memory/:key") {
+        if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.lane")) throw fail(403, "forbidden", `${w.module} may not read agents' memory (role kernel.lane)`); }
+        if (!memory) throw fail(503, "unavailable", "memory is off");
+        const key = decodeURIComponent(m[0]!);
+        if (!Object.values(grantsFile().agents ?? {}).some((g) => g.key === key)) throw fail(404, "not_found", `no agent ${key.slice(0, 60)}`);
+        const { doc } = memory.read(key);
+        return send(res, 200, { view: memoryView(doc), facts: doc.facts, updated: memory.updated(key) ?? null });
       }
       if (hit?.path === "/v1/routing/:op") {
         // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from

@@ -36,7 +36,11 @@ export interface Work {
   activity(): Promise<KernelActivity>;
   /** The owner's Stop (POST /v1/stop, `account` the signed-in admin): the running jobs of a task or an agent end cancelled; their ids. */
   stop(what: { task: string } | { agent: string }, account: string): Promise<string[]>;
+  /** An agent's memory as its jobs read it (GET /v1/memory/:key, kernel memory.ts), or null for no such agent. */
+  memory?(key: string): Promise<AgentMemory | null>;
 }
+/** One agent's memory: its facts, each dated with its source, and when it last changed. */
+export interface AgentMemory { facts: { date: string; src: string; fact: string }[]; updated: string | null }
 
 /** An agent's kernel job as the board's lists show it: `running` ones now, `recent` ones that ended (with the first line of how a failure ended). */
 export interface ActivityJob {
@@ -119,6 +123,13 @@ export function kernelWork(k: { url: string; token: string }): Work {
       const res = await fetch(`${k.url}/v1/stop`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json", "x-aidenhq-account": account }, body: JSON.stringify(what), signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
       return ((await res.json()) as { stopped: string[] }).stopped;
+    },
+    async memory(key) {
+      const res = await fetch(`${k.url}/v1/memory/${encodeURIComponent(key)}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
+      const j = (await res.json()) as AgentMemory;
+      return { facts: j.facts, updated: j.updated };
     },
   };
 }

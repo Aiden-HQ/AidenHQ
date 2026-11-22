@@ -136,13 +136,12 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     // Setup's log tasks (grants): held by an agent, they take comments only, and never a child (task-scope.ts).
     const logs = logTasks({ agents: table as never, fleet_issues: fleetIssues() });
     const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue, logs);
-    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, a fleet overseer (the chief of staff, fleet-admin, or the Fleet Steward, fleet-audit) anywhere. */
+    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a fleet overseer (the chief of staff, fleet-admin, or the Fleet Steward, fleet-audit) anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};
-      if ([own.memory_inbox, own.review_log, own.chat_task].includes(t.id)) return "listed";
+      if ([own.review_log, own.chat_task].includes(t.id)) return "listed";
       const fleet = fleetIssues();
       if (fleet && t.identifier === fleet) return "listed";
-      if (roles.includes("librarian") && Object.values(table).some((g) => g.memory_inbox === t.id)) return "listed";
       return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
     /** A task a fleet settler may change: one an agent made (never a person's own task or chat), and not a log task. */

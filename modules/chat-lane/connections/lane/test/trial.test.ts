@@ -8,7 +8,7 @@ import type { Lane } from "../src/lane/lane.js";
 import { openLaneStore } from "../src/lane/store.js";
 import { buildServer } from "../src/mcp.js";
 
-const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-aria", apiKey: "pcp_aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
+const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
 
 async function server(trial: boolean, caller = { id: "ag-aria", name: "Aria", key: "aria" }) {
   const laneStore = openLaneStore(":memory:");

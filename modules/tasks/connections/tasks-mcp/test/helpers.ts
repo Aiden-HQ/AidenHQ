@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
 
-const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "profile"];
+const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "review_log", "graded", "feedback_for", "profile"];
 const SERVICE_KEY = "tasks-service-key";
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] };
@@ -18,6 +18,8 @@ let current = { handler: () => {}, board: undefined, directory: { agents: {} }, 
 export const cpSeen = [];
 /** Waits the tasks server asked the kernel to record (POST /v1/wait), for a bridge made with `acceptWaits`; else /v1/wait is a 404. */
 export const waits = [];
+/** Memory calls the tasks server forwarded to the kernel (POST /v1/memory/<op>), with the key and assertion they came with. */
+export const memorySeen = [];
 
 const front = await listen(async (req, res) => {
   const u = req.url ?? "";
@@ -46,6 +48,10 @@ const kernel = await listen(async (req, res) => {
   if (u === "/v1/wait" && req.method === "POST" && current.acceptWaits) {
     waits.push(JSON.parse(await read(req)));
     return send(200, { waiting: true });
+  }
+  if (u.startsWith("/v1/memory/") && req.method === "POST") {
+    memorySeen.push({ op: u.slice("/v1/memory/".length), moduleKey, caller: req.headers["x-aidenhq-caller"], body: JSON.parse(await read(req)) });
+    return send(200, { line: "- (2026-11-23, src: WOR-12) noted" });
   }
   if (u.startsWith("/v1/cp/agent/")) {
     if (!moduleKey || !req.headers["x-aidenhq-caller"]) return send(401, {});

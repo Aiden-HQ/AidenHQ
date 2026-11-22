@@ -346,3 +346,11 @@ repo); any signed-in member's page can send a notice without submitting, which c
   limited to what that admin could ask, authorize changes only while open, and are logged.
 - Email squatting: only admins create accounts, and an Access policy must verify email.
 - `scripts/verify-security.sh` checks the exposure after changes.
+- The fast chat lane's tool calls: the chat-lane module's own token (role `kernel.lane`) plus the agent it speaks for
+  (`x-aidenhq-lane-agent`). The kernel takes that agent's grants and roles from the grants table, on its chat task, and
+  refuses an agent with no chat task (`kernel/src/identity.ts` laneCaller). The call carries no job, so every job-only route
+  refuses it: memory, settings, waits and model calls billed to a run.
+- Agent memory (`POST /v1/memory/:op`, `kernel/src/memory.ts`): only a module with `kernel.memory` serving a live job's
+  `memory_<op>` call reaches it, and only that job's own agent's document, from the grants table; another agent's only for
+  read and a removals-only rewrite, by a `librarian`. Every fact passes one check (length, secrets redacted, nothing
+  instruction-shaped), and its readers get it fenced as data. `GET /v1/memory/:key` is for the board and the lane.

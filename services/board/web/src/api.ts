@@ -332,6 +332,7 @@ export const api = {
   models: (assignee: string) => call<Models>("GET", `/api/models/${encodeURIComponent(assignee)}`),
   // Lane C: the agent page's Handbook tab.
   handbook: (key: string) => call<import("./AgentHandbook").HandbookData>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook`),
+  memory: (key: string) => call<import("./AgentHandbook").MemoryData>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/memory`),
   handbookHistory: (key: string) => call<import("./AgentHandbook").HandbookHistory>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/handbook/history`),
   // Lane E: Browse, marketplaces, an agent's grants, and the setup flows other work adds (a 404 means none).
   browse: (q: string, kind: string) => call<{ modules: BrowseModule[] }>("GET", `/api/modules/browse?${new URLSearchParams({ q, kind })}`),

@@ -10,7 +10,7 @@ import type { Store } from "./store.js";
 export const NOTE_MAX = 2048; // bytes
 export type Memory = { note: string; revision: number; updated_at: number; provenance: string };
 
-export const memoryOf = (store: Store, channel: string): Memory => {
+export const channelMemoryOf = (store: Store, channel: string): Memory => {
   const v = store.getKv(`mem:${channel}`);
   return v ? (JSON.parse(v) as Memory) : { note: "", revision: 0, updated_at: 0, provenance: "" };
 };
@@ -31,7 +31,7 @@ const check = (store: Store, a: any, requester: { key?: string; task?: string } 
   if (!bound || !requester?.key || bound.agent !== requester.key) throw new Error(`${channel} isn't a channel assigned to you`);
   const thread = requester.task ? store.getKv(`tt:${requester.task}`) : undefined;
   if (!thread || thread.split(":")[0] !== channel) throw new Error(`channel memory is written only from a task that is a thread of ${channel}`);
-  const cur = memoryOf(store, channel);
+  const cur = channelMemoryOf(store, channel);
   if (a.base_revision !== cur.revision) throw new Error(`stale: the note is at revision ${cur.revision}, you wrote from ${a.base_revision}; read slack_channel_context again and rewrite`);
   return { channel, note: a.note, base_revision: a.base_revision as number, agent: bound.agent, provenance: `slack:${thread}` };
 };
@@ -48,7 +48,7 @@ export function memoryWriter(store: Store): Executor {
       const thread = String(a?.provenance ?? "").slice(6);
       // The record was planned for this agent and thread; the binding and the revision are checked again at the write.
       if (!bound || bound.agent !== a.agent || thread.split(":")[0] !== a.channel) throw new Error("the channel is no longer assigned to that agent");
-      const cur = memoryOf(store, a.channel);
+      const cur = channelMemoryOf(store, a.channel);
       if (a.base_revision !== cur.revision) throw new Error(`stale: the note moved to revision ${cur.revision}`);
       store.setKv(`mem:${a.channel}`, JSON.stringify({ note: a.note, revision: cur.revision + 1, updated_at: Date.now(), provenance: a.provenance } satisfies Memory));
       return { ok: true, text: `${a.channel} note is now revision ${cur.revision + 1}.` };

@@ -93,7 +93,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
   /**
-   * The log tasks setup makes and an agent holds (grants memory_inbox, review_log, chat_task, fleet_issues), by id or
+   * The log tasks setup makes and an agent holds (grants review_log, chat_task, fleet_issues), by id or
    * identifier: written to by many, they wake nobody (the chat lane answers a chat task's words itself).
    */
   containers?: () => Set<string>;

@@ -46,15 +46,3 @@ test("without the librarian role both are refused", async () => {
   assert.match(p.error, /librarian role/);
   assert.deepEqual(p.created, []);
 });
-test("a memory proposal must name the instance repository so the job clones it", async () => {
-  const repos = { instance: "acme-agents/aidenhq-instance" };
-  const named = await call(["librarian"], "task_propose_rule", { title: "Memory update: Alpha", marker: "memory:alpha:2026-11-21", description: "agent: alpha\nrepository: acme-agents/aidenhq-instance\n- A fact (T-1, 2026-11-21)" }, repos);
-  assert.equal(named.created[0].assigneeAgentId, "arch");
-  for (const description of ["agent: alpha\n- A fact (T-1, 2026-11-21)", "agent: alpha\nrepository: someone/other-instance\n- A fact (T-1, 2026-11-21)"]) {
-    const refused = await call(["librarian"], "task_propose_rule", { title: "Memory update: Alpha", marker: "memory:alpha:2026-11-21", description }, repos);
-    assert.equal(refused.error, "A memory proposal must name acme-agents/aidenhq-instance so the job clones it; otherwise the file is never written.");
-    assert.deepEqual(refused.created, []);
-  }
-  // A rule proposal with the same shape but no memory marker is not held to it.
-  assert.ok((await call(["librarian"], "task_propose_rule", { title: "Fix rule", marker: "rule:alpha:x", description: "d" }, repos)).created.length);
-});

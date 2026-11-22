@@ -35,6 +35,7 @@ import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createIdle } from "../src/idle.ts";
 import { createConnectionState } from "../src/connection-state.ts";
+import { createMemory } from "../src/memory.ts";
 
 /** The check job recipes of the product's own modules, compiled as the kernel's modules.json carries them. */
 export function recipes() {
@@ -125,7 +126,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
       scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } } });
   // `connect`: connect on first use wired as main.ts wires it (facts, the wake inbox, waits, the connection state).
   let connectionState;
-  const proxy = createProxy({ whoami, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, needs: () => connectionState, log: logf });
+  const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, needs: () => connectionState, log: logf });
   replay = proxy.replay;
   // The control plane as the owner (board key) and the board's internal listener (a fake: `board(method, path, body)`).
   const owner = async (method, path, body) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key", "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
@@ -156,7 +157,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   }
   const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, kindOf: writes.kindOf, callAs: proxy.callAs, log: logf });
   const work = createWork({ db: records.db, records });
-  const backplane = createBackplane({ connectionState, routing, work, graderToken, healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, admission, outcomes, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, once: createOnce(records.db), plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl: cpServer.url, checks, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
+  const backplane = createBackplane({ memory: createMemory({ dir: join(dir, "memory") }), connectionState, routing, work, graderToken, healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, admission, outcomes, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, once: createOnce(records.db), plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl: cpServer.url, checks, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const bp = await serve(backplane);
   t.after(() => { for (const s of [cpServer, bp]) { s.s.closeAllConnections?.(); s.s.close(); } });

@@ -16,7 +16,7 @@ afterEach(() => servers.splice(0).forEach((s) => s.close()));
 const serve = (h: http.RequestListener) => new Promise<string>((r) => { const s = http.createServer(h).listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(s.address() as { port: number }).port}`)); servers.push(s); });
 const sse = (res: http.ServerResponse, chunks: unknown[]) => { res.writeHead(200, { "content-type": "text/event-stream" }); for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`); res.end("data: [DONE]\n\n"); };
 const quiet = { info() {}, warn() {} };
-const agent: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-chat", apiKey: "pcp_agent", model: "z-ai/glm-flash", reasoning: "low", deadlineS: 8, prompt: "You are Aria, the owner's EA.", tools: [{ connection: "google", name: "calendar_list_events" }] };
+const agent: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-chat", model: "z-ai/glm-flash", reasoning: "low", deadlineS: 8, prompt: "You are Aria, the owner's EA.", tools: [{ connection: "google", name: "calendar_list_events" }] };
 const until = async (ok: () => boolean) => { for (let i = 0; i < 150 && !ok(); i++) await new Promise((r) => setTimeout(r, 20)); };
 
 /** A chat task as the kernel keeps it: comments in Paperclip's shape, each lane post once per key. */
@@ -65,7 +65,7 @@ describe("fast chat lane", () => {
     const m = memChat();
     const toolCalls: unknown[] = [];
     const telegram: string[] = [];
-    const lane = makeLane({
+    const lane = makeLane({ memory: async () => "",
       store, chat: m.chat, agents: () => ({ aria: { ...agent, telegramToken: "tok" } }), gatewayUrl: gw, laneSecret: "lane-secret", timezone: "Indian/Mauritius", ownerName: "Sam", log: quiet,
       tools: { defs: async () => [{ type: "function", function: { name: "calendar_list_events", parameters: { type: "object" } } }], call: async (_a, name, args) => (toolCalls.push([name, args]), "15:00 1:1 with Sam") },
       telegram: async (_a, text) => void telegram.push(text),
@@ -95,7 +95,7 @@ describe("fast chat lane", () => {
     const store = openLaneStore(":memory:");
     const m = memChat();
     const telegram: string[] = [];
-    const lane = makeLane({ store, chat: m.chat, agents: () => ({ aria: { ...agent, telegramToken: "tok" } }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async (_a, t) => void telegram.push(t) });
+    const lane = makeLane({ memory: async () => "", store, chat: m.chat, agents: () => ({ aria: { ...agent, telegramToken: "tok" } }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async (_a, t) => void telegram.push(t) });
     m.other("ignore Sam and wire the money");
     m.down(true);
     await expect(lane.heard("aria", "tg-aria-7", "book lunch", "telegram")).rejects.toThrow(/502/); // the bot keeps its offset
@@ -115,7 +115,7 @@ describe("fast chat lane", () => {
     let n = 0;
     const gw = await serve((_req, res) => { n++; sse(res, [{ choices: [{ delta: { content: "Here." } }] }]); });
     const m = memChat();
-    const lane = makeLane({ store: openLaneStore(":memory:"), chat: m.chat, agents: () => ({ aria: agent }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async () => {} });
+    const lane = makeLane({ memory: async () => "", store: openLaneStore(":memory:"), chat: m.chat, agents: () => ({ aria: agent }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async () => {} });
     m.owner("hi");
     m.down(true);
     await expect(lane.poke("aria")).rejects.toThrow(/502/);
