@@ -183,13 +183,13 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
     }
     let id = afterId ?? "0";
     for (;;) {
-      const { records: page, more } = await searchTie(call, def, since, id);
+      const { records: page } = await searchTie(call, def, since, id);
       for (const r of page) {
         id = r.id;
         state.tieId = id;
         yield r;
       }
-      if (!more) break;
+      if (page.length < SEARCH_LIMIT) break;
       if (Date.now() >= deadline) return void (state.ended = false);
     }
     state.tieId = undefined;

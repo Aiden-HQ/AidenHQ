@@ -80,7 +80,7 @@ it("pages by offset; past HubSpot's 10,000-result cap a window restarts from the
 
   const slow = fakeStore();
   const full = [deal("1", t(1))].concat(Array.from({ length: 199 }, (_, i) => deal(`f${i}`, t(1))));
-  await syncObject(slow.store, async (_, args) => (args.filterGroups[0].filters[0].operator === "EQ" ? answer([]) : answer(full, 200, 5000)), "deals", opts({ deadline: Date.now() - 1 }));
+  await syncObject(slow.store, async (_: string, args: Record<string, any>) => (args.filterGroups[0].filters[0].operator === "EQ" ? answer([]) : answer(full, 200, 5000)), "deals", opts({ deadline: Date.now() - 1 }));
   expect(slow.scopes.get("deals")).toEqual({ baselined: false, cursor: t(1) });
   expect(writes.length).toBeGreaterThan(WINDOW);
 });
