@@ -327,8 +327,11 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   const message = `FROM debian:bookworm${d}\nRUN ${write}\nRUN echo 'To disable this repository, rm /etc/apt/sources.list.d/vendor.list'\nRUN apt-get install -y foo\n`;
   assert.equal(scanFile("Dockerfile", message).problems.length, 1);
   // A real removal, unconditional or an `&&` the next command depends on, still clears it.
-  for (const line of [`rm -f /etc/apt/sources.list.d/vendor.list`, `rm -f /etc/apt/sources.list.d/vendor.list && true`])
+  for (const line of [`rm -f /etc/apt/sources.list.d/vendor.list`, `true; rm -f /etc/apt/sources.list.d/vendor.list`])
     assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems, []);
+  // A removal behind `&&` or `||` may be skipped, so the repository may survive: the pin requirement stays.
+  for (const line of [`test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list`, `test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list || true`])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems.length, 1);
   // A redirect on the install line is not a package to pin.
   const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
   assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);
@@ -341,6 +344,11 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   assert.equal(scanFile("Dockerfile", otherFd).problems.length, 1);
   const grouped = `FROM debian:bookworm${d}\nRUN echo 'deb https://a.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN echo 'deb https://b.example/apt bookworm main' | tee -ai /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
   assert.deepEqual(scanFile("Dockerfile", grouped).pins.filter((p) => p.kind === "apt")[0].sources, ["https://a.example/apt bookworm main", "https://b.example/apt bookworm main"]);
+  // A `>` inside quotes is text, not a redirect: it must not turn the real write into an earlier one.
+  const quotedGt = `FROM debian:bookworm${d}\nRUN echo > /etc/apt/sources.list.d/vendor.list 'deb https://repo.example/apt bookworm main # see version > 1'\nRUN apt-get install -y foo\n`;
+  const quotedGtResult = scanFile("Dockerfile", quotedGt);
+  assert.equal(quotedGtResult.problems.length, 1);
+  assert.deepEqual(scanFile("Dockerfile", quotedGt.replace("install -y foo", "install -y foo=1.0")).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
 });
 
 test("pins: a disabled source file leaves no entry behind in apt dating", () => {

@@ -115,9 +115,17 @@ function writtenFiles(segment: string): Written[] {
     const file = /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(path)?.[1];
     out.push({ path, ...(file ? { file } : {}), append, content });
   };
+  // Quoted text is data, not shell syntax: `echo 'a > b'` writes nothing. Each quoted run is masked so redirects and
+  // operands are read from code alone, keeping its content so a quoted target still resolves to its path.
+  const quoted: string[] = [];
+  const unmask = (t: string) => { const m = /^\uE000(\d+)\uE001$/.exec(t); return m ? quoted[Number(m[1])]! : t; };
+  const code = segment.replace(/'([^']*)'|"([^"]*)"/g, (_m: string, a: string | undefined, b: string | undefined) => {
+    quoted.push(a ?? b ?? "");
+    return `\uE000${quoted.length - 1}\uE001`;
+  });
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
-  const clean = segment.replace(/\d*>&\d+/g, " ");
+  const clean = code.replace(/\d*>&\d+/g, " ");
   // A command's stdout goes to the last `>` it names, and every `>` before that one truncates its own file: `echo … >
   // vendor.list > /tmp/log` empties vendor.list and writes the line only to the log.
   const redirects = [...clean.matchAll(REDIRECT)];
@@ -125,7 +133,7 @@ function writtenFiles(segment: string): Written[] {
   redirects.forEach((m, i) => {
     const append = m[2] === ">>";
     const content: Written["content"] = m[1] === "2" ? "unknown" : i === lastOut ? "deb" : append ? "none" : "empty";
-    add(strip(m[3]!), append, content);
+    add(unmask(strip(m[3]!)), append, content);
   });
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
@@ -137,15 +145,16 @@ function writtenFiles(segment: string): Written[] {
     // What `tee` writes comes from its stdin: a `< file` overrides the pipe, and a producer whose own stdout a `>` sent
     // elsewhere leaves the pipe empty.
     // Only fd 0 (`<`, `0<`) overrides the pipe; `3< /dev/null` redirects another descriptor and leaves stdin alone.
-    const input = /(?:^|\s)(?:0<|<)\s*("[^"]+"|'[^']+'|\S+)/.exec(arg)?.[1];
+    const input = /(?:^|\s)(?:0<|<)\s*(\S+)/.exec(arg)?.[1];
     const pipe = clean.lastIndexOf("|", m.index! - 1);
     // The command immediately feeding `tee` is the one whose output it reads: an earlier command in the same pipeline
     // (`a > /tmp/log | b | tee x`) sent its own stdout elsewhere and doesn't make this one empty.
     const producer = pipe >= 0 ? clean.slice(clean.lastIndexOf("|", pipe - 1) + 1, pipe) : "";
-    const content: Written["content"] = input
-      ? strip(input) === "/dev/null" ? (append ? "none" : "empty") : "unknown"
+    const source = input && unmask(strip(input));
+    const content: Written["content"] = source
+      ? source === "/dev/null" ? (append ? "none" : "empty") : "unknown"
       : producer.trim() && !stdoutRedirected(producer) ? "deb" : append ? "none" : "empty";
-    for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(a, append, content);
+    for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(unmask(a), append, content);
   }
   return out;
 }
@@ -191,16 +200,18 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // the repositories present at that point: adding a repository is what makes a later unpinned install a problem, and
   // removing it before an install stops it being one. A `deb` line is filed under the source file its own command
   // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
-  // A command after `||` runs only when the one before it fails, so `test -f x || rm x` may leave x in place: its removal
-  // must not clear a repository the surviving path still has. After `&&` the next command runs only if it succeeded, so
-  // `rm x && apt install` does apply — x is gone by install time.
+  // A command after `&&` or `||` runs only if the one before it succeeded or failed, so `test -f marker && rm x` may
+  // leave x in place for a later line. Its removal applies to the rest of this line (where the shell guarantees it ran
+  // if a later command does), and at the line's end the state it would have left is restored, so the next line still
+  // sees the file and the pin requirement it carries.
   let conditional = false;
+  let restore: (() => void) | undefined;
   for (const part of cmd.split(/(&&|\|\||;)/)) {
-    if (/^&&$|^\|\|$|^;$/.test(part)) { conditional = part === "||"; continue; }
+    if (/^&&$|^\|\|$|^;$/.test(part)) { conditional = part !== ";"; continue; }
     const segment = part;
     const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
     // A removal is a command that runs `rm`/`unlink` on a sources.list.d name, not a quoted message mentioning one.
-    const removes = !conditional && /(?:^|\s)(?:sudo\s+)?(?:rm|unlink)\b/.test(unquoted(segment)) && /sources\.list\.d/.test(unquoted(segment));
+    const removes = /(?:^|\s)(?:sudo\s+)?(?:rm|unlink)\b/.test(unquoted(segment)) && /sources\.list\.d/.test(unquoted(segment));
     // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
     // source file it only copies for diagnostics adds no repository.
     const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
@@ -209,6 +220,11 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     // install sees, so it neither requires pins nor dates them.
     const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
     if (removes) {
+      // A conditional removal may not have run: remember the state to put back when the line ends.
+      if (conditional && !restore) {
+        const before = { files: new Map([...state.files].map(([f, v]) => [f, [...v]])), holds: new Set(state.holds), entries: new Map([...state.entries].map(([f, v]) => [f, [...v]])) };
+        restore = () => { state.files = before.files; state.holds = before.holds; state.entries = before.entries; state.added = state.holds.size > 0 || state.entries.has(undefined); };
+      }
       // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
       // removes nothing it loads.
       const removed = named.filter((f) => /\.(list|sources)$/.test(f));
@@ -240,8 +256,9 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         else if (state.added) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
       }
     }
-    conditional = false;
   }
+  // Undo a conditional removal once the line is done: the file may still be there for the next line.
+  restore?.();
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
     pins.push({ kind: "github-release", name: m[1]!, package: m[1]!, version: m[2], at });
   }
