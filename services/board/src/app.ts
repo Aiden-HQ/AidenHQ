@@ -1979,6 +1979,7 @@ export function createApp(opts: AppOptions): Server {
     settings: () => readSources(settingsFiles()).compiled?.settings,
     file: fileSettingsChange,
     // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
+    onSetupChange: () => store.events.emit("setup"),
     signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
     scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
     signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",

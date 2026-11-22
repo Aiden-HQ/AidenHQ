@@ -6,9 +6,16 @@ After=network-online.target
 # The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
 Environment=AIDENHQ_DIR=%h/aidenhq
 EnvironmentFile=-%h/.config/aidenhq-checkout.env
+# The data dir the backoff marker goes under, written by the apply from the host's settings: the unit starts scripts that read
+# the environment only (ops/lib/data-dir.sh), so the marker and the exporter that writes aidenhq_unit_backoff share the path.
+EnvironmentFile=-%h/.config/aidenhq-ci-runner.env
 # The vault holds ci_token, the ci module's key for the kernel's runner_token op; the CI network is a system unit (aidenhq-ci-net).
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/docker network inspect aidenhq-ci
+# Waits out a refused registration token (1s doubling to a minute, cleared by the next token that mints, dropped when stale
+# after a drain or an outage): in ExecStartPre, where the unit is activating rather than active, so a refusal reads as the
+# restart loop it is. A clean job exit writes nothing and starts the next runner at once.
+ExecStartPre=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner-backoff.sh %i
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # A finished job ends the container (and this run); the next one starts a new container at once (a 10s delay left

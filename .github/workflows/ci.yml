@@ -321,6 +321,39 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      # The monitoring rules, checked with the image modules/monitoring/prometheus/Dockerfile pins. The checker comes from the
+      # commit the change is based on -- the PR's base, main for a merge train, or main's own tree on a push to main -- never
+      # the head, like the suite map and the eval gate below: this step runs code from the image, so a PR able to choose the
+      # image could point it at a promtool that exits 0 and skip the rules. Only the rules under test come from the head; a
+      # change to the Dockerfile still runs on main's push with its own image. `test rules` also runs `check rules`
+      # internally; both are run so a malformed rule file fails with promtool's own message before a test does.
+      - name: promtool image
+        id: promtool
+        run: |
+          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1)
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PR_BASE=$(git rev-parse origin/main) ;; refs/heads/main) PR_BASE= ;; esac
+          if [ -n "${PR_BASE:-}" ]; then
+            image=$(git show "$PR_BASE:modules/monitoring/prometheus/Dockerfile" | sed -n 's/^FROM \([^ ]*\).*/\1/p' | head -n 1)
+          else
+            image=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' modules/monitoring/prometheus/Dockerfile | head -n 1)
+          fi
+          # A digest is what makes the image immutable: the base's Dockerfile is pinned (the policy job dates a change to it),
+          # and an unpinned one must fail here rather than resolve a mutable tag.
+          case "$image" in
+            *@sha256:*) ;;
+            *) echo "::error::promtool image ${image:-<none>} is not digest-pinned"; exit 1 ;;
+          esac
+          echo "promtool from ${image}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - name: promtool check rules
+        env:
+          IMAGE: ${{ steps.promtool.outputs.image }}
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" check rules rules.yml
+      - name: promtool test rules
+        env:
+          IMAGE: ${{ steps.promtool.outputs.image }}
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" test rules rules.test.yml
       # The suites to test (.github/ci/select.ts, map in .github/ci/areas.json): on a pull request, those its changed
       # files touch, both files read from the base so a PR can't shrink its own set (a base without them runs every suite);
       # on a rebased head with an unchanged patch, only those main's new commits also touch. Every suite on a push to main.
