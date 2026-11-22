@@ -127,12 +127,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
     return v === "true" ? true : v === "false" ? false : undefined;
   };
   const notePairing = (module: string, paired: boolean) => {
-    if (pairedBefore.get(module) === paired) return;
-    // Known from an earlier read or a stored one: only then is a change something to announce (the first read is not).
-    const known = pairedBefore.has(module) || rememberedPairing(module) !== undefined;
+    // Compare with what the last read or the stored value said (a restart empties the map): only a real change is announced.
+    const before = pairedBefore.has(module) ? pairedBefore.get(module) : rememberedPairing(module);
     pairedBefore.set(module, paired);
     d.store.setMeta(`setup_paired:${module}`, String(paired));
-    if (known) changed();
+    if (before !== undefined && before !== paired) changed();
   };
   /** What the board believes about a module's pairing: a read that failed says nothing, so the last confirmed state stands. */
   const confirmedPairing = (module: string, paired: boolean | undefined) => paired ?? pairedBefore.get(module) ?? rememberedPairing(module);
@@ -193,7 +192,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
   const pairedOf = async (f: SetupFlowPoint & { token?: string }): Promise<boolean | undefined> => {
     if (!(f.pair_url ?? f.advanced?.pair_url)) return true;
     const r = (await pairCall(f, "GET").catch(() => null)) as { paired?: unknown } | null;
-    return r ? Boolean(r.paired) : undefined;
+    // Only an explicit boolean is an answer; a 200 with a missing or malformed body says nothing about pairing.
+    return typeof r?.paired === "boolean" ? r.paired : undefined;
   };
 
   /** The one completion rule, the setup page's: a connection's real state when the flow has one (sign-in, connect path or pairing), else its secrets (`present`, unknown without a session: not done). */
@@ -339,10 +339,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         const f = flow(m[1]!);
         const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
         const { paired, paired_at } = await pairCall(f, "GET");
-        if (paired && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
+        const known = typeof paired === "boolean" ? paired : undefined;
+        if (known && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
         // The setup page learns a code was sent by polling here; any change (paired or revoked) tells the other open boards.
-        notePairing(m[1]!, Boolean(paired));
-        return { paired: Boolean(paired), ...(paired_at != null ? { paired_at } : {}) };
+        if (known !== undefined) notePairing(m[1]!, known);
+        return { paired: known ?? confirmedPairing(m[1]!, undefined) ?? false, ...(paired_at != null ? { paired_at } : {}) };
       },
     },
   ];
