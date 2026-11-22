@@ -342,15 +342,18 @@ test("an owner's merge at the bound head after an unanswered merge call stays sk
   assert.equal(outcomes[0].objects, undefined, "no object of the owner's merge is named as made here");
 });
 
-test("a maximum-size batch keeps the whole evidence line: every merge is on it, whole JSON under the kernel's cap", async (t) => {
-  // The grading reader takes the outcome's first line, and 30 PRs on a long repo name run it past the kernel's old 4,000-character
-  // cap by themselves: it must stay whole JSON inside what the kernel now keeps (records.ts OUTCOME_MAX) rather than be cut mid-entry.
-  const repo = "acme-agents/widget", heads = new Map();
-  const prs = {}, tasks = {};
+test("a maximum-size mixed batch keeps the whole evidence line: the queue's merges and linked already-merged PRs, whole JSON under the kernel's cap", async (t) => {
+  // The grading reader takes the outcome's first line, and 30 PRs on a long repo name run past the kernel's old 4,000-character cap
+  // by themselves: the line must stay whole JSON inside what the kernel now keeps (records.ts OUTCOME_MAX), not cut mid-entry.
+  // Two PRs were merged before the queue polled them, 28 it merges itself: the line carries both kinds, its own first.
+  const repo = "acme-agents/widget";
+  const prs = {}, tasks = {}, heads = new Map(), already = [];
   for (let n = 1; n <= 30; n++) {
     const head = String(n % 10).repeat(40);
     heads.set(n, head);
-    prs[`${repo}#${n}`] = { head, checks: "SUCCESS" };
+    const pre = n > 28;
+    if (pre) already.push({ repo, number: n, head, sha: String(n).repeat(40).slice(0, 40) });
+    prs[`${repo}#${n}`] = { head, checks: "SUCCESS", ...(pre ? { state: "MERGED", merged: String(n).repeat(40).slice(0, 40), message: "Someone else's merge" } : {}) };
     tasks[`https://github.com/${repo}/pull/${n}`] = { task: "WOR-9", branch: "feature" };
   }
   const cacheDir = mkdtempSync(join(tmpdir(), "codehost-size-"));
@@ -358,7 +361,7 @@ test("a maximum-size batch keeps the whole evidence line: every merge is on it, 
   const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
   const args = Array.from({ length: 30 }, (_, i) => ({ repo, number: i + 1, head: heads.get(i + 1)! }));
   await merge("k-00000000000000d1", args);
-  // One merge per repository per poll (the queue's own pace): 30 polls land all 30, each at its bound head.
+  // One merge per repository per poll (the queue's own pace): 28 polls land its 28, the last two were merged already.
   for (let i = 0; i < 40 && !outcomes.length; i++) { await handle.stepMerges(); await new Promise((r) => setTimeout(r, 5)); }
   await settle();
   assert.equal(outcomes[0]?.ok, true, String(outcomes[0]?.text ?? "").slice(0, 600));
@@ -366,11 +369,12 @@ test("a maximum-size batch keeps the whole evidence line: every merge is on it, 
   const OUTCOME_MAX = 6000; // kernel/src/records.ts
   assert.ok(line.length <= OUTCOME_MAX, `the evidence line fits the kernel's outcome cap; it is ${line.length}`);
   const kept = JSON.parse(line.replace(/^merged-prs: /, ""));
-  assert.equal(kept.length, 30, `all 30 of this queue's merges are on the line, not truncated; it has ${kept.length}`);
+  assert.equal(kept.length, 30, `every PR of the batch is on the line, not truncated; it has ${kept.length}`);
+  assert.deepEqual(kept.map((p) => p.number), [...Array(28)].map((_, i) => i + 1).concat([29, 30]), "the queue's own merges first, then the ones already merged");
+  assert.deepEqual(kept.slice(28), already, "the already-merged rows carry their own merge commits");
   // The grading reader's contract, pinned here without importing it (verifiedMerges, kernel-loop.ts: 40 hex either side).
   const SLUG = /^[\w.-]+\/[\w.-]+$/, SHA = /^[0-9a-f]{40}$/;
   assert.ok(kept.every((p) => SLUG.test(p.repo) && Number.isInteger(p.number) && SHA.test(p.head) && SHA.test(p.sha)), "every row is one the grading reader keeps");
-  assert.deepEqual(kept.map((p) => p.number), args.map((p) => p.number), "in the record's order");
 });
 
 test("a merge call that times out after GitHub merged is reported merged, and an outcome the kernel didn't take is delivered again", async () => {
