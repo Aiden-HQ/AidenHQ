@@ -154,7 +154,24 @@ case "$1" in
           || { echo "Error response from daemon: No such image: $id" >&2; exit 1; }
       fi
       if grep -qxF -- "$id" "$HELD" || awk -F '\\t' -v ref="$id" '$1 == ref { found = 1 } END { exit !found }' "$TAGS"; then
-        [ -n "$file" ] && : > "$file"; : > "$SAVED"; exit 0
+        if [ -n "$file" ]; then
+          # An OCI archive naming FAKE_SAVE_MANIFESTS manifests: a plain save of a multi-platform index writes one entry
+          # per platform, which is what the script's single-image check reads back. Zero writes no index at all (legacy).
+          : > "$file"
+          if [ -n "\${FAKE_SAVE_MANIFESTS:-}" ] && [ "$FAKE_SAVE_MANIFESTS" -gt 0 ]; then
+            d="$(mktemp -d)"
+            { printf '{\"schemaVersion\":2,\"manifests\":['; i=0
+              while [ "$i" -lt "$FAKE_SAVE_MANIFESTS" ]; do
+                [ "$i" -gt 0 ] && printf ','
+                printf '{\"digest\":\"sha256:%%064d\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}' "$i"
+                i=$((i + 1))
+              done
+              printf ']}\n'; } > "$d/index.json"
+            tar -C "$d" -cf "$file" index.json
+            rm -rf "$d"
+          fi
+        fi
+        : > "$SAVED"; exit 0
       fi
       echo "Error response from daemon: No such image: $id" >&2; exit 1
     fi
@@ -847,11 +864,32 @@ test("security-sbom: a later scan's space is measured with the archives its pred
   assert.equal(calls.filter((c) => c.startsWith("save ")).length, 3);
 });
 
-test("security-sbom: a pre-1.48 daemon does not plain-save a tag that may hold several platforms", { skip: NOT_LINUX }, async () => {
+test("security-sbom: archives are exported smallest first and scanned largest first", { skip: NOT_LINUX }, async () => {
+  // The snapshot deadline is spent on exports, so a large save that runs it out must not take the smaller archives with
+  // it: the small images are written first and still land. Scanning wants the opposite order (largest first, so the peak
+  // is at the first scan while every archive is still on disk). One order for both would fail one of the two.
+  const { status, out, calls } = await run({ FAKE_FREE_KB: "60000000" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:aa11" },
+      { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:bb22" },
+      { id: "c3", image: "sha256:5555", config: "tasks-mcp:local", label: "sha256:cc33" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9991", "gate:local": "sha256:9992", "tasks-mcp:local": "sha256:9993" },
+    held: ["sha256:aa11", "sha256:bb22", "sha256:cc33"],
+    sizes: { "sha256:aa11": 2 * 1024 ** 3, "sha256:bb22": 8 * 1024 ** 3, "sha256:cc33": 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const saves = calls.filter((c) => c.startsWith("save "));
+  assert.deepEqual(saves.map((c) => c.split(" ").pop()), ["sha256:aa11", "sha256:cc33", "sha256:bb22"], `exports were not smallest first:\n${saves.join("\n")}`);
+  const scans = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  assert.deepEqual(scans.map((c) => c.match(/--source-name (image:\S+)/)?.[1]), ["image:sha256:3333", "image:sha256:5555", "image:sha256:1111"], `scans were not largest first:\n${scans.join("\n")}`);
+});
+
+test("security-sbom: a pre-1.48 daemon does not plain-save a tag whose archive holds several platforms", { skip: NOT_LINUX }, async () => {
   // On a containerd store an old daemon's plain save of a tag writes every platform it holds; the archive would contain
-  // variants the container does not run and the size check would not cover it. Only an immutable single image may be
-  // exported that way, and a tag that cannot be proven single is a line instead.
-  const { status, out, targets, calls } = await run({ FAKE_API: "1.47" }, {
+  // variants the container does not run and the size check would not cover it. The save runs, and its archive has to
+  // prove one image: two manifests is a line, never a scan under the running variant's target.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_MANIFESTS: "2" }, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
     manifests: { "aidenhq/board:local": "sha256:1111" },
@@ -862,7 +900,24 @@ test("security-sbom: a pre-1.48 daemon does not plain-save a tag that may hold s
   assert.equal(status, 0, out);
   const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(line, `no tag target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.equal(line[1], "-", "a possibly multi-platform tag was not saved");
-  assert.match(line[2], /may hold several/, line[2]);
-  assert.ok(!calls.some((c) => c.startsWith("save ")), `a plain save of a tag ran:\n${calls.join("\n")}`);
+  assert.equal(line[1], "-", "a multi-platform archive was scanned");
+  assert.match(line[2], /holds several platforms/, line[2]);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
 });
+
+test("security-sbom: a pre-1.48 daemon scans a plain save whose archive holds one image", { skip: NOT_LINUX }, async () => {
+  // The same fallback, with an archive that proves one manifest: the running image is scanned instead of the pass
+  // publishing a line for every image on an older daemon.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_MANIFESTS: "1" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+  assert.ok(calls.some((c) => c.startsWith("save ") && !c.includes("--platform")), calls.join("\n"));
+});
+

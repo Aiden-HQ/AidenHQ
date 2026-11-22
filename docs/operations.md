@@ -420,16 +420,17 @@ resolved there on the container's own platform (an immutable id that holds its p
 sized as that same reference and platform (an index reports the whole index while a platform save writes one manifest),
 and the plan sizes every image before writing anything, then admits smallest first only while all admitted archives plus
 the largest one's own size again (the workspace its scan unpacks into while every archive is still on disk) fit above the
-floor; scans run largest first, so each scan has already had its predecessors' archives deleted and the accounting above
-is the highest peak, not a sum of every workspace. An image the batch cannot fit beside the archives already retained, or
+floor. Exports run smallest first and scans largest first: the snapshot deadline is spent on exports, so a large save that
+runs it out still leaves the smaller archives written, while the peak scan is the first one, with every archive on disk and
+its predecessors' archives deleted after each scan — the accounting above is that peak, not a sum of every workspace. An image the batch cannot fit beside the archives already retained, or
 whose own scan would not have room after all of them, is a line and no bytes are written for it; free space is checked
 again before each save and again before each scan. It empties the work dir after every target, keeps 30 GB free (an image whose size the daemon won't report is
 recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
 older daemon, or a single-platform
 store) is read on the Docker server platform, and the pass says on stderr how many it did that for; a Docker API older
-than 1.48 (which has no `image save --platform`) exports only a proven single image (an immutable id) with a plain save —
-a tag that may hold several platforms is a line, never an archive holding variants the container is not running — also
-said on stderr.
+than 1.48 (which has no `image save --platform`) uses a plain save, sized as the whole reference because that is what the
+save writes, and then reads the archive back: an `index.json` naming more than one manifest is a line, never an archive
+holding variants the container is not running, and the fallback is also said on stderr.
 Its descriptor is the authority on what a container runs: the tag is a target only while it names that manifest, and the
 Compose label or the container's own id only answer for a daemon that reports none. A second pass started
 while one holds `.lock` skips rather than running two at once.

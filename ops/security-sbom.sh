@@ -230,6 +230,16 @@ resolve_ref() { # <pin manifest> <container .Image> [platform]
   done < <(platform_refs "$pin" "$image")
   printf '%s' "$pin"
 }
+# A plain `docker save` (a daemon without `image save --platform`) writes every platform a tag or an index id holds, so
+# the archive itself has to prove it holds one image: an OCI `index.json` naming one manifest, or Docker's legacy
+# `manifest.json`, which is a single image by construction. An archive with more manifests is refused rather than scanned
+# under a target that stands for one running variant.
+plain_archive_single() { # <tar>
+  local idx
+  idx="$(tar -xOf "$1" index.json 2>/dev/null || true)"
+  [ -n "$idx" ] || return 0
+  [ "$(printf '%s' "$idx" | grep -o '"digest": *"sha256:' | wc -l)" -le 1 ]
+}
 # Export the image <pin> to <dest> from <ref>, the reference resolved and sized under the lock. The ref is re-read first:
 # if it no longer names <pin> (a tag another pull moved, an index a prune dropped) nothing is written, so a different image
 # is never saved under this target. A save from an immutable id cannot name anything but the id; a tag is checked again
@@ -252,15 +262,16 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
       rm -f "$dest"; return 1
     fi
   else
-    # No platform selection on this daemon: a plain save of a tag on the containerd store writes every platform it holds,
-    # so the archive would hold variants the container is not running and the size check would not cover it. Only an
-    # immutable image id is known to be one variant.
-    case "$ref" in
-      sha256:*) ;;
-      *) export_err="this daemon cannot select a platform to save, and $ref may hold several; not scanning it"; return 1 ;;
-    esac
+    # No platform selection on this daemon, and an id is no proof of one variant either: on the containerd store a
+    # container's `.Image` is the top-level index, so a plain save of it writes every platform the index holds. The save
+    # runs, and the archive decides: one manifest is the running image, more is a line, never a scan of variants.
     if ! export_err="$(docker_call 900 image save -o "$dest" "$ref" 2>&1)"; then
       rm -f "$dest"; return 1
+    fi
+    if ! plain_archive_single "$dest"; then
+      rm -f "$dest"
+      export_err="this daemon cannot select a platform to save, and $ref's archive holds several platforms; not scanning it"
+      return 1
     fi
   fi
   case "$ref" in
@@ -274,8 +285,8 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
 # one, and a batch enumerated there is a half-applied snapshot. The lock is released before the scans, so an apply never
 # waits on one. Returns 1 when the enumeration itself failed: the caller keeps the previous batch rather than publish a
 # short one.
-plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
-plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); }
+plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=()
+plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); }
 snapshot() {
   local listing rows cid row image config desc label want key raw size size_gb avail ref saved archive pin now
   local plat avail_now man nodesc unit need room top
@@ -377,7 +388,7 @@ snapshot() {
   done <<< "$rows"
   for unit in "${units[@]}"; do image="${u_image[$unit]}"; variant_count[$image]=$(( ${variant_count[$image]:-0} + 1 )); done
   [ "$nodesc" -eq 0 ] || echo "security-sbom: $nodesc container(s) report no platform manifest descriptor; read on the Docker server platform $platform" >&2
-  plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
+  plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=()
   # Every archive stays on disk until its scan, so the room a scan needs is not known until every image is sized: the
   # batch must fit all its archives *and*, at the scan of the largest, its own archive twice over as workspace. Saving as
   # the sizes arrive would admit an image whose scan then skips it every pass (a saved archive that is never read). So the
@@ -410,19 +421,16 @@ snapshot() {
     if ! ref="$(resolve_ref "$pin" "$image" "$plat")"; then
       plan_add "image:$key" "fail:docker save: no local image exports $want" "$pin" "$image"; continue
     fi
-    # A daemon without `image save --platform` cannot pick one variant out of an index: only an immutable image id is
-    # known to be a single image, and a tag that may hold several is a line instead of an archive holding variants the
-    # container is not running (whose size the check above would not have covered).
-    if [ "$save_platform" = 0 ]; then
-      case "$ref" in
-        sha256:*) ;;
-        *) plan_add "image:$key" "fail:docker save: this daemon cannot select a platform to save, and $ref may hold several" "$pin" "$ref"; continue ;;
-      esac
-    fi
     # Size the very variant the save will write, through the very reference it will read: `docker image inspect` on an
-    # index reports the index's total, while `docker save --platform` writes one platform manifest.
+    # index reports the index's total, while `docker save --platform` writes one platform manifest. A plain save (no
+    # `--platform` on this daemon) writes everything the reference holds, so the whole reference is what must fit; the
+    # archive is then checked for one manifest, and one that holds several is a line rather than an unscanned variant.
     raw=""; saved=""
-    if raw="$(docker_call 5 image inspect --platform "$plat" -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
+    if [ "$save_platform" = 0 ]; then
+      if raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
+    else
+      if raw="$(docker_call 5 image inspect --platform "$plat" -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
+    fi
     if [ -z "$saved" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
     if [ -z "$saved" ]; then
       plan_add "image:$key" "fail:docker image inspect: ${raw:-failed}" "$pin" "$image"; continue
@@ -444,7 +452,7 @@ snapshot() {
   room=$(( $(free_gb) - min_free_gb ))
   [ "$room" -lt 0 ] && room=0
   local -A admit=()
-  local -a order=()
+  local -a saves=()
   local total=0 biggest=0 idx sz i
   # NB: the loop body runs in this shell only if the loop itself is not at the end of a pipeline; the sizes come from a
   # process substitution so `admit`/`order` persist for the second pass.
@@ -457,17 +465,20 @@ snapshot() {
       admit[$idx]=0
     fi
   done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
-  # Largest first: see the accounting above.
+  # Two orders, not one. The scans run largest first (see the accounting above), but the exports under the snapshot
+  # deadline run smallest first: a save that runs out the budget must not be the one that takes every smaller archive
+  # down with it, and a smaller archive written first still lands even if the largest export times out. The scan order is
+  # recovered after the saves from the saved sizes, so it does not depend on the order the archives were written.
   while IFS=$'\t' read -r sz idx; do
-    [ "${admit[$idx]:-0}" = 1 ] && order+=("$idx")
-  done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -rn)
+    [ "${admit[$idx]:-0}" = 1 ] && saves+=("$idx")
+  done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
   for idx in "${!p_size[@]}"; do
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
     if [ "${admit[$idx]:-0}" != 1 ]; then
       plan_add "image:$key" "fail:skipped: ${sz} GB image does not fit: the batch keeps every archive until it is scanned and unpacks this one beside them, so it needs ${sz} GB of room and only ${room} GB is above the ${min_free_gb} GB floor on $out" "$pin" "$ref"
     fi
   done
-  for idx in "${order[@]}"; do
+  for idx in "${saves[@]}"; do
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
     # Free space is read again with the archives already written: the plan's budget counted them, but another writer on the
     # same filesystem can have taken room since, and a save that starts below the floor fills the disk the host runs on.
@@ -479,7 +490,7 @@ snapshot() {
     # that moves after the lock is released can change it. The scan-time path only re-opens archives.
     archive="$archives/${#plan_target[@]}.tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
-      plan_add "image:$key" "archive:$archive" "$pin" "$ref"
+      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz"
     else
       plan_add "image:$key" "fail:docker save: ${export_err:-failed}" "$pin" "$ref"
     fi
@@ -495,7 +506,19 @@ fi
 SNAPSHOT_DEADLINE=""
 exec 8>&-
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
+# Scan largest first: every admitted archive is on disk at the first scan, so that one is the peak, and each later scan
+# has its predecessors' archives deleted. The archives were written smallest first (above); this order is recovered from
+# their sizes, so it does not depend on how they were written. Failures cost no space and go first.
+scan_order=()
 for i in "${!plan_target[@]}"; do
+  case "${plan_source[$i]}" in archive:*) ;; *) scan_order+=("$i") ;; esac
+done
+while IFS=$'\t' read -r sz i; do
+  [ -n "$i" ] && scan_order+=("$i")
+done < <(for i in "${!plan_target[@]}"; do
+  case "${plan_source[$i]}" in archive:*) printf '%s\t%s\n' "${plan_size[$i]}" "$i" ;; esac
+done | sort -rn)
+for i in "${scan_order[@]}"; do
   target="${plan_target[$i]}"; source="${plan_source[$i]}"
   case "$source" in
     fail:*) fail "$target" "${source#fail:}" ;;
