@@ -107,15 +107,16 @@ export class CodeReviewReader {
 
   /**
    * A fingerprint of the change `base`...`head` (from their merge base): each file's status, name and patch, hunk headers
-   * included, so the same edit at another place differs; a file with no patch (a binary) by its blob. null when GitHub doesn't show all of it (a file with changes but no
-   * patch, or the compare's 300-file cap).
+   * included, so the same edit at another place differs. null when GitHub doesn't show all of it (a file with changes but no
+   * patch (a binary, a mode-only change), or the compare's 300-file cap).
    */
   async patchId(repo: string, base: string, head: string): Promise<{ id: string | null }> {
-    const r = await this.github.request<{ files?: { filename: string; previous_filename?: string; status: string; sha?: string; changes?: number; patch?: string }[] }>("GET", `/repos/${repo}/compare/${base}...${head}`, { query: { per_page: 1 } });
+    const r = await this.github.request<{ files?: { filename: string; previous_filename?: string; status: string; changes?: number; patch?: string }[] }>("GET", `/repos/${repo}/compare/${base}...${head}`, { query: { per_page: 1 } });
     const files = r.files ?? [];
-    if (files.length >= 300 || files.some((f) => f.changes && typeof f.patch !== "string")) return { id: null };
+    // A file without a patch (a binary, a mode-only change, one too large) can't be compared: no fingerprint.
+    if (!Array.isArray(r.files) || files.length >= 300 || files.some((f) => typeof f.patch !== "string")) return { id: null };
     const h = createHash("sha256");
-    for (const f of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) h.update(`${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch ?? `blob:${f.sha ?? ""}`}\0`);
+    for (const f of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) h.update(`${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch}\0`);
     return { id: h.digest("hex") };
   }
 

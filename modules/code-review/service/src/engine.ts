@@ -342,7 +342,7 @@ export function createEngine(d: EngineDeps) {
       // change is either the baseline's (a bare rebase: its review and verdict carry, unrun) or reviewed whole.
       const was = incremental_from ? one<{ merge_base: string }>("SELECT merge_base FROM runs WHERE repo = ? AND number = ? AND head = ? AND merge_base IS NOT NULL AND status = 'done' ORDER BY created DESC LIMIT 1", r.repo, r.number, incremental_from)?.merge_base : undefined;
       if (incremental_from && was !== merge_base) {
-        if (was && r.kind === "auto" && await sameChange(r, was, incremental_from, merge_base)) return carry(r, incremental_from, merge_base);
+        if (was && r.kind === "auto" && !answeredSince(r, incremental_from) && await sameChange(r, was, incremental_from, merge_base)) return carry(r, incremental_from, merge_base);
         incremental_from = null;
       }
       if (incremental_from) {
@@ -379,6 +379,8 @@ export function createEngine(d: EngineDeps) {
       return false;
     }
   }
+  /** A finding answered on its thread since the baseline head's review: its claim waits for a mandatory recheck, so no carry. */
+  const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > (SELECT MAX(ended) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done')", r.repo, r.number, r.repo, r.number, from);
   /** A bare rebase's run: done at no cost and nothing posted, its range from the baseline it carries (covered, and the PR's
    * baseline next). The PR's findings are the PR's, so they stay as they are. */
   function carry(r: RunRow, from: string, merge_base: string) {

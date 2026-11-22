@@ -431,7 +431,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const list = baseTree && plain(baseTree, ".github/code-review-checklist.json") ? readSmall(join(baseTree, ".github/code-review-checklist.json"), 200_000) : undefined;
   try { if (list) checks = checklistText(matchChecklist(JSON.parse(list).items, diff)); } catch {}
   // Text addressed to a reviewer is looked for in the whole change, left-out files included (they can't hide it).
-  const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer);
+  // The PR's title and body (spec.intent) too: steering text there is the same attempt.
+  const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer) || (!tree && atReviewer(String(spec.intent ?? "").split("\n").map((l) => `+${l}`).join("\n")));
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
   const previous = tree ? [] : (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")

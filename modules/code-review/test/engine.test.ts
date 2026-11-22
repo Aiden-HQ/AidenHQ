@@ -465,6 +465,12 @@ test("a bare rebase carries the review and its verdict unrun; a push on the same
   // Rebased with a change of its own: reviewed whole.
   w.pr(2, sha("5")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started.slice(2).map((s) => [s.head, s.incremental_from]), [[sha("5"), null]]);
+  w.finish(2); await w.tick();
+  // An answer since that review waits for a mandatory recheck: a bare rebase after it is reviewed, never carried.
+  w.later(1000); w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 70, author: "bob", body: "by design: refunds credit on purpose" }] }]); await w.tick();
+  w.patches.set(sha("5"), "five").set(sha("6"), "five"); w.bases.set(sha("6"), sha("p"));
+  w.pr(2, sha("6")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started.slice(3).map((s) => [s.head, s.previous.map((f) => f.claim)]), [[sha("6"), ["by design: refunds credit on purpose"]]]);
 });
 
 test("a mandatory run is never skipped for budget; the owner dismisses an open finding and the merge may go", async () => {
