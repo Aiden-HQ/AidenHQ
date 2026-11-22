@@ -7,6 +7,16 @@ FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config libssl-dev python3-pip python3-dev golang-go make gnupg openssh-client \
     && rm -rf /var/lib/apt/lists/*
+# krb5 1.22.3-1 (2026-11-11, security release): the browser and agent-base layers carry 1.22.1-3 from when they were built,
+# and their tags don't change when only this directory does, so a fresh engineer build would otherwise keep it. sid has the
+# fix; --only-upgrade moves just these four packages, and the assertions fail the build if the archive stops carrying it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && for p in libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0; do \
+         dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$p")" ge 1.22.3-1 \
+           || { echo "$p is $(dpkg-query -W -f='${Version}' "$p"), below 1.22.3-1" >&2; exit 1; }; \
+       done
 # rustup-init 1.29.3 (archived 2026-11-03; per-arch sha256 from the .sha256 files beside each binary), checksummed; it installs the pinned toolchain into /opt/rust (readable by all). At run
 # time RUSTUP_HOME stays there; CARGO_HOME is unset, so cargo's registry and builds go under the user's own HOME.
 ENV RUSTUP_HOME=/opt/rust/rustup
@@ -76,7 +86,7 @@ RUN npm i -g --before=2026-11-14 oxlint@1.93.0 knip@6.45.1 jscpd@5.4.3 fallow@3.
 # govulncheck v1.9.0 (2026-10-11), built with the image's Go from the module proxy (go.sum and the checksum database verify it).
 RUN GOTOOLCHAIN=local CGO_ENABLED=0 GOBIN=/usr/local/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 \
     && chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /tmp/gocache && govulncheck -version | grep -q v1.9.0
-# osv-scanner 2.7.1, zizmor 1.32.0, scc 4.1.0 and squawk 2.72.0: release binaries.
+# osv-scanner 2.7.1, zizmor 1.32.0 and squawk 2.72.0: release binaries.
 RUN case "$(dpkg --print-architecture)" in \
       amd64) a=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 file=osv-scanner_linux_amd64 ;; \
       arm64) a=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 file=osv-scanner_linux_arm64 ;; \
@@ -89,12 +99,27 @@ RUN case "$(dpkg --print-architecture)" in \
     esac \
     && curl -fsSLo /tmp/zz.tgz "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/$file" && echo "$a  /tmp/zz.tgz" | sha256sum -c - \
     && tar -xzf /tmp/zz.tgz -C /usr/local/bin zizmor && rm /tmp/zz.tgz && zizmor --version | grep -q 1.32.0
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) a=c7328436d3027f4357d3d7853f7dc3ac2bbcb4ca08f1adad91a27c593884079b file=scc_Linux_x86_64.tar.gz ;; \
-      arm64) a=6e0d2a1f8d3540ba7df185477dec40bb7340f1b214bfd303147de5cad2bd7b8b file=scc_Linux_arm64.tar.gz ;; \
-    esac \
-    && curl -fsSLo /tmp/scc.tgz "https://github.com/boyter/scc/releases/download/v4.1.0/$file" && echo "$a  /tmp/scc.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/scc.tgz -C /usr/local/bin scc && rm /tmp/scc.tgz && scc --version | grep -q 4.1.0
+# scc 4.1.0 (2026-09-07; modules/code-review/catalog.json maint.scc): a review's complexity pass. Built from the module at
+# that tag with the image's Go, not from its release binary: those are cut with go1.27.0 and carry x/net 0.56.0 (critical
+# GO-2026-6612, highs GO-2026-6603/6610/6611/6617/6860), x/crypto 0.53.0 and x/text 0.39.0, and there is no newer release.
+# scc/go.mod beside this file lifts them to x/net 0.62.0, x/crypto 0.58.0 and x/text 0.43.0 (the floors x/net 0.62.0
+# requires), and its `go 1.27.4` floor with GOTOOLCHAIN=local makes a base whose Go is older fail the build instead of
+# fetching another toolchain. The download and build caches are dropped after it. The smoke test keeps the JSON shape the
+# review's scc adapter reads.
+COPY scc/go.mod scc/go.sum /opt/scc/
+RUN cd /opt/scc \
+    && GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=readonly GOPATH=/opt/scc/cache GOCACHE=/opt/scc/cache/build go mod download all \
+    && GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=readonly GOPATH=/opt/scc/cache GOCACHE=/opt/scc/cache/build go build -trimpath \
+         -ldflags "-s -w" -o /usr/local/bin/scc github.com/boyter/scc/v4 \
+    && chmod -R u+w /opt/scc/cache && rm -rf /opt/scc/cache && chmod 0755 /usr/local/bin/scc \
+    && go version /usr/local/bin/scc | grep -Eq 'go1\.(27\.([4-9]|[1-9][0-9])|[2-9][0-9]\.)' \
+    && go version -m /usr/local/bin/scc | grep -Eq '^\s+dep\s+golang\.org/x/net\s+v0\.(6[2-9]|[7-9][0-9])' \
+    && go version -m /usr/local/bin/scc | grep -Eq '^\s+dep\s+golang\.org/x/crypto\s+v0\.(5[6-9]|[6-9][0-9])' \
+    && go version -m /usr/local/bin/scc | grep -Eq '^\s+dep\s+golang\.org/x/text\s+v0\.(4[1-9]|[5-9][0-9])' \
+    && scc --version | grep -qx 'scc version 4.1.0' \
+    && mkdir -p /tmp/scc-smoke && printf 'package main\n\nfunc main() {}\n' > /tmp/scc-smoke/main.go \
+    && scc --by-file -f json --no-cocomo /tmp/scc-smoke | python3 -c 'import json, sys; d = json.load(sys.stdin); assert isinstance(d, list) and d and d[0]["Files"]' \
+    && rm -rf /tmp/scc-smoke
 RUN case "$(dpkg --print-architecture)" in \
       amd64) a=a61661808119a82515565503111099b070c869f73698f61cb1785de5d0c8b11a file=squawk-linux-x64 ;; \
       arm64) a=bcb529c1344512de5ce70695d89e7b1ae58738f73c05187a5f56cbf079417cf2 file=squawk-linux-arm64 ;; \

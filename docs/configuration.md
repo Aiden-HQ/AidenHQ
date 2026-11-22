@@ -356,7 +356,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 
 The kernel runs every agent's job (`kernel/src/jobs.ts`; the `dispatch` module turns wakes into jobs) and reads the optional,
 untracked `config/runner.yaml` at start for its tuning: `work_dir` (default `~/aidenhq-work`), `state_dir` (default
-`~/.local/state/aidenhq-runner`, which holds the job logs), `timeout_minutes` (per job, default 60; `ops/setup.sh` writes it
+`~/.local/state/aidenhq-runner`, which holds the job logs and the jobs' engine homes: live state, despite the name), `timeout_minutes` (per job, default 60; `ops/setup.sh` writes it
 from `TIMEOUT_MINUTES`) and `gateway.url`. Which organizations agents may push and open PRs in is the instance's
 `github_orgs` (`instance.yaml`), enforced by the code host (`modules/github`).
 

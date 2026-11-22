@@ -37,7 +37,6 @@ export function firing(kv: Pick<Kv, "get">): Firing {
  * Label and annotation values can carry names an agent's app chose, so none of them reaches its task.
  */
 const OWNER_SENTENCE: Record<string, string> = {
-  disknearlyfull: "a disk on the host is nearly full",
   coreservicedown: "a core service has been down for over 5 minutes",
   applyfailed: "an apply failed validation or its health check, so the host is on the last known good; the reason and log are in the Fleet Steward's check",
 };

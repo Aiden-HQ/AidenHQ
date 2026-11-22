@@ -17,7 +17,7 @@
 // verdict; the merge queue still asks verdict() itself.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason, never silent.
 import type { DatabaseSync } from "node:sqlite";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
 import type { Ack, Finding, Posted, Poster, PrSource, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
@@ -78,6 +78,8 @@ export type RunRow = {
   review_url: string | null; resolved: number | null; identity: string | null;
   /** Its post filed again once (a refusal that wasn't a decision), and when that is due (posted 'retry'). */
   post_tries: number; post_due: number | null;
+  /** A refused post's typed need (needs_owner, JSON): restricted, expired, sso or scope, with what fixes it. */
+  need: string | null;
 };
 
 const DDL = `
@@ -91,7 +93,8 @@ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number
   important INTEGER NOT NULL DEFAULT 0, nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
   focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, due INTEGER NOT NULL, created INTEGER NOT NULL,
   posted TEXT, author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT,
-  merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT, batch TEXT NOT NULL, recheck INTEGER NOT NULL DEFAULT 0);
+  merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT, batch TEXT NOT NULL, recheck INTEGER NOT NULL DEFAULT 0,
+  need TEXT);
 CREATE INDEX IF NOT EXISTS runs_pr ON runs (repo, number, created);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status, due);
 CREATE TABLE IF NOT EXISTS reviews (run TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -104,7 +107,14 @@ CREATE TABLE IF NOT EXISTS dispositions (finding TEXT NOT NULL, repo TEXT NOT NU
   reason TEXT NOT NULL, evidence TEXT, by TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS dispositions_pr ON dispositions (repo, number, finding);
 CREATE TABLE IF NOT EXISTS cursors (repo TEXT PRIMARY KEY, comments TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));`;
+CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL, comment INTEGER NOT NULL, run TEXT NOT NULL, PRIMARY KEY (repo, comment));
+-- Who asked for a one-off review: their task and the agent or owner's name, and the runs their own request was answered with
+-- (its run set: the same ask twice by two askers shares them, and each hears the summary of the runs it asked for).
+-- \`text\` is that summary, stored before it is sent; \`pending\` the stamp it was written from and \`sent\` the one delivered, so
+-- a kernel that can't take it now is retried on a later tick and a settled summary is never sent twice. \`claim\` marks a send in
+-- flight: a crash mid-send leaves it set, and the next start clears it so the summary is tried again (at least once, never lost).
+CREATE TABLE IF NOT EXISTS askers (batch TEXT NOT NULL, task TEXT NOT NULL DEFAULT '', setkey TEXT NOT NULL DEFAULT '', requester TEXT NOT NULL,
+  runs TEXT NOT NULL DEFAULT '', text TEXT, pending TEXT, sent TEXT, claim TEXT, PRIMARY KEY (batch, task, setkey));`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
  * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
 export const DATA_VERSION = 1;
@@ -129,13 +139,19 @@ export function createEngine(d: EngineDeps) {
   const now = d.now ?? Date.now;
   const log: Log = d.log ?? (() => {});
   if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version < DATA_VERSION) {
-    db.exec("DROP TABLE IF EXISTS prs; DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS reviews; DROP TABLE IF EXISTS findings; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS cursors;");
+    db.exec("DROP TABLE IF EXISTS prs; DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS reviews; DROP TABLE IF EXISTS findings; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS cursors; DROP TABLE IF EXISTS askers;");
     db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
+  // An `askers` table from before a row was keyed by its run set held one row per ask task, so a second distinct ask of the same task
+  // overwrote the first's runs and its summary. It holds only summaries not yet delivered, so it starts fresh: each ask is recorded again.
+  if ((db.prepare("SELECT count(*) n FROM sqlite_master WHERE type = 'table' AND name = 'askers'").get() as { n: number }).n
+    && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  // A send a restart cut off (its claim still set) is tried again: the summary is recoverable, never dropped.
+  db.exec("UPDATE askers SET claim = NULL WHERE claim IS NOT NULL");
   // A start a restart cut off (running, no check job yet) is queued again.
   db.prepare("UPDATE runs SET status = 'queued', started = NULL, attempts = 0, billed_prior = 0, bills = NULL WHERE status = 'running' AND check_job IS NULL").run();
   const iso = () => new Date(now()).toISOString();
@@ -185,12 +201,16 @@ export function createEngine(d: EngineDeps) {
   // ---- runs: queue, skip, start, finish ---------------------------------------------------------------------------------------
 
   type Target = { repo: string; number: number; head: string; base: string; author: string };
+  /** An asker of a one-off batch: the agent's name, and its task (absent: the owner's board or an agent with no task). Kept once per batch and task. */
+  type Asker = { requester: string; task?: string };
+  /** One ask's stored row: its batch, task, run-set key and run ids. */
+  type Ask = { batch: string; task: string; setkey: string; runs: string };
   /**
    * One trigger's batch: a queued run per combo, the first rechecking the PR's still-open findings. An automatic batch replaces
    * the PR's queued automatic runs (the push they were for is superseded); the same ask twice (two comments, a double click) is
    * the batch already waiting or running on that head.
    */
-  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; moment?: Moment } = {}): RunRow[] {
+  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; moment?: Moment; asker?: Asker } = {}): RunRow[] {
     const due = o.due ?? now();
     mirrorDue = true;
     if (kind === "auto") {
@@ -202,9 +222,11 @@ export function createEngine(d: EngineDeps) {
     // A one-off never gates; the recheck runs in the first mandatory run (whose verdict counts), else the first.
     const mand = (c: Combo) => kind !== "oneoff" && c.mandatory;
     const checker = Math.max(0, list.findIndex(mand));
-    return list.map((c, i) => {
+    const runs = list.map((c, i) => {
       if (kind !== "auto") {
-        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0);
+        // The same ask is the same run only when it asks the same question: a different focus (or none) is its own run, so a
+        // one-off asked with a focus never reuses a queued run of another ask and drop that ask's focus.
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
@@ -213,6 +235,24 @@ export function createEngine(d: EngineDeps) {
         o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open");
       return runRow(id)!;
     });
+    // Who asked, and the runs this request was answered with (its run set): the same ask twice by two askers shares those runs,
+    // and each hears one summary of them (a request that also picks up a run already queued is one ask, not two). The row sits
+    // in the first run's batch, whose end re-summarises it. A one-off with no asker (the board's POST /reviews) is the owner's.
+    if (kind === "oneoff" && runs.length) recordAsker(runs[0]!.batch, o.asker ?? { requester: "" }, runs.map((r) => r.id));
+    return runs;
+  }
+
+  /** Records that `asker` asked for `runs`: their own summary is of those runs, never of another ask's. */
+  function recordAsker(batch: string, a: Asker, runs: string[]) {
+    // One row per ask: its batch, its task and its own run set. A later ask of the same task (another combo, another focus) is its
+    // own row and its own summary, never a rewrite of the first ask's; the same ask twice is the same row, so it is told once.
+    // The set is a set: sorted, so the same runs asked for in another combo order (a later ask that reuses them all) are one ask.
+    const setkey = createHash("sha256").update(JSON.stringify([...runs].sort())).digest("hex").slice(0, 16);
+    run(`INSERT INTO askers (batch, task, setkey, requester, runs) VALUES (?, ?, ?, ?, ?) ON CONFLICT (batch, task, setkey) DO UPDATE SET
+      requester = excluded.requester`, batch, a.task ?? "", setkey, a.requester.slice(0, 100), JSON.stringify(runs));
+    // The runs may already be where they will end (a run the spend limit holds, or one settled before this ask named it): a summary
+    // only a later end would write would never come, so the new asker is looked at now. One still queued or running returns here.
+    summariseFor(batch, a.task ?? "", setkey, JSON.stringify(runs));
   }
 
   /** A queued run skipped (superseded, closed, stopped): it keeps what its earlier attempts were billed, and its flow ends. */
@@ -375,8 +415,9 @@ export function createEngine(d: EngineDeps) {
     end(row);
   }
 
-  /** The run's review.ended fact. */
+  /** The run's review.ended fact; a one-off's askers are summarised once all the runs they asked for have ended. */
   function end(r: RunRow) {
+    if (r.kind === "oneoff") summarise(r.batch, r.id);
     d.emit?.({ type: "review.ended", subject: subject(r.repo, r.number), version: r.id, at: r.ended ?? iso(),
       data: { status: r.status, ...(r.why ? { why: r.why.slice(0, 300) } : {}), important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: r.cost_usd, ...comboOf(r), kind: r.kind, run: r.id } });
   }
@@ -411,6 +452,9 @@ export function createEngine(d: EngineDeps) {
       if ((capped || r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS)) && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying again", { run: r.id, attempt: r.attempts, why: res.why.slice(0, 200) });
         run("UPDATE runs SET billed_prior = ?, bills = ?, why = ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", charge(r, res.billed_usd), JSON.stringify(bills(r, res.billed_usd)), res.why.slice(0, 500), now() + (capped ? CAP_WAIT : RUN_RETRY), r.id);
+        // A one-off the install's spend limit holds is told now: its batch's summary would otherwise wait on a run that can't
+        // start, and the asker would hear nothing at all. It reads as skipped for the limit, with the limit as the one fix.
+        if (capped && r.kind === "oneoff") summarise(r.batch, r.id);
         return;
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
@@ -486,7 +530,10 @@ export function createEngine(d: EngineDeps) {
     const posted = await publish(r, review);
     // A refusal it files again ends as done (its review is complete; only its post is pending again), never failed then done.
     const again = retries(r, posted);
-    done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
+    // A refusal filed again is recorded as a retry now, before the summary looks: afterPost sets its due time, and a summary
+    // must not read the in-between state as settled.
+    done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null,
+      posted.state === "refused" && again ? "retry" : posted.state);
     afterPost(runRow(r.id)!, posted);
   }
   const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && (!r.post_tries || (r.post_tries < POST_TRIES && !!prRow(r.repo, r.number)?.open));
@@ -544,6 +591,9 @@ export function createEngine(d: EngineDeps) {
 
   /** A post's outcome is in: a posted one is the PR's baseline and keeps its link; a one-off's task is done either way. */
   function settled(r: RunRow, o: Posted) {
+    // A refusal only the owner can fix (github-mcp's needs_owner) is kept, so the batch's summary names its one link; any other
+    // outcome clears it, so a need an earlier attempt left is never read as this one's.
+    run("UPDATE runs SET need = ? WHERE id = ?", o.state === "refused" && o.need ? JSON.stringify(o.need) : null, r.id);
     if (o.state === "posted") {
       // The comments it opened: what makes a thread Aiden's own (an answer, a resolve), never a marker read back from GitHub.
       for (const c of o.comments ?? []) run("INSERT OR IGNORE INTO comments (repo, number, comment, run) VALUES (?, ?, ?, ?)", r.repo, r.number, c, r.id);
@@ -554,6 +604,133 @@ export function createEngine(d: EngineDeps) {
       if ((ackOf(r.repo, r.number) || acking_(r.repo, r.number)) && prRow(r.repo, r.number)?.head === r.head) void ack({ repo: r.repo, number: r.number, head: r.head, state: "done", run: r.id, combo: comboOf(r), counts: { important: r.important, nit: r.nit, pre_existing: r.pre_existing, cost_usd: round(r.cost_usd) }, ...(o.url ? { review: o.url } : {}) });
     }
     if (r.write_id && ownTask(r)) void d.poster.close(r.repo, r.number, "The one-off review's post is settled.", r.id).catch((e) => log("review task not closed", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
+    if (r.kind === "oneoff") summarise(r.batch, r.id);
+  }
+
+  /** One line for what fixes a refusal only the owner can fix, from the need github-mcp's review route carried (runs.need). */
+  function fixOf(needJson: string | null | undefined): string | undefined {
+    let need: { cause?: unknown; org?: unknown; url?: unknown; scope?: unknown } | undefined;
+    try { need = JSON.parse(String(needJson ?? "")) as typeof need; } catch {}
+    if (!need || typeof need.cause !== "string") return undefined;
+    const cause = need.cause;
+    if (cause === "restricted") return `the Grant link: ${typeof need.url === "string" ? need.url : "GitHub's settings, Connections, Applications"}${typeof need.org === "string" ? ` (press Grant next to ${need.org})` : ""}`;
+    if (cause === "sso") return `the SSO authorization link: ${typeof need.url === "string" ? need.url : "the board's GitHub card"}`;
+    if (cause === "expired" || cause === "not_connected") return "Reconnect GitHub on the board (Settings, Connections)";
+    if (cause === "scope") return `Reconnect GitHub on the board to grant \`${typeof need.scope === "string" ? need.scope : "the missing permission"}\``;
+    return undefined;
+  }
+  /**
+   * One summary per one-off ask, once the runs it asked for have settled: posted, refused, skipped for budget, or failed,
+   * naming the PR, what happened and the one action that fixes it. Each asker hears the summary of the runs its own request
+   * queued, once: a wake notice on their task (its agent hears it, and its task can act), or to the owner when the request was
+   * the board's or their task has closed. Never one message per run.
+   */
+  function summarise(batch: string, runId?: string) {
+    // The askers of this run's batch, and any ask whose own runs include it even when they also came from an earlier batch.
+    const asked = runId
+      ? all<Ask>("SELECT batch, task, setkey, runs FROM askers WHERE batch = ? OR runs LIKE ?", batch, `%${JSON.stringify(runId)}%`)
+      : all<Ask>("SELECT batch, task, setkey, runs FROM askers WHERE batch = ?", batch);
+    for (const a of asked) summariseFor(a.batch, a.task, a.setkey, a.runs);
+  }
+
+  function summariseFor(batch: string, task: string, setkey: string, asked: string) {
+    let ids: string[] = [];
+    try { const v = JSON.parse(asked || "[]"); if (Array.isArray(v)) ids = v.filter((x): x is string => typeof x === "string"); } catch {}
+    // An asker recorded before the runs were kept (a database from the first shape of this table): the whole batch is its ask.
+    const runs = ids.length ? all<RunRow>(`SELECT * FROM runs WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY created`, ...ids)
+      : all<RunRow>("SELECT * FROM runs WHERE batch = ? AND kind = 'oneoff' ORDER BY created", batch);
+    if (!runs.length) return;
+    // A run waiting on the install's spend limit is not on its way yet: it is reported as such (the one action is the limit), so
+    // the batch is summarised now rather than never. Everything else still to come waits: a queued or running run, or a post
+    // filed again (a refusal that wasn't a decision), so the summary tells what happened to it, not the state in between.
+    const spent = (r: RunRow) => SPEND_LIMIT.test(String(r.why ?? ""));
+    if (runs.some((r) => !spent(r) && (r.status === "queued" || r.status === "running" || (r.status === "done" && (r.posted === "pending" || r.posted === "retry"))))) return;
+    const body = Object.fromEntries(runs.map((r) => [r.id, `${r.status}|${r.posted ?? ""}|${r.why ?? ""}|${r.need ?? ""}`]));
+    const bodyStamp = JSON.stringify(body);
+    // The same outcomes, already summarised and not sent yet (a tick's deliver is about to), needs nothing: a finished run is
+    // summarised twice (its post's pending write, then its outcome), and the second look is this read.
+    const had = one<{ pending: string | null }>("SELECT pending FROM askers WHERE batch = ? AND task = ? AND setkey = ?", batch, task, setkey);
+    if (had?.pending === bodyStamp) return;
+    const first = runs[0]!;
+    // Each run lands in one of these: posted, refused (a write the reviewer or owner turned down, or a post the executor
+    // refused for a need only the owner can fix), skipped for budget, or failed (no result, or one not bound to the run).
+    const posted = runs.filter((r) => r.status === "done" && r.posted !== "refused");
+    const refused = runs.filter((r) => r.status === "failed" && (r.posted === "refused" || !!r.write_id));
+    // A run that never started because the install's spend limit is reached: the gateway's cap, not the run's own (the day cap
+    // is gone). A queued one waits for the limit to lift; a failed one gave up. Both are the same outcome to the asker.
+    const spend = runs.filter((r) => spent(r) && r.status !== "done" && !refused.includes(r));
+    const skipped = runs.filter((r) => !spent(r) && r.status === "skipped" && /^budget/.test(String(r.why ?? "")));
+    const failed = runs.filter((r) => r.status === "failed" && !refused.includes(r) && !spend.includes(r));
+    // A run skipped for a reason of its own (superseded, closed) is named too, never left out of the counts.
+    const other = runs.filter((r) => r.status === "skipped" && !skipped.includes(r) && !spend.includes(r));
+    const parts = [posted.length ? `${posted.length} posted` : "", refused.length ? `${refused.length} refused` : "",
+      spend.length ? `${spend.length} skipped for the spend limit` : "", skipped.length ? `${skipped.length} skipped for budget` : "",
+      failed.length ? `${failed.length} failed` : "", other.length ? `${other.length} skipped (${String(other[0]!.why ?? "no reason").slice(0, 80)})` : ""].filter(Boolean);
+    const what = parts.length ? parts.join(", ") : "no run ended";
+    // The one action that fixes it, most useful first: the Grant link (or Reconnect) of a refusal's need, the spend limit's reset,
+    // the budget's reset, then a re-run for a refusal or failure with no owner-fixable cause.
+    const fix = refused.map((r) => fixOf(r.need)).find(Boolean)
+      ?? (spend.length ? "the install's spend limit resets (Settings, spend_day_usd or spend_month_usd)" : undefined)
+      ?? (skipped.length ? "budget resets at 00:00 UTC" : undefined)
+      ?? (refused.length || failed.length ? "re-run it with code_review_run" : undefined);
+    const text = `**One-off review settled:** ${first.repo}#${first.number} at ${first.head.slice(0, 7)}: ${runs.length} ${runs.length === 1 ? "run" : "runs"}, ${what}.${fix ? ` To fix it: ${fix}.` : ""}`;
+    // Stored before anything goes, so a kernel that can't take it now is tried again on a later tick (deliver): a settlement
+    // message is never lost to a restart. A request whose runs ended differently after a first summary is summarised once more,
+    // and the same one is never re-sent.
+    run("UPDATE askers SET text = ?, pending = ? WHERE batch = ? AND task = ? AND setkey = ?", text, bodyStamp, batch, task, setkey);
+  }
+
+  /** Sends each stored, unsent summary to its asker; one whose task has closed goes to the owner instead, once per batch. */
+  async function deliver() {
+    const todo = all<{ batch: string; task: string; setkey: string; requester: string; text: string | null; pending: string; sent: string | null; claim: string | null }>(
+      "SELECT batch, task, setkey, requester, text, pending, sent, claim FROM askers WHERE text IS NOT NULL AND (sent IS NULL OR sent != pending) AND claim IS NULL ORDER BY rowid");
+    // Tasks that hear nothing (gone, done or cancelled), by the batch and the run set they asked about: the owner is told
+    // instead, once. Askers of one run set share a stamp (`pending`), so they are one message; a distinct run set of the same
+    // batch keeps its own, never another ask's — even when its runs happened to render the same text.
+    const closed = new Map<string, { batch: string; stamp: string; text: string; asks: { task: string; setkey: string }[]; who: string[] }>();
+    for (const a of todo) {
+      // The send is claimed first, in a compare-and-set on the stamp it is for: two ticks can't both send it, and one that changed
+      // mid-send keeps its new stamp for the next send. A wake carries the key as the notice's `id`, which the kernel reads back
+      // from the task's thread, so a summary sent again after a crash that lost its answer still wakes the agent once. `claim`, not
+      // `sent`, marks it: a crash mid-send leaves the claim and the next start clears it, so the summary is sent again rather than
+      // dropped. A failed send hands the claim back, so the next tick tries again.
+      if (run("UPDATE askers SET claim = ? WHERE batch = ? AND task = ? AND setkey = ? AND pending = ? AND claim IS NULL AND (sent IS NULL OR sent != pending)", a.pending, a.batch, a.task, a.setkey, a.pending).changes !== 1) continue;
+      const key = `code-review:ask:${a.batch}:${a.task || "owner"}:${createHash("sha256").update(a.pending).digest("hex").slice(0, 16)}`;
+      try {
+        if (a.task && (await d.poster.notify({ task: a.task, text: a.text!, dedupe_key: key })) === "closed") {
+          // The task is done with this ask: it is not asked again, but the row stays unsent until the owner's notice below lands, or
+          // a crash between the two would leave `sent` set with the owner never told. Its `claim` is handed back for that send.
+          run("UPDATE askers SET claim = NULL WHERE batch = ? AND task = ? AND setkey = ? AND claim = ?", a.batch, a.task, a.setkey, a.pending);
+          const k = `${a.batch}\u0000${a.pending}`;
+          const c = closed.get(k) ?? { batch: a.batch, stamp: a.pending, text: a.text!, asks: [], who: [] };
+          closed.set(k, { ...c, asks: [...c.asks, { task: a.task, setkey: a.setkey }], who: [...c.who, a.requester || "an agent"] });
+          continue;
+        }
+        if (!a.task) await d.poster.notify({ text: a.text!, dedupe_key: key });
+        run("UPDATE askers SET sent = ?, claim = NULL WHERE batch = ? AND task = ? AND setkey = ? AND claim = ?", a.pending, a.batch, a.task, a.setkey, a.pending);
+      } catch (e) {
+        run("UPDATE askers SET claim = NULL WHERE batch = ? AND task = ? AND setkey = ? AND claim = ?", a.batch, a.task, a.setkey, a.pending);
+        log("one-off summary not sent; the next tick tries again", { batch: a.batch, task: a.task, err: String((e as Error).message).slice(0, 200) });
+      }
+    }
+    // A closed task hears nothing, so the owner gets the message naming every asker whose task is closed, its own key.
+    for (const { batch, stamp, text, asks, who } of closed.values()) {
+      log("one-off summary: an asker's task is closed; it goes to the owner", { batch, askers: who });
+      // Its own key, of its own run set *and* its own askers: two closed asks of one batch are one message only when they asked the
+      // same runs and are the same asks, so a second asker whose runs ended the same way (or an asker joining that set later) is
+      // not dropped for having rendered the same words. A key of the stamp alone would lose the second one.
+      const set = createHash("sha256").update(`${stamp}\u0000${asks.map((x) => `${x.task}\u0000${x.setkey}`).sort().join("\u0001")}`).digest("hex").slice(0, 16);
+      const key = `code-review:ask:${batch}:closed:${set}`;
+      try {
+        await d.poster.notify({ text: `${text} (asked by ${who.join(", ")})`, dedupe_key: key });
+      } catch (e) {
+        // The owner wasn't told, so these asks stay unsent: the next tick asks the task again (it may be open now) or tells the owner.
+        log("one-off summary not sent; the next tick tries again", { batch, err: String((e as Error).message).slice(0, 200) });
+        continue;
+      }
+      // Told: each of these asks is done with. Only now is it marked, so a crash anywhere above leaves it to be sent again.
+      for (const x of asks) run("UPDATE askers SET sent = pending, claim = NULL WHERE batch = ? AND task = ? AND setkey = ?", batch, x.task, x.setkey);
+    }
   }
 
   /** A posted review is the PR's baseline for the next incremental run; one only filed (or refused) never is. */
@@ -566,7 +743,9 @@ export function createEngine(d: EngineDeps) {
   async function settle(r: RunRow) {
     const o = await d.poster.outcome(r.write_id!).catch(() => ({ state: "pending" as const }));
     if (o.state === "pending") return;
-    run("UPDATE runs SET posted = ?, status = ?, why = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? null : `not posted: ${o.why ?? "refused"}`, r.id);
+    // The need is this outcome's, never an earlier one's: a retry that settled (posted, or refused for another reason) replaces the
+    // need the failed attempt left, or the summary would name a Grant link for a connection that is fine now.
+    run("UPDATE runs SET posted = ?, status = ?, why = ?, need = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? null : `not posted: ${String(o.why ?? "refused").slice(0, 300)}`, o.need ? JSON.stringify(o.need) : null, r.id);
     afterPost(runRow(r.id)!, o);
   }
 
@@ -761,6 +940,8 @@ export function createEngine(d: EngineDeps) {
       if (started) await startRun(started);
     }
     if (github || mirrorDue) { mirrorDue = false; await mirror(); }
+    // Every one-off summary a request settled in this tick (or an earlier tick couldn't send) goes now, one per asker.
+    await deliver();
   }
 
   // ---- the verdict on GitHub: the commit status aidenhq/review ---------------------------------------------------------------
@@ -982,8 +1163,12 @@ export function createEngine(d: EngineDeps) {
       const r = runRow(id);
       return r ? { repo: r.repo, number: r.number, head: r.head } : undefined;
     },
-    /** A one-off review of any open or merged PR the instance can read, by each combo asked for (default: the repo's on_open); posted like any other. */
-    async oneoff(b: { pr_url?: unknown; combos?: unknown; focus?: unknown; full?: unknown }) {
+    /**
+     * A one-off review of any open or merged PR the instance can read, by each combo asked for (default: the repo's on_open); posted
+     * like any other. `asker` is who hears its batch's one summary, from the caller the service verified (never the request body);
+     * absent, it is the board's ask and the owner hears it.
+     */
+    async oneoff(b: { pr_url?: unknown; combos?: unknown; focus?: unknown; full?: unknown }, asker?: Asker) {
       if (b.focus !== undefined && (typeof b.focus !== "string" || b.focus.length > 300)) throw new RequestError("focus is a short text");
       const asked = b.combos === undefined ? undefined : parseCombos(b.combos, "combos");
       if (asked && "error" in asked) throw new RequestError(asked.error);
@@ -991,7 +1176,12 @@ export function createEngine(d: EngineDeps) {
       const p = await readPr(b.pr_url);
       const cfg = repoCfg(p.repo);
       const list = asked ?? (cfg?.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_open);
-      return queue(p, list, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null });
+      // The asker is the service's verified caller (api.ts; never a body field), but what it names still only reaches a notice's
+      // target and the owner's alert text: a name is one line, and a task is an id or it is dropped (the owner hears it instead).
+      const name = String(asker?.requester ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
+      const task = asker?.task && /^[A-Za-z0-9_-]{1,100}$/.test(asker.task) ? asker.task : undefined;
+      const who: Asker | undefined = asker ? { requester: name || "an agent", ...(task ? { task } : {}) } : undefined;
+      return queue(p, list, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null, ...(who ? { asker: who } : {}) });
     },
     runs(q: { repo?: string; status?: string; limit?: number }) {
       const where: string[] = [], args: unknown[] = [];

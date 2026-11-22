@@ -181,8 +181,8 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   uncounted; per repo there is no cap); past it, the issue is held and triaged the tick a slot frees (the daily run has it after a day). A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
-  Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`
-  and `CoreServiceDown` also send the owner one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
+  Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `CoreServiceDown`
+  and `ApplyFailed` also send the chief of staff one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
   `tailscale serve --bg --https=8444 http://127.0.0.1:3131` (no sudo: the user is tailscaled's operator) and set
   `grafana_root_url`. Sign in as `admin` with the vault's `grafana_admin_password`. Unit and container states come from the
   user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the gateway's from
@@ -200,7 +200,35 @@ first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its night
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
 Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
-first); `prune-docker.timer` does the same daily on a host that hasn't applied. Apply installs changed prune units.
+first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
+knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
+before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, cache under the
+20 GB cap, no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
+(not once a night: the peak between prunes is what crossed the alert line), so the space peak between prunes stays under
+the alert line. It also removes one-off containers — a container with no compose service and no `aidenhq.computer` label, the class a
+`docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
+`docker container prune --filter until=`, which filters on created time and so would delete a compose service that an
+apply's generation snapshot had just stopped, and its own check reads `State.FinishedAt`; a container with no stop time
+(created and never started) is kept, since the day cannot be measured against it. It only reaches containers that carry
+the opt-in label `aidenhq.oneoff=1` (the one `ops/security-sbom.sh` puts on its scan container): a container someone
+started by hand is never removed, however old. The stop time is read again immediately before `docker rm`, so a one-off
+that was restarted in between is kept rather than deleted on a stale reading. No volume is touched (`docker rm` without
+`-v`). That step is `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its
+rebuilds. Each prune command has its own `timeout` under the unit's `TimeoutStartSec`, so one that hangs cannot stop
+systemd reaching the later steps and the verification; the apply-time steps are bounded the same way, since `|| true`
+only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
+prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
+system df`), so a build that grows the cache past 20 GB while later steps run does not read as a prune that capped nothing;
+in that snapshot, over 20 GB with nothing reclaimable is a build holding that cache in use (the cap holds), while any
+reclaimable bytes at all mean the cap did not hold. The snapshot, its status and its invocation are one record, so a run
+is only ever judged on its own result, and the cap's only tolerance is the precision Docker printed the size with.
+
+Each step's exit status is recorded for the verification: the `-` prefix keeps a failure from skipping the next step, and
+the verification reads the record, so a failed prune still fails the unit without running the same 48 h prune a second
+time. The image step is wrapped by `ops/prune-docker-step.sh`, which writes it; `ops/prune-docker-containers.sh` writes its
+own, since a container listing that failed while the daemon was unreachable can recover before the verification's
+re-listing, and that fresh listing alone would read as a clean scan. A `build-cache` snapshot that could not be read is
+reported as unknown, never as "nothing cached".
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be
@@ -208,7 +236,18 @@ built from a backup with `ops/setup.sh --restore`. Off-host, nightly: [operation
 
 Moving a running instance to another host (drain, cold copy, tailnet names, rollback): [operations/migrate-host.md](operations/migrate-host.md).
 
-## Task workspaces
+## Task workspaces and disk
+
+Every job of a task runs in `<work_dir>/tasks/<identifier>` (default `~/aidenhq-work`), with its build-cache overlays in
+`.cache-layers/<identifier>` and its engine home (the Codex home and sessions) in `<state_dir>/<engine>/<agent>_<task>`.
+`state_dir` (default `~/.local/state/aidenhq-runner`) is the **kernel's live job state** despite its old name: never delete it
+(deleting it on 2026-11-22 failed every Engineer job with EACCES until it was restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
+of those folders, and check folders a dead kernel left in `checks/`, once nothing live uses it (no running job, no box not yet released) and its task has been done or
+cancelled for a day, or it has been idle for 3 days whatever the task's state (a resumed task clones again and starts a fresh
+session). When a disk is over 80% used the limits drop to a day idle and closed at all. Docker is bounded by
+`prune-docker.timer` (Backups above); Paperclip's dumps, journald (its default cap), `~/checkpoints` (the last generations)
+and the skill runtimes are bounded where they are made. `DiskSpaceLow` (80%) and `DiskNearlyFull` (95%) file Fleet Ops
+tasks for the Fleet Steward; neither tells the owner.
 
 ## Host one-offs
 
@@ -526,7 +565,7 @@ not the boundary: the org's runner group is. To serve the product org:
 
 **The public Aiden-HQ repos (AidenHQ, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
 In the product's ci.yml the first job (`checks`) counts the hosted jobs this repo's other runs hold (queued or running) and
-sends the heavy jobs (packages, runner-unit, runner-flows, board) to `[self-hosted, aidenhq]` only when that count is 12 or
+sends the heavy jobs (the packages shards and board) to `[self-hosted, aidenhq]` only when that count is 12 or
 more (the free plan runs ~20 at once), the repository variable `CI_SELF_HOSTED` is `true`, and the run is a push to main or
 a same-repo PR (never a merge train: it holds PRs that may come from forks); any API error keeps them hosted. That routing
 lives in the workflow file the run carries, so it is no boundary. The boundaries are: *Require approval for all outside
@@ -539,8 +578,10 @@ runner starts the hook with an environment of its own (the github and runner con
 job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
 Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
 `settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
-aidenhq-ci-runner@Aiden-HQ-1 aidenhq-ci-runner@Aiden-HQ-2` (up to 4, or move existing fleet-org units); then the repo
-variable (Settings -> Secrets and variables -> Actions -> Variables). Unset it to go back to hosted only.
+aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-4` (four run today, owner 2026-11-22: the host was overloaded at six); then the repo variables
+(Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 4). Unset it to go back to hosted only.
+To scale down, `systemctl --user disable --now` each instance above the new count (and `reset-failed` it): a unit that is
+only stopped stays enabled, so `ops/ci-runner-units.sh` restarts it and a failed one keeps alerting.
 aidenhq-distro can adopt the same routing in its ci.yml later.
 
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly

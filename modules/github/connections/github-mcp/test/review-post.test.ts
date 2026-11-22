@@ -40,9 +40,20 @@ describe("rendering model text", () => {
     expect(summary).toContain('<!-- aidenhq-review: {"important":1,"nit":0,"pre_existing":0} -->');
   });
 
+  it("a nit gets no thread: 1 important and 2 nits make one inline comment, and the summary lists the 2 nits", () => {
+    const r = review([finding("f_imp_1", "src/pay.ts", 2), finding("f_nit_1", "src/pay.ts", 3, { severity: "nit", title: "Name pay better" }), finding("f_nit_2", "src/util.ts", 8, { severity: "nit", title: "Dead branch" })]);
+    const { summary, comments, listed } = renderReview(r, "run1", { gated: true });
+    expect(comments.map((c) => c.id)).toEqual(["f_imp_1"]);
+    expect(listed).toEqual([]);
+    expect(summary).toContain("**Nits** (no thread)");
+    expect(summary).toContain("- `pay.ts:3` Name pay better");
+    expect(summary).toContain("- `util.ts:8` Dead branch");
+    expect(summary).toContain("**blocks the merge**"); // the important one gates; the nits don't
+  });
+
   it("scans at a glance: a short title, the counts, important findings in a table linked to their threads, the rest collapsed, each finding once", () => {
     expect([modelName("anthropic/claude-haiku-5.5"), modelName("~openai/gpt-6.2-sol"), modelName("~deepseek/deepseek-flash-latest")]).toEqual(["Haiku 5.5", "GPT 6.2 Sol", "DeepSeek Flash"]);
-    const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "nit" }), finding("f_none_1", "docs/x.md", 7, { severity: "pre_existing" })]);
+    const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "pre_existing" }), finding("f_none_1", "docs/x.md", 7, { severity: "pre_existing" })]);
     const place = anchors(r.findings, new Map([["src/deep/pay.ts", new Set([1, 2])], ["src/pay.ts", new Set([9])]]));
     expect(place.get("f_nit_1")).toEqual({ line: 9 }); // the nearest diff line of its file
     expect(place.has("f_none_1")).toBe(false); // in no changed file: no thread
@@ -50,7 +61,7 @@ describe("rendering model text", () => {
     expect(summary).toContain("### Aiden review · DeepSeek Flash (medium)");
     expect(summary).toContain("**blocks the merge**");
     expect(summary).toContain("| \u{1F534} | [Amount \\| unchecked](https://github.com/t/1) | `pay.ts:2` |");
-    expect(summary).toMatch(/<details><summary>1 nit<\/summary>[\s\S]*`pay.ts:3`/);
+    expect(summary).toMatch(/<details><summary>1 pre-existing<\/summary>[\s\S]*`pay.ts:3`/);
     expect(summary.match(/Amount/g)).toHaveLength(1);
     expect(summary).toContain("Fix brief"); // the one without a thread carries its reasoning, once
     expect(comments.find((c) => c.id === "f_nit_1")!.body).toContain("outside the diff");
@@ -156,7 +167,7 @@ describe("posting", () => {
   it("posts as the owner, COMMENT only: a thread for every finding (its line, the nearest diff line, or its file), links in the summary; the acknowledgement is the notice's", async () => {
     const w = world();
     const p = poster(w);
-    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" }), finding("f_binary_1", "logo.png", 1, { severity: "nit" })]);
+    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" }), finding("f_binary_1", "logo.png", 1, { severity: "pre_existing" })]);
     const done = await p.execute("post", postArgs(r));
     expect(JSON.parse(done.text)).toMatchObject({ identity: "owner", login: "owner1", inline: 3, listed: 0 });
     expect(done.objects).toEqual(["github:acme/payments#12/comment/501", "github:acme/payments#12/comment/502", "github:acme/payments#12/comment/601"]);
@@ -305,7 +316,7 @@ describe("code review's GitHub App", () => {
   const isWrite = (c: { method: string; path: string; body?: any }) => !c.path.startsWith("/app") && !c.path.endsWith("/installation") && c.method !== "GET" && !(c.path === "/graphql" && !String(c.body?.query).startsWith("mutation"));
 
   it("posts every review write as the App's installation where it is installed, and as the owner where it isn't; reads stay the owner's", async () => {
-    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_binary_1", "logo.png", 1, { severity: "nit" })]);
+    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_binary_1", "logo.png", 1)]);
     for (const installed of [true, false]) {
       const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41)] });
       const p = poster(w, withApp(w, installed));

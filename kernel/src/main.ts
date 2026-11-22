@@ -87,7 +87,7 @@ import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes, wakeNotice } from "./wakes.ts";
-import { createWorkspaceSweep, pruneSkillRuntimes } from "./workspaces.ts";
+import { createDiskSweep, pruneSkillRuntimes } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
 import { ensureStateDirs, readEngines } from "./sandbox.ts";
@@ -440,7 +440,8 @@ const wakes = createWakes({
   knownRepo: (repo) => (repo.startsWith(`${LOCAL_ORG}/`) ? localHost() && localRepoExists(repo) : covers(repo, KNOWN_REPOS, codehostRepos())),
   // No member can take it: an open parent hears it as a wake notice (as asker.tell does), else the owner.
   tellBlocked: async (task, text) => {
-    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text)) === "posted") return;
+    // A parent that can't be read now is not a reason to lose the message: it goes to the owner, as with no parent at all.
+    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text).catch(() => "retry")) === "posted") return;
     notify.queue({ kind: "alert", text });
   },
 });
@@ -472,10 +473,19 @@ every(() => {
   sweeping = true;
   void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })).finally(() => { sweeping = false; });
 }, 5 * 60_000);
-// A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
-const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
-const sweepDisk = () => { void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })); try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); } };
-every(sweepDisk, 3_600_000);
+// The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
+// go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
+const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, stopping: () => draining,
+  stillClosed: async (task) => { const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`); return r.status === 404 ? true : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined; }, // 404: the task is gone, so is its workspace's reason to stay
+  engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
+let diskSweeping = false;
+const sweepDisk = () => {
+  if (diskSweeping) return;
+  diskSweeping = true;
+  void sweepFolders().catch((e: Error) => log("disk sweep failed", { err: e.message })).finally(() => { diskSweeping = false; });
+  try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); }
+};
+every(sweepDisk, 15 * 60_000);
 once(sweepDisk, 60_000);
 // A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
 // (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.
@@ -713,7 +723,7 @@ const gw = createGateway({
   notifyOwner: (text) => toOwner("alert")(text),
   tellDelegator: async (task, text) => {
     const issue = await issueOf(task);
-    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`)) === "posted") return;
+    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`).catch(() => "retry")) === "posted") return;
     toOwner("alert")(`${issue?.identifier ?? task}: ${text}`);
   },
   jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),

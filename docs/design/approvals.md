@@ -52,7 +52,7 @@ an autonomy he set below full.
 Code refuses some requests before any review, with the reason to the agent: a request on a cancelled or done task; a product
 write to its default branch; a push to the instance repo (it changes through apply);
 a merge whose head moved or whose named checks are red or missing; content the reviewer already rejected as malicious; a
-close outside the agents org or of a product or instance PR (except a Dependabot PR on the product repo).
+close outside the agents org or of an instance PR.
 
 **The Platform Engineer's line** (`requester.platform`): a job holding the `platform-engineer` role, which admission
 (`kernel/src/admission.ts`) freezes onto a job only on a task no agent filed, or one filed by an agent holding `architect` or
@@ -65,7 +65,7 @@ Typical git assignments (`plan.ts`; read it for the full rules):
 | Request | Tier |
 |---|---|
 | Push or draft PR of an ordinary branch (`agent/<task>/...`) in the agents org; `.github/` exactly the product's CI template | 0 |
-| Close a PR in the agents org; closing a product Dependabot PR; create_repo in an allowed org | 0 |
+| Close a PR in the agents org or the product repo; create_repo in an allowed org | 0 |
 | Merge in the agents org: every named check green (or running, merged only once green) on the exact head, head pushed by the code host, no other `.github/` change, app not sensitive | 0 |
 | Same merge with a foreign head, other `.github/` change or sensitive app; any other `.github/` change; an empty repo's first push; push or PR outside the agents org; a change request on `local` | 1 |
 | Push to an agents-org repo's default or deploy branch | 1 |

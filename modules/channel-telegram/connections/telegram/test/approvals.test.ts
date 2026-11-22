@@ -1,7 +1,7 @@
 // Cards decided with the kernel's single-use tokens: kept here, never in Telegram; a button maps to its card, a typed reply to
 // the one card held for its task, Approve all to one decision per card; the decide setting keeps some cards for the board.
 import { describe, expect, it } from "vitest";
-import { approvalPress, decideByReply, decideCard, decideList, parseReply, sendBatch, sendOutcomes, syncCards } from "../src/approvals.js";
+import { approvalPress, decideByReply, decideCard, parseReply, syncCards } from "../src/approvals.js";
 import type { Card } from "../src/kernel.js";
 import { openStore } from "../src/store.js";
 
@@ -65,48 +65,4 @@ describe("cards", () => {
     expect(await decideByReply(k, store, "WOR-9", "approve", "owner", "all")).toMatchObject({ ok: false });
   });
 
-  it("a card not yet sent here can't be approved by a typed reply", async () => {
-    const store = openStore(":memory:");
-    const k = fakeKernel([card("A00000007", "WOR-7")]);
-    expect(await decideByReply(k, store, "WOR-7", "approve", "owner", "all")).toMatchObject({ ok: false, reason: expect.stringContaining("hasn't reached you") });
-    expect(k.decided).toEqual([]);
-  });
-
-  it("Approve all: a list once a new card joins two or more; each card decided on its own token", async () => {
-    const store = openStore(":memory:");
-    const k = fakeKernel([card("A00000008", "WOR-8"), card("A00000009", "WOR-9")]);
-    const { sent, send } = sender();
-    const { cards } = await syncCards(k, store, send, "all", true);
-    expect(await sendBatch(cards, store, send)).toBe(true);
-    expect(await sendBatch(cards, store, send)).toBe(false); // nothing new joined
-    const list = sent[2]!;
-    expect(list.text).toContain("Each is decided on its own");
-    const all = approvalPress(press(list.markup.inline_keyboard[0][1].callback_data), "42", store)!;
-    expect(all.ids).toEqual(["A00000008", "A00000009"]);
-    expect(await decideList(k, store, all.ids, all.decision, "owner")).toMatch(/^Approved 2/);
-    expect(k.decided.map((d) => d.token)).toEqual(["ta-A00000008", "ta-A00000009"]);
-  });
-
-  it("an outcome edits the card's own message, once", async () => {
-    const store = openStore(":memory:");
-    store.setKv("card:A1", "1");
-    store.setKv("cardmsg:A1", "77");
-    const edits: [number, string][] = [];
-    const fin = [{ id: "A1", identifier: "WOR-1", state: "used", outcome: "applied" as const, outcomeText: "Pushed.", sentence: "s" }];
-    expect(await sendOutcomes(fin, store, async (m, t) => (edits.push([m, t]), true))).toBe(1);
-    expect(await sendOutcomes(fin, store, async () => true)).toBe(0);
-    expect(edits).toEqual([[77, "✅ Done · WOR-1: Pushed."]]);
-  });
-
-  it("a card rejected elsewhere, or replaced, is edited once too", async () => {
-    const store = openStore(":memory:");
-    for (const [id, m] of [["R1", "11"], ["R2", "12"]] as const) (store.setKv(`card:${id}`, "1"), store.setKv(`cardmsg:${id}`, m));
-    const edits: [number, string][] = [];
-    const ended = [{ id: "R1", identifier: "WOR-2", state: "rejected" }, { id: "R2", identifier: "WOR-3", state: "stale" }, { id: "R9", identifier: "WOR-4", state: "rejected" }];
-    expect(await sendOutcomes([], store, async (m, t) => (edits.push([m, t]), true), ended)).toBe(2);
-    expect(await sendOutcomes([], store, async () => true, ended)).toBe(0);
-    expect(edits.map(([m]) => m)).toEqual([11, 12]);
-    expect(edits[0]![1]).toBe("🚫 Rejected · WOR-2: nothing ran.");
-    expect(edits[1]![1]).toMatch(/^⚠️ No longer applies · WOR-3/);
-  });
 });

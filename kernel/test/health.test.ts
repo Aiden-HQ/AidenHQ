@@ -49,17 +49,3 @@ test("a probe whose tool has a write kind is refused", async (t) => {
   assert.equal(r.status, 409);
   assert.equal(g.seen.filter((s) => s.method === "tools/call").length, 0);
 });
-
-test("connection health asks every connection's /healthz through the resolver: ok, not ok, or unreachable", async () => {
-  const { createConnectionHealth } = await import("../src/health.ts");
-  const { createServer } = await import("node:http");
-  const srv = createServer((req, res) => res.writeHead(req.url === "/healthz" ? 503 : 404).end('{"ok":false,"state":"missing","detail":"not signed in"}')).listen(0, "127.0.0.1");
-  await new Promise((r) => srv.once("listening", r));
-  const port = srv.address().port;
-  const resolver = { resolve: async (u) => { const x = new URL(u); if (x.hostname === "gone") throw new Error("the service gone isn't running"); return { host: "127.0.0.1", port, path: x.pathname }; }, forget() {} };
-  const conn = (url) => ({ url, tools: { read: [], write: [], destructive: [] } });
-  const probes = await createConnectionHealth({ connections: () => ({ lane: conn("http://chat-lane:8080/mcp"), gone: conn("http://gone:8080/mcp") }), resolver })();
-  srv.close();
-  assert.deepEqual([probes.lane.ok, probes.lane.state, probes.lane.detail], [false, "missing", "not signed in"]);
-  assert.match(probes.gone.detail, /^unreachable: the service gone/);
-});

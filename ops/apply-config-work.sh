@@ -698,8 +698,13 @@ switchOver() {
   stepRun warehouse warehouseInputs ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
   lap warehouse
 
-  # The daily Docker prune: setup installed it once, so a changed unit reaches the host here.
+  # The Docker prune (prune-docker.timer, every four hours): setup installed it once, so a changed unit reaches the host
+  # here. Its last EnvironmentFile= names the checkout this apply applied, written every apply like the host-metrics
+  # unit's: the scripts it runs (ops/prune-docker-containers.sh, ops/prune-docker-verify.sh) must be the ones the applied
+  # checkout has, not the ones setup recorded.
   local u
+  local prune_env="$HOME/.config/aidenhq-prune-docker.env"
+  printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$prune_env.tmp" && mv -f "$prune_env.tmp" "$prune_env"
   for u in prune-docker; do
     if ! cmp -s "ops/units/$u.service" "$HOME/.config/systemd/user/$u.service" || ! cmp -s "ops/units/$u.timer" "$HOME/.config/systemd/user/$u.timer"; then
       cp "ops/units/$u.service" "ops/units/$u.timer" "$HOME/.config/systemd/user/" && systemctl --user daemon-reload \
@@ -760,6 +765,17 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
     rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" "$HOME/.config/aidenhq-host-metrics.env" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
+  # docker.prom is written by this product's collector (ops/host-metrics.sh). A product version that does not write it — a
+  # rollback to one from before it — would leave the file the newer collector last wrote in the textfile directory, and
+  # node-exporter would keep serving those bytes and `collect_ok 1` as if they were current, with HostMetricsStale paging on
+  # a mtime no running collector can refresh. Applying such a version removes the file and the read cache it came from; a
+  # version that writes it leaves them alone (its first run rewrites both). `ops/rollback.sh` runs a full apply, so a
+  # rollback takes this path too.
+  local docker_prom_dir="${AIDENHQ_DATA_DIR:-$product_dir/data}/modules/monitoring"
+  case "$docker_prom_dir" in /*) ;; *) docker_prom_dir="$product_dir/$docker_prom_dir" ;; esac
+  if [ -e "$docker_prom_dir/docker.prom" ] && ! grep -q 'write docker.prom' ops/host-metrics.sh 2>/dev/null; then
+    rm -f "$docker_prom_dir/docker.prom" "$docker_prom_dir/docker-df.json" && echo "docker.prom removed (this product version has no Docker disk collector)"
+  fi
   # The security module's daily SBOM batch (ops/security-sbom.sh): its timer runs while the module's security-scanner service
   # is in the compiled compose, and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
   # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env
@@ -800,11 +816,18 @@ switchOver() {
   # start (ops/ci-runner-units.sh).
   ops/ci-runner-units.sh "${AIDENHQ_DATA_DIR:-$PWD/data}"
   lap units
-  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling) and build cache behind: drop
-  # images older than 48 hours and cap the cache at 20 GB (least recently used first; prune-docker.service says why).
-  # Images a container uses and volumes are never touched.
-  docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
-  docker image prune -af --filter until=48h >/dev/null 2>&1 || true
+  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling), build cache and one-off
+  # containers behind: the same reclaim prune-docker.timer runs (images unused for 48 h, the cache capped at 20 GB least
+  # recently used first in both builder flag forms, one-offs stopped over a day). Each step is independent (`|| true`, the
+  # shell's form of the unit's `-` prefix): a failing builder prune must not skip the image prune on every apply.
+  # Each step is also bounded: `|| true` only helps once the command exits, and a Docker daemon that stops answering
+  # would otherwise hold the apply here, after services restarted and before the new product is recorded as applied.
+  # `-k 30s` is the hard deadline: timeout's own SIGTERM can be ignored by a stuck buildx child, and the SIGKILL 30 s
+  # later guarantees each step ends, so the steps after it and the applied-product marker are still reached.
+  timeout -k 30s 15m docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
+  timeout -k 30s 15m docker builder prune -f --keep-storage 20GB >/dev/null 2>&1 || true
+  timeout -k 30s 10m docker image prune -af --filter until=48h >/dev/null 2>&1 || true
+  timeout -k 30s 5m bash ops/prune-docker-containers.sh || true
   lap prune
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"

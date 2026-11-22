@@ -108,6 +108,8 @@ export type Ack = {
 };
 /** What the commit status mirrors: the verdict's first reason (its code; "pass" when there is none). */
 export type Status = { repo: string; number: number; head: string; reason: string; important: number; running: { model: string; effort: string }[]; partial?: true };
+/** A typed need an infrastructure refusal carried (github-mcp's review route, needs_owner): the cause and what fixes it. */
+export type PostNeed = { cause: string; org?: string; url?: string; scope?: string };
 /** A posted review's outcome: posted, waiting on the AI reviewer's decision (a Tier 1 write), or refused. */
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;
@@ -119,6 +121,8 @@ export type Posted = {
   comments?: number[];
   /** The acknowledgement comment it wrote. */
   ack?: number;
+  /** A refusal only the owner can fix (restricted, expired, sso, scope): the one action that unblocks the next post. */
+  need?: PostNeed;
 };
 export interface Poster {
   /** One GitHub review for the run's head: a thread per finding, the summary with the severity line and commands;
@@ -134,4 +138,7 @@ export interface Poster {
   outcome(write: string): Promise<Posted>;
   /** Closes the PR's review task (it only holds its posts' approvals) once the PR is closed or a one-off's post is settled. */
   close(repo: string, number: number, why: string, run?: string): Promise<void>;
+  /** One message to whoever asked for a one-off batch: a notice on their task when an agent asked from one (it wakes it), else
+   * the owner. "closed": the task was already closed, so the caller has to reach the owner instead. */
+  notify(n: { task?: string; text: string; dedupe_key: string }): Promise<"sent" | "closed">;
 }
