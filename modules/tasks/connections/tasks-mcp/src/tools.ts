@@ -1056,10 +1056,10 @@ const TOOLS: Record<string, Tool> = {
         }
       };
       /**
-       * One source's matching rows, page by page, in Paperclip's order (newest first). Each page reports the oldest row it
-       * held (`tail`), matches or not, so a merge can tell that no page behind it can be newer than what it already has.
+       * One source's matching rows, page by page, in the issues list's order. Each page reports its last row in that order
+       * (`tail`), matches or not, so a merge can tell whether anything behind it can still come first.
        */
-      type Page = { rows: (readonly [Json, Json])[]; tail: number };
+      type Page = { rows: (readonly [Json, Json])[]; tail: Json };
       const pagesOf = async function* (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) {
         const pages = issuePages(query, progress, () => until - Date.now())[Symbol.asyncIterator]();
         for (;;) {
@@ -1070,8 +1070,8 @@ const TOOLS: Record<string, Tool> = {
           const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
           if (step.done) return;
           const raw = step.value as Json[];
-          // A page's rows are prepared a few at a time: a `prepare` that reads the task again (a truncated chat) must not fire a
-          // whole page of requests at once, and one slow read must not hold up every other row's answer.
+          // A page's rows are prepared a few at a time: a `prepare` that reads a task again must not fire a whole page of
+          // requests at once, and one slow read must not hold up every other row's answer.
           const ready: Json[] = [];
           for (let n = 0; n < raw.length; n += PREPARE_AT_ONCE) {
             // A chunk that ran out the clock ends the page's preparation: no further batch starts past the budget.
@@ -1085,19 +1085,36 @@ const TOOLS: Record<string, Tool> = {
           const rows = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > until) complete = false;
-          const tail = Math.min(...raw.map((i: Json) => Date.parse(String(i.createdAt ?? "")) || 0));
+          // The page's last row, as the list is served: anything behind it ranks at or after it, never before.
+          const tail = raw.reduce((last: Json, i: Json) => (cmp(i, last) > 0 ? i : last));
           yield { rows, tail } as Page;
           if (Date.now() > until) return;
         }
       };
-      // The one recency key is Paperclip's own: createdAt, the order the issues list is served in.
-      function at([i]: readonly [Json, Json]) { return Date.parse(String(i.createdAt ?? "")) || 0; }
       /**
-       * Two newest-first sources as one newest-first stream, each task once. Both sources' first pages are read together, and a
-       * later page only when its own rows are used up, so a newer match in either source is returned at once and the limit is
+       * The issues list's order (`issueListOrderBy` in Paperclip's issue service): priority, then the latest activity, then
+       * `updatedAt`, then the id, each newest/highest first. Negative when `a` is served before `b`. A row that is not in this
+       * order is not comparable, so a merge over such a page only claims what it can prove.
+       */
+      const rank = (i: Json) => {
+        const n = PRIORITIES.indexOf(String(i?.priority ?? ""));
+        return n < 0 ? PRIORITIES.length : n;
+      };
+      const stamp = (v: Json) => Date.parse(String(v ?? "")) || 0;
+      const activity = (i: Json) => stamp(i?.lastActivityAt ?? i?.updatedAt);
+      function cmp(a: Json, b: Json) {
+        if (rank(a) !== rank(b)) return rank(a) - rank(b);
+        if (activity(a) !== activity(b)) return activity(b) - activity(a);
+        if (stamp(a?.updatedAt) !== stamp(b?.updatedAt)) return stamp(b?.updatedAt) - stamp(a?.updatedAt);
+        return String(b?.id ?? "").localeCompare(String(a?.id ?? ""));
+      }
+      const at = (row: readonly [Json, Json]) => row[0];
+      /**
+       * Two sources as one stream in the list's order, each task once. Both sources' first pages are read together, and a
+       * later page only when its own rows are used up, so a match in either source is returned in order and the limit is
        * applied to the merged, deduped stream (a chat handed back between the scans cannot leave a slot unfilled).
        */
-      const mergeNewest = async function* (a: AsyncIterable<Page>, b: AsyncIterable<Page>) {
+      const mergeNewest = async function* (a: AsyncIterable<Page>, b: AsyncIterable<Page>, keepA: (row: readonly [Json, Json]) => Promise<boolean> = async () => true) {
         const left = a[Symbol.asyncIterator](), right = b[Symbol.asyncIterator]();
         let [pa, pb] = await Promise.all([left.next(), right.next()]);
         let ia = 0, ib = 0;
@@ -1107,27 +1124,30 @@ const TOOLS: Record<string, Tool> = {
           const headA = pa.done ? undefined : pa.value.rows[ia];
           const headB = pb.done ? undefined : pb.value.rows[ib];
           let row: readonly [Json, Json];
+          let fromA: boolean;
           if (headA && headB) {
-            // Both sources' newest unread rows are known: a tie keeps the assigned (b) snapshot, the one read last.
-            const fromB = at(headB) >= at(headA);
-            row = fromB ? headB : headA;
-            if (fromB) ib++; else ia++;
+            // A tie keeps the assigned (b) snapshot, the one read last.
+            fromA = cmp(at(headA), at(headB)) < 0;
+            row = fromA ? headA : headB;
+            if (fromA) ia++; else ib++;
           } else if (headA) {
-            // The other source has no match on its page. The page does not end the source: its `tail` bounds every row still
-            // unread behind it, so this head comes first only when nothing unread can be newer; else that source is read on.
-            if (!pb.done && at(headA) < pb.value.tail) {
+            // The other source has no match on its page. The page does not end the source: its tail ranks at or after every
+            // row still unread, so this head comes first only when it ranks at or before that tail; else that source is read on.
+            if (!pb.done && cmp(at(headA), pb.value.tail) > 0) {
               pb = await right.next();
               ib = 0;
               continue;
             }
+            fromA = true;
             row = headA;
             ia++;
           } else if (headB) {
-            if (!pa.done && at(headB) < pa.value.tail) {
+            if (!pa.done && cmp(at(headB), pa.value.tail) > 0) {
               pa = await left.next();
               ia = 0;
               continue;
             }
+            fromA = false;
             row = headB;
             ib++;
           } else {
@@ -1144,6 +1164,9 @@ const TOOLS: Record<string, Tool> = {
             continue;
           }
           if (seen.has(row[0].id)) continue;
+          // The owner source's rows are only candidates until their detail is read: that read happens when the row is reached,
+          // so a page of them costs nothing while a match from the other source is already known to come first.
+          if (fromA && !(await keepA(row))) continue;
           seen.add(row[0].id);
           // Yielded before either source is read past it: a caller that stops at `limit` never reads on.
           yield row;
@@ -1168,31 +1191,33 @@ const TOOLS: Record<string, Tool> = {
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
         const mineOnly = async (i: Json) => (i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i) ? i : null);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
-        // Paperclip cuts a long description in a list, which can cut the marker off the end: read the full task then.
+        // Only the cheap checks run while paging; the marker (and a truncated description's full read) waits until the row is
+        // the next one to return, so owner history that a newer assigned task already outranks is never fetched.
         const owner = await ownerUserId();
+        const chatUntil = Math.min(deadline, Date.now() + SCAN_MS / 2);
         let theirs: URLSearchParams | undefined;
-        let aChat: (row: Json, until: number) => Promise<Json | null> = async () => null;
+        let isChat: (row: readonly [Json, Json]) => Promise<boolean> = async () => false;
         if (owner) {
           theirs = new URLSearchParams(q);
           theirs.delete("assigneeAgentId");
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          aChat = async (row, until) => {
-            if (row.assigneeAgentId) return null;
+          isChat = async ([row]) => {
+            if (row.assigneeAgentId) return false;
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
             const full = row.descriptionTruncated
-              ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, until - Date.now())) }).catch((err) => { if (err?.status === 404) return null; throw err; })
+              ? await atEdge(() => api("GET", `/api/issues/${encodeURIComponent(row.id)}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, chatUntil - Date.now())) }).catch((err) => { if (err?.status === 404) return null; throw err; }), () => null, chatUntil)
               : row;
             // The full read also decides ownership again: a chat reassigned away since the list row is not ours.
-            if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return null;
-            return mark.test(full.description ?? "") ? full : null;
+            if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return false;
+            return mark.test(full.description ?? "");
           };
         }
-        // Half the scan's budget is held for the assigned history, so neither source can starve the other.
-        const chats = theirs ? pagesOf(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2)) : (async function* () {})();
-        out = await take(mergeNewest(chats, pagesOf(q, mineOnly)));
+        const cheap = async (i: Json) => (i.assigneeUserId === owner && !i.assigneeAgentId ? i : null);
+        const chats: AsyncIterable<Page> = theirs ? pagesOf(theirs, cheap, chatUntil) : (async function* () {})();
+        out = await take(mergeNewest(chats, pagesOf(q, mineOnly), isChat));
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),

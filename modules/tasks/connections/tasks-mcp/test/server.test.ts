@@ -62,10 +62,14 @@ function issueBoard({ rows, me = "me", full = {} }) {
       const status = new Set(String(url.searchParams.get("status") ?? "").split(",").filter(Boolean));
       const agent = url.searchParams.get("assigneeAgentId"), user = url.searchParams.get("assigneeUserId");
       const offset = Number(url.searchParams.get("offset") ?? 0), limit = Number(url.searchParams.get("limit") ?? 100);
+      // Paperclip's order for the issues list (issueListOrderBy): priority, then latest activity, then updatedAt, then id.
+      const prio = (r) => ["critical", "high", "medium", "low"].indexOf(r.priority ?? "");
+      const at = (r) => Date.parse(r.lastActivityAt ?? r.updatedAt ?? "") || 0;
       return send(rows
         .filter((r) => !status.size || status.has(r.status))
         .filter((r) => !agent || r.assigneeAgentId === agent)
         .filter((r) => !user || r.assigneeUserId === user)
+        .sort((a, b) => (prio(a) < 0 ? 4 : prio(a)) - (prio(b) < 0 ? 4 : prio(b)) || at(b) - at(a) || String(b.id).localeCompare(String(a.id)))
         .slice(offset, offset + limit));
     }
     if (p.endsWith("/companies/co/agents")) return send([]);
@@ -128,7 +132,8 @@ test("task_list with no state still returns only the not-done kinds", async () =
 });
 
 test("task_list returns no more than limit matches even when more pages hold matches", async () => {
-  const rows = Array.from({ length: 450 }, (_, n) => row(`idle-${n}`, "todo"));
+  // Distinct activity times, newest first: the list is served newest first, and the cap keeps its first rows.
+  const rows = Array.from({ length: 450 }, (_, n) => ({ ...row(`idle-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (450 - n) * 60_000).toISOString() }));
   const states = Object.fromEntries(rows.map((r) => [r.id, state("idle")]));
   const { call } = bridge({ handler: issueBoard({ rows }), states });
   const out = parse(await call("task_list", { state: "idle", limit: 3 }));
@@ -137,7 +142,7 @@ test("task_list returns no more than limit matches even when more pages hold mat
 
 test("task_list(mine) merges assigned work and handed-back chats newest first before the limit", async () => {
   const old = { ...row("assigned-1", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" };
-  const chat = { ...row("chat-1", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const chat = { ...row("chat-1", "todo"), assigneeUserId: "owner", updatedAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
   const states = { "assigned-1": noAttention("working"), "chat-1": noAttention("waiting") };
   const { call } = bridge({ handler: issueBoard({ rows: [chat, old] }), states });
   const out = parse(await call("task_list", { mine: true, limit: 1 }));
@@ -235,9 +240,9 @@ test("task_list(mine) reads past pages whose candidates all fail the filter", as
 test("task_list(mine) does not yield an older chat while the assigned pages still hold a newer match", async () => {
   // The assigned source opens with pages of work that is not waiting; the waiting task sits behind them but is newer than
   // the owner chat, so with limit=1 the chat must not be returned before it.
-  const work = Array.from({ length: 400 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-06-01T00:00:00Z" }));
-  const wait = { ...row("waits-1", "todo"), assigneeAgentId: "me", createdAt: "2026-05-01T00:00:00Z" };
-  const chat = { ...row("chat-5", "todo"), assigneeUserId: "owner", createdAt: "2026-03-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const work = Array.from({ length: 400 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", updatedAt: "2026-06-01T00:00:00Z" }));
+  const wait = { ...row("waits-1", "todo"), assigneeAgentId: "me", updatedAt: "2026-05-01T00:00:00Z" };
+  const chat = { ...row("chat-5", "todo"), assigneeUserId: "owner", updatedAt: "2026-03-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
   const states = Object.fromEntries([...work, wait].map((r) => [r.id, noAttention(r.id === "waits-1" ? "waiting" : "working")]));
   states["chat-5"] = noAttention("waiting");
   const { call } = bridge({ handler: issueBoard({ rows: [...work, wait, chat] }), states });
@@ -249,7 +254,7 @@ test("task_list(mine) does not read another page of a source its tail already ru
   // The assigned task is newest, so the first owner page's tail already proves nothing behind it can come first: a page
   // behind it is never requested.
   const work = Array.from({ length: 200 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" }));
-  const newer = { ...row("newest-1", "todo"), assigneeAgentId: "me", createdAt: "2026-09-01T00:00:00Z" };
+  const newer = { ...row("newest-1", "todo"), assigneeAgentId: "me", priority: "critical", updatedAt: "2026-09-01T00:00:00Z" };
   const others = Array.from({ length: 400 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z" }));
   const board = issueBoard({ rows: [newer, ...work, ...others] });
   let ownerPages = 0;
@@ -287,9 +292,25 @@ test("task_list(mine) reads truncated chats a few at a time, not a whole page at
   assert.ok(peak <= 8, `at most a chunk of detail reads at once, saw ${peak}`);
 });
 
-test("task_list(mine) caps both sources on Paperclip's own createdAt order, the order it returns", async () => {
-  // The chat is newer by createdAt and only touched later on the assigned one: the list is Paperclip's newest-first, so the
-  // newer chat is the one `limit: 1` keeps.
+test("task_list(mine) does not read a chat's description when a newer match already fills the limit", async () => {
+  // Every owner row is truncated, so each would need a detail read. The assigned task ranks first and `limit: 1` is filled by
+  // it: the owner rows behind it are never reached, so none of their descriptions is read.
+  const assigned = { ...row("assigned-9", "todo"), assigneeAgentId: "me", priority: "critical", updatedAt: "2026-09-01T00:00:00Z" };
+  const notes = Array.from({ length: 50 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", updatedAt: "2026-02-01T00:00:00Z", description: "cut", descriptionTruncated: true }));
+  const board = issueBoard({ rows: [assigned, ...notes] });
+  let details = 0;
+  const handler = (req, res) => {
+    if (req.url?.startsWith("/api/issues/note-")) details++;
+    return board(req, res);
+  };
+  const { call } = bridge({ handler, states: { "assigned-9": noAttention("working") } });
+  const out = parse(await call("task_list", { mine: true, limit: 1 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["assigned-9"], JSON.stringify(out));
+  assert.equal(details, 0, "no owner row was read in full behind the answer");
+});
+
+test("task_list(mine) caps both sources on the list's own order, the order it returns", async () => {
+  // The assigned task was touched last, and that is the order the issues list is served in: `limit: 1` keeps it.
   const assigned = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-03-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z" };
   const chat = { ...row("chat-3", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", updatedAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
   const states = { "assigned-2": noAttention("working"), "chat-3": noAttention("waiting") };
@@ -332,8 +353,8 @@ test("task_list(mine) stops reading pages once it has limit distinct matches", a
 test("task_list(mine) returns the newest match without reading the rest of the history", async () => {
   // One matching task at the top of the assigned list, then 900 non-matching older rows.
   let reads = 0;
-  const rows = [{ ...row("match-1", "todo"), assigneeAgentId: "me", createdAt: "2026-06-01T00:00:00Z" },
-    ...Array.from({ length: 900 }, (_, n) => ({ ...row(`old-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" }))];
+  const rows = [{ ...row("match-1", "todo"), assigneeAgentId: "me", updatedAt: "2026-06-01T00:00:00Z" },
+    ...Array.from({ length: 900 }, (_, n) => ({ ...row(`old-${n}`, "todo"), assigneeAgentId: "me", updatedAt: "2026-01-01T00:00:00Z" }))];
   const board = issueBoard({ rows });
   const handler = async (req, res) => {
     if ((req.url ?? "").includes("/issues?")) reads++;
