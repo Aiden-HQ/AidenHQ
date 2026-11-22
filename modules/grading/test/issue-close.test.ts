@@ -45,6 +45,11 @@ test("a manual close with no line stays unresolved: a link, a non-owner's line a
 });
 
 
+test("a completed close needs the merged PR, not just its closer's word", async () => {
+  const closer = { author: { login: "someone" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "done" };
+  assert.match(text(await run({ comments: { nodes: [closer] } })), /the close does not count/);
+});
+
 test("a not-planned close counts when its closer, an owner, said why just before it", async () => {
   const closer = { author: { login: "someone" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "Not a bug: src/a.ts:3 shows it." };
   assert.doesNotMatch(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [closer] } })), /does not count/);

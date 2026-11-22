@@ -135,7 +135,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    issue still open after its PR merged means the PR lacked the `Fixes` line: close it `completed` with a `note` carrying
    that line.
 7. `not-real` closes `not_planned` with a `note` quoting the log line or path that disproves it. `already-fixed` closes
-   `completed` with a `note` citing the fix's PR and merge commit.
+   `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` naming where the defect lives (the upstream project or owner) and
    the evidence; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
    `duplicate` closes `not_planned` with a `note` linking the issue it duplicates. `uncertain` stays open with what is missing.

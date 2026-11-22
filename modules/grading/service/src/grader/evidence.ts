@@ -709,9 +709,9 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // owner/repo#N", in this repo or another), or that line.
   const by = closedBy(i)?.pull_request;
   const keywordPr = i.state === "CLOSED" && by?.merged ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
-  // A close with a reason (not planned, a duplicate) carries no PR: it counts when its closer, an owner, member or collaborator (the
+  // A close that is not a completion (not planned, a duplicate) carries no PR: it counts when its closer, an owner, member or collaborator (the
   // fleet acts as the owner), left a comment just before it saying why.
-  const reasoned = i.state === "CLOSED" && comments.some((c) => owned(c) && c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000);
+  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && comments.some((c) => owned(c) && c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000);
   const trusted = Boolean(keywordPr) || lines.length > 0 || reasoned;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
