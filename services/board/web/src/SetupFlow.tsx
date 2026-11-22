@@ -33,8 +33,8 @@ export function SetupFlow({ module, change, onDone, onSignIn }: { module: string
     [module, onSignIn],
   );
   useEffect(() => void load(), [load]);
-  // Its sign-in finished in the tab Connect opened.
-  useEvents(["connections"], load);
+  // Its sign-in finished in the tab Connect opened, or its pairing did in another: re-read either way.
+  useEvents(["connections", "setup"], load);
   // No flow: a module whose sign-in is one Connect (an old #/setup link), on Settings > Connections.
   useEffect(() => {
     if (flow === null) location.replace("#/settings/connections");
