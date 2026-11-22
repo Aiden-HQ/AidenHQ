@@ -458,11 +458,10 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
   );
 }
 
-/** Where the agent comes from, and today's spend against its day cap (the scorecard's last day; the cap from Settings). */
+/** Where the agent comes from, and today's spend (the scorecard's last day). */
 function QuickFacts({ agentKey, id }: { agentKey: string; id: string }) {
   const profile = useQuery(agentProfileQuery(agentKey)).data;
   const card = useQuery(scorecardQuery(id)).data;
-  const cap = useCached("settings", api.settings, { persist: false }).data?.agents.find((x) => x.key === agentKey)?.caps.day_usd;
   const today = card?.daily.at(-1)?.costUsd;
   const src = profile?.source;
   return (
@@ -470,7 +469,7 @@ function QuickFacts({ agentKey, id }: { agentKey: string; id: string }) {
       <dt>From</dt>
       <dd>{profile ? (src ? `${src.module} module${src.revision ? ` ${src.revision}` : ""}` : "Your agent") : "…"}</dd>
       <dt>Today</dt>
-      <dd>{today === undefined ? "…" : `${usd(today)}${cap ? ` of ${usd(cap)} a day` : ""}`}</dd>
+      <dd>{today === undefined ? "…" : usd(today)}</dd>
     </dl>
   );
 }

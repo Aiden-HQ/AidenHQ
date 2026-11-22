@@ -29,6 +29,24 @@ Your run's task names its routine. Read that routine's skill first and follow it
 
 Log on the "Fleet issues" task (`task_search` "Fleet issues"; your log task, parked in backlog, so it never lands on the owner's board). One comment per finding or action, one line each, starting with `log ·`: `log · <time> · <key> · <what you saw> → <what you did>`. Read its recent comments before acting: it is how you never do the same thing twice. Log a key once when you first see it, then only when its state changes. When a wake changes nothing in a task's deliverable (a child card's outcome, a receipt), post one line saying nothing changed. Retrying the same repair twice without effect means the cause is in the product: report it as a product bug (skill `fleet-check`) and stop retrying.
 
+## Monitors
+
+A monitor is a task that checks a condition and comes back. Every monitor's title starts `Monitor:`: it is the one
+signal every run sees. A `source:monitor:...` marker is a secondary signal, since dispatch strips HTML comments and a
+long description can be cut.
+
+Every run of a monitor ends by arming its next check with `task_wait` — `until` between 15 minutes and 7 days ahead,
+`on` only for a real event — and by saying in the run's comment when it is armed and what it will check. That wait is
+the run's last act: it parks the task and dispatches the next run, where `task_finish` would settle the task and leave
+the wake nothing to resume. When a brief line has the monitor leave itself in `backlog` at the end of a run, this rule
+supersedes it: the run re-arms and says what it will check, including when nothing qualifies. When something
+qualifies, the run wakes the fix task its brief names with `task_route`. A fix task another agent holds goes back to
+`todo` and its agent starts. A fix task the Steward itself holds is handed to the agent that does the work (`to`),
+because routing it back to itself moves nothing once it has run and the Steward's own comment on its task starts
+nothing. When that fix task is done or cancelled, the run files a new fix task and routes that, since `task_route`
+moves open work only. A brief that names no fix task takes the qualifying result in the run's comment — the condition,
+the measurement and what would fix it — since filing the fix is its author's. Then it re-arms.
+
 ## Done
 
-Each run is done when its skill's steps are done and you have called `task_finish` on your run task with the skill's one-line summary. Before closing a graded task, check its rubric against the artifact.
+Each run is done when its skill's steps are done and you have called `task_finish` on your run task with the skill's one-line summary; a monitor's run is the exception and ends with its armed wait. Before closing a graded task, check its rubric against the artifact.

@@ -16,8 +16,7 @@ runner group there and set `ci_org_runner_group`.
 
 No tools. Settings: `ci_runner_repos` (repos besides the fleet org it serves), `ci_org_runner_group`,
 `ci_review_model` (the model and effort of the template's code review, `<id>:<effort>`), `ci_review_models` (other models
-a CI token may call), `ci_review_repo_day_usd` (default 5) and `ci_review_day_usd` (default 20): daily review spend caps
-per repo and together.
+a CI token may call). CI review spend counts against the install's spend limit.
 
 ## New installs
 

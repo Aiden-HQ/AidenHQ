@@ -409,17 +409,6 @@ test("another requester's identical request is its own record, and a stricter re
   assert.equal(k.records.get(c.id).state, "review");
 });
 
-test("a raise_cap card, the install cap's included, goes straight to the owner: no model call the cap would refuse", async (t) => {
-  const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }) });
-  const card = { target: "AidenHQ day cap", sentence: "Double it.", changes: "c", reads: "Nothing new.", cost: "Up to $10.00 more.", details: "d" };
-  const args = (agentId) => ({ scope: "day", agentId, subject: "2026-11-18", cap: 10, spent: 10.2, to: 20 });
-  for (const [task, who] of [["TASK-9", "install"], ["TASK-8", "ag-ada"]]) {
-    const r = k.writes.fileNative("kernel.raise_cap", { task, args: args(who), card, reason: "a cap", rule: "raise-cap" });
-    assert.deepEqual([r.state, r.tier], ["owner", 2]);
-  }
-  assert.equal(k.reviewed.length, 0, "no model call: the cap it raises would refuse one");
-});
-
 test("the owner's reason for a rejection reaches the requester's task, fenced and neutralised", async (t) => {
   const k = await kernel(t, { repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" } });
   const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 2, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", identifier: "ACME-1", state: "owner" });

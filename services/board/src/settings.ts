@@ -12,8 +12,6 @@ import { EFFORTS, compiledEngine } from "./board.js";
 export const HEARTBEAT_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
 export const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"];
 
-/** The fleet default spend caps (scripts/modules.ts CAPS): an agent's own caps in the grants table override them. */
-const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
 
 export interface SettingDef {
   default?: unknown;
@@ -84,7 +82,6 @@ export interface Compiled {
 }
 interface GrantsAgent {
   key: string;
-  caps?: Record<string, number>;
   graded?: boolean;
   trial?: boolean;
 }
@@ -101,7 +98,6 @@ export interface Sources {
   /** The last line of the grants table's revs.jsonl: the last applied change to any agent. */
   lastRev: { at?: string; product_sha?: string; instance_sha?: string } | null;
   boardTimezone: string;
-  pendingRaises: number;
   pendingApprovals: number;
   /** Release updates (kernel/src/updates.ts's display copy, updates.json beside the generations): null when this instance has none. */
   updates?: UpdatesView | null;
@@ -217,7 +213,6 @@ export function settingsView(s: Sources) {
       trial: Boolean(a.trial ?? g?.trial),
       graded: Boolean(g?.graded),
       roles: a.roles ?? [],
-      caps: { ...CAPS, ...(g?.caps ?? {}) },
       defaults: defaultsOf("agents", key, ["model", "reasoning_effort", "heartbeat"]),
       connections: Object.keys(a.enabled_tools ?? {}),
     };
@@ -233,7 +228,6 @@ export function settingsView(s: Sources) {
     // What the Agents page offers: the heartbeat hours compile accepts, and every model already in use (a datalist).
     choices: { heartbeatHours: HEARTBEAT_HOURS, models: [...new Set([...Object.values(c.agents ?? {}).flatMap((a) => [a.model, ...(a.models ?? [])]), ...Object.values(c.routines ?? {}).map((r) => r.model)].filter((m): m is string => Boolean(m)))].sort() },
     approvals: { pending: s.pendingApprovals },
-    spend: { defaults: CAPS, pendingRaises: s.pendingRaises },
     updates: s.updates ?? null,
   };
 }

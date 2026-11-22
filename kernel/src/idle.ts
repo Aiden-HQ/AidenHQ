@@ -25,12 +25,12 @@
 //   tick only as a backstop. A hold the loop left is released once, when that is safe.
 import type { Api } from "./channels.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { inTx, iso, strictFact, type Log } from "./factlog.ts";
+import { inTx, iso, type Log } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import type { TaskStateRead } from "./task-state-read.ts";
 import { fail } from "./proxy.ts";
 import type { Wakes } from "./wakes.ts";
-import type { Escalate } from "./escalate.ts";
+import type { AskTo, Escalate } from "./escalate.ts";
 
 export const IDLE_AFTER_MS = 15 * 60_000;
 export const IDLE_CAP = 3;
@@ -81,7 +81,6 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
   keyOf?: (agent: string) => string;
   now?: () => number; log?: Log;
 }) {
-  const fact = facts ? strictFact(facts) : () => {};
   db.exec(PARK_DDL);
   const q = (sql: string) => db.prepare(sql);
   /** Whether a task's own wait is armed: an open `wait:` wake (a new wait replaces the last; a bound, dropped or replaced one
@@ -340,28 +339,62 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         if (r.status === 404 || r.json?.id !== caller.task) throw fail(409, "refused", "a wait is recorded on this job's own task only");
       }
       const t = now();
-      let until: number;
-      if (b.until !== undefined) {
-        until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
-        if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
-        if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
-      } else if (who) until = t + MAX_WAIT;
-      else if (on) until = t + DAY;
-      else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
+      // The deadline is validated before anything is sent: a question the recipient gets must arm a wait, never arrive for a call
+      // that then fails. Its failure is held, though: a retry of the open question reuses that wait and its own `until`, so a
+      // stale or malformed deadline on that retry is not this call's to use.
+      const deadline = (): number => {
+        let until: number;
+        if (b.until !== undefined) {
+          until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
+          if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
+          if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
+        } else if (who) until = t + MAX_WAIT;
+        else if (on) until = t + DAY;
+        else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
+        return until;
+      };
+      let until = NaN;
+      let deadlineError: Error | undefined;
+      try { until = deadline(); } catch (e) { deadlineError = e as Error; }
       // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait. The
       // kernel picks who settles it (escalate.ts); an `asked` question that may not go to the owner directly goes there too.
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
       // on them as before.
-      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked) : undefined;
-      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task isn't waiting. Decide with your handbook, brief and advisor, and note the assumption in your result.");
-      // One open ask per task: a second question while the first is unanswered isn't sent and the first wait stands.
-      if (r?.sent === "open") return { waiting: true, asked: false, to: r.to, note: "Your earlier question on this task is still unanswered, so this one wasn't sent: the task waits for that answer." };
+      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked, () => { if (deadlineError) throw deadlineError; }) : undefined;
+      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task's wait is unchanged. Decide with your handbook, brief and advisor, and note the assumption in your result.");
+      // One open ask per task: a different question while the recorded one is unanswered fails the call, actionably (escalate.ask
+      // answers only a retry of the same question). A state that can't be read now fails the call too.
+      if (r?.sent === "open" && r.to) throw fail(409, "conflict", `This task's earlier question is still open with ${r.to}: tell that recipient to answer it, or finish the work that asks, then ask again. Nothing was sent and this task's wait is unchanged.`);
+      if (r?.sent === "open") throw fail(503, "unavailable", "This task's ask state can't be read now, so nothing was sent and this task's wait is unchanged. Try again.");
+      if (r?.sent === "ambiguous") throw fail(409, "conflict", "This task's earlier question is still open, but its recipient can't be told apart from the record (it was asked before the kernel recorded the exact destination), so nothing was sent: have that question answered with a comment on the task, then ask again.");
+      // A retry of the question already open reuses that wait: nothing is sent, nothing recorded, and its own deadline stands. The
+      // deadline reported is the one the gate read from the row that proved the ask open, never a fresh one no wait carries and
+      // never a second read that could differ; when that row carries none, none is claimed (the held deadline is not this call's
+      // either, since nothing new was armed).
+      if (r?.sent === "same" || r?.sent === "asked-open") {
+        return {
+          waiting: true, ...(r.until ? { until: r.until } : {}), to: r.to as AskTo, asked: true,
+          ...(r.sent === "asked-open" ? { note: `The owner already has this question, and this task's earlier question is still open with ${r.to as AskTo}: both replies land on the task and wake you.` } : {}),
+        };
+      }
+      if (deadlineError) throw deadlineError;
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
+      // A marker only for a question the kernel actually asked: a handoff, or an ask that found the task gone, records none, so
+      // it can't later block a real question as "still open" with a recipient nobody wrote to.
+      const askedOf = r && (r.sent === "asked" || r.sent === "recorded") ? (r.to as AskTo) : undefined;
       // The wait's fact and its wake in one transaction: a wait that can't be recorded fails the call (the agent tries again).
       inTx(db, "task_wait", () => {
-        if (who && escalate) escalate.record(caller.task, to === "owner" ? "owner" : "delegator");
-        fact({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } });
-        wakes.open({ key: `wait:${caller.task}:${until}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
+        if (askedOf) escalate!.record(caller.task, askedOf, t);
+        // A wait the kernel didn't ask (a handoff, or an ask that found the task gone) leaves no ask for a later gate to read: the
+        // marker of an earlier ask would otherwise pair with this wait's own question and hold the task against a real question.
+        else if (escalate && who) db.prepare("DELETE FROM escalations WHERE key = ?").run(`ask:${caller.task}`);
+        // A replacement can arrive in the same millisecond as the wait it replaces: give its fact and wake their own id, or
+        // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
+        let n = 0;
+        while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
+        // The wait episode is in the wake key too: two replacements with the same `until` but a different millisecond must
+        // still be different wakes, or the later one is dropped as a duplicate and the task keeps the old one.
+        wakes.open({ key: `wait:${caller.task}:${until}:${t}${n ? `:${n}` : ""}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });
       });
       // The wait is durable now; the issue is parked at once so the pinned recovery sweep (next tick: 60–90 s) never reads an
       // armed wait as stranded work, whoever holds the task and whatever the holder's status does while it waits. A write that

@@ -141,7 +141,7 @@ test("check box: a restart adopts a running check, which ends with its result, r
   const dir = mkdtempSync(join(tmpdir(), "adopt-"));
   const db = new DatabaseSync(join(dir, "kernel.db"));
   const A = "a".repeat(40), B = "b".repeat(40);
-  const review = { module: "code-review", argv: ["sh", "-c", `sleep 1; echo '{"findings":[]}' > /aidenhq-out/result.json; echo reviewed`], timeout_min: 5, title: "the review", spec: { base: "sha", budget_usd: "usd" }, files: {}, model: { max_usd: 2 }, result: true };
+  const review = { module: "code-review", argv: ["sh", "-c", `sleep 1; echo '{"findings":[]}' > /aidenhq-out/result.json; echo reviewed`], timeout_min: 5, title: "the review", spec: { base: "sha" }, files: {}, model: true, result: true };
   const boxes = [], calls = [];
   const call = async (route, body) => {
     calls.push(route);
@@ -152,7 +152,7 @@ test("check box: a restart adopts a running check, which ends with its result, r
     snapshot: () => async () => {}, modelToken: () => "tok", spent: () => 0.25, tokens: () => ({ input: 10, cached: 0, output: 5 }), gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const pause = () => new Promise((r) => setTimeout(r, 10));
   const old = kernel();
-  const ask = { repo: "acme/app", head: A, run: "code-review", spec: { base: B, budget_usd: "1" } };
+  const ask = { repo: "acme/app", head: A, run: "code-review", spec: { base: B } };
   const { id } = old.start("github", ask);
   while (!db.prepare("SELECT follow FROM checks WHERE id = ?").get(id).follow) await pause();
   old.detach();

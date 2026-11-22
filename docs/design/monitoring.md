@@ -48,9 +48,9 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
 
 - Board: `aidenhq_board_cards_created_today{tier}`, `aidenhq_board_cards_decided_today{tier,state}`, `aidenhq_board_cards_pending{tier}`.
 - Fleet Steward service: `aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`.
-- Gateway: `aidenhq_gateway_spend_usd_today{agent,kind}`, `aidenhq_gateway_agent_day_spend_usd{agent}` and
-  `_agent_day_cap_usd{agent}`, `aidenhq_gateway_cap_refusals_today{agent,kind}`, `aidenhq_gateway_ci_spend_usd_today`,
-  `aidenhq_gateway_ci_day_cap_usd`, `aidenhq_gateway_inflight`. Labels are agent keys.
+- Gateway: `aidenhq_gateway_spend_usd_today{agent,kind}`, `aidenhq_gateway_install_spend_usd{period}` and
+  `aidenhq_gateway_install_limit_usd{period}` (`period` is `day` or `month`), `aidenhq_gateway_cap_refusals_today{agent,kind}`,
+  `aidenhq_gateway_inflight`. Labels are agent keys.
 - Kernel jobs (relayed by the Fleet Steward's `/metrics`, role `kernel.work-read`): `aidenhq_kernel_jobs_running`, `_oldest_seconds`,
   `_duration_seconds` (histogram over every job on record).
 - Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps

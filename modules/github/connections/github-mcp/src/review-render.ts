@@ -69,14 +69,11 @@ export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden
 export const SKIP_REASONS = {
   draft: "this is a draft pull request",
   fork: "this pull request comes from a fork; a maintainer asks for a review with `aiden review`",
-  budget_repo: "this repository's daily review budget is used up",
-  budget_instance: "the daily review budget for all repositories is used up",
   superseded: "a newer commit arrived",
   stopped: "reviews are stopped on this pull request (`aiden review always` starts them again)",
   unchanged: "nothing changed since the last review",
   ignored: "every changed file is ignored by this repository's review settings",
   no_access: "the pull request can't be read",
-  daily_limit: "the daily limit of automatic reviews is reached; ask with `aiden review`",
 } as const;
 /** A command's answer, in fixed words (`aiden review help|always|focus: …|status` with no review yet). */
 export const ANSWERS = {

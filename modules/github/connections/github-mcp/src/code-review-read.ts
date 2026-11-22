@@ -166,7 +166,7 @@ export class CodeReviewReader {
 }
 
 /** GET /internal/code-review/<op>: the answer for the query, as { status, body }. */
-export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: URLSearchParams): Promise<{ status: number; body: unknown }> {
+export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: URLSearchParams, onError?: (err: unknown) => void): Promise<{ status: number; body: unknown }> {
   try {
     if (op === "repos") return { status: 200, body: { repos: await reader.repos((q.get("q") ?? "").slice(0, 100)) } };
     const repo = repoArg(q.get("repo"));
@@ -185,6 +185,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     }
     return { status: 404, body: { error: "no such operation" } };
   } catch (err) {
+    onError?.(err); // the owner is told of a failure only they can fix (an expired sign-in, an org restriction)
     const detail = (err as Error).message.slice(0, 300);
     if (err instanceof GitHubRefused) return { status: 400, body: { error: "refused", detail } };
     return { status: /GitHub 404 /.test(detail) ? 404 : 502, body: { error: "github_error", detail } };

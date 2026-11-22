@@ -82,7 +82,7 @@ const split = (repo: string): Ref => { const [owner, name] = repo.split("/"); re
 const api = (r: Ref) => `/repos/${r.owner}/${r.repo}`;
 
 export class ReviewPoster {
-  constructor(private readonly gh: GitHub, private readonly access: Pick<GitHubAccess, "identity">) {}
+  constructor(private readonly gh: GitHub, private readonly access: Pick<GitHubAccess, "identity">, private readonly onFailure?: (err: unknown) => void) {}
 
   /** Who posts: the owner (a typed need when GitHub isn't connected). */
   async identity(): Promise<Who> {
@@ -289,7 +289,7 @@ export class ReviewPoster {
     }
     const made = mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] }));
     const problems: string[] = [];
-    const tryTo = async <T>(what: string, f: () => Promise<T>) => f().catch((e: Error) => void problems.push(`${what}: ${String(e.message).slice(0, 150)}`));
+    const tryTo = async <T>(what: string, f: () => Promise<T>) => f().catch((e: Error) => void (this.onFailure?.(e), problems.push(`${what}: ${String(e.message).slice(0, 150)}`)));
     // A finding on a file without diff lines takes a file comment (its own thread, outside the review).
     const unthreaded = new Set<string>();
     for (const c of first.comments.filter((x) => x.file)) {

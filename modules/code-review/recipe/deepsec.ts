@@ -16,8 +16,8 @@
 // scan data. Model: deepsec's pi backend through our gateway's OpenAI-compatible route (a pi models.json in the run's own
 // PI_CODING_AGENT_DIR), the run's capped token in OPENROUTER_API_KEY, the only variable it names. The `local` route configures no
 // credential (every other route links a Vercel project first), and pi reads its provider from that models.json. Spend: the token is
-// capped at the check's budget_usd by the kernel, the hard stop across every step; `init` also gets --max-cost-usd = budget_usd
-// (`process` and `revalidate` have no such flag). A run that hits the cap reports the budget ran out, and what was analysed so far.
+// counted against the install's spend limit; `init` also gets --max-cost-usd = budget_usd
+// (`process` and `revalidate` have no such flag). A run that hits the limit reports it, and what was analysed so far.
 // Install scripts never run (npm_config_ignore_scripts).
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

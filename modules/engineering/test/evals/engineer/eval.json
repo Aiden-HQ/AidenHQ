@@ -6,6 +6,7 @@
   "aidenhq_close (text: the PR link)",
   "aidenhq_create_repo (text: the new repository)",
   "aidenhq_apply (title: the commit subject; text: the instance repo, the branch and exactly what the commit changes, with no commentary: anything you leave out or explain goes in reply)",
+  "task_wait (text: the question for whoever delegated the task, with the exact ids and what you need decided)",
   "reply (text: your final answer on the task; say what you left out and why here)"
  ],
  "routines": {

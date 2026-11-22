@@ -34,7 +34,6 @@ agents:
     max_parallel: 10
     # Woken by the module's watcher (a task per issue); the 4-hour heartbeat is the backstop.
     heartbeat: 4
-    caps: { run_usd: 2, task_usd: 8, day_usd: 20 }
     connections:
       # The Maintainer's reads are tagged `named` in the github module, so naming them is the only way to hold them:
       # `github: read` would hand every reader the product repo's issues.

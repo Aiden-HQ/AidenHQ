@@ -7,7 +7,7 @@
 // cancel. Judging a run's progress (no work for too long) is its dispatcher's: it stops the run (dispatch progress.ts).
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
@@ -81,6 +81,16 @@ export function spawnDetached(argv: string[], logPath: string): number {
  * output, i.e. what the engine wrote to stderr (e.g. Codex's "Error: thread/resume failed: ..."), its secret shapes blanked: it
  * reaches the ledger, the Steward and the task. Read from the log's head only.
  */
+/** The run's last message beside its log. The logs folder can be gone (deleted by hand): it is made again, and a write that
+ * still fails is logged, never thrown, so a job's end can't take the kernel down (generation 399). */
+export function writeLastMessage(logPath: string, text: string, log: (msg: string, fields?: Record<string, unknown>) => void) {
+  try {
+    mkdirSync(dirname(logPath), { recursive: true });
+    writeFileSync(`${logPath}.last.md`, text);
+  } catch (e) {
+    log("couldn't write the job's last message", { log: logPath, err: (e as Error).message });
+  }
+}
 export function firstError(logPath: string): string {
   let head = "";
   try { head = readFrom(logPath, 0, 256 * 1024).toString("utf8"); } catch { return ""; }
@@ -374,7 +384,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       // failure notice carry the cause.
       const error = !lastMessage && code !== 0 && !timedOut && !cancelled ? firstError(logPath) : "";
       if (error) lastMessage = `The job failed: ${error}`;
-      if (lastMessage) writeFileSync(`${logPath}.last.md`, lastMessage);
+      if (lastMessage) writeLastMessage(logPath, lastMessage, log);
       // No status: the run died without its shell, by its own stop or timeout (killed), else by hand (a failure).
       const exit = code === null && !killed ? 1 : code;
       const state = cancelled ? "cancelled" : timedOut ? "timeout" : exit ? "failed" : "done";

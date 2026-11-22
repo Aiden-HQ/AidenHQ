@@ -222,8 +222,8 @@ services:
       AIDENHQ_LAUNCHER_URL: "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}"
       # The Costs tab: OpenRouter's own spend for the key (GET /api/v1/key), next to the board's token estimate.
       OPENROUTER_KEY_FILE: /run/secrets/openrouter_key
-      # The model gateway (kernel/src/gateway, on the host's backplane address): the board pulls its billed ledger and it files
-      # raise_cap here, each with gateway_board_key.
+      # The model gateway (kernel/src/gateway, on the host's backplane address): the board pulls its billed ledger and the
+      # spend summary here, each with gateway_board_key.
       AIDENHQ_GATEWAY_URL: "${AIDENHQ_GATEWAY_URL:-http://10.231.0.1:8201}"
       # The Handbook tab reads module handbooks and the instance's own files (read-only mounts below).
       BOARD_MODULES_DIR: /handbooks/modules

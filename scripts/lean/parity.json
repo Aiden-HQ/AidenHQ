@@ -148,7 +148,7 @@
   },
   {
     "n": 18,
-    "workflow": "Spend caps, raise_cap card",
+    "workflow": "The install spend limit and the task cap",
     "today": [
       "kernel/test/gateway.test.ts"
     ],

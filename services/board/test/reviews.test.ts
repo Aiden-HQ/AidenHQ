@@ -15,10 +15,9 @@ import { configProblems, insightsOf, type Run } from "../src/reviews.js";
 import { Store } from "../src/store.js";
 import { fakeRecords } from "./fake-records.js";
 
-const COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
+const COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
 const CONFIG = {
   repos: [] as unknown[],
-  day_usd: 200,
 };
 const dir = mkdtempSync(join(tmpdir(), "reviews-"));
 writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { code_review: { value: CONFIG, set: false } }, agents: {} }));
@@ -69,7 +68,7 @@ describe("the Reviews page's routes", () => {
   });
 
   it("files a watched repo as one settings change, and refuses the old reviewers and string-trigger shape", async () => {
-    const value = { ...CONFIG, repos: [{ repo: "acme/payments", on_open: [COMBO], on_push: [{ ...COMBO, effort: "low" }], day_usd: 50 }] };
+    const value = { ...CONFIG, repos: [{ repo: "acme/payments", on_open: [COMBO], on_push: [{ ...COMBO, effort: "low" }] }] };
     expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ repo: "acme/payments", on_open: "standard", on_push: [] }] } })).status).toBe(400);
     expect((await call("POST", "/api/reviews/config", { value: { ...value, reviewers: {} } })).status).toBe(400);
     expect((await call("POST", "/api/reviews/config", { value: { ...value, repos: [{ ...value.repos[0], on_open: [{ ...COMBO, effort: "max" }] }] } })).status).toBe(400);
@@ -87,9 +86,9 @@ describe("the Reviews page's routes", () => {
   });
 });
 
-it("a combo may leave run_usd to the engine's default and may be mandatory, at both moments (the module's shape)", () => {
+it("a combo may be mandatory, at both moments (the module's shape)", () => {
   const c = { engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "medium" };
-  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [{ ...c, mandatory: true }] }] })).toEqual([]);
-  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual(["repos.0.on_push: a mandatory reviewer goes in both moments (a PR's first review and each push)"]);
-  expect(configProblems({ day_usd: 1000, repos: [{ repo: "a/b", on_open: [c], on_push: [], mandatory: true }] })[0]).toMatch(/mandatory/);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [{ ...c, mandatory: true }] }] })).toEqual([]);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual(["repos.0.on_push: a mandatory reviewer goes in both moments (a PR's first review and each push)"]);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [c], on_push: [], mandatory: true }] })[0]).toMatch(/mandatory/);
 });
