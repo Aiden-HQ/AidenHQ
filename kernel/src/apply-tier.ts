@@ -71,7 +71,7 @@ export function applyParts(s: any) {
       const [b, h] = [parse(s.base?.[f]), parse(s.head?.[f])];
       parts.push(...(b === null || h === null ? [REJECT("unparseable", "apps.yaml doesn't parse")] : appsParts(b?.apps ?? [], h?.apps ?? [], s.moduleApps)));
     } else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f))) parts.push(agentDefPart(m[1], parse(def(m[1], "base")), parse(def(m[1], "head")), s));
-    // A curated memory (the Librarian's proposal; compiled into the agent's handbook as facts, never instructions): the
+    // A curated memory (the Librarian's proposal; compiled into the agent's handbook as lessons and facts, never authority): the
     // reviewer decides, for a role holder too (owner, 2026-11-14), and flags one that redirects authority.
     else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push((s.roles?.[m[1]] ?? []).length ? T(1, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
     else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f))) {
