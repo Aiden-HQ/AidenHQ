@@ -28,7 +28,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
+import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread } from "./seams.ts";
 import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { SETUP_PATH } from "./adapters.ts";
@@ -1591,7 +1591,8 @@ export function createEngine(d: EngineDeps) {
     for (const p of all<{ number: number; author: string; fork: number; head: string }>("SELECT number, author, fork, head FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
       if (!one("SELECT 1 FROM findings WHERE repo = ? AND number = ?", cfg.repo, p.number)) continue;
-      for (const t of await d.source.threads(cfg.repo, p.number)) {
+      const threads = await d.source.threads(cfg.repo, p.number).catch((e) => (log("a pull request's threads couldn't be read; its replies wait for the next poll", { repo: cfg.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }), [] as Thread[]));
+      for (const t of threads) {
         // Each reply is read once, whether or not its finding is open now: one that arrives while the finding is closed is consumed
         // as nothing, so only a reply posted after it reopens can close it again.
         if (!t.finding || !one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND id = ?", cfg.repo, p.number, t.finding)) continue;
