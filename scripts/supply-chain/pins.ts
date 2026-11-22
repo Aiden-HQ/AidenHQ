@@ -295,9 +295,12 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
   // What a `cat` command reads, with everything that is not an input dropped: its stdout redirects (`> f`, `>| f`,
   // `2>&1` name where it writes, so `cat > f` fed by a pipe still reads the pipe) and its own name.
   const catRest = (piece: string) => piece
+    // A descriptor duplication (`2>&1`, and its quoted or spaced forms `3>&"1"`, `2>& 1`) names no file, so it goes
+    // with `stdoutTarget`'s syntax rather than leaving its quoted operand to read as one.
+    .replace(/\d*>&[ \t]*(?:\uE000\d+\uE001|\d+)/g, " ")
     // An output redirect and its descriptor go together: `cat /dev/null 2>/tmp/log > f` reads /dev/null, and `2` is
     // not a file. A bare `>` with no descriptor is still one.
-    .replace(/\d*>&\d+|(?<![0-9>])\d*(?:>>?\|?|&>>?)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
+    .replace(/(?<![0-9>])\d*(?:>>?\|?|&>>?)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
     // Its stdin redirects name an input, not an operand: `cat 0</dev/null` has no file operand, and `0` is the descriptor.
     .replace(/(?<![0-9<])\d*<(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
     .replace(/^\s*(?:RUN\s+)?cat\b/i, " ");

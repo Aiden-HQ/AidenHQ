@@ -679,6 +679,12 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
     `RUN printf '%s\\n' 'deb https://second.example/apt bookworm main' | cat ${dir}/first.list - > ${dir}/combined.list`,
   ].join("\n");
   assert.deepEqual(scanFile("Dockerfile", `${base}\n${concat}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main", "https://second.example/apt bookworm main"]);
+  // A descriptor duplication on a `cat` names no input, however its operand is written: the quoted and spaced forms
+  // (`3>&"1"`, `3>& 1`) must not leave the quoted number behind to read as a file operand.
+  for (const dup of ["3>&\"1\"", "3>& 1"]) {
+    const lines = [`RUN ${D} > ${dir}/vendor.list`, `RUN cat ${dir}/vendor.list ${dup} > ${dir}/copy.list`, `RUN rm ${dir}/vendor.list`];
+    assert.deepEqual(scanFile("Dockerfile", `${base}\n${lines.join("\n")}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"], dup);
+  }
   // The same concatenation happens when `cat file -` sits inside a pipeline instead of before a redirect.
   const pipelineConcat = [
     `RUN ${D} > ${dir}/first.list`,
