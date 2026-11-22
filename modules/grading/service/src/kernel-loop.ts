@@ -76,7 +76,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     // The task's own agent, whatever its company (work or personal).
     agent: (id: string) => read(`/api/agents/${encodeURIComponent(id)}`).catch((e: { status?: number }) => (e.status === 404 ? undefined : Promise.reject(e))),
     // A verdict's move is the finish check's own resolve: done accepts the work, todo reopens it with the note (which wakes the agent).
-    setStatus: async (id: string, status: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: status === "done" ? "ok" : "reopen", comment: note })),
+    setStatus: async (id: string, status: string, note: string, { expectStatus }: { expectStatus?: string } = {}) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: status === "done" ? "ok" : "reopen", comment: note, ...(expectStatus ? { expectStatus } : {}) })),
     // A grader that keeps failing: the task ends blocked with the error (no wake), and its delegator is told.
     block: async (id: string, note: string) => void (await kernel("POST", `/v1/checks/${encodeURIComponent(id)}`, { verdict: "block", comment: note })),
     // A note on a task: a labelled wake notice (the kernel posts it and wakes the assignee).

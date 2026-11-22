@@ -32,6 +32,8 @@ export interface Verdict {
   criteria: { id: string; met: "yes" | "no" | "unknown"; evidence: string }[];
   /** The rubric this pass graded (rubricHash), so a verdict from a rubric since amended is never applied to the new one. */
   rubric?: string;
+  /** The round the pass began on (Grade.round): a row that moved on since is a different round, and this verdict is dropped. */
+  round?: number;
 }
 export interface Grade {
   issueId: string;
@@ -44,6 +46,11 @@ export interface Grade {
    * to the same words: the contents alone cannot tell a pass on A from a pass on B that was amended back to A.
    */
   revision: number;
+  /**
+   * The grading round this row is on: 0 when filed, +1 at every restart and every verdict, so a close decided on one round is
+   * told apart from a later submission that left the filing (and its hash) unchanged.
+   */
+  round: number;
   /** Distinct deliverable versions rejected so far. */
   attempts: number;
   state: GradeState;
@@ -80,6 +87,7 @@ interface Row {
   resume: number;
   resumed_at: string | null;
   revision: number;
+  round: number;
 }
 
 /** Rejected versions before the grade gives up and closes the task done, ungraded (fail open: never parked on anyone). */
@@ -133,15 +141,17 @@ export function parseAmendment(b: unknown): { issue: string; rubric: string[] } 
  */
 export const rubricHash = (rubric: string[], deliverable?: Deliverable, revision?: number) => createHash("sha256").update(JSON.stringify([rubric, deliverable ?? null, revision ?? null])).digest("hex").slice(0, 16);
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
-export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string };
+export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string; round?: number };
 /** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
 export function parseVerdict(b: unknown): VerdictInput {
   if (!isMap(b)) return bad("send {version, outcome}");
-  only(b, ["version", "outcome", "model", "criteria", "reason", "rubric"], "");
+  only(b, ["version", "outcome", "model", "criteria", "reason", "rubric", "round"], "");
   const criteria = b.criteria === undefined ? [] : Array.isArray(b.criteria) && b.criteria.length <= 8 ? b.criteria : bad("criteria: at most 8");
   return {
     reason: typeof b.reason === "string" ? b.reason.slice(0, 300) : undefined,
     rubric: b.rubric === undefined ? undefined : str(b.rubric, 32, "rubric"),
+    // The round the pass began on: a non-negative integer, or none (a caller that never read the row has no round to name).
+    round: b.round === undefined ? undefined : Number.isInteger(b.round) && (b.round as number) >= 0 ? (b.round as number) : bad("round: a non-negative integer"),
     version: str(b.version, 200, "version"), outcome: oneOf(b.outcome, OUTCOMES, "outcome"), model: b.model === undefined ? "" : str(b.model, 100, "model"),
     criteria: criteria.map((c, i) => { const m = isMap(c) ? c : bad(`criteria.${i}`); only(m, ["id", "met", "evidence"], `criteria.${i}.`); return { id: str(m.id, 20, `criteria.${i}.id`), met: oneOf(m.met, ["yes", "no", "unknown"] as const, `criteria.${i}.met`), evidence: str(m.evidence, 1000, `criteria.${i}.evidence`) }; }),
   };
@@ -162,7 +172,7 @@ export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), revision: r.revision ?? 0, attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume), resumedAt: r.resumed_at ?? null });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), revision: r.revision ?? 0, round: r.round ?? 0, attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume), resumedAt: r.resumed_at ?? null });
 
 export class Grades {
   private events?: { emit: (topic: string, id: string) => void };
@@ -190,6 +200,9 @@ export class Grades {
       // The filing this row holds, +1 on every restart: a verdict names it, so a pass on a filing that was later amended back to
       // the same words is still stale. A row written before this column existed is its first filing.
       if (!columns.includes("revision")) db.exec("ALTER TABLE grades ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+      // The round a close is bound to: +1 on every restart and every verdict. A re-filed submission keeps the filing hash but
+      // starts a new round, so a close queued on the satisfied pass before it never lands on the submission after it.
+      if (!columns.includes("round")) db.exec("ALTER TABLE grades ADD COLUMN round INTEGER NOT NULL DEFAULT 0");
       // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
       db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
       // Who filed each row's rubric, in its own table rather than a column on `grades`. A fresh start, not a migration: a row
@@ -284,7 +297,7 @@ export class Grades {
    */
   private restart(issueId: string, rubric: string, deliverable?: string, { resume = false }: { resume?: boolean } = {}): void {
     const now = new Date().toISOString();
-    const reset = `rubric = ?, revision = revision + 1, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, resumed_at = ${resume ? "?" : "NULL"}, updated_at = ?`;
+    const reset = `rubric = ?, revision = revision + 1, round = round + 1, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, resumed_at = ${resume ? "?" : "NULL"}, updated_at = ?`;
     // The deliverable is written only when it is re-bound (a differing re-file); an amendment leaves it as filed.
     const args = resume ? [now] : [];
     if (deliverable === undefined) this.db.prepare(`UPDATE grades SET ${reset} WHERE issue_id = ?`).run(rubric, ...args, now, issueId);
@@ -380,7 +393,9 @@ export class Grades {
   private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
     this.db
       // A pass settling the row ends the amendment's resume: the row is no longer the restarted one the runner had to pick up.
-      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?")
+      // Every verdict starts a new round: a close decided on the round before it is stale, even when the filing's words and
+      // hash are the same (a re-filed submission is graded again, and its close must be its own).
+      .prepare("UPDATE grades SET state = ?, round = round + 1, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?")
       .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
@@ -410,6 +425,9 @@ export class Grades {
     // longer the one asked for. Every outcome is dropped alike, leaving the row as it is (open), so the next pass grades what
     // the row now holds. A verdict naming no filing at all is dropped the same way: nothing shows it read what the row holds,
     // and an unnamed wait would park an amended row for work it never looked at.
+    // The pass read this round when it began. A re-file, an amendment or a submission that moved the row on since then is a
+    // different round, and this verdict graded the one before it: applying it would settle or park work nobody asked about.
+    if (v.round !== undefined && Number(v.round) !== g.round) return g;
     const current = rubricHash(g.rubric, g.deliverable, g.revision);
     if (v.rubric !== current) return g;
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
@@ -451,7 +469,8 @@ export async function settleClosedGrades(grades: Grades, issue: (id: string) => 
     const i = await Promise.resolve()
       .then(() => issue(g.issueId))
       .catch(() => undefined);
-    if (!i || (i.status !== "done" && i.status !== "cancelled")) continue;
+    if (!i) continue;
+    if (i.status !== "done" && i.status !== "cancelled") continue;
     const row = grades.settle(g.issueId, `the task was ${i.status} before the grader settled it`, now);
     if (row) settled.push(row);
   }
