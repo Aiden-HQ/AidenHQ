@@ -457,6 +457,20 @@ test("a retry is compared with the same normalization as the stored question", a
   assert.equal(JSON.parse(fact.data).question, "Is this --> the path?", "the wait as it was");
 });
 
+test("a retry of the open question with a stale deadline reuses its wait instead of failing", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 20 * MIN).toISOString();
+  const ask = { reason: "which path", until, for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  // The deadline passes while the answer is lost, and the agent retries the same question: its own wait still stands and the
+  // stale `until` is never armed, so the retry can't be refused for a deadline it doesn't use.
+  w.tick(25 * MIN);
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.deepEqual([again.asked, again.to], [true, "delegator"]);
+  assert.equal(again.until, until, "the wait's own deadline is reused");
+  assert.equal(w.asked.notices.length, 1, "a retry sends nothing");
+});
+
 test("a handoff clears the earlier ask marker, so its own question can't hold the task", async (t) => {
   const w = world(t);
   assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");

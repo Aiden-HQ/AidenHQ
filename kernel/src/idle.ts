@@ -339,14 +339,19 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         if (r.status === 404 || r.json?.id !== caller.task) throw fail(409, "refused", "a wait is recorded on this job's own task only");
       }
       const t = now();
-      let until: number;
-      if (b.until !== undefined) {
-        until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
-        if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
-        if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
-      } else if (who) until = t + MAX_WAIT;
-      else if (on) until = t + DAY;
-      else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
+      // The deadline is checked once the ask is decided: a retry of an open question reuses that wait and its own `until`, so the
+      // caller's (possibly stale) deadline must not fail it.
+      const deadline = (): number => {
+        let until: number;
+        if (b.until !== undefined) {
+          until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
+          if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
+          if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
+        } else if (who) until = t + MAX_WAIT;
+        else if (on) until = t + DAY;
+        else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
+        return until;
+      };
       // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait. The
       // kernel picks who settles it (escalate.ts); an `asked` question that may not go to the owner directly goes there too.
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
@@ -361,8 +366,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // A retry of the question already open reuses that wait: nothing is sent, nothing recorded, and its own deadline stands.
       if (r?.sent === "same") {
         const at = state.read({ ids: [caller.task] }).tasks[0]?.wait_until;
-        return { waiting: true, until: at ?? iso(until), to: r.to as AskTo, asked: true };
+        return { waiting: true, until: at ?? iso(deadline()), to: r.to as AskTo, asked: true };
       }
+      const until = deadline();
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
       // A marker only for a question the kernel actually asked: a handoff, or an ask that found the task gone, records none, so
       // it can't later block a real question as "still open" with a recipient nobody wrote to.
