@@ -280,8 +280,8 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   assert.deepEqual(scanFile("Dockerfile", input).problems, []);
   const inputPiped = `FROM debian:bookworm${d}\nRUN printf 'deb https://repo.example/apt bookworm main\\n' | tee /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo\n`;
   const inputPipedResult = scanFile("Dockerfile", inputPiped);
-  assert.equal(inputPipedResult.problems.length, 1);
-  assert.match(inputPipedResult.problems[0], /install foo/);
+  // `< /dev/null` overrides the pipe, so the file is written empty: no repository, so an unpinned install is fine.
+  assert.deepEqual(inputPipedResult.problems, []);
   // A file-descriptor redirect inside the operand list must not cut it short, and a `tee` fed from a file writes that
   // file empty, so it carries no `deb` line to date a pin from.
   const fd = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&1 /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
@@ -294,6 +294,19 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   const unfedResult = scanFile("Dockerfile", unfed);
   assert.deepEqual(unfedResult.problems, []);
   assert.deepEqual(unfedResult.pins.filter((p) => p.kind === "apt")[0].sources, []);
+  // A file written empty is not an added repository: it neither requires a pin nor dates one.
+  const empty = `FROM debian:bookworm${d}\nRUN tee /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", empty).problems, []);
+  // A producer whose stdout a `>` sent elsewhere leaves the pipe empty, so `tee` writes no repository either.
+  const bypassed = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' > /tmp/repo.log | tee /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  const bypassedResult = scanFile("Dockerfile", bypassed);
+  assert.deepEqual(bypassedResult.problems, []);
+  assert.deepEqual(bypassedResult.pins.filter((p) => p.kind === "apt")[0].sources, []);
+  // Append mode belongs to the file it names: a plain `tee` replaces the file even when another target appends.
+  const perTarget = `FROM debian:bookworm${d}\nRUN echo 'deb https://a.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN echo 'deb https://b.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list >> /tmp/log\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", perTarget).pins.filter((p) => p.kind === "apt")[0].sources, ["https://b.example/apt bookworm main"]);
+  const appended = `FROM debian:bookworm${d}\nRUN echo 'deb https://a.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN echo 'deb https://b.example/apt bookworm main' | tee -a /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", appended).pins.filter((p) => p.kind === "apt")[0].sources, ["https://a.example/apt bookworm main", "https://b.example/apt bookworm main"]);
 });
 
 test("pins: a disabled source file leaves no entry behind in apt dating", () => {

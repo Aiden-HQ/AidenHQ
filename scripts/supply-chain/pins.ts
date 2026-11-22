@@ -36,7 +36,7 @@ export interface Pin { kind: string; name: string; package: string; version?: st
 // `entries` the `deb` lines by source file (`undefined` for a line naming no file, which accumulates) and `added` whether
 // the stage has added any repository at all — a Deb822 `.sources` file adds one without a parseable `deb` line. A stage
 // extending another inherits the files it still has, never one the parent rewrote or removed.
-interface State { files: Map<string, string[]>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+interface State { files: Map<string, string[]>; holds: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
 const sources = (s: State) => [...s.entries.values()].flat();
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
@@ -95,28 +95,38 @@ const imagePin = (ref: string, at: string): Pin => {
 };
 const strip = (s: string) => s.replace(/^["']|["']$/g, "");
 const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
-// A file a command writes, and whether that command's own output reaches it. `fed` is false for a `2>` (stderr) target
-// and for a `tee` whose stdin is redirected from a file (`< …`) rather than the pipe: the file is still written, but
-// not with this segment's content.
-interface Written { path: string; file?: string; fed: boolean }
+// A file a command writes, whether it appends, and what reaches it: `deb` when the command's own `deb` line does,
+// `unknown` when it copies content we can't read (a Deb822 source, a `2>` target), and `empty` when nothing does
+// (`< /dev/null`, or a producer whose `>` sent its stdout past the pipe). An empty file adds no repository.
+interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" }
+const REDIRECT = /(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g;
+const stdoutRedirected = (text: string) => [...text.replace(/\d*>&\d+/g, " ").matchAll(REDIRECT)].some((m) => m[1] !== "2");
 // The destinations a command writes: a `>`/`>>` target and each `tee` operand. A path it only reads, as
 // `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
 // sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads.
 function writtenFiles(segment: string): Written[] {
   const out: Written[] = [];
-  const add = (path: string, fed: boolean) => {
+  const add = (path: string, append: boolean, content: Written["content"]) => {
     const file = /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(path)?.[1];
-    out.push({ path, ...(file ? { file } : {}), fed });
+    out.push({ path, ...(file ? { file } : {}), append, content });
   };
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
   const clean = segment.replace(/\d*>&\d+/g, " ");
-  for (const m of clean.matchAll(/(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g)) add(strip(m[3]!), m[1] !== "2");
+  for (const m of clean.matchAll(REDIRECT)) add(strip(m[3]!), m[2] === ">>", m[1] === "2" ? "unknown" : "deb");
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
   for (const m of clean.matchAll(/\btee\b([^|;&]*)/g)) {
-    const raw = m[1]!.replace(/(?:\d*>>?|\d*<<?|&>>?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " ");
-    for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(a, !/\d*<<?/.test(m[1]!));
+    const arg = m[1]!;
+    const raw = arg.replace(/(?:\d*>>?|\d*<<?|&>>?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " ");
+    const append = /(?:^|\s)(?:-a|--append)(?=\s|$)/.test(raw);
+    // What `tee` writes comes from its stdin: a `< file` overrides the pipe, and a producer whose own stdout a `>` sent
+    // elsewhere leaves the pipe empty.
+    const input = /(?:^|\s)\d*<<?\s*("[^"]+"|'[^']+'|\S+)/.exec(arg)?.[1];
+    const pipe = clean.lastIndexOf("|", m.index! - 1);
+    const producer = pipe >= 0 ? clean.slice(0, pipe) : "";
+    const content: Written["content"] = input ? (strip(input) === "/dev/null" ? "empty" : "unknown") : producer.trim() && !stdoutRedirected(producer) ? "deb" : "empty";
+    for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(a, append, content);
   }
   return out;
 }
@@ -176,21 +186,22 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
       // removes nothing it loads.
       const removed = named.filter((f) => /\.(list|sources)$/.test(f));
-      if (removed.length) removed.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
-      else if (!named.length) { state.files.clear(); state.entries.clear(); }
-      state.added = state.files.size > 0 || state.entries.has(undefined);
+      if (removed.length) removed.forEach((f) => { state.files.delete(f); state.holds.delete(f); state.entries.delete(f); });
+      else if (!named.length) { state.files.clear(); state.holds.clear(); state.entries.clear(); }
+      state.added = state.holds.size > 0 || state.entries.has(undefined);
     } else if (loaded.length) {
-      // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held. Any source file counts as added,
-      // Deb822 `.sources` included: its Types/URIs fields carry the repository a `deb` line would. A destination this
-      // segment's output doesn't reach (`2>` stderr, a `tee` fed from `< file`) is still written, but with no `deb`
-      // line, so it holds no repository to date a pin from.
-      const append = />>|\btee\b[^|]*\s-a\b/.test(segment);
-      for (const { file, fed } of loaded) {
-        const written = fed ? debs : [];
+      // `>>` and `tee -a` add to the file they name; a plain `>` or `tee` replaces what it held, and each destination has
+      // its own mode. A file counts as added when its content was written or copied rather than known to be empty — a
+      // Deb822 `.sources` holds a repository its Types/URIs fields spell out even with no parseable `deb` line — but a
+      // file written empty (`< /dev/null`, a producer whose `>` bypassed the pipe) adds none and dates none.
+      for (const { file, append, content } of loaded) {
+        const written = content === "deb" ? debs : [];
         state.files.set(file!, append ? [...(state.files.get(file!) ?? []), ...written] : written);
         state.entries.set(file!, append ? [...(state.entries.get(file!) ?? []), ...written] : written);
+        if (content === "empty") state.holds.delete(file!);
+        else state.holds.add(file!);
       }
-      state.added = state.added || loaded.length > 0;
+      state.added = state.holds.size > 0 || state.entries.has(undefined);
     } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
     for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
       for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
@@ -233,8 +244,8 @@ function hostPins(path: string, text: string): { pins: Pin[]; problems: string[]
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
-  const fresh = (): State => ({ files: new Map(), entries: new Map(), added: false, releases: new Set() });
-  const clone = (s: State): State => ({ ...s, files: new Map([...s.files].map(([f, v]) => [f, [...v]])), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+  const fresh = (): State => ({ files: new Map(), holds: new Set(), entries: new Map(), added: false, releases: new Set() });
+  const clone = (s: State): State => ({ ...s, files: new Map([...s.files].map(([f, v]) => [f, [...v]])), holds: new Set(s.holds), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
   let state: State = fresh();
   const at = (n: number) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {
