@@ -294,7 +294,7 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     // Its stdin redirects name an input, not an operand: `cat 0</dev/null` has no file operand, and `0` is the descriptor.
     .replace(/(?<![0-9<])\d*<(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
     .replace(/^\s*(?:RUN\s+)?cat\b/i, " ");
-  const catInput = (piece: string): Pick<Written, "content" | "entries"> | undefined => {
+  const catInput = (piece: string): (Pick<Written, "content" | "entries"> & { readsPipe?: boolean }) | undefined => {
     // Its input files: any `<`-redirect and its positional operands (`cat /tmp/x`, `cat </tmp/x`), with flags dropped
     // (`cat -n f`, `cat -- -x`: a lone `--` ends the options, and `-` names stdin).
     const REDIR = /(?<![0-9<])(?:0<|<)(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g;
@@ -316,27 +316,33 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     // Its output is known empty only when every input it reads is: each file operand, and stdin when read (a redirect to
     // `/dev/null`, else the pipe — which a bare `cat` passes on by returning nothing here).
     const inputs = [...files, ...(stdin && stdinFile !== undefined ? [stdinFile] : [])];
+    // The shell opens a command's redirections before it runs, so a truncating redirect to the same path empties it
+    // before `cat` reads it: `cat < f > f` (and `cat f > f`) writes nothing.
+    const truncated = new Set([...piece.matchAll(/(?<![>0-9])\d*>(?!>|&)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g)].map((n) => unmask(strip(n[1]!))));
     // A file operand or a `<`-redirect names content we can read only when this stage wrote that file: a source the
     // scanner holds carries its repositories (`cat vendor.list > dest.list` copies the `deb` line), while a name the
     // stage never wrote — or one it holds without readable entries (`COPY --from`, a copied `.sources` with no URIs) —
     // is content we can't read, whatever the pipe holds.
     const entries: string[] = [];
     for (const f of inputs) {
-      if (f === "/dev/null") continue;
+      if (f === "/dev/null" || truncated.has(f)) continue;
       const held = knownSource?.(f);
       if (!held?.length) return { content: "unknown" };
       entries.push(...held);
     }
-    // Only `/dev/null` and tracked files were read. A `-` operand (or no operand at all) reads stdin as well: when nothing
-    // overrides stdin (`cat </dev/null` does), the piped bytes are still its output, so the caller passes them through — a
-    // bare list beside them adds nothing. Otherwise the output is exactly those files, known empty when they were empty.
-    if (entries.length) return { content: "deb", entries };
-    return stdin && stdinFile === undefined ? undefined : { content: "empty" };
+    // A `-` operand (or no operand at all) reads stdin as well, and only a `<`-redirect replaces what that holds: the
+    // caller adds the piped bytes, which are concatenated with whatever files were named. With no file beside it, `cat`
+    // is the pipe itself and the caller passes its bytes through.
+    const readsPipe = stdin && stdinFile === undefined;
+    if (readsPipe && !entries.length) return undefined;
+    if (entries.length) return { content: "deb", entries, readsPipe };
+    // Only `/dev/null` (or files this command truncated) was read: the output is known empty.
+    return { content: "empty" };
   };
   // What reaches pipeline element i's stdout: nothing when its own last command redirects it, known content from a
   // here-document, and otherwise the pipeline's earlier command — or, when that is a pass-through (`cat`, `tee`), what
   // feeds it. A redirect deeper in the pipeline therefore empties the file `tee` is actually fed by.
-  const flow = (i: number): Pick<Written, "content" | "text"> => {
+  const flow = (i: number): Pick<Written, "content" | "text" | "entries"> => {
     if (i < 0 || parts[i]!.op !== "|") return { content: "empty" };
     const piece = stripVerb(lastCommand(parts[i]!.text));
     // Its own stdout redirect sends the bytes elsewhere, whatever it reads: `tee /tmp/log >/dev/null | tee f` feeds f
@@ -411,8 +417,20 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     // pipe feeds it — `catInput` answers nothing only for that pass-through case.
     const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
     const catRead = passThrough ? catInput(catText) : undefined;
+    // `cat file -` concatenates the file with what the pipe feeds it, so both sets of repositories reach the file; an
+    // input either side can't read keeps the whole write `unknown`. Without a `-` (or with stdin redirected) only the
+    // file operands are read, and `cat` with no operand at all is just the pipe.
+    const piped = catRead?.readsPipe ? flow(part - 1) : undefined;
+    const combined = (): Pick<Written, "content" | "text" | "entries"> => {
+      if (!catRead) return flow(part - 1);
+      if (!piped) return catRead;
+      if (catRead.content === "unknown" || piped.content === "unknown") return { content: "unknown" };
+      const upstream = piped.content === "deb" ? (piped.entries ?? repoEntries(piped.text ?? "").repos) : [];
+      const all = [...(catRead.entries ?? []), ...upstream];
+      return all.length ? { content: "deb", entries: all } : { content: "empty" };
+    };
     const through: Pick<Written, "content" | "text" | "entries"> | undefined = passThrough
-      ? catRead ?? flow(part - 1)
+      ? combined()
       : own?.content === "deb" || own?.content === "unknown" ? own : undefined;
     const fed: Pick<Written, "content" | "text" | "entries"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with

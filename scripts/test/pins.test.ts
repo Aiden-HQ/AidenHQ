@@ -665,6 +665,19 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
     "RUN apt-get install -y foo=1.0",
   ].join("\n");
   assert.deepEqual(scanFile("Dockerfile", `${base}\n${copied}\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // The shell truncates a redirect's destination before the command reads it, so `cat < f > f` writes nothing: the file
+  // ends empty and a following install needs no pin (bash leaves f at 0 bytes).
+  const selfTruncate = [`RUN ${D} > ${dir}/vendor.list`, `RUN cat < ${dir}/vendor.list > ${dir}/vendor.list`].join("\n");
+  assert.deepEqual(scanFile("Dockerfile", `${base}\n${selfTruncate}\nRUN apt-get install -y foo\n`).problems, []);
+  // `cat file -` concatenates the file with the pipe, so a pin is dated from both repositories.
+  const concat = [
+    `RUN ${D} > ${dir}/first.list`,
+    `RUN printf '%s\\n' 'deb https://second.example/apt bookworm main' | cat ${dir}/first.list - > ${dir}/combined.list`,
+  ].join("\n");
+  assert.deepEqual(scanFile("Dockerfile", `${base}\n${concat}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main", "https://second.example/apt bookworm main"]);
+  // A `-` whose stdin is redirected reads that file, not the pipe, so only the tracked operand is the output.
+  const redirected = [`RUN ${D} > ${dir}/first.list`, `RUN printf 'x' | cat ${dir}/first.list - </dev/null > ${dir}/combined.list`].join("\n");
+  assert.deepEqual(scanFile("Dockerfile", `${base}\n${redirected}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
 });
 
 test("pins: a removal's reach ends at each install, not at any later ||", () => {
