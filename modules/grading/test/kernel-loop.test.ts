@@ -577,6 +577,29 @@ test("a graded close refused because the owner handed the task back is requeued,
   assert.deepEqual(grades.due().map((x) => x.issueId), ["t18"], "the next pass grades the handed-back work again");
 });
 
+test("a deferred notice is dropped when the row moved past the round it reports", async () => {
+  // The close resolved, and the notice waited for the task to be done. While it waited, the assignee submitted again: the row
+  // is `pending` on a new round. Telling the parent "done, graded against its rubric" would describe a grade the row no longer
+  // holds. The notice names its filing and round, and is dropped; the new pass queues its own notice.
+  const issue = { id: "t21", identifier: "WOR-21", title: "report", description: "Report.", status: "done", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t21", filed, deliverable);
+  const g = grades.record("t21", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  // The row moves on after the close: a later submission bumps the round without changing the filing's words.
+  grades.pend("t21");
+  assert.notEqual(grades.get("t21").round, g.round);
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t21', ?)").run(JSON.stringify([{ do: "tell", issue: { id: "t21", parentId: "p1" }, kind: "done", who: "WOR-21 (Dana)", title: "report", identifier: "WOR-21", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
+  await loop.runGrades();
+  assert.deepEqual(calls.wake, [], "the parent is not told a result the row no longer holds");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t21'").get()?.v ?? "", "", "the stale notice is dropped");
+});
+
 test("a refused close's reset never parks a newer submission's row", async () => {
   // The close is refused (409) after the assignee submitted again: the row is `pending` on a new round. The reset that requeues
   // a refused close names the round it was decided on, so the store drops it and the new submission's own pass keeps its row.

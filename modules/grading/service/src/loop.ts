@@ -219,6 +219,20 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
             return;
           }
           if (now !== "done") return;
+          // A notice that waited this long may describe a grade the row no longer holds: an amendment or a re-submission can
+          // land between the close and the deferred notice. It names the filing and round it was queued for, and is dropped
+          // when the row has moved past them — the pass that grades the new filing queues its own notice. A notice queued
+          // before steps carried a filing keeps the status-only check it always had.
+          if (s.filing || typeof s.round === "number") {
+            const still = await stillFiled(task, s.filing, s);
+            if (still.verdict === "unknown") return;
+            if (still.verdict === "stale") {
+              log("a deferred notice is stale: the filing or round moved on", { issue: task });
+              steps.length = 0;
+              state.set(`owed:${task}`, "");
+              return;
+            }
+          }
           if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
         }
       } catch (err: Json) {
@@ -394,7 +408,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // The notice keeps its parts, not only the rendered sentence: a later close that changes the reason rewrites the reason and
       // renders the notice again from these, so it never has to guess where the free-text title ends.
       const notice = { who: `${issue.identifier} (${agent?.name ?? "its agent"})`, title: String(issue.title ?? ""), identifier: String(issue.identifier ?? issue.id), ...(ungraded ? { ungraded } : {}) };
-      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      // The notice names the same filing and round as the close it reports: a deferred notice is revalidated against them
+      // before it speaks, so a row restarted or amended after the close cannot be described by the grade it replaced.
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, round: row.round, deliverable: g.deliverable, rubric, filing, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
