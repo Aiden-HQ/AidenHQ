@@ -908,6 +908,8 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; ex
     // tail pages share rows but never all of them, so they are not mistaken for it.
     const ids = page.map((i: Json) => i.id).join(",");
     if (ids === last) {
+      // A same page twice is the list's end only when it is the whole list; with rows still ahead it is a server that ignores
+      // `offset`, which must be reported as a stall rather than taken for the tail.
       if (++repeats > 1) {
         progress.stalled = true;
         return;
@@ -917,17 +919,22 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; ex
     // The next page starts inside this one, half a page back, so its first rows must be this page's tail. If they are not (an
     // unseen first row, or a shared prefix that disagrees) the list was reordered between the reads: a row may have slipped
     // past the overlap, so say so instead of claiming a complete scan.
-    if (asked.length) {
-      const j = asked.findIndex((i: Json) => i.id === page[0].id);
-      const shared = j < 0 ? 0 : Math.min(asked.length - j, page.length);
-      if (j < 0 || page.slice(0, shared).some((i: Json, n: number) => i.id !== asked[j + n].id)) progress.moved = true;
-    }
+    const previous = asked;
     asked = page;
+    if (previous.length) {
+      const j = previous.findIndex((i: Json) => i.id === page[0].id);
+      const shared = j < 0 ? 0 : Math.min(previous.length - j, page.length);
+      if (j < 0 || page.slice(0, shared).some((i: Json, n: number) => i.id !== previous[j + n].id)) progress.moved = true;
+    }
     const fresh = page.filter((i: Json) => !seen.has(i.id));
     // A short page with nothing new is the list's tail read again: the endpoint returned fewer rows than it was asked for, so
-    // there is nothing behind it. Reading on would only repeat the last rows, one round trip at a time.
+    // there is nothing behind it. Reading on would only repeat the last rows, one round trip at a time. A page identical to
+    // the one just read (a server capping its page size and ignoring `offset`) is not the tail: that is a stall.
     if (!fresh.length) {
-      if (page.length < PAGE) return;
+      if (page.length < PAGE) {
+        if (previous.length === page.length && page.every((i: Json, n: number) => i.id === previous[n].id)) progress.stalled = true;
+        return;
+      }
       continue;
     }
     for (const i of fresh) seen.add(i.id);

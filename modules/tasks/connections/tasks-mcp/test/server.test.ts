@@ -290,6 +290,24 @@ test("task_search does not call an exhausted short result set incomplete", async
   assert.equal(out.out.incomplete, undefined, "the set was read to its end, not cut short");
 });
 
+test("task_list reports a stalled endpoint that caps its page and ignores offset", async () => {
+  // The endpoint returns the same 100 rows however far the offset goes: a short page with nothing new, which is not the tail.
+  const rows = Array.from({ length: 300 }, (_, n) => ({ ...row(`c-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (300 - n) * 60_000).toISOString() }));
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
+  const board = issueBoard({ rows });
+  const handler = async (req, res) => {
+    const url = new URL(req.url ?? "", "http://x");
+    if (url.pathname.endsWith("/issues")) {
+      for await (const _ of req) void _;
+      return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(rows.slice(0, 100)));
+    }
+    return board(req, res);
+  };
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
+  assert.match(String(out.out?.incomplete ?? ""), /stopped advancing/);
+});
+
 test("task_list(mine) reads past pages whose candidates all fail the filter", async () => {
   // Two full pages of assigned work that is not waiting; the waiting task is on the third. No owner chats: the merge sees one
   // source, and a page without matches must not be taken for the end of it.
