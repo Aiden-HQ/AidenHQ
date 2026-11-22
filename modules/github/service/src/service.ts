@@ -404,9 +404,8 @@ export function createService(o: Options) {
           objects.push(`${ref(s.slug)}@${b.sha}`);
           if (action === "pr") {
             // The PR this publish is for: an open one into the default branch the plan read (the same head may also target
-            // another base, and that one is not what was reviewed).
-            const open = (await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`))
-              .filter((p: { base?: { ref?: string } }) => !p.base?.ref || p.base.ref === def);
+            // another base, and that one is not what was reviewed). Both filters are GitHub's, so paging can't hide it.
+            const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}&base=${encodeURIComponent(def)}`);
             // The PR's text is signed by the agent that asked for it (spec §4).
             const asker = readAskers()[askerKey(rec.kind, rec.args)];
             // A republish that names no text, or only blank text, keeps the PR as it is: a PATCH replaces the whole description,

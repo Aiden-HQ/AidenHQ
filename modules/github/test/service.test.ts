@@ -206,7 +206,7 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
 // remains no PATCH is issued at all: the head is pushed and the PR stays as it is. A real body still replaces it, footered once.
 test("an open PR keeps its description when a republish sends a blank body; a real body still replaces it once", async (t) => {
   const url = "https://github.com/acme-agents/widget/pull/7";
-  const open = "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature";
+  const open = "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main";
   const { sha, outcomes, ghCalls, call } = await setup(t, {
     routes: (m, p) =>
       m === "GET" && p === open ? { status: 200, body: [{ number: 7, html_url: url, head: { sha } }] }
@@ -250,7 +250,7 @@ test("a new PR with a blank body still opens with the asking agent's footer", as
   const url = "https://github.com/acme-agents/widget/pull/8";
   const { sha, outcomes, ghCalls, call } = await setup(t, {
     routes: (m, p) =>
-      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature" ? { status: 200, body: [] }
+      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main" ? { status: 200, body: [] }
         : m === "POST" && p === "/repos/acme-agents/widget/pulls" ? { status: 201, body: { number: 8, html_url: url, head: { sha } } }
           : undefined,
   });
@@ -264,13 +264,12 @@ test("a new PR with a blank body still opens with the asking agent's footer", as
 });
 
 // The same head may have an open PR into another base (a release branch); that one is not what this publish planned, so a
-// publish into the default branch opens its own PR rather than editing the release PR.
+// publish into the default branch asks GitHub for a PR into `main` only, and opens one rather than editing the release PR.
 test("an open PR into another base is not reused by a publish into the default branch", async (t) => {
   const url = "https://github.com/acme-agents/widget/pull/9";
   const { sha, outcomes, ghCalls, call } = await setup(t, {
     routes: (m, p) =>
-      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature"
-        ? { status: 200, body: [{ number: 6, html_url: "https://github.com/acme-agents/widget/pull/6", base: { ref: "release/1.x" } }] }
+      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature&base=main" ? { status: 200, body: [] }
         : m === "POST" && p === "/repos/acme-agents/widget/pulls" ? { status: 201, body: { number: 9, html_url: url, head: { sha } } }
           : undefined,
   });
@@ -278,7 +277,8 @@ test("an open PR into another base is not reused by a publish into the default b
   await call("/aidenhq/v1/executor/execute", { id: "k-0000000000000124", kind: "github.pr", args, digest: "d", idempotency_key: "base" });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false, "the release PR is left alone");
+  assert.ok(ghCalls.some((c) => c.method === "GET" && c.path.endsWith("&base=main")), "the lookup is filtered by base at GitHub");
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false, "nothing is edited");
   assert.equal(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme-agents/widget/pulls")?.body.base, "main");
 });
 
