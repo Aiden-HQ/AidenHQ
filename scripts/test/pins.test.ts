@@ -344,6 +344,28 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   // `rm x && apt install …; echo done || true` still guarantees the removal before the install.
   const newChain = `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list && apt-get install -y foo; echo done || true\n`;
   assert.deepEqual(scanFile("Dockerfile", newChain).problems, []);
+  // A repository written after a conditional removal is not the one the restore puts back: the line's own write
+  // survives the line, so an unpinned install on the next line is still a problem.
+  for (const [after, wrote] of [
+    [`echo 'deb https://new.example/apt bookworm main' > /etc/apt/sources.list.d/new.list`, ">"],
+    [`echo 'deb https://new.example/apt bookworm main' | tee /etc/apt/sources.list.d/new.list`, "| tee"],
+  ] as const)
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list; ${after}\nRUN apt-get install -y foo\n`).problems.length, 1, wrote);
+  // The removed file itself is still put back: the line's install may have skipped the removal, and the next line sees
+  // the repository either way.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list; echo done\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A quoted `;` or `&&` is text: it does not start a new command, so a message naming `rm` removes nothing.
+  for (const message of [`echo 'note; rm -f /etc/apt/sources.list.d/vendor.list'`, `echo 'test && rm -f /etc/apt/sources.list.d/vendor.list'`])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${message}\nRUN apt-get install -y foo\n`).problems.length, 1, message);
+  // A redirect belongs to the command it is in: `a > f | b` still writes f, so its `deb` line counts.
+  const perCommand = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list | cat > /tmp/log\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", perCommand).problems.length, 1);
+  // `tee`'s stdin redirect may sit straight against an operand, and a redirect glued to a pinned argument is not part of
+  // the version.
+  const adjacent = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' > /tmp/vendor.list\nRUN tee /etc/apt/sources.list.d/vendor.list</tmp/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", adjacent).problems.length, 1);
+  const glued = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y foo=1.2.3>/tmp/log\n`;
+  assert.deepEqual(scanFile("Dockerfile", glued).pins.filter((p) => p.kind === "apt")[0].version, "1.2.3");
   // A redirect on the install line is not a package to pin.
   const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
   assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);
