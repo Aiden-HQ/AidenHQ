@@ -33,7 +33,7 @@ export function anonymousCallers(app: App, node: boolean): boolean {
   return node && exposes(app);
 }
 export const GATE_PORT = 3130; // the gate (modules/apps-platform/gate) on the host's loopback; scripts/modules.ts uses the same
-const RESERVED = new Set([443, 3100, 3120, 3121, 3122, 3129, GATE_PORT, 8090, 8443]); // core services (3129: the kernel's sign-in listener), the gate, and the board's tailnet ports
+const RESERVED = new Set([443, 3100, 3120, 3121, 3122, 3129, GATE_PORT, 3132, 8090, 8443]); // core services (3129: the kernel's sign-in listener), the gate (3132: its test-only listener), and the board's tailnet ports
 export const EDGE_CONTAINER = "aidenhq-apps-edge"; // compose.yaml container_name
 
 export function checkPort(app: App): void {

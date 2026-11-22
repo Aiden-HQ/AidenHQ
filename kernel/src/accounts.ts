@@ -53,6 +53,8 @@ export interface GateInfo {
   apps?: Record<string, SharedApp>;
   /** Test-user sign-in (docs/design/access.md, Test-user sign-in): the one identity an agent may use, and the apps named for it. */
   test_user?: { email: string; apps: string[] };
+  /** The gate's kernel-only listener for the test session (test_port), when its config has one. */
+  test_port?: number;
   /** App doors (docs/design/app-doors.md): every exposed app at <name>.<base>, named by browsers with this scheme and port. */
   door?: { base: string; scheme: "http" | "https"; port?: number };
   /** The module door (docs/design/app-doors.md): its exact origin (the board's host on the door port) → the gate's host for it. */
@@ -61,7 +63,7 @@ export interface GateInfo {
 
 export function readGate(file: string): GateInfo | undefined {
   try {
-    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string; door?: unknown; origin?: unknown }>; previews?: unknown; doors?: { base?: unknown }; origin?: { scheme?: unknown; port?: unknown } };
+    const g = JSON.parse(readFileSync(file, "utf8")) as { login?: string; my_apps?: { host?: string }; hosts?: Record<string, { app?: string; default_role?: string; door?: unknown; origin?: unknown }>; previews?: unknown; doors?: { base?: unknown }; origin?: { scheme?: unknown; port?: unknown }; test_port?: unknown };
     const door = typeof g.doors?.base === "string" && g.doors.base ? { base: g.doors.base.toLowerCase(), scheme: g.origin?.scheme === "http" ? "http" as const : "https" as const, ...(Number.isInteger(g.origin?.port) ? { port: g.origin!.port as number } : {}) } : undefined;
     // A module door is a door, not a shared app: never an app host or a shared app, only an origin a door handoff may name.
     const entries = Object.entries(g.hosts ?? {});
@@ -72,7 +74,7 @@ export function readGate(file: string): GateInfo | undefined {
     const testUser = t && typeof t.email === "string" && Array.isArray(t.apps)
       ? { email: t.email.trim().toLowerCase(), apps: t.apps.map(String) }
       : undefined;
-    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}), ...(testUser ? { test_user: testUser } : {}) };
+    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}), ...(testUser ? { test_user: testUser } : {}), ...(testUser && Number.isInteger(g.test_port) ? { test_port: g.test_port as number } : {}) };
   } catch {
     return undefined;
   }

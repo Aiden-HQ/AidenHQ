@@ -28,7 +28,7 @@
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
 //   aidenhq test-request <app> <method> <path> [--body <json|@file>] [--header name:value]...
 //                                                    one request as the owner's named test user at a gated app
-//                                                    (settings.edge.test_user): through the gate's own loopback listener, the
+//                                                    (settings.edge.test_user): through the gate's kernel-only test listener, the
 //                                                    session never shown here. Prints status, headers and body (JSON).
 //   aidenhq advise "<question>" [--file <brief>]     a second opinion from the advisor (tasks-mcp advisor_ask)
 //   aidenhq reset                                    start the next turn with a fresh session

@@ -214,6 +214,19 @@ function reach(v: unknown, path: string[], at = "", dup = { found: false }): { v
   return { values: out, dup: dup.found };
 }
 /**
+ * Whether a change of settings.edge.test_user widens it: a test user added where there was none, another email, or any app
+ * named that the base didn't name. Narrowing, dropping apps or turning it off is not a widening.
+ */
+export function testUserWidens(base: any, head: any): boolean {
+  const t = (v: any) => (v && typeof v === "object" ? { email: String(v.email ?? "").trim().toLowerCase(), apps: Array.isArray(v.apps) ? v.apps.map(String) : [] } : undefined);
+  const [b, h] = [t(base), t(head)];
+  if (!h) return false;
+  if (!b) return true;
+  if (b.email !== h.email) return true;
+  return h.apps.some((a: string) => !b.apps.includes(a));
+}
+
+/**
  * What an agent's change to a setting does that its module makes the owner's (OwnerRule), each value read as the module runs
  * it (unset or removed: the rule's default; the setting's default under both sides): `raise`, a number above what it was (a
  * new entry: above the default); `change`, any different value; `to`, the value newly set to that (an entry removed holds its
@@ -305,6 +318,11 @@ function instanceParts(s: any) {
         const def = s.settingDefs?.[sk];
         const raised = s.byAgent && Array.isArray(def?.owner) ? ownerRaises(sk, def.owner, def.default, base.settings?.[sk], head.settings?.[sk]) : [];
         if (raised.length) parts.push(T(2, "setting-owner", `an agent's change the owner decides: ${raised.join("; ")}`.slice(0, 600)));
+        // The test identity an agent may sign in as (settings.edge.test_user): naming another app widens what an agent can
+        // reach as a person, so an agent's widening is merit 2 (the reviewer reads it with that label). Turning it off, or
+        // narrowing within what was named, isn't.
+        if (s.byAgent && sk === "edge" && testUserWidens(base.settings?.edge?.test_user, head.settings?.edge?.test_user))
+          parts.push(T(2, "setting-owner", "settings.edge.test_user: an agent's change to the apps it may sign in as, or the identity it uses: the owner's authority".slice(0, 600)));
       }
       // Spend is the owner's authority under every autonomy: raising the install's limits or the task cap. Only a finite positive
       // number at or under the old value tightens it; unset is the default (SPEND_DEFAULTS, kernel/settings.json).

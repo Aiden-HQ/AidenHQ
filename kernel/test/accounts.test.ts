@@ -3,11 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openAccounts } from "../src/accounts.ts";
+import { openAccounts, readGate } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
 import { openRecords } from "../src/records.ts";
 import { authSecret, tailnetPeer } from "../src/auth-rules.ts";
@@ -302,4 +302,17 @@ test("wrong codes back off per account, whatever the peer: 100 from the tailnet 
   assert.ok(checked >= 1 && checked <= 5, `${checked} codes checked`);
   assert.ok(codes.some((r) => r.status === 429 && r.headers["retry-after"] === "1"), "a code that arrived during a check was refused");
   assert.equal(codes.filter((r) => r.status === 429).length, 20 - checked);
+});
+
+// The gate's config the kernel reads: the test identity and its kernel-only listener, never the main port.
+test("readGate: test_user and its test_port, and neither without the other", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-info-"));
+  const file = join(dir, "gate.json");
+  writeFileSync(file, JSON.stringify({ port: 3130, test_port: 3132, test_user: { email: "Probe@Acme.com", apps: ["roadmap"] }, hosts: { "roadmap.acme.com": { app: "roadmap" } } }));
+  assert.deepEqual(readGate(file).test_user, { email: "probe@acme.com", apps: ["roadmap"] });
+  assert.equal(readGate(file).test_port, 3132);
+  writeFileSync(file, JSON.stringify({ port: 3130, test_port: 3132, hosts: {} }));
+  assert.equal(readGate(file).test_port, undefined); // no test user: no test listener to name
+  writeFileSync(file, JSON.stringify({ port: 3130, test_user: { email: "probe@acme.com", apps: ["roadmap"] }, hosts: {} }));
+  assert.equal(readGate(file).test_port, undefined); // a config from before test_port: the kernel's own default
 });

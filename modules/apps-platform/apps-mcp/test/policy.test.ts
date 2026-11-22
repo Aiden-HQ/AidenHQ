@@ -145,8 +145,9 @@ describe("sandbox output", () => {
   });
 });
 
-it("refuses the board's tailnet port", () => {
+it("refuses the board's tailnet port, the gate's two listeners and the kernel's sign-in port", () => {
   expect(() => checkPort(app({ port: 8443 }))).toThrow(/reserved/);
+  for (const port of [3130, 3132, 3129]) expect(() => checkPort(app({ port }))).toThrow(/reserved/);
 });
 
 it("serves each exposed app on the apps node: its port, proxied to the publishing container's own port", () => {

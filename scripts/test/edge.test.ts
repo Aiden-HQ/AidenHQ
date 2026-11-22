@@ -162,7 +162,10 @@ test("test user: the named apps and their one email compile into the gate; an un
   assert.deepEqual(out.edge.gate.test_user, { email: "probe@acme.com", apps: ["roadmap"] });
   assert.equal(out.edge.gate.test_keys_file, "/secrets/test_keys.json");
   assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_SECRETS_DIR}/identity/keys.json:/secrets/test_keys.json:ro"));
+  // The kernel-only listener exists only alongside a test user; without one the gate opens its one port alone.
+  assert.equal(out.edge.gate.test_port, 3132);
   assert.equal(compile(mods, inst({ edge }, [app])).edge.gate.test_user, undefined);
+  assert.equal(compile(mods, inst({ edge }, [app])).edge.gate.test_port, undefined);
   assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "probe@acme.com", apps: ["notes"] } } }, [app, { name: "notes", repo: "acme/notes", owner: "a", description: "d", port: 4200 }])), /not a shared app/);
   assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "not-an-email", apps: ["roadmap"] } } }, [app])), /must be an email/);
   assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "probe@acme.com", apps: ["roadmap", "roadmap"] } } }, [app])), /twice/);

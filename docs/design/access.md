@@ -264,7 +264,10 @@ not an answer. The test user is the one identity an agent may use, for the apps 
 
 - **Setting.** `settings.edge.test_user: { email, apps: [<app name>] }`, an instance setting (a Tier 2 apply). Compile
   refuses an email that isn't an address, an empty list, a repeated name, and any name that isn't a shared app with a
-  `share.host`; it writes `test_user` and `test_keys_file` into `config/gate.json`. Naming no test user leaves it off.
+  `share.host`; it writes `test_user`, `test_keys_file` and the kernel-only `test_port` into `config/gate.json`. Naming no
+  test user leaves all three off and the gate opens only its usual port. An agent's apply that widens it — a test user
+  where there was none, another email, or an app the base didn't name — is merit 2 (the AI reviewer reads it as the
+  owner's authority, `kernel/src/apply-tier.ts` `testUserWidens`); narrowing the list, or turning it off, is merit 1.
 - **Signing key.** `scripts/identity.ts` creates `identity/test.pem` (Ed25519, issuer `aidenhq-test`) beside the gate's and
   apps-mcp's, and lists its public half in `identity/keys.json`. Only the kernel reads the private key; the gate mounts
   `keys.json` read-only and is the only other reader of the public one. Apps do not know `aidenhq-test`, so an app never
@@ -273,26 +276,33 @@ not an answer. The test user is the one identity an agent may use, for the apps 
   `POST /v1/jobtools/test-request`, which takes the live job's own `ahqj_` token. The kernel reads `gate.json`, refuses an
   app the owner did not name (403), takes the agent and task from the job row (never the request), signs a 60-second
   Ed25519 token bound to the app's host, the app name, the configured email and a random `jti`, and sends the request to
-  the gate's loopback listener with `Host` set to the app's host. The token never reaches the agent: the answer carries
-  the status, a few headers (`content-type`, `retry-after`, `location`, …) and a trimmed body. Each use is logged by the
-  kernel (agent, task, app, host, method and the route, never its query string) and by the gate (`test sign-in`, with the
-  `jti`).
-- **What the gate does with it.** On the loopback listener only (`createGate({ testSessions: true })`; the front and
-  tunnel listeners refuse it) the gate verifies the token: EdDSA, a known `aidenhq-test` key, `iss`/`aud`/`app`, a
-  signature, 60 seconds, the configured email and its `sub`, one use per `jti` (a full replay cache refuses a new session
-  instead of evicting a live one, so a sign-in is never accepted twice). It then runs the same `authorize()` as a
-  browser's session: the account must exist and be enabled, the role is the app's role resolution, `blocked` is 403,
-  `sameOrigin` holds for writes, and the normal `X-AidenHQ-Identity` is minted. The configured email must be a non-admin
-  account, and its role on the named app must not be `admin` (either one is refused), so a mistake in the setting can never
-  grant the test identity admin on an app. The
-  header matches the gate's `x-aidenhq-` strip rule, so an app never sees it, and nothing the gate trusts for everyone
-  was added: no header or shared secret is accepted without a kernel signature.
-- **Revocation.** Remove the app from `test_user.apps` (an apply, so `gate.json` loses it), disable or remove the account
-  (the gate reads `accounts.json` on every request), or rename `identity/test.pem` to a trusted-looking `test.old.pem` and
-  run an apply: compile creates a fresh key, so the old one stays listed but the kernel signs with the new one and the
-  gate's copy of `keys.json` is rewritten. None of these needs a redeploy of the app. The scoping is what stops it on
-  an app the owner has not named: `gate.json` lists no such host for the test identity, the kernel refuses the app, and
-  the gate refuses a token for any host outside the named list (403).
+  the gate's kernel-only listener (`test_port`) with `Host` set to the app's host. The token never reaches the agent: the
+  answer carries the status, a few headers (`content-type`, `retry-after`, `location`, …) and a trimmed body. Each use is
+  logged by the kernel (agent, task, app, host, method and the route, never its query string) and by the gate
+  (`test sign-in`, with the `jti`).
+- **What the gate does with it.** The gate accepts the test session only on its own kernel-only listener, `test_port`
+  (3132, loopback; `createGate({ testSessions: true })`). The listener the front door and the tunnel proxy to (and the
+  cloudflared socket) never passes `testSessions`, so the same header there is not an identity (401/403/404 as any other
+  unauthenticated request), and `test_port` is in no ingress rule, no app's reserved-port list and not `edge.front.port`
+  (`scripts/edge.ts` refuses all three). On that listener the gate verifies the token: EdDSA, a known `aidenhq-test` key,
+  `iss`/`aud`/`app`, a signature, 60 seconds, the configured email and its `sub`, one use per `jti` (a full replay cache
+  refuses a new session instead of evicting a live one, so a sign-in is never accepted twice). It then runs the same
+  `authorize()` as a browser's session: the account must exist and be enabled, the role is the app's role resolution,
+  `blocked` is 403, `sameOrigin` holds for writes, and the normal `X-AidenHQ-Identity` is minted. The configured email
+  must be a non-admin account, and its role on the named app must not be `admin` (either one is refused), so a mistake in
+  the setting can never grant the test identity admin on an app. The header matches the gate's `x-aidenhq-` strip rule, so
+  an app never sees it, and nothing the gate trusts for everyone
+  was added: no header or shared secret is accepted without a kernel signature. A password-mode host still requires a
+  signed-in app session for everyone else, but a test session names the identity itself (the kernel signed it, and a
+  password install has no browser session for an agent), so the password adapter is not consulted for `idp: test`; the
+  same account, disabled-account and role checks still run.
+- **Revocation.** Remove the app from `test_user.apps` (an apply, so `gate.json` loses it; for an agent that is a
+  narrowing and stays the panel's), disable or remove the account (the gate reads `accounts.json` on every request), or
+  rename `identity/test.pem` to a trusted-looking `test.old.pem` and run an apply: compile creates a fresh key, so the old
+  one stays listed but the kernel signs with the new one and the gate's copy of `keys.json` is rewritten. None of these
+  needs a redeploy of the app. The scoping is what stops it on an app the owner has not named: `gate.json` lists no such
+  host for the test identity, the kernel refuses the app, and the gate refuses a token for any host outside the named
+  list (403).
 - **What it cannot do.** It is one member's identity, for the named apps only: it cannot act as the owner, an app admin, or
   on any other host, preview or door, and it is not a way around the front door for anyone else. Writes it makes are the
   test user's writes and are visible to the app like any member's; keep canaries in the text so a test submission is

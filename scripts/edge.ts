@@ -20,7 +20,7 @@
 // settings.edge.test_user ({ email, apps }): the one identity an agent may sign in as at the named shared apps, for end-to-end
 // checks of person-facing routes (docs/design/access.md, Test-user sign-in). Compile validates it (an email, and each app a
 // shared app with a host and no door or preview) and writes it to the gate; the gate accepts its kernel-signed session on its
-// loopback listener only, and the kernel is its only caller.
+// own kernel-only port (test_port) only, and the kernel is its only caller.
 // App doors (docs/design/app-doors.md): without `edge`, on exposure local or public, compile still runs the gate, serving
 // every exposed app to AidenHQ admins at <app>.<base> (`localhost` over http on loopback; <ip-with-dashes>.sslip.io behind
 // Caddy, scripts/front-door.ts), with each app's port from apps-mcp's doors file and sign-in only on the kernel's admin
@@ -38,6 +38,8 @@ import YAML from "yaml";
 
 export const GATE_PORT = 3130; // modules/apps-platform/apps-mcp/src/tailnet.ts reserves the same port
 export const GATE_URL = `http://127.0.0.1:${GATE_PORT}`;
+/** The gate's kernel-only listener (test-user.ts): never proxied by the front door, never in an ingress rule, never the door port. */
+export const TEST_PORT = 3132;
 export const DOOR_PORT = 8447; // the module door: the board's host on this port, through the front door to the gate
 // cloudflared's way to the gate: a unix socket in a directory only the two of them mount (data/gate/socket), so the gate
 // believes CF-Connecting-IP there and nowhere else (anything on the host's loopback reaches GATE_URL).
@@ -107,7 +109,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     if (hosts[s.host]) fail(`app ${a.name}: share.host ${s.host} is also ${hosts[s.host]!.app}'s`);
     if (/^pr-\d+\./.test(s.host)) fail(`app ${a.name}: share.host ${s.host}: pr-<n>.<host> hosts are previews'`);
     if (!Number.isInteger(a.port)) fail(`app ${a.name}: share.host needs a port`);
-    if (a.port === GATE_PORT) fail(`app ${a.name}: port ${GATE_PORT} is the gate's`);
+    if (a.port === GATE_PORT || a.port === TEST_PORT) fail(`app ${a.name}: port ${a.port} is the gate's`);
     if (a.port === AUTH_PORT) fail(`app ${a.name}: port ${AUTH_PORT} is the kernel's sign-in listener`);
     if ((s.groups ?? []).length) fail(`app ${a.name}: share.groups come in phase 2`);
     for (const k of ["viewers", "admins"]) if (s[k] !== undefined) fail(`app ${a.name}: share.${k} is gone: app admins are named on the board (Accounts, App admins) and set roles on the app's Access page`);
@@ -144,7 +146,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     for (const k of Object.keys(f)) if (!["address", "port"].includes(k)) fail(`settings.edge.front.${k} is not a setting`);
     const o = String(f.address ?? "").split(".").map(Number);
     if (o.length !== 4 || !o.every((n, k) => Number.isInteger(n) && n >= 0 && n <= 255 && String(n) === String(f.address).split(".")[k]) || o[0] !== 100 || o[1]! < 64 || o[1]! > 127) fail("settings.edge.front.address must be a tailnet IPv4 address (100.64.0.0/10)");
-    if (!Number.isInteger(f.port) || f.port < 1024 || f.port > 65535 || f.port === AUTH_PORT || f.port === GATE_PORT) fail(`settings.edge.front.port must be 1024-65535, never ${AUTH_PORT} or ${GATE_PORT}`);
+    if (!Number.isInteger(f.port) || f.port < 1024 || f.port > 65535 || f.port === AUTH_PORT || f.port === GATE_PORT || f.port === TEST_PORT) fail(`settings.edge.front.port must be 1024-65535, never ${AUTH_PORT}, ${GATE_PORT} or ${TEST_PORT}`);
     frontDoor = { address: f.address, port: f.port };
   } else for (const k of ["identity", "front"]) if (edge[k] !== undefined) fail(`settings.edge.${k} is only for app_login header-jwt`);
   // The test user (docs/design/access.md, Test-user sign-in): named apps only, each a shared app with a host.
@@ -167,7 +169,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
   if (!front && !team && (login === "access" || anyAud || edge.team_domain != null)) fail("settings.edge.team_domain must be <team>.cloudflareaccess.com");
   const issuer = team && `https://${team}.cloudflareaccess.com`;
   const gate: Obj = {
-    port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
+    port: GATE_PORT, ...(testUser ? { test_port: TEST_PORT } : {}), login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
     ...(identity ? { identity, front: frontDoor } : { socket: GATE_SOCKET }),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
     ...(testUser ? { test_user: testUser, test_keys_file: TEST_KEYS_FILE } : {}),

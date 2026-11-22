@@ -608,7 +608,7 @@ async function precheck(who: Parameters<typeof writes.preview>[0], b: { kind: st
   return { decision: v.decision, text: `${v.model === "kernel/code" ? "The kernel's own rules" : `The AI reviewer (${v.model})`} ${said}.${note} Nothing was filed.`, reason: v.reason };
 }
 // Test-user sign-in (test-user.ts): the kernel signs a 60-second session for the owner's named test identity, and the gate
-// accepts it on its loopback listener only. The key, the public half the gate mounts, and the named apps are the vault's and
+// accepts it on its own kernel-only listener only (test_port, never the port the front door or the tunnel reaches). The key, the public half the gate mounts, and the named apps are the vault's and
 // the compiled gate's, read on each use, so a revoke (an apply removing an app, a deleted key, a disabled account) holds at once.
 const testUser = createTestUser({
   job: (token) => jobTools.who(token),

@@ -8,7 +8,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { validateImages } from "./computers.ts";
 import { validate } from "../kernel/src/writes.ts";
-import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
+import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT, TEST_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
@@ -937,7 +937,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   for (const k of Object.keys(compose.services)) if (!serviceModule[k] && claimed[k]) fail(`module ${claimed[k]}: the service name ${k} is a root service's`);
   // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
-  checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
+  checkPorts([base, compose], [[GATE_PORT, "gate"], [TEST_PORT, "the gate's test listener"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
 
   instanceAgents(instanceDir, settings, paperclip, routineTitles);
   expandTeams(instance, paperclip);

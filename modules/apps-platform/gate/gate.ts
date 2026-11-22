@@ -62,6 +62,8 @@ export type Site = HostSite & { parent?: string; door?: true };
 /** config/gate.json, as scripts/edge.ts compiles it (my_apps, auth_url and hosts are always written). */
 export interface GateConfig {
   port: number;
+  /** The kernel-only listener (test_user): the test session is accepted there and nowhere else (main.ts). */
+  test_port?: number;
   login?: string;
   issuer?: string;
   certs_url?: string;
@@ -175,7 +177,7 @@ const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate
 const b64json = (s: string): unknown => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
 const b64url = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
 export const IDENTITY_HEADER = "x-aidenhq-identity";
-/** The kernel's test-user session, accepted only on the loopback listener (docs/design/access.md, Test-user sign-in). */
+/** The kernel's test-user session, accepted only on the gate's kernel-only test listener (docs/design/access.md). */
 export const TEST_SESSION_HEADER = "x-aidenhq-test-session";
 const TEST_ISSUER = "aidenhq-test";
 const TEST_TTL_S = 60;
@@ -669,7 +671,10 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       // Sibling app hosts are same-site: another host's page must not sign a visitor in or out here.
       return read || sameOrigin(req, origin) ? { auth: true, path: `${path}${norm.search}` } : { status: 403, msg: "forbidden: cross-origin" };
     }
-    if (login === "password" && !email) {
+    // Password mode's session is checked even when a host's aud already named the email: a signed-in app session, not an
+    // Access-verified email, is what a password host admits, and the sessionCache keeps this cheap. A test session is the
+    // exception: it names the identity itself (the kernel signs it), and a password install has no browser session to find.
+    if (login === "password" && idp !== "test") {
       try {
         ({ email, idp } = (await adapters.password.authenticate(req, cfg)) ?? ({} as Partial<SignIn>));
       } catch (e) {

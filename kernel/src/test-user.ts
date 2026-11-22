@@ -27,6 +27,8 @@ export class TestUserError extends Error {
 export interface GateTestConfig {
   /** The gate's config (config/gate.json): the test identity and the shared apps' hosts. */
   test_user?: { email?: unknown; apps?: unknown };
+  /** The gate's kernel-only listener (scripts/edge.ts writes it alongside test_user, readGate() carries it); the kernel's own default otherwise. */
+  test_port?: unknown;
   /** The shared apps by name, as readGate() returns them. */
   apps?: Record<string, { host?: unknown }>;
   hosts?: Record<string, { app?: unknown; door?: unknown }>;
@@ -68,9 +70,9 @@ export interface RunRequest { app: string; method: string; path: string; body?: 
 
 /**
  * The kernel's test-user requests. `job` names the live kernel job (its agent and task) from its own token, `gate` reads the
- * compiled gate config, and `send` reaches the gate's loopback listener (a test double in the tests).
+ * compiled gate config, and `send` reaches the gate's kernel-only listener (a test double in the tests).
  */
-export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3130, now = Date.now, log, send }: {
+export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3132, now = Date.now, log, send }: {
   job: (token: string) => { agent: string; task: string };
   gate: () => GateTestConfig | undefined;
   /** identity/test.pem (the kernel's signer) and identity/keys.json (the public half the gate mounts), as the vault holds them. */
@@ -82,13 +84,22 @@ export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3130, 
   log?: (o: object) => void;
   send?: (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>;
 }) {
-  /** The gate's listener on 127.0.0.1, with the Host of the app's own host. */
-  const post = (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }) => new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((ok, no) => {
-    const r = http.request({ host: "127.0.0.1", port: gatePort, method: req.method, path: req.path, headers: { ...req.headers, host: req.host }, timeout: 30_000 }, (res) => {
+  /** The gate's kernel-only listener (test_port) on 127.0.0.1, with the Host of the app's own host. */
+  const post = (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }, port = gatePort) => new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((ok, no) => {
+    const r = http.request({ host: "127.0.0.1", port, method: req.method, path: req.path, headers: { ...req.headers, host: req.host }, timeout: 30_000 }, (res) => {
       const chunks: Buffer[] = [];
       let size = 0;
       res.on("data", (c: Buffer) => { size += c.length; if (size <= BODY_CAP * 2) chunks.push(c); });
-      res.on("end", () => ok({ status: res.statusCode ?? 502, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
+      // A connection that ends mid-body is not an answer: fail, rather than hand back a truncated body as if it were whole.
+      // Node reports that as "aborted" (an error, or a close without a complete message); both become one clear refusal.
+      const cut = () => no(new Error("the gate's answer was interrupted"));
+      res.on("close", () => { if (!res.complete) cut(); });
+      res.on("aborted", cut);
+      res.on("error", (e) => (res.complete ? no(e) : cut()));
+      res.on("end", () => {
+        if (!res.complete) return no(new Error("the gate's answer was interrupted"));
+        ok({ status: res.statusCode ?? 502, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") });
+      });
     });
     r.on("timeout", () => r.destroy(new Error("the gate didn't answer within 30 seconds")));
     r.on("error", no);
@@ -125,7 +136,11 @@ export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3130, 
         if (typeof v !== "string" || /[\u0000-\u001f\u007f]/.test(v)) throw new TestUserError(400, "bad-header", `${name} must be one line of text`);
         headers[name] = v;
       }
-      if (body !== undefined) headers["content-type"] ??= "application/json";
+      // A stated byte length: the gate and the app read the body as exactly these bytes, whatever its character count.
+      if (body !== undefined) {
+        headers["content-type"] ??= "application/json";
+        headers["content-length"] = String(Buffer.byteLength(body));
+      }
 
       let signer: { key: KeyObject; kid: string };
       try { signer = testSigner(keyFile())(); } catch (e) { throw new TestUserError(503, "key-missing", `the kernel has no test-signing key: run ops/apply-config.sh (${String((e as Error).message)})`); }
@@ -136,7 +151,9 @@ export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3130, 
       const part = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
       const claims = `${part({ alg: "EdDSA", kid: signer.kid, typ: "JWT" })}.${part({ iss: "aidenhq-test", aud: host, app, sub: subOf(email), email, jti, iat, exp: iat + TTL_S })}`;
       headers["x-aidenhq-test-session"] = `${claims}.${sign(undefined, Buffer.from(claims), signer.key).toString("base64url")}`;
-      const answer = await (send ?? post)({ host, method, path, headers, ...(body !== undefined ? { body } : {}) });
+      // The gate's own test_port when its config has one (an install whose gate listens elsewhere); 3132 otherwise.
+      const port = Number.isInteger(cfg?.test_port) ? (cfg!.test_port as number) : gatePort;
+      const answer = await (send ?? ((r) => post(r, port)))({ host, method, path, headers, ...(body !== undefined ? { body } : {}) });
       // The route only: a query string is the caller's data and can carry a token, so it never reaches the log.
       log?.({ msg: "test sign-in", agent: who.agent, task: who.task, app, host, method, route: path.split("?")[0], status: answer.status });
       const keep = ["content-type", "retry-after", "location", "cache-control", "www-authenticate", "allow"];

@@ -35,7 +35,7 @@ would mean migrating apps' stored `sub`s.
 - `access`: the Cloudflare Access JWT for the host's audience tag (RS256, team JWKS).
 - `header-jwt`: a front door's signed identity header (`cfg.identity`: header, issuer, JWKS, optional `auth_method`), see access.md.
 - `password`: the board's Better Auth session through the auth listener (3129).
-- `test`: the kernel's test-user session (access.md, Test-user sign-in), verified on the loopback listener only; the email
+- `test`: the kernel's test-user session (access.md, Test-user sign-in), verified on the gate's kernel-only `test_port` listener only; the email
   it names then takes the same account and role resolution, and must not be an admin. It is not an app identity: apps
   never see an `aidenhq-test` token, only the `aidenhq-gate` one the gate mints after it.
 

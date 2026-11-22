@@ -78,7 +78,7 @@
 //                              | clone {repo}: a repository its dispatcher's clone grant covers as a git bundle (its default
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
 //                              | test-request {app, method, path, body?, headers?}: one request as the owner's named test user at a
-//                              shared app (test-user.ts), signed by the kernel and sent to the gate's loopback listener, its session
+//                              shared app (test-user.ts), signed by the kernel and sent to the gate's kernel-only listener, its session
 //                              never returned; the gate resolves the account and role as for a browser
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
@@ -224,8 +224,9 @@ export const ROUTES = [
   { method: "POST", path: "/v1/operator/:op", auth: "operator-key" },
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
-// `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+// `:id` matches a record id, any other `:name` a lowercase route segment ([a-z0-9_-]+, so `test-request` and `sign_out` match;
+// a segment, never a slash), a trailing `/*` the rest of the path, slash included.
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_-]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };

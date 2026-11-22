@@ -76,6 +76,36 @@ test("the shipped modules declare these rules: an agent's new fleet org or maint
   checkTyped({ kind: "setting", key: "github_fleet_org", value: "othercorp" }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_fleet_org: {} } }] });
 });
 
+// The test identity an agent may sign in as (settings.edge.test_user): an agent's widening of what it can reach as a person
+// is merit 2 (the AI reviewer reads it with that label, as every owner-authority setting is); narrowing is merit 1.
+test("an agent naming another app or another test user is merit 2; narrowing or turning it off is not", () => {
+  const edge = (b, h, byAgent = true) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: defs,
+    base: { "instance.yaml": YAML.stringify({ settings: b === undefined ? {} : { edge: b } }) },
+    head: { "instance.yaml": YAML.stringify({ settings: h === undefined ? {} : { edge: h } }) } }));
+  const one = { test_user: { email: "probe@acme.com", apps: ["roadmap"] } };
+  const two = { test_user: { email: "probe@acme.com", apps: ["roadmap", "notes"] } };
+  const owner = (r) => assert.equal(r.tier, 2, JSON.stringify(r));
+  owner(edge({}, one)); // named where none was
+  owner(edge(undefined, one));
+  owner(edge(one, two)); // another app
+  owner(edge(one, { test_user: { email: "other@acme.com", apps: ["roadmap"] } })); // another identity
+  assert.equal(edge(two, one).tier, 1); // narrowing is the reviewer's alone
+  assert.equal(edge(one, {}).tier, 1); // turning it off too
+  assert.equal(edge(one, { test_user: { email: "Probe@Acme.com", apps: ["roadmap"] } }).tier, 1); // same identity, other case
+  // The owner's own change is their authority already.
+  assert.equal(edge(one, two, false).tier, 1);
+});
+
+test("testUserWidens: a new test user, another email or an added app widens; removing one doesn't", async () => {
+  const { testUserWidens } = await import("../src/apply-tier.ts");
+  assert.equal(testUserWidens(undefined, { email: "a@x.com", apps: ["roadmap"] }), true);
+  assert.equal(testUserWidens({ email: "a@x.com", apps: ["roadmap"] }, { email: "b@x.com", apps: ["roadmap"] }), true);
+  assert.equal(testUserWidens({ email: "a@x.com", apps: ["roadmap"] }, { email: "a@x.com", apps: ["roadmap", "notes"] }), true);
+  assert.equal(testUserWidens({ email: "a@x.com", apps: ["roadmap", "notes"] }, { email: "a@x.com", apps: ["notes"] }), false);
+  assert.equal(testUserWidens({ email: "a@x.com", apps: ["roadmap"] }, undefined), false);
+  assert.equal(testUserWidens(undefined, undefined), false);
+});
+
 test("raising a spend limit or the task cap is merit 2 (the owner's with autonomy off) at any autonomy; unset is the default, and tightening is not", () => {
   const owner = (b, h) => applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify({ settings: b }) }, head: { "instance.yaml": YAML.stringify({ settings: h }) } }).some((p) => p.rule === "spend-cap" && p.tier === 2);
   for (const [b, h] of [[{}, { spend_month_usd: 2000 }], [{}, { task_usd: 30 }], [{ spend_day_usd: 10 }, {}]]) assert.equal(owner(b, h), true, JSON.stringify([b, h]));

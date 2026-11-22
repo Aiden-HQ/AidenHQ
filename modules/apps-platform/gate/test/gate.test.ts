@@ -354,9 +354,9 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
   };
   const g = createGate({ config: () => cfg, now: () => clock, log: () => {} });
   const port = await listen(g);
-  const send = (path, { cookie, host = "roadmap.example.com", method = "GET", origin } = {}) => new Promise((resolve) => {
+  const send = (path, { cookie, host = "roadmap.example.com", method = "GET", origin, headers = {} } = {}) => new Promise((resolve) => {
     seen = undefined;
-    request({ host: "127.0.0.1", port, path, method, headers: { host, "x-aidenhq-user": "owner@example.com", ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) } }, (r) => {
+    request({ host: "127.0.0.1", port, path, method, headers: { host, "x-aidenhq-user": "owner@example.com", ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}), ...headers } }, (r) => {
       let body = "";
       r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, headers: r.headers, body }));
     }).end(method === "POST" ? "{}" : undefined);
@@ -473,6 +473,30 @@ test("password mode: sign-in only on the my-apps host; app hosts get a host-only
     const mine = await send("/", { host: MY, cookie: `${SC}=s-ann` });
     assert.equal(mine.status, 200);
     assert.match(mine.body, /roadmap\.example\.com/);
+    // A password host takes a signed-in session, never an Access-verified email alone: a host with an aud whose Access token
+    // is valid but which carries no app session still goes to sign-in, rather than being let in on the Access claim.
+    Object.assign(cfg.hosts["roadmap.example.com"], { aud: AUD });
+    Object.assign(cfg, { issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksSrv.address().port}/cdn-cgi/access/certs` });
+    const noSession = await send("/plan", { host: "roadmap.example.com", headers: { "cf-access-jwt-assertion": token({ email: "ann@example.com" }) } });
+    assert.equal(noSession.status, 302);
+    assert.match(noSession.headers.location, /^https:\/\/apps\.example\.com\/\.auth\/go\?/);
+    delete cfg.hosts["roadmap.example.com"].aud;
+    delete cfg.issuer;
+    delete cfg.certs_url;
+    // A test session, by contrast, is the identity on a password host: the kernel signs it, so there is no browser session to find.
+    const k = signingKey(join(secrets, "identity", "test.pem"))();
+    const nowS = Math.floor(clock / 1000);
+    const claims = `${b64({ alg: "EdDSA", kid: k.kid, typ: "JWT" })}.${b64({ iss: "aidenhq-test", aud: "roadmap.example.com", app: "roadmap", sub: subOf("ann@example.com"), email: "ann@example.com", jti: "7".repeat(32), iat: nowS, exp: nowS + 60 })}`;
+    const testTok = `${claims}.${sign(null, Buffer.from(claims), k.key).toString("base64url")}`;
+    const tg = createGate({ config: () => ({ ...cfg, test_user: { email: "ann@example.com", apps: ["roadmap"] }, test_keys_file: join(secrets, "identity", "keys.json") }), now: () => clock, log: () => {}, testSessions: true });
+    const tPort = await listen(tg);
+    try {
+      const asTest = await new Promise((resolve) => request({ host: "127.0.0.1", port: tPort, path: "/plan?q=1", headers: { host: "roadmap.example.com", "x-aidenhq-test-session": testTok } }, (r) => { let body = ""; r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, body })); }).end());
+      assert.equal(asTest.status, 200);
+      const atClock = createIdentity({ app: "roadmap", keysFile: join(secrets, "identity", "keys.json"), now: () => clock / 1000 });
+      assert.deepEqual(atClock.identify({ method: "GET", url: "/", headers: JSON.parse(asTest.body) }), { sub: subOf("ann@example.com"), email: "ann@example.com", name: "Ann Ö", role: "member", kind: "person" });
+      assert.equal(JSON.parse(asTest.body)["x-aidenhq-test-session"], undefined);
+    } finally { tg.close(); tg.closeAllConnections(); }
   } finally {
     for (const s of [g, auth]) { s.close(); s.closeAllConnections(); }
   }
