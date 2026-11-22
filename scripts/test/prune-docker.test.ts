@@ -42,16 +42,29 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   for (const e of execs.slice(0, -1)) assert.ok(e.startsWith("-"), `not independent, a failing one skips the rest: ${e}`);
   assert.equal(execs.at(-1), "/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-verify.sh");
   assert.ok(!execs.at(-1).startsWith("-"), "the verification's exit code must reach systemd");
+  // A pruning command that hangs must not hold the oneshot until TimeoutStartSec and take the later steps with it: each
+  // one has a timeout well under the service's ceiling.
+  for (const e of execs.slice(0, -1)) assert.match(e, /^-(\/usr\/bin\/timeout \d+m|\/usr\/bin\/env bash .*\/usr\/bin\/timeout \d+m)/, `no per-command timeout: ${e}`);
+  const ceiling = Number(/^TimeoutStartSec=(\d+)min$/m.exec(service)?.[1]);
+  const sum = execs.slice(0, -1).map((e) => Number(/(\d+)m\b/.exec(e)?.[1] ?? 0)).reduce((a, b) => a + b, 0);
+  assert.ok(ceiling > sum, `TimeoutStartSec ${ceiling}min must exceed the per-command timeouts (${sum}min)`);
   // The cache cap in both flag forms: buildx knows --max-used-space, the classic fallback only --keep-storage (a CLI
   // without the buildx plugin fails the first with "unknown flag"), and each is a no-op where the other works.
-  assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --max-used-space 20GB"), `buildx cache cap: ${execs.join(" | ")}`);
-  assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/timeout 15m /usr/bin/docker builder prune -f --max-used-space 20GB"), `buildx cache cap: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/timeout 15m /usr/bin/docker builder prune -f --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
   // The image and container prunes go through the step wrapper, which records their status for the verification: the `-`
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
   assert.match(service, /^Environment=AIDENHQ_DIR=/m);
   assert.match(service, /^EnvironmentFile=-%h\/\.config\/aidenhq-prune-docker\.env$/m, "the applied checkout wins over the one setup recorded");
+  // Enabling is not starting: on a fresh host a prune run can fail (a cold `docker system df` past its cap) and must not
+  // make the install fail, so setup enables the timer (and the service, for boot) without `--now` on the service.
+  const setup = readFileSync(join(repo, "ops/setup.sh"), "utf8");
+  const now = /systemctl --user enable --now ([^\n]*)/.exec(setup)?.[1] ?? "";
+  assert.ok(!/prune-docker\.service/.test(now), `setup starts prune-docker.service synchronously: ${now}`);
+  assert.match(setup, /systemctl --user enable --now [^\n]*prune-docker\.timer/);
+  assert.match(setup, /systemctl --user enable prune-docker\.service$/m);
   // No volume or data deletion: the unit never takes --volumes or prunes volumes.
   assert.doesNotMatch(service, /system prune|--volumes|volume prune/);
 });
@@ -101,6 +114,7 @@ test("the apply-time prunes are independent too, and keep the same retention", (
 function fakeDocker({
   containers = [], cache = "10.52GB", daemonUp = true, cacheRow = true, imagePruneFails = false,
   uninspectable = [], vanishOnRm = [], vanishOnInspect = [], relistFails = false, systemDfFails = false,
+  restartedBeforeRm = [],
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prune-docker-"));
   const bin = join(dir, "bin");
@@ -113,8 +127,11 @@ function fakeDocker({
   const rows = containers.map((c) => `${c.id}|${c.running}|${c.finished}|${c.service ?? ""}|${c.computer ?? ""}|${c.oneoff ? "labelled" : ""}`).join("\n");
   const rowsFile = join(dir, "rows");
   writeFileSync(rowsFile, rows + "\n");
+  const seenFile = join(dir, "seen");
+  writeFileSync(seenFile, "");
   writeFileSync(join(bin, "docker"), `#!/usr/bin/env bash
 rows_file="${rowsFile}"
+seen_file="${seenFile}"
 printf '%s\\n' "$*" >> "${calls}"
 case "$1 $2" in
   # \`docker info\` has no positional operand: match it on its whole line, before "$1 $2" ("info ").
@@ -137,6 +154,13 @@ case "$1 $2" in
     esac
     case " ${uninspectable.join(" ")} " in
       *" $id "*) echo "Error response from daemon: container $id is not running" >&2; exit 1 ;;
+    esac
+    # The second read of a container that was restarted mid-run: it is running again, exactly the race the step must not
+    # delete through.
+    case " ${restartedBeforeRm.join(" ")} " in
+      *" $id "*)
+        if grep -qx "$id" "\${seen_file}"; then printf 'true|0001-01-01T00:00:00Z||\n'; exit 0; fi
+        printf '%s\\n' "$id" >> "\${seen_file}" ;;
     esac
     while IFS='|' read -r cid running hours service computer oneoff; do
       [ "$cid" = "$id" ] || continue
@@ -203,6 +227,19 @@ test("only one-offs stopped over a day are removed, and never with their volumes
   assert.match(r.out, /never: never started, kept/, r.out);
   assert.doesNotMatch(r.calls, /rm -[a-z]*v/, "docker rm takes no -v: volumes stay");
   assert.equal(r.status, 0, r.out);
+});
+
+test("a one-off that is restarted between the check and the removal is kept", () => {
+  // The first inspect says it has been stopped for 30 h, so it is eligible; the re-check immediately before `docker rm`
+  // sees it running again (another process restarted it). Removing it then would delete a live container's layer.
+  const d = fakeDocker({
+    containers: [{ id: "racy", running: "false", finished: "30", oneoff: true }],
+    restartedBeforeRm: ["racy"],
+  });
+  const r = d.run("ops/prune-docker-containers.sh");
+  assert.equal(r.status, 0, r.out);
+  assert.doesNotMatch(r.calls, /^rm racy$/m, r.calls);
+  assert.match(r.out, /racy: changed state since it was inspected/);
 });
 
 test("the apply-time container step and the unit's are the same script, so the retention has one home", () => {

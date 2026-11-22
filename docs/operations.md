@@ -211,8 +211,11 @@ the alert line. It also removes one-off containers — a container with no compo
 apply's generation snapshot had just stopped, and its own check reads `State.FinishedAt`; a container with no stop time
 (created and never started) is kept, since the day cannot be measured against it. It only reaches containers that carry
 the opt-in label `aidenhq.oneoff=1` (the one `ops/security-sbom.sh` puts on its scan container): a container someone
-started by hand is never removed, however old. No volume is touched (`docker rm` without `-v`). That step is
-`ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its rebuilds.
+started by hand is never removed, however old. The stop time is read again immediately before `docker rm`, so a one-off
+that was restarted in between is kept rather than deleted on a stale reading. No volume is touched (`docker rm` without
+`-v`). That step is `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its
+rebuilds. Each prune command has its own `timeout` under the unit's `TimeoutStartSec`, so one that hangs cannot stop
+systemd reaching the later steps and the verification.
 
 The image and container steps run through `ops/prune-docker-step.sh`, which records the step's exit status for the
 verification: the `-` prefix keeps a failure from skipping the next step, and the verification reads the record, so a

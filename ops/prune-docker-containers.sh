@@ -11,6 +11,10 @@
 # (ops/lib/generations.sh genSnapshot) had just stopped. A container with no stop time (created and never started) is
 # kept: the day cannot be measured against it.
 #
+# The stop time is read again immediately before `docker rm`: a container that was eligible when first inspected but has
+# since been started and stopped again is under a day old now, and is kept. (Docker's `rm` has no compare-and-delete, so
+# this narrows that window rather than closing it; a one-off that someone restarts mid-run is not worth losing.)
+#
 # No volume is ever removed: `docker rm` without -v drops the writable layer and keeps the volumes (app-warehouse_pgdata
 # included). The unit prefixes this step with `-`, so its exit code never skips a later step; ops/prune-docker-verify.sh
 # re-reads the host afterwards and fails the unit when anything this should have removed is still there.
@@ -24,15 +28,18 @@ failed=0
 say() { printf 'prune-docker: %s\n' "$*"; }
 fail() { failed=1; printf 'prune-docker: %s\n' "$*" >&2; }
 exists() { "$DOCKER" ps -aq 2>/dev/null | grep -qx -- "$1"; }
+state() { # id -> "running|finished|service|computer", empty when the container is unreadable
+  "$DOCKER" inspect \
+    -f '{{.State.Running}}|{{.State.FinishedAt}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "aidenhq.computer"}}' \
+    "$1" 2>/dev/null
+}
 
 ids="$("$DOCKER" ps -aq --filter "label=$LABEL")" || { ids=""; fail "could not list the containers labelled $LABEL"; }
 now="$(date +%s)"
 # shellcheck disable=SC2086 # container ids, one word each
 for id in $ids; do
   running="" finished="" service="" computer=""
-  IFS='|' read -r running finished service computer <<< "$("$DOCKER" inspect \
-    -f '{{.State.Running}}|{{.State.FinishedAt}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "aidenhq.computer"}}' \
-    "$id" 2>/dev/null)"
+  IFS='|' read -r running finished service computer <<< "$(state "$id")"
   case "$running" in
     true) continue ;; # running: in use, whatever started it
     false) ;;
@@ -50,6 +57,13 @@ for id in $ids; do
   age=$(( now - stopped ))
   if [ "$age" -lt "$STOPPED_SECS" ]; then
     say "container $id: stopped $(( age / 3600 )) h ago, kept (under $(( STOPPED_SECS / 3600 )) h)"
+  elif ! IFS='|' read -r again_running again_finished again_service again_computer <<< "$(state "$id")" \
+      || [ "$again_running" != false ] || [ -n "$again_service" ] || [ -n "$again_computer" ]; then
+    say "container $id: changed state since it was inspected (running or unreadable), kept"
+  elif ! again_stopped="$(date -u -d "$again_finished" +%s 2>/dev/null)" || [ "$again_stopped" -le 0 ]; then
+    say "container $id: stop time unreadable now ($again_finished), kept"
+  elif [ $(( "$(date +%s)" - again_stopped )) -lt "$STOPPED_SECS" ]; then
+    say "container $id: started and stopped again since the first check, kept (under $(( STOPPED_SECS / 3600 )) h)"
   elif out="$("$DOCKER" rm "$id" 2>&1)"; then
     say "container $id: removed, stopped $(( age / 3600 )) h ago"
   elif exists "$id"; then

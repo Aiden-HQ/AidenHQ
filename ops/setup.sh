@@ -605,7 +605,12 @@ phase units
 say "Kernel, model gateway and run pruning (user units)"
 # The units were installed before the apply (step 7).
 # aidenhq-kernel: every model and tool call (kernel/src); the only holder of the OpenRouter key and the connections' keys.
-as_user systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer
+# prune-docker: the timer alone. `--now` on the .service would make a successful prune a prerequisite for the install: on a
+# fresh host `docker system df` can exceed its cap right after the first builds, the verification fails the unit, and
+# `enable --now` returns nonzero before the remaining setup steps. The timer's Persistent=true runs the unit at once if it
+# is due, and its failure is a UnitFailed alert, not an install failure.
+as_user systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.timer
+as_user systemctl --user enable prune-docker.service
 # aidenhq-apply-recover: at boot, finishes an apply that died mid-run (ops/apply-config.sh --recover).
 as_user systemctl --user enable aidenhq-apply-recover
 [ "${KERNEL_RESTART:-0}" = 0 ] || as_user systemctl --user restart aidenhq-kernel
