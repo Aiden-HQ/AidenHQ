@@ -121,10 +121,20 @@ export async function reconcileTick(p: Platform, log: Log): Promise<void> {
       // The failed checks' generated reasons (never page text): the maintainer sees why it rolled back.
       const why = r.checks && failed(r.checks).length ? `: ${summary(r.checks)}` : "";
       // A stopped app says so first (the incident keeps 200 characters), and replaces an incident an earlier refused commit
-      // opened ("rolled back"): the app is down now.
-      if (r.stopped) p.store.closeIncident(app.name);
-      if (r.stopped) await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} refused; ${r.stopped} (as does the rollback target ${r.previous?.slice(0, 8)})${why}`);
-      else if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}${why}; ${NOTE}`);
+      // opened ("rolled back"): the app is down now. A build_failed commit is retried, so do not close and re-raise the
+      // same teardown failure on every attempt: it stands while that incident is open. Once it closes (the app recovered)
+      // a teardown failure raises a new one, even for the same commit. A retry whose outcome is no longer that teardown
+      // replaces the incident too: the teardown warning must not outlive the teardown it named.
+      const detail = r.stopped ? `deploy of ${head.slice(0, 8)} refused; ${r.stopped}${r.previous ? ` (as does the rollback target ${r.previous.slice(0, 8)})` : ""}${why}` : undefined;
+      const open = p.store.openIncident(app.name);
+      if (open?.detail.includes("teardown failed") && open.detail !== detail?.slice(0, 200)) p.store.closeIncident(app.name);
+      if (detail) {
+        const cur = p.store.openIncident(app.name);
+        if (!(cur?.kind === "deploy_failed" && cur.detail === detail.slice(0, 200))) {
+          p.store.closeIncident(app.name);
+          await p.raise(app.name, "deploy_failed", detail);
+        }
+      } else if (r.status !== "healthy") await p.raise(app.name, "deploy_failed", `deploy of ${head.slice(0, 8)} ${r.status}${r.previous ? `, rolled back to ${r.previous.slice(0, 8)}` : ""}${why}; ${NOTE}`);
     } catch (err) {
       // Nothing started (fetch, checkout, policy, secrets): retried next tick, not recorded as a deploy, paged once per commit.
       p.errors.set(app.name, String((err as Error).message ?? err).slice(0, 300));

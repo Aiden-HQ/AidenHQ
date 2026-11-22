@@ -161,22 +161,30 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   async function syncEdge(): Promise<void> {
     const want = new Map<string, EdgeTarget>();
     const all = apps();
-    await refreshNode(all.some((a) => exposes(a) && a.host === "local" && store.goodDeploys(a.name).length)).catch((err) => log.warn({ err: String(err) }, "apps node login check failed"));
+    await refreshNode(all.some((a) => exposes(a) && a.host === "local" && store.publishable(a.name))).catch((err) => log.warn({ err: String(err) }, "apps node login check failed"));
     // Healthy previews of served apps too (previews.ts), at their own ports.
     const previews = store.previews().flatMap((r) => {
       const parent = all.find((a) => a.name === r.app);
       return r.status === "healthy" && parent ? [previewApp(parent, r.pr, r.port)] : [];
     });
-    for (const app of [...all, ...previews]) {
-      if (!exposes(app) || app.host !== "local" || !store.goodDeploys(app.name).length) continue;
-      const t = engine.deployed(app) ? edgeTarget(app, engine.compose(app)) : undefined;
-      if (t) want.set(`app-${app.name}`, t);
-    }
-    // The gate's doors (doors.ts): the same apps the node would serve, at their registry port on the host's loopback.
+    // The gate's doors (doors.ts) first: the same apps the node would serve, at their registry port on the host's loopback.
+    // Written before any app's generated Compose file is read, so a withheld app's door closes even when a Compose file
+    // elsewhere is unreadable (a throw below must not leave a withdrawn route up).
     try {
-      if (cfg.doorsFile) writeAtomic(cfg.doorsFile, `${JSON.stringify(Object.fromEntries(all.filter((a) => exposes(a) && a.host === "local" && store.goodDeploys(a.name).length).map((a) => [a.name, a.port])), null, 1)}\n`);
+      if (cfg.doorsFile) writeAtomic(cfg.doorsFile, `${JSON.stringify(Object.fromEntries(all.filter((a) => exposes(a) && a.host === "local" && store.publishable(a.name)).map((a) => [a.name, a.port])), null, 1)}\n`);
     } catch (err) {
       log.warn({ err: String(err) }, "doors file not written");
+    }
+    // Each app's own target, read one at a time: one unreadable Compose file must not keep the others from being served.
+    for (const app of [...all, ...previews]) {
+      if (!exposes(app) || app.host !== "local" || !store.publishable(app.name)) continue;
+      let t: EdgeTarget | undefined;
+      try {
+        t = engine.deployed(app) ? edgeTarget(app, engine.compose(app)) : undefined;
+      } catch (err) {
+        log.warn({ app: app.name, err: String(err) }, "apps node target skipped");
+      }
+      if (t) want.set(`app-${app.name}`, t);
     }
     writeServeConfig(cfg.edgeDir, [...want.values()]);
     // The gate's view: shared apps' healthy previews and their loopback ports (it checks each against its own config).
@@ -238,7 +246,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     if (nodeConfigured() && !nodeUp) return { unpublished: WAITING_FOR_NODE };
     const d = readDoor(cfg.gateFile);
     if (!d) return { unpublished: NO_DOOR };
-    if (!(app.host === "local" && store.goodDeploys(app.name).length)) return { unpublished: NOT_SERVED };
+    if (!(app.host === "local" && store.publishable(app.name))) return { unpublished: NOT_SERVED };
     const ip = doorIp(d.base);
     if (d.scheme === "https" && !(ip && certOk(doorHost(d, app.name), ip))) return { unpublished: WAITING_FOR_CERTIFICATE };
     return { url: doorUrl(d, app.name) };
