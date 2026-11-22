@@ -8,8 +8,8 @@
 //   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
 //                            (the grader resolves a card a report cites; never the card's args or its requester)
 //   GET /v1/work?agent=<id>  an agent's last 50 jobs (newest first), each with how it ended and the routine its task traces to,
-//                            and for the board's timeline the wake that started it, why it ended, its billed cost and the
-//                            records the agent filed while it ran: { jobs }
+//                            and for the board's timeline the wake that started it, why it ended, its billed cost, whether
+//                            it was a quiet routine run and the records the agent filed while it ran: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
 //                            UTC day from the gateway ledger: { records, usage } (the Fleet Steward's scorecards; each record says
 //                            whether it is a `judged` rejection: the AI reviewer's, not code's)
@@ -52,6 +52,8 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       cause: (wake?.cause as string | undefined) ?? null,
       caused_by: wake ? (String(factData(`wake:${wake.key}`, "wake.opened")?.author ?? "") || null) : null,
       cost_usd: typeof ended?.cost_usd === "number" ? ended.cost_usd : null,
+      // A routine run that only closed or parked its task (quiet.ts, in its job.ended fact).
+      quiet: ended?.quiet === true,
       error: failed ? (String(ended?.why || "") || String(r.final || r.state).split("\n")[0]!).slice(0, 300) : null,
       writes,
     };

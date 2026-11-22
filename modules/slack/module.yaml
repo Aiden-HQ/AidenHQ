@@ -55,6 +55,9 @@ contributes:
 # A channel (channel@1): what the owner writes in their command channel is posted as theirs (stamped [slack]). As a transport,
 # the kernel sends it owner-channel's messages one at a time (transport: below), with this module's own token.
 privileged: [ speaks-as-owner ]
+# kernel.events: slack-live sends each kept Slack event to the kernel's event router (POST /v1/events) with this module's own token.
+roles:
+  requests: [ kernel.events ]
 providers:
   channel:
     transport: http://slack-live:8089/transport/send
@@ -78,6 +81,9 @@ connections:
       named: [ slack_read_canvas, slack_list_channel_members, slack_read_file, slack_read_list, slack_search_emojis, slack_get_reactions ]
       write: [ slack_send_message_draft ]
       destructive: [ slack_send_message, slack_schedule_message, slack_add_reaction, slack_create_conversation, slack_create_list, slack_update_list, slack_add_list_record, slack_update_list_record, slack_create_canvas, slack_update_canvas, slack_get_file_upload_url, slack_complete_file_upload ]
+    # Routines' events (kernel events.ts), from the live listener (advanced mode): a routine subscribes to a channel its agent's
+    # slack_read_channel reaches.
+    events: { resource: "channel id", kinds: [ message, app_mention ], filter: [ kind, author, contains, bot ], reads: [ slack_read_channel ] }
   slack_live:
     setup: "Set it up on the board (#/setup/slack, Aiden in Slack with your own app): paste the two tokens, then DM the bot the pairing code. The app's manifest: slack-app-manifest.yml."
     url: http://slack-live:8089/mcp

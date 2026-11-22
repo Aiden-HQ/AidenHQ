@@ -50,6 +50,7 @@ const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.apply": "files instance applies",
   "kernel.checks": "runs check jobs",
   "kernel.cp-read": "reads the control plane as the owner",
+  "kernel.events": "sends the events of its connections to subscribed routines, and reads their batches for their runs",
   "kernel.facts": "records flow facts of the types it declares",
   "kernel.flow-read": "reads the fleet's flow timelines and metrics",
   "kernel.grader": "mints grader tokens",

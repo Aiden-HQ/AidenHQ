@@ -20,6 +20,8 @@ export interface AgentJob {
   cause?: string | null;
   caused_by?: string | null;
   cost_usd?: number | null;
+  /** A routine run that only closed or parked its task (kernel quiet.ts): left out of the timeline. */
+  quiet?: boolean;
   error?: string | null;
   writes?: { id: string; kind: string; tier: number; state: string; decided_by: string | null; review_code: string | null; created_at: string }[];
 }
@@ -100,7 +102,7 @@ export function triggerWords(cause: string | null | undefined, by: string | null
 /** The kernel's jobs as the Activity tab shows them. `issues`: what the board already holds, for task titles (else the identifier). */
 export function timelineOf(jobs: AgentJob[], { agents = [], issues = [], routines = [] }: { agents?: Agent[]; issues?: Issue[]; routines?: Routine[] } = {}): TimelineEntry[] {
   const byId = new Map(issues.map((i) => [i.id, i]));
-  return jobs.map((j) => {
+  return jobs.filter((j) => !j.quiet).map((j) => {
     const issue = byId.get(j.task);
     const routine = j.routine ? routines.find((r) => r.id === j.routine) : undefined;
     return {

@@ -193,5 +193,13 @@ const binding = cfg.botToken ? {
   mention: (ev: any) => mention(ev, { store, thread: (b) => kernel("/v1/channel/thread", b, channelToken), react: async (channel, timestamp, name) => void (await slackApi("reactions.add", { channel, timestamp, name })) }),
 } : undefined;
 
-if (appToken) void startSocket({ appToken, store, onKept: poke, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), log });
+// Routines' events: each kept event to the kernel's event router with this module's own token (role kernel.events). Any 2xx is
+// taken (queued, skipped or dropped); a 429 or 5xx throws so Slack redelivers; any other refusal is logged and passed.
+const forward = async (e: unknown) => {
+  const res = await fetch(`${kernelUrl}/v1/events`, { method: "POST", headers: { authorization: `Bearer ${channelToken}`, "content-type": "application/json" }, body: JSON.stringify(e), signal: AbortSignal.timeout(15_000) });
+  if (res.status === 429 || res.status >= 500) throw new Error(`POST /v1/events -> ${res.status}`);
+  if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");
+};
+
+if (appToken) void startSocket({ appToken, store, onKept: poke, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");
