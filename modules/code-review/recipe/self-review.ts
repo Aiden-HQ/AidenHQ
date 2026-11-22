@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// An Engineer's review of its own committed change before it publishes (skill write-code), in its box: the code-review check's
+// An Engineer's review of its own committed change before it publishes (skill publish), in its box: the code-review check's
 // codex-native engine (engines.ts), brief, scrub, clean and severity rule (brief.ts), through the job's gateway. Sol, as the PR
 // gate: the first review of a branch is medium over the whole change; each re-run is low, over what changed since the last
 // reviewed commit when that review left nothing important open (the gate's on_push incremental review: the engine's base is that

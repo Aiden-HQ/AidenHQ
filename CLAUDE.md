@@ -88,7 +88,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   - The wake inbox and dispatch: the only way an agent job starts.
   - Paperclip: tasks and schedules only.
 - **Rules live in one place.**
-  - How code is written lives in the `write-code` skill. How work is delegated lives in `delegate-work`. Whom to route
+  - How code is written lives in the `write-code` skill, how it is published in `publish`. How work is delegated lives in `delegate-work`. Whom to route
     work to lives in each agent's one-line `description:` (served by `task_team`). Cross-agent behaviour is a module skill
     or prompt.
   - A handbook links the skill; it never copies the rule. Fix a rule at its source.
