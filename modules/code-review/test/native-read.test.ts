@@ -10,15 +10,18 @@ import { runEngine } from "../recipe/engines.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
-async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean } = {}) {
+async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean; lockOnly?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "native-read-"));
   const repo = join(dir, "repo"), bin = join(dir, "bin");
   mkdirSync(repo); mkdirSync(bin);
   sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t");
   writeFileSync(join(repo, "a"), "1\n"); sh(repo, "add", "a"); sh(repo, "commit", "-qm", "base");
   const base = sh(repo, "rev-parse", "HEAD");
+  if (opts.lockOnly) { writeFileSync(join(repo, "package-lock.json"), "{}\n"); sh(repo, "add", "."); sh(repo, "commit", "-qm", "lock"); }
+  else {
   writeFileSync(join(repo, "a"), "2\n"); sh(repo, "commit", "-qam", "one");
   writeFileSync(join(repo, "b"), "3\n"); sh(repo, "add", "b"); sh(repo, "commit", "-qm", "two");
+  }
   if (opts.files) {
     // A quoted path (non-ASCII, a space) and a rename that git pairs in one header.
     writeFileSync(join(repo, "café x.txt"), "4\n"); writeFileSync(join(repo, "old.txt"), "line1\nline2\nline3\nline4\n");
@@ -45,3 +48,5 @@ test("git show HEAD is a part of the change, not the read", async () => assert.e
 test("one file of two is not the read", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a`), false));
 test("quoted paths and a rename in git's default diff are covered", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD`, { files: true }), true));
 test("a changed-file list that can't be made is not clean", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD`, { badBase: true }), false));
+test("headers without a hunk (a cut-off output) are not the read", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD | grep -v '^@@\\|^[-+ ]'`), false));
+test("only a lockfile changed: there is nothing to require", async () => assert.equal(await readOf(() => "true", { lockOnly: true }), true));

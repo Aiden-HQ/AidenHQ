@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { runEngine } from "./engines.ts";
+import { changeFiles, runEngine } from "./engines.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"]; // the repository's own, from the merge base (never the branch's)
@@ -43,6 +43,11 @@ async function main(): Promise<{ out: string[]; code: number }> {
   if (git("status", "--porcelain")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
   if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
 
+  // Only lockfiles or generated files changed: nothing to review (the engine's own rule for what a review must see).
+  if (changeFiles(root, from)?.length === 0) {
+    writeFileSync(memo, JSON.stringify({ branch, base, head, open: 0 }));
+    return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles or generated files changed; no model ran)`], code: 0 };
+  }
   // The gateway and token under the names the engines read; nothing else of the job's env goes on.
   process.env.OPENROUTER_BASE_URL = `${gateway.replace(/\/$/, "")}/api/v1`;
   process.env.OPENROUTER_API_KEY = token;

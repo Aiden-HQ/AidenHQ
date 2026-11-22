@@ -427,6 +427,16 @@ args = [${[join(HERE, "review-tools.ts"), repo.root, repo.base].map(q).join(", "
 ` : ""}`;
 }
 
+/** The files of the change from `base` that a review must see, renames as delete and add: the path and whether it has a hunk (a binary
+ * file, a mode change or an empty file has none). Lockfiles and generated files are no requirement. undefined when git can't list them. */
+export function changeFiles(root: string, base: string): { path: string; hunks: boolean }[] | undefined {
+  try {
+    const out = execFileSync("git", ["-c", "core.quotePath=false", "diff", "--no-renames", "--numstat", "-z", base, "HEAD"], { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 });
+    return out.split("\0").filter(Boolean).map((l) => { const [a, r, ...p] = l.split("\t"); return { path: p.join("\t"), hunks: a !== "-" && Number(a) + Number(r) > 0 }; })
+      .filter((f) => !/(^|\/)(go\.sum|bun\.lockb)$|[-.]lock(\.json|\.yaml)?$|\.snap$|\.map$|\.min\.(js|css)$/.test(f.path));
+  } catch { return undefined; }
+}
+
 /** A git header line with its C-quoted names ("a/caf\303\251") decoded. */
 export const unquoteGit = (line: string) => line.replace(/"((?:[^"\\]|\\.)*)"/g, (_m, q: string) => {
   const bytes: number[] = [];
@@ -446,17 +456,25 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));
   const r = await run("codex", ["exec", "review", "--base", base, "--ignore-rules", "--json", "-o", join(tmp, "answer.txt")], { cwd: root, minutes, env: codexEnv(home) });
   const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  // It read the change: commands that name the requested base (its sha, the merge base's, or `git merge-base`) printed the diff of every file the change touches, renames as delete and add (a lockfile or
-  // generated file may be left out). `git show HEAD` or a cut-off output doesn't count: that is a part of the change.
-  const wanted = (() => { try { return execFileSync("git", ["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", base, "HEAD"], { cwd: root, encoding: "utf8" }).split("\0").filter((p) => p && !/(^|\/)(go\.sum|bun\.lockb)$|[-.]lock(\.json|\.yaml)?$|\.snap$|\.map$|\.min\.(js|css)$/.test(p)); } catch { return undefined; } })();
+  // It read the change: commands that name the requested base (its sha, the merge base's, or `git merge-base`) printed the patch of every file the change touches, a hunk each (a lockfile or generated
+  // file may be left out). Codex 0.166.0's review prompt only says "Run `git diff <base>`": the model fetches the diff itself, so a
+  // `git show HEAD` or a cut-off output is a part of the change, not the read.
+  const wanted = changeFiles(root, base);
   // The base as codex names it: the sha, the merge base's sha, or `git merge-base …` computing it.
   const names = [base, (() => { try { return execFileSync("git", ["merge-base", base, "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { return ""; } })()].filter(Boolean).map((x) => x.slice(0, 7));
   const namesBase = (c: unknown) => /git\s+merge-base\b/.test(String(c ?? "")) || names.some((n) => String(c ?? "").includes(n));
   const shown = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution" && namesBase(e.item.command)).map((e) => String(e.item!.aggregated_output ?? "")).join("\n");
   // A change's file list that can't be made is no coverage proof. Codex's own diff may quote paths (git's core.quotePath) and pair a
   // rename's two names in one header: decode the headers, and a file is covered when a header names it on either side.
-  const headers = shown.split("\n").filter((l) => l.startsWith("diff --git ")).map(unquoteGit);
-  const read = headers.length > 0 && wanted !== undefined && wanted.every((p) => headers.some((h) => h.startsWith(`diff --git a/${p} `) || h.endsWith(` b/${p}`)));
+  // Codex's own diff output as blocks, one per file header, each with whether a hunk (`@@`) followed it: headers alone are not the patch.
+  const blocks: { header: string; hunk: boolean }[] = [];
+  for (const l of shown.split("\n")) {
+    if (l.startsWith("diff --git ")) blocks.push({ header: unquoteGit(l), hunk: false });
+    else if ((l.startsWith("@@ ") || l.startsWith("similarity index 100%")) && blocks.length) blocks.at(-1)!.hunk = true; // a pure rename has no hunk
+  }
+  const covers = (p: string, b: { header: string }) => b.header.startsWith(`diff --git a/${p} `) || b.header.endsWith(` b/${p}`);
+  // Nothing to require (only lockfiles or generated files changed): nothing to read. A file list that can't be made is no proof.
+  const read = wanted !== undefined && wanted.every((f) => blocks.some((b) => covers(f.path, b) && (!f.hunks || b.hunk))) && (wanted.length === 0 || blocks.length > 0);
   let rollouts: string[] = [];
   try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
   const v = nativeReview(rollouts);
