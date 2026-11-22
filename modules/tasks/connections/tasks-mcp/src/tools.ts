@@ -1381,6 +1381,13 @@ const TOOLS: Record<string, Tool> = {
       // The crew: an agent's sub-task on the user's task stays the agent's, as `todo` (a valid
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
       if (ownPart) {
+        // The owner can close the part while this comment posts, and the board has no conditional update (the kernel's
+        // closed-task guard covers `settleScope` only, and an owner-made part is not in it). So read the status again
+        // right before the write: a part closed meanwhile stays closed, and only the report it already posted stands.
+        const latest = await api("GET", `/api/issues/${issueRef(issue)}`);
+        if (["done", "cancelled"].includes(String(latest.status ?? ""))) {
+          throw new Error(`Refused: ${latest.identifier ?? current.identifier ?? current.id} was ${latest.status} by the time the handoff was applied, so it stays closed: its report is posted, and the part was not moved to todo or made to wait. File a new task for anything still wanted.`);
+        }
         const i = await patchIssue(issue, { status: "todo", comment: body });
         // It waits on the user's reply (their comment wakes it): an owner wait carrying the handoff's words, so it isn't idle work.
         if (current.id === CURRENT()) {

@@ -196,6 +196,47 @@ test("a closed own-part is refused before its comment, so a handoff cannot reope
   }
 });
 
+test("a part the owner closes while the handoff's report posts is not reopened", async () => {
+  // The board has no conditional update, so the guard is a re-read right before the status write: the owner closing the
+  // part while `postLeadingParts` runs must leave it closed, with its report posted and no owner wait recorded.
+  const before = waits.length;
+  const issues = { cur: { ...ownPart }, par: { ...par } };
+  const patches = [];
+  let closed = false;
+  const handler = (req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const url = req.url ?? "";
+      const send = (x) => (res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+      if (url === "/api/agents/me") return send({ id: "me", name: "Fleet Steward" });
+      if (url.startsWith("/api/companies/")) return send({ defaultResponsibleUserId: "owner" });
+      const m = /^\/api\/issues\/([^/?]+)(\/comments)?/.exec(url);
+      if (m && m[2] && req.method === "POST") {
+        // The owner closes the part at the moment the report's first part is posted.
+        closed = true;
+        issues[m[1]].status = "done";
+        return send({ id: "c1" });
+      }
+      if (m && m[2]) return send([]);
+      if (m && req.method === "PATCH") {
+        if (closed) throw new Error("the handoff must not patch a part the owner closed");
+        patches.push({ issue: m[1], ...JSON.parse(body) });
+        return send(Object.assign(issues[m[1]], JSON.parse(body)));
+      }
+      if (m) return send(issues[m[1]] ?? {});
+      res.statusCode = 404;
+      res.end("{}");
+    });
+  };
+  const r = await bridge({ handler, agents: { me: { key: "fleet-steward", roles: ["fleet-settle"] } }, task: "cur", acceptWaits: true }).call("task_handoff", { issue: "cur", comment: `Over to you.\n\n${'a long report line\n\n'.repeat(1200)}Final line.` });
+  const error = r.result?.isError ? r.result.content[0].text : undefined;
+  assert.match(error, /was done by the time the handoff was applied/);
+  assert.deepEqual(patches, []);
+  assert.equal(issues.cur.status, "done");
+  assert.equal(waits.length, before);
+});
+
 test("a fleet settler cannot hand off a part that is not this run's task", async () => {
   const before = waits.length;
   const { error, patches } = await handoff({ other: { ...ownPart, id: "other", identifier: "WOR-3", title: "Another part" }, par: { ...par } }, ["fleet-settle"], "cur", "other");
