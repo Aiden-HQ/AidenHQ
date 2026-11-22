@@ -240,11 +240,11 @@ export function createConnectionState(o: {
       return out;
     },
 
-    /** Once per UTC day: one digest line per need that still has waiting tasks and wasn't reported today. */
+    /** Once per UTC day: one digest line per need that still has waiting tasks and wasn't reported today (a full need only as a reminder: `hit` confirms it first). */
     tick(): void {
       const t = now(), today = day(t);
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
-      const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND ${LASTED} AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))`).all(today, t - LASTING) as Row[];
+      const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND (cause NOT IN ('not_connected', 'expired') OR reported_day IS NOT NULL) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))`).all(today) as Row[];
       for (const r of rows) {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
