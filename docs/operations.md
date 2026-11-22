@@ -411,15 +411,17 @@ noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var
 records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
 `src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` and keeps each target's
 archive in `data/modules/security/sbom/.archives` until its scan. Every image is saved under the lock, from a reference
-resolved there (an immutable id that holds the running platform manifest, else the tag itself), and the plan budgets the
-saves across the whole batch before any writes, so an image the batch cannot fit beside the others is a line, not a full
-disk; free space is checked again before each scan, with every archive still on disk. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
+resolved there (an immutable id that holds the running platform manifest, else the tag itself), sized as that same
+reference, and the plan budgets the saves across the whole batch before any writes, charging only the archive retained
+between scans (each scan's workspace is freed before the next). An image the batch cannot fit beside the archives already
+retained is a line, not a full disk; free space is checked again before each scan, with every archive still on disk. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
 than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
 demand can't be judged to fit). A second pass started while one holds `.lock` skips rather than running two at once.
 
-The container enumeration, the image target list and the `docker save`s of images whose tags have moved are taken under
-the host's apply lock (`data/apply.lock`), each Docker call bounded by a timeout and that phase by an overall deadline, so
-an apply neither runs against a half-applied snapshot nor waits on an unresponsive daemon. A pass that cannot enumerate
+The container enumeration, the image target list and every `docker save` are taken under the host's apply lock
+(`data/apply.lock`), each Docker call bounded by a timeout and the whole phase — from `docker version` before the first
+inspect to the last save — by an overall deadline, so an apply neither runs against a half-applied snapshot nor waits on
+an unresponsive daemon or a hung save. A pass that cannot enumerate
 (a failing `ps`, an inspect that fails for a still-running container, or a re-list that fails after such an inspect) keeps
 the previous batch instead of publishing a short one. The lock is released before the syft scans, and the snapshot
 deadline ends with the lock so a long host scan can't make a later check look overdue. Every image's archive is exported from the reference the lock

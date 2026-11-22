@@ -60,6 +60,11 @@ async function run(env = {}, {
 lockstate() { if [ -n "$FAKE_APPLY_LOCK" ] && flock -n "$FAKE_APPLY_LOCK" -c true 2>/dev/null; then echo free; else echo held; fi; }
 case "$1" in run|save) printf '%s\\n' "$*" >> "$CALLS" ;; esac
 [ "$1" = run ] && printf 'run %s\\n' "$(lockstate)" >> "$LOCKS"
+# The host scan is the twenty-minute one on a real box: FAKE_HOST_SCAN_SLEEP holds it open that long (seconds), so a test
+# can put the snapshot deadline inside it and prove the deadline ends with the snapshot.
+if [ "$1" = run ] && [ -n "$FAKE_HOST_SCAN_SLEEP" ] && [[ "$*" == *"--source-name host"* ]]; then
+  read -r -t "$FAKE_HOST_SCAN_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_HOST_SCAN_SLEEP")
+fi
 # rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
 [ "$1" = rm ] && exit 0
 # Only a container carrying this scanner's own label may be removed: inspect prints the label, or fails as Docker does.
@@ -115,6 +120,9 @@ case "$1" in
     fi
     if [ "$1" = save ]; then
       printf 'save %s\n' "$*" >> "$CALLS"; printf 'save %s\n' "$(lockstate)" >> "$LOCKS"
+      # A daemon that stops answering mid-save: FAKE_SAVE_SLEEP holds the call open, so a test can prove the snapshot
+      # deadline terminates it instead of holding the apply lock.
+      [ -n "$FAKE_SAVE_SLEEP" ] && read -r -t "$FAKE_SAVE_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_SAVE_SLEEP")
       shift
       file=""; id=""
       while [ "$#" -gt 0 ]; do
@@ -423,7 +431,7 @@ test("security-sbom: a tag that moves mid-pass is read from the image the lock v
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
-  assert.notEqual(scanned[1], "-", "the running image was scanned");
+  assert.notEqual(scanned[1], "-", `the running image was scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   const call = syft(calls, "image:aidenhq/board:local");
   assert.match(call.line, /docker-archive:\/image\.tar/, "read from the saved archive, not the mutable tag");
   assert.ok(!calls.some((c) => c.includes("docker:aidenhq/board:local")), `never the daemon source for a tag:\n${calls.join("\n")}`);
@@ -516,18 +524,23 @@ test("security-sbom: a failed follow-up listing keeps the previous batch", { ski
   assert.equal(batchRaw, sentinel, "the previous batch is the one the scanner still reads");
 });
 
-test("security-sbom: a long host scan does not expire the apply-lock snapshot budget for the tag rechecks", { skip: NOT_LINUX }, async () => {
-  // The snapshot budget is one second, and the host scan outlives it. With the deadline left set, every later tag
-  // export would be refused as "the tag moved"; the deadline must not reach past the snapshot.
-  const { status, out, targets, calls } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "1" }, {
-    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
-    tags: { "aidenhq/board:local": "sha256:1111" },
-    manifests: { "aidenhq/board:local": "sha256:1111" },
+test("security-sbom: a Docker save that stops answering is cut off by the snapshot deadline", { skip: NOT_LINUX }, async () => {
+  // The save hangs and the snapshot budget is two seconds. The call must be terminated, the image recorded as a line, and
+  // the pass must finish (releasing the apply lock) rather than hold it while an apply waits.
+  const started = Date.now();
+  const { status, out, targets, locks } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "2", FAKE_SAVE_SLEEP: "20" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 1024 },
   });
+  const took = (Date.now() - started) / 1000;
   assert.equal(status, 0, out);
-  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
-  assert.ok(scanned && scanned[1] !== "-", `the tag was not scanned after the snapshot deadline:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.equal(targets.filter((t) => t[0].startsWith("image:")).length, 1, "one line per image, no second manifest key");
+  assert.ok(took < 15, `the pass held the lock for ${took}s on a 2s budget`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, `the image was not recorded:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "it was not scanned");
+  assert.ok(locks.every((l) => l.startsWith("save held") || l.startsWith("run free")), locks.join("\n"));
 });
 
 test("security-sbom: a tagged image that cannot fit is a line and saves nothing", { skip: NOT_LINUX }, async () => {
@@ -565,4 +578,45 @@ test("security-sbom: an image is sized through any local reference that can expo
   assert.doesNotMatch(scanned[2], /no local image exports|No such image/);
   assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" other:local")), `the other tag did not export it:\n${calls.join("\n")}`);
   assert.match(syft(calls, "image:sha256:gone").line, /docker-archive:\/image\.tar/);
+});
+
+test("security-sbom: only the retained archive is charged, so two images that fit are both scanned", { skip: NOT_LINUX }, async () => {
+  // 45 GB free, a 30 GB floor: 15 GB of room. Two images whose archives are 5 GB each do not fit twice over (10 + 10), but
+  // their scans run one at a time, so only the two 5 GB archives are ever retained together. Charging each image twice
+  // would reject the second for no reason.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "45000000" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" },
+      { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:4444" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999", "gate:local": "sha256:8888" },
+    held: ["sha256:2222", "sha256:4444"],
+    sizes: { "sha256:2222": 5 * 1024 ** 3, "sha256:4444": 5 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  for (const name of ["image:sha256:1111", "image:sha256:3333"]) {
+    const scanned = targets.find((t) => t[0] === name);
+    assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(scanned[1], "-", `${name} was not scanned: ${scanned[2]}`);
+  }
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 2);
+});
+
+test("security-sbom: an image is sized as the reference that is exported, not another that answers", { skip: NOT_LINUX }, async () => {
+  // The running platform is held by `other:local` (an index), and the container's own id resolves to nothing. Sizing must
+  // read the index that will be saved, not fall back to a size the pass never proved covers the export.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "35000000" }, {
+    containers: [{ id: "c1", image: "sha256:gone", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:index" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:2222" },
+    held: ["sha256:index"],
+    // The index the save reads is 40 GB: it cannot fit in the 5 GB above the floor, whatever else might answer.
+    sizes: { "other:local": 40 * 1024 ** 3, "sha256:gone": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:gone");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the oversized export was not scanned");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran for an image that does not fit:\n${calls.join("\n")}`);
 });
