@@ -32,9 +32,9 @@
 //   step. Same sandbox and token rules as the harness's own engine; only that skill (never the repo's) is loaded. It reads the tree
 //   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deepsec } from "./deepsec.ts";
@@ -495,19 +495,47 @@ export function patchGroups(root: string, base: string, files: string[], budget 
  * The regular files of commit `head` written into `dir`, as the commit's blobs hold them: read with ls-tree and cat-file, so no
  * checkout filter, attribute or hook of the clone runs on them. Links and submodules are left out.
  */
-export function snapshot(root: string, head: string, dir: string) {
+export async function snapshot(root: string, head: string, dir: string) {
+  mkdirSync(dir, { recursive: true });
   const entries = gitSafe(root, ["ls-tree", "-r", "-z", "--full-tree", head]).split("\0").filter(Boolean)
     .flatMap((l) => { const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l); return m ? [{ exec: m[1] === "100755", sha: m[2]!, path: m[3]! }] : []; });
-  const out = spawnSync("git", ["cat-file", "--batch"], { cwd: root, input: `${entries.map((x) => x.sha).join("\n")}\n`, maxBuffer: 1 << 30, env: { ...process.env, ...gitEnv() } });
-  if (out.status !== 0 || !out.stdout) throw new Error("the commit's files could not be read");
-  let at = 0;
-  for (const x of entries) {
-    const nl = out.stdout.indexOf(10, at), size = Number(out.stdout.subarray(at, nl).toString().split(" ")[2]);
-    const body = out.stdout.subarray(nl + 1, nl + 1 + size);
-    at = nl + 1 + size + 1;
-    mkdirSync(dirname(join(dir, x.path)), { recursive: true });
-    writeFileSync(join(dir, x.path), body, { mode: x.exec ? 0o755 : 0o644 });
-  }
+  if (!entries.length) return;
+  const bad = () => new Error("the commit's files could not be read");
+  const child = spawn("git", ["cat-file", "--batch"], { cwd: root, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "pipe", "ignore"] });
+  child.stdin.on("error", () => {});
+  child.stdin.end(`${entries.map((x) => x.sha).join("\n")}\n`);
+  // The answers as they stream in, each checked (object id, type, size) and written to its file: nothing is held but a chunk.
+  let buf = Buffer.alloc(0), i = 0, fd = -1, left = 0, nl = false;
+  await new Promise<void>((ok, fail) => {
+    child.stdout.on("data", (d: Buffer) => {
+      try {
+        buf = Buffer.concat([buf, d]);
+        for (;;) {
+          if (nl) { if (!buf.length) return; buf = buf.subarray(1); nl = false; i++; }
+          if (fd < 0) {
+            if (i >= entries.length) { if (buf.length) throw bad(); return; }
+            const end = buf.indexOf(10);
+            if (end < 0) return;
+            const x = entries[i]!, h = buf.subarray(0, end).toString().split(" ");
+            if (h[0] !== x.sha || h[1] !== "blob" || !/^\d+$/.test(h[2] ?? "")) throw bad();
+            buf = buf.subarray(end + 1);
+            left = Number(h[2]);
+            mkdirSync(dirname(join(dir, x.path)), { recursive: true });
+            fd = openSync(join(dir, x.path), "w", x.exec ? 0o755 : 0o644);
+          }
+          const n = Math.min(left, buf.length);
+          writeSync(fd, buf, 0, n);
+          buf = buf.subarray(n);
+          left -= n;
+          if (left > 0) return;
+          closeSync(fd);
+          fd = -1;
+          nl = true;
+        }
+      } catch (err) { child.kill(); fail(err); }
+    });
+    child.on("close", (code) => (code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
+  });
 }
 
 /**
@@ -525,7 +553,7 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
   let cwd = root;
   if (head) {
     cwd = join(scratch, "tree");
-    snapshot(root, head, cwd);
+    await snapshot(root, head, cwd);
   }
   const roots = [cwd.replace(/\/$/, ""), realpathSync(cwd)];
   const findings: ReturnType<typeof nativeFindings> = [];

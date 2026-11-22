@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { patchGroups, runEngine } from "../recipe/engines.ts";
+import { patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
 import { place } from "../recipe/scope.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -269,4 +269,23 @@ test("with a commit to review at, codex works in a copy of its files, not the li
     assert.equal(execFileSync("cat", [join(scratch, "tree", "a.txt")], { encoding: "utf8" }), "a1\n", "the copy holds the reviewed commit's file");
     assert.equal(existsSync(marker), false, "no filter of the clone ran");
   } finally { model.close(); }
+});
+
+test("snapshot writes a commit's regular files exactly (binary, executable, nested), and makes the directory even for a commit with none", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "snap-")), repo = join(dir, "r");
+  mkdirSync(join(repo, "d"), { recursive: true }); sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t"); sh(repo, "config", "commit.gpgsign", "false");
+  const bin = Buffer.from([0, 1, 2, 255, 10, 13, 0]);
+  writeFileSync(join(repo, "d", "b.bin"), bin); writeFileSync(join(repo, "x.sh"), "echo\n"); writeFileSync(join(repo, "empty"), "");
+  sh(repo, "add", "."); sh(repo, "update-index", "--chmod=+x", "x.sh"); sh(repo, "commit", "-qm", "files");
+  const full = sh(repo, "rev-parse", "HEAD");
+  sh(repo, "rm", "-rq", "."); sh(repo, "commit", "-qm", "none");
+  const out = join(dir, "out");
+  await snapshot(repo, full, out);
+  assert.deepEqual(readFileSync(join(out, "d", "b.bin")), bin);
+  assert.equal(readFileSync(join(out, "x.sh"), "utf8"), "echo\n");
+  assert.ok((statSync(join(out, "x.sh")).mode & 0o111) !== 0, "the executable bit");
+  assert.equal(readFileSync(join(out, "empty"), "utf8"), "");
+  const none = join(dir, "none");
+  await snapshot(repo, sh(repo, "rev-parse", "HEAD"), none);
+  assert.ok(existsSync(none));
 });
