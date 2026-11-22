@@ -114,7 +114,7 @@ export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string,
 
 /** A task's approval record as tiering reads it. */
 export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; digest?: string };
-/** The reviewer's reason codes that name malice: the only rejections that refuse the same content again. */
+/** The reviewer's reason codes that name malice: the rejections the reviewer posts as malicious (work.ts reads them too). */
 export const MALICE = ["malicious", "secret_exfiltration", "prompt_injection"];
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];

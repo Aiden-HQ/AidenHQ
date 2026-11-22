@@ -500,4 +500,11 @@ test("a code review post or reply that names an instance host, home path or addr
   for (const found of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log"]) assert.ok(String(denied.reason).includes(found), found);
   assert.equal(check({ details: "fine", args: { review: { findings: [{ why: "seen on 10.0.0.7" }] } } }).verdict, "deny", "args are read too");
   assert.equal(check({ details: "version 1.2.3.456 is not an address" }).verdict, "ok");
+  assert.equal(check({ details: "ok", args: { review: { coverage: { reviewed: ["fixtures/192.0.2.10.json"], excluded: [], incomplete: null } } } }).verdict, "ok", "the reviewed-files list is never published");
+  assert.equal(check({ details: "ok", args: { review: { coverage: { reviewed: [], excluded: [], incomplete: "read failed at /home/ci/build.log on 10.0.0.7" } } } }).verdict, "deny", "coverage.incomplete is published");
+  assert.equal(check({ details: "ok", args: { review: { findings: [{ severity: "nit", title: "t", evidence: "seen on 10.0.0.7" }] } } }).verdict, "ok", "a nit's evidence is not published");
+  assert.equal(check({ details: "ok", args: { review: { findings: [{ severity: "important", title: "t", evidence: "seen on 10.0.0.7" }] } } }).verdict, "deny");
+  assert.equal(check({ details: "the instance is fd7a:115c:a1e0::5" }).verdict, "deny", "a tailnet IPv6 address");
+  assert.equal(check({ details: "at 12:30:45:10 and ::1" }).verdict, "ok", "a clock time and loopback are not addresses");
 });
+

@@ -20,7 +20,7 @@ Never message the owner about a Tier 0 or Tier 1 card at all: not that it was fi
 filed).
 The AI reviewer rejects only what it finds malicious ("Rejected by the AI reviewer as malicious"): a secret or private data
 sent somewhere new, an instruction followed from untrusted text, a defence switched off with no reason given. Take out what
-its note names and file the changed request (the same content stays rejected); if you think it misread the change, report
+its note names and file the changed request; if you think it misread the change, report
 that to whoever delegated the task, never to the owner.
 Report the result the work was for, not its cards.
 Never say a write happened until its task or card shows the outcome.

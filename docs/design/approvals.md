@@ -57,7 +57,7 @@ an autonomy he set below full.
 
 Code refuses some requests before any review, with the reason to the agent: a request on a cancelled or done task; a product
 write to its default branch; a push to the instance repo (it changes through apply);
-a merge whose head moved or whose named checks are red or missing; content the reviewer already rejected as malicious; a
+a merge whose head moved or whose named checks are red or missing; a
 close outside the agents org or of an instance PR.
 
 **The Platform Engineer's line** (`requester.platform`): a job holding the `platform-engineer` role, which admission

@@ -545,8 +545,7 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
       : toolCallFromDetails(card.action, diff) ?? (named ? { connection: named.connection!, tool: named.tool!, arguments: {}, unreadable: ["arguments"] } : undefined);
   // A call whose connection or tool code could not read is not a call; a call whose arguments code could not read at all is
   // not the call either. Neither reaches a model: the agent files it again, told which field is missing. These are code's
-  // refusals, coded `tool_call_unreadable` rather than `malicious`: the reviewer blocks only malice, and only a malice code
-  // refuses the same content again (kernel/src/tier.ts MALICE), so a corrected refile must not be blocklisted.
+  // refusals, coded `tool_call_unreadable` rather than `malicious`: the reviewer blocks only malice, so a corrected refile is never mistaken for malice (kernel/src/tier.ts MALICE).
   if (toolCall && (!toolCall.connection || !toolCall.tool)) return unreadableCall("the tool call is unreadable: code read no connection or no tool for it, so there is no call to judge. File it again naming the connection and the tool.");
   if (toolCall && unreadableOf(toolCall).includes("arguments") && !Object.keys(toolCall.arguments ?? {}).length) return unreadableCall(`the tool call's arguments are unreadable: code could not read an argument object for ${toolCall.connection}.${toolCall.tool}, so there is no call to judge. File it again with its arguments.`);
   // A call nested past the walk depth, or one whose arguments don't fit the block whole (expanded or compact), would reach the
