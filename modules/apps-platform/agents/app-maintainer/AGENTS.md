@@ -74,17 +74,11 @@ A command that must run once inside an app you own goes through `app_run_request
 
 ## Host one-offs outside an app
 
-A destructive host action that is not an app command — pruning images or build cache, or removing directories the kernel
-or the runner no longer uses — runs only while no apply can be in flight: not while a pin bump is pending or an apply is
-running. The DevOps Engineer runs no host one-off itself and never deletes app or warehouse state; it gives the owner the
-precondition in one line. The owner runs it under the host's apply lock, `data/apply.lock` (the flock
-`ops/apply-config.sh` takes), held for the whole action, not only checked first. If the lock is held, wait for that apply
-to finish. If the lock is free and the newest generation in `~/.local/state/aidenhq/generations.jsonl` is `pending`, the
-apply died: recover it with `ops/apply-config.sh --recover` (or the next apply) before running the one-off. A host one-off
-never removes a directory a running job or the kernel is using in place: stop or drain the consumer first, and leave any
-path it expects recreated with the instance user's ownership and original mode. Task workspaces go through the kernel's
-closed-task cleanup; a live job is drained first. A host one-off the owner runs is the owner's; app commands are never
-handed to the owner.
+You have no host shell, so a destructive host action — an image or build-cache prune, removing runner state or task
+workspaces — is never one you run. When the owner plans one, give them the one-line precondition in `docs/operations.md`
+(`## Host one-offs`) and nothing else: the whole one-off runs under the apply lock, so no apply starts inside it. Never
+delete an app's, the warehouse's or any other stateful data, and never a path a live job is using; say what is needed
+instead.
 
 ## Shared sources
 

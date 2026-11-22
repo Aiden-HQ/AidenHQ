@@ -210,6 +210,23 @@ Moving a running instance to another host (drain, cold copy, tailnet names, roll
 
 ## Task workspaces
 
+## Host one-offs
+
+A disk reclaim, an image or build-cache prune, or removing runner state is destructive host work, and an apply must never
+start inside one: the apply's compose step builds images and restarts services, and a prune can remove an image the apply
+has built but not yet attached. Run the whole one-off under the apply lock:
+
+    cd ~/aidenhq
+    flock data/apply.lock -c '<the one-off>'
+
+That is the same `data/apply.lock` the apply opens and holds for its whole run (`ops/lib/apply-lock.sh`), so an apply
+queued meanwhile waits its turn (`another apply is running: this one waits its turn`) instead of starting inside the work.
+A one-off that will outlast a few minutes says so in the message that asks for it.
+
+Never delete stateful data — an app's, the warehouse's or a module's files under `~`. Never remove a path a live job is
+using: a closed task's workspace goes through the kernel's own sweep (`kernel/src/workspaces.ts`), and anything a running
+job holds waits until it holds none.
+
 ## Logs and debugging a run
 
 - `docker compose logs -f <service>` for any service; `systemctl --user status aidenhq-kernel` and
