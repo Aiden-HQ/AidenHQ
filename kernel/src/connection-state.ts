@@ -38,7 +38,7 @@ const FULL_WAIT = 7 * DAY - 60_000;
 /** A need is confirmed (listed in the digest, told to agents) only once its row is this old. */
 const LASTING = 10 * 60_000;
 /** The owner was told directly and a task still waits on this very need (its key: cause and scope or account included; alias `s`): it stays until Connect, a success or the wait's end. */
-const ASKED = "(s.told = 1 AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.need = s.key))";
+const ASKED = "(s.told = 1 AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.need = s.key OR (w.need IS NULL AND w.module = s.module AND w.account IN ('', s.account))))";
 /** Confirmed for the digest: asked (above), or a background row at least LASTING old. Arg: now - LASTING. A success deletes the row, so a restart's blip never lasts. */
 const CONFIRMED = `(${ASKED} OR (s.told = 0 AND s.since <= ?))`;
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
@@ -80,17 +80,21 @@ export function createConnectionState(o: {
     try {
       db.exec("BEGIN IMMEDIATE");
       db.exec(`CREATE TABLE IF NOT EXISTS connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, need TEXT NOT NULL DEFAULT '', PRIMARY KEY (module, account, task));`);
+        CREATE TABLE IF NOT EXISTS connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, need TEXT, PRIMARY KEY (module, account, task));`);
       const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
       // A table made before accounts keeps its shape under IF NOT EXISTS: add the column ('' = whole module), rebuild the key.
       if (!cols("connection_state").includes("account")) db.exec("ALTER TABLE connection_state ADD COLUMN account TEXT NOT NULL DEFAULT ''");
       if (!cols("connection_waits").includes("account")) {
         db.exec("ALTER TABLE connection_waits RENAME TO connection_waits_before_accounts");
-        db.exec(`CREATE TABLE connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, need TEXT NOT NULL DEFAULT '', PRIMARY KEY (module, account, task))`);
+        db.exec(`CREATE TABLE connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, need TEXT, PRIMARY KEY (module, account, task))`);
         db.exec("INSERT INTO connection_waits (module, account, task, agent, at, full) SELECT module, '', task, agent, at, full FROM connection_waits_before_accounts");
         db.exec("DROP TABLE connection_waits_before_accounts");
       }
-      if (!cols("connection_waits").includes("need")) db.exec("ALTER TABLE connection_waits ADD COLUMN need TEXT NOT NULL DEFAULT ''");
+      if (!cols("connection_waits").includes("need")) db.exec("ALTER TABLE connection_waits ADD COLUMN need TEXT");
+      // A wait from before it named its need: the one need of its connection and account, when there is exactly one; otherwise it stays
+      // null and counts for any need there (ASKED).
+      db.exec(`UPDATE connection_waits SET need = (SELECT key FROM connection_state s WHERE s.module = connection_waits.module AND s.account = connection_waits.account)
+        WHERE need IS NULL AND (SELECT COUNT(*) FROM connection_state s WHERE s.module = connection_waits.module AND s.account = connection_waits.account) = 1`);
       db.exec("COMMIT");
       break;
     } catch (e) {

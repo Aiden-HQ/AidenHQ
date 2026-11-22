@@ -269,6 +269,20 @@ test("the waits table upgrades in place: old rows read as whole-module, and a se
   assert.equal(s.ok("google", { fullOnly: true }), 1, "and its wait clears module-wide");
 });
 
+test("a wait from before it named its need is backfilled when its connection has exactly one, else it counts for any need there", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE connection_state (key TEXT PRIMARY KEY, module TEXT NOT NULL, cause TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL, url TEXT, since INTEGER NOT NULL, told INTEGER NOT NULL DEFAULT 0, last_hit INTEGER);" +
+    "CREATE TABLE connection_waits (module TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', task TEXT NOT NULL, agent TEXT NOT NULL, at INTEGER NOT NULL, full INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (module, account, task));" +
+    "INSERT INTO connection_state (key, module, cause, detail, since, told) VALUES ('google:expired', 'google', 'expired', 'x', 1, 1), ('github:expired', 'github', 'expired', 'x', 1, 1), ('github:scope:admin:org', 'github', 'scope', 'x', 1, 1);" +
+    "INSERT INTO connection_waits (module, task, agent, at) VALUES ('google', 'w1', 'a1', 1), ('github', 'w2', 'a1', 1)");
+  const s = createConnectionState({
+    db, idle: { wait: async () => ({}) as never }, wakes: { open: () => {} }, queue: () => {}, issue: async () => undefined,
+    comments: async () => [], agentName: async () => "Aiden", label: (m) => m, connections: () => ({ google: { module: "google" }, github: { module: "github" } }) as never, grants: () => ({}), boardUrl: () => "http://board.example", now: () => 2,
+  });
+  assert.deepEqual(db.prepare("SELECT task, need FROM connection_waits ORDER BY task").all().map((r) => ({ ...r })), [{ task: "w1", need: "google:expired" }, { task: "w2", need: null }]);
+  assert.equal(s.needs().length, 3, "the ambiguous wait keeps both github needs listed; google's has its own");
+});
+
 test("a partial cause waits a day and is not listed down; a success clears only full causes", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "github", { cause: "scope", scope: "read:org", detail: "" });

@@ -111,21 +111,15 @@ export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "diges
   const day = new Date(now).toISOString().slice(0, 10);
   const lines = await needs().then((l) => l, () => undefined);
   if (!lines) return false;
-  const sig = lines.join("\n");
+  const sig = [...lines].sort().join("\n");
   if (!sig) {
-    store.setKv("needs:done", "[]");
     store.setKv("needs:sig", ""); // a recovery is always observed, so the same failure returning tomorrow is new
     return false;
   }
   if (store.getKv("needs:day") === day) return false;
   if (store.getKv("needs:sig") === sig) return false;
-  // Sent in chunks under the transport limit; a failed chunk leaves the lines already delivered marked, so a retry sends the rest.
-  const delivered = JSON.parse(store.getKv("needs:done") || "[]") as string[];
-  for (const b of chunks(lines.filter((l) => !delivered.includes(l)), (l) => `- ${l}`)) {
-    if ((await send(`Connections that need you:\n\n${b.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
-    delivered.push(...b);
-    store.setKv("needs:done", JSON.stringify(delivered));
-  }
+  // Sent in chunks under the transport limit. The signature is recorded only once every chunk went, so a failed chunk resends the whole list.
+  for (const b of chunks(lines, (l) => `- ${l}`)) if ((await send(`Connections that need you:\n\n${b.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
   store.setKv("needs:sig", sig);
   store.setKv("needs:day", day);
   return true;

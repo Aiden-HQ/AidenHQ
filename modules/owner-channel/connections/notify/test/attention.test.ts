@@ -132,7 +132,7 @@ it("queued connection lines from before the digest pulled them are dropped at st
   expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other"]);
 });
 
-it("the daily connections message is split under the transport limit, and a failed chunk is retried without resending delivered lines (44035f85)", async () => {
+it("the daily connections message is split under the transport limit; a failed chunk resends the whole list (88df70a2)", async () => {
   const store = openStore(":memory:");
   const cfg = { digestHours: [] as number[] };
   const lines = Array.from({ length: 24 }, (_, n) => `Google (user${n}@x.com) isn't connected ${"x".repeat(250)}`);
@@ -141,9 +141,11 @@ it("the daily connections message is split under the transport limit, and a fail
   const day = Date.UTC(2026, 10, 17, 9);
   expect(await flushNeeds(store, cfg, async (t) => (++calls === 3 ? false : (sent.push(t), true)), day, async () => lines)).toBe(false);
   expect(sent.length).toBe(2);
-  expect(sent.every((t) => t.length <= 3500)).toBe(true);
+  sent.length = 0;
   expect(await flushNeeds(store, cfg, async (t) => (sent.push(t), true), day + 60_000, async () => lines)).toBe(true);
+  expect(sent.length).toBeGreaterThan(2);
   expect(sent.every((t) => t.length <= 3500)).toBe(true);
   const all = sent.join("\n");
   for (const l of lines) expect(all.split(l).length - 1).toBe(1);
+  expect(await flushNeeds(store, cfg, async () => true, day + 86400_000, async () => [...lines].reverse())).toBe(false);
 });
