@@ -69,12 +69,28 @@ const needKey = (n: NeedBody["need"] | { cause: string; scope?: string; org?: st
  * refusal (a 4xx) is dropped with a log rather than retried forever. With `file`, the kept ones survive the container: an apply
  * recreating it in the window before a report lands loses nothing.
  */
-export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLog; fetcher?: typeof fetch; waitMs?: number; file?: string; /** Names the installed sign-in: a kept sign-in need from another one is stale. */ generation?: () => string }) {
+export function needQueue(o: {
+  kernelUrl: string;
+  key: () => string;
+  log: WarnLog;
+  fetcher?: typeof fetch;
+  waitMs?: number;
+  file?: string;
+  /** Names the installed sign-in: a kept sign-in need from another one is stale. */
+  generation?: () => string;
+  /** Whether the current sign-in already grants a scope: a kept scope need it covers is the owner's fix already made. */
+  covers?: (scope: string) => boolean;
+}) {
   const waitMs = o.waitMs ?? NEED_WAIT_MS;
   const pending = new Map<string, Pending>();
   const gen = () => o.generation?.() ?? "";
   /** A kept sign-in need the owner has since fixed by reconnecting: sending it would mark the fresh sign-in down. */
   const stale = (p: Pending) => Boolean(o.generation) && SIGN_IN_CAUSES.has(p.need.cause) && p.gen !== gen();
+  /**
+   * A kept scope need the current grant already covers: a reconnect that granted the scope is the owner's fix, and replaying the
+   * notice would put the gap back on a connection that no longer has it. A scope list that can't be read (empty) never says so.
+   */
+  const fixed = (p: Pending) => p.need.cause === "scope" && typeof p.need.scope === "string" && Boolean(o.covers?.(p.need.scope));
   const save = () => {
     if (!o.file) return;
     try {
@@ -132,6 +148,12 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
           o.log.warn({ cause: p.need.cause }, "a connection need met before the owner reconnected was dropped");
           continue;
         }
+        if (fixed(p)) {
+          pending.delete(k);
+          changed = true;
+          o.log.warn({ cause: p.need.cause, scope: p.need.scope }, "a connection need the owner has since granted was dropped");
+          continue;
+        }
         const r = await postNeed(o.kernelUrl, o.key(), { connection: "github", need: p.need }, o.log, o.fetcher ?? fetch, 5_000);
         if (r === "retry") continue;
         pending.delete(k);
@@ -144,6 +166,8 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
     tell: async (err: unknown): Promise<void> => {
       if (!(err instanceof GitHubNeed) || !err.ownerFixable) return;
       const body = bodyOf(err), k = needKey(body.need);
+      // The owner granted it since (the reply is from an earlier attempt): staging it would report a gap that is already fixed.
+      if (fixed({ need: body.need })) return;
       // Staged (and on disk) before the attempt; the cap is applied only if this one has to stay, so staging a report the kernel
       // takes never evicts a kept one.
       pending.set(k, { need: body.need, gen: gen() });

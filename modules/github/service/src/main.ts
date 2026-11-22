@@ -32,7 +32,7 @@ const read = (f?: string) => (f && existsSync(f) ? readFileSync(f, "utf8").trim(
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(JSON.stringify({ svc: "github", msg, ...f }));
 const key = read(env.CODEHOST_KEY_FILE);
 if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
-const access = await startGithubMcp();
+const { access, reportNeed } = await startGithubMcp();
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
 const maintained = parseRepos(env.GITHUB_MAINTAINER_REPOS ?? "");
@@ -48,7 +48,7 @@ const reviewGate = createReviewGate(gateOptions);
 const watchGate = createReviewGate(gateOptions);
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
-  access, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
+  access, reportNeed, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
