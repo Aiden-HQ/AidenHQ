@@ -215,7 +215,9 @@ started by hand is never removed, however old. The stop time is read again immed
 that was restarted in between is kept rather than deleted on a stale reading. No volume is touched (`docker rm` without
 `-v`). That step is `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its
 rebuilds. Each prune command has its own `timeout` under the unit's `TimeoutStartSec`, so one that hangs cannot stop
-systemd reaching the later steps and the verification.
+systemd reaching the later steps and the verification; the apply-time steps are bounded the same way, since `|| true`
+only helps once the command exits. The verification treats a cache over 20 GB with nothing reclaimable as a build holding
+that cache in use (the cap holds), rather than as a prune that failed.
 
 The image and container steps run through `ops/prune-docker-step.sh`, which records the step's exit status for the
 verification: the `-` prefix keeps a failure from skipping the next step, and the verification reads the record, so a

@@ -55,7 +55,7 @@ done
 # is not a contract).
 df_out="$(timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null)"; df_rc=$?
 [ "$df_rc" -eq 0 ] || bad+=("docker system df failed (exit $df_rc), so the build-cache cap cannot be confirmed")
-cache="$(
+rows="$(
   printf '%s\n' "$df_out" | awk '
     function field(key,  re, s) {
       re = "\"" key "\":\"([^\"]*)\""
@@ -64,8 +64,9 @@ cache="$(
       sub("^\"" key "\":\"", "", s); sub("\"$", "", s)
       return s
     }
-    field("Type") == "Build Cache" { print field("Size"); exit }'
+    field("Type") == "Build Cache" { print field("Size") "\t" field("Reclaimable"); exit }'
 )"
+cache="${rows%%"	"*}"
 # `docker system df` prints a Build Cache row even when the cache is empty ("0B"). Some stores leave the row out entirely
 # when there is no build cache at all: with nothing cached the 20 GB cap holds by definition, so the absence is not a
 # failure. A read that FAILED is a different thing (above), and so is a row whose size is unreadable. The check is only
@@ -81,7 +82,27 @@ case "$cache" in
       else if (u == "kB") n *= 1000; else if (u != "B" && u != "") exit
       printf "%.0f", n }')"
     [ -n "$bytes" ] || bad+=("the build cache size ($cache) is unreadable, so the 20 GB cap cannot be confirmed")
-    [ -z "$bytes" ] || [ "$bytes" -le "$CAP_BYTES" ] || bad+=("the build cache is $cache, over the 20 GB cap: neither builder flag form capped it")
+    if [ -n "$bytes" ] && [ "$bytes" -gt "$CAP_BYTES" ]; then
+      # A concurrent build can hold more than the cap in cache that is in use: the prune then did all it could, and
+      # `docker system df` still reports the full Size. Reclaimable is the part a prune could still remove; with none
+      # left, the cap is holding as far as it can and this is not a failed prune. Some builds running is the only thing
+      # that can keep Size over the cap with nothing reclaimable.
+      reclaim="${rows#*"	"}"
+      reclaim_bytes="$(awk -v s="$reclaim" 'BEGIN {
+        sub(/[[:space:]].*$/, "", s)
+        if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
+        n = substr(s, 1, RLENGTH) + 0; u = substr(s, RLENGTH + 1)
+        if (u == "TB") n *= 1000000000000; else if (u == "GB") n *= 1000000000; else if (u == "MB") n *= 1000000
+        else if (u == "kB") n *= 1000; else if (u != "B" && u != "") exit
+        printf "%.0f", n }')"
+      if [ -z "$reclaim_bytes" ]; then
+        bad+=("the build cache is $cache, over the 20 GB cap, and its reclaimable size ($reclaim) is unreadable: whether the cap held cannot be confirmed")
+      elif [ "${reclaim_bytes:-0}" -gt $((1024 * 1024 * 1024)) ]; then
+        bad+=("the build cache is $cache with $reclaim still reclaimable after the prune: neither builder flag form capped it")
+      else
+        echo "prune-docker: build cache is $cache but nothing is reclaimable: a build holds that cache in use, so the cap holds"
+      fi
+    fi
     ;;
 esac
 

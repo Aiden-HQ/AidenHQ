@@ -99,9 +99,12 @@ test("the container step removes only one-offs stopped over a day, and the verif
 });
 
 test("the apply-time prunes are independent too, and keep the same retention", () => {
-  const lines = apply.split("\n").filter((l) => /^\s*(docker (builder|image|container) prune|bash ops\/prune-docker-containers\.sh)/.test(l));
+  const lines = apply.split("\n").filter((l) => /^\s*(timeout \d+m )?(docker (builder|image|container) prune|bash ops\/prune-docker-containers\.sh)/.test(l));
   assert.ok(lines.length >= 4, lines.join("\n"));
   for (const l of lines) assert.match(l, /\|\| true$/, `a failing one must not skip the rest: ${l}`);
+  // `|| true` only helps when the command exits: bound each one so a daemon that stops answering cannot hold the apply,
+  // after services restarted and before the new product is recorded.
+  for (const l of lines) assert.match(l, /^\s*timeout \d+m /, `unbounded apply-time prune: ${l}`);
   assert.ok(lines.some((l) => /docker builder prune -f --max-used-space 20GB\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /docker builder prune -f --keep-storage 20GB\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /docker image prune -af --filter until=48h\b/.test(l)), lines.join("\n"));
@@ -114,7 +117,7 @@ test("the apply-time prunes are independent too, and keep the same retention", (
 function fakeDocker({
   containers = [], cache = "10.52GB", daemonUp = true, cacheRow = true, imagePruneFails = false,
   uninspectable = [], vanishOnRm = [], vanishOnInspect = [], relistFails = false, systemDfFails = false,
-  restartedBeforeRm = [],
+  restartedBeforeRm = [], reclaimable = "",
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prune-docker-"));
   const bin = join(dir, "bin");
@@ -184,7 +187,7 @@ case "$1 $2" in
   "system df")
     ${systemDfFails ? `echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;` : ""}
     ${cacheRow
-      ? `printf '{"Size":"%s","Type":"Build Cache"}\\n' "${cache}"`
+      ? `printf '{"Size":"%s","Reclaimable":"%s","Type":"Build Cache"}\\n' "${cache}" "${reclaimable}"`
       : `printf '{"Size":"25.15GB","Type":"Images"}\\n'`}
     exit 0 ;;
   "image prune") exit ${imagePruneFails ? 1 : 0} ;;
@@ -243,7 +246,7 @@ test("a one-off that is restarted between the check and the removal is kept", ()
 });
 
 test("the apply-time container step and the unit's are the same script, so the retention has one home", () => {
-  assert.match(apply, /^\s*bash ops\/prune-docker-containers\.sh \|\| true$/m);
+  assert.match(apply, /^\s*timeout 5m bash ops\/prune-docker-containers\.sh \|\| true$/m);
   assert.doesNotMatch(apply, /docker container prune/);
 });
 
@@ -258,11 +261,23 @@ test("the verification fails the unit when the daemon is down, the cache is over
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /daemon does not answer/);
-  // Neither builder flag form capped the cache: the 20 GB cap is the thing that has to hold.
-  d = fakeDocker({ cache: "104.2GB" });
+  // Neither builder flag form capped the cache and there is still reclaimable data: the 20 GB cap is the thing that has
+  // to hold.
+  d = fakeDocker({ cache: "104.2GB", reclaimable: "90GB" });
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /over the 20 GB cap/);
+  assert.match(r.out, /still reclaimable after the prune/);
+  // Over the cap with nothing reclaimable: a concurrent build holds that cache in use, the prune did all it could, and
+  // the unit must not read as a failed prune.
+  d = fakeDocker({ cache: "104.2GB", reclaimable: "0B" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /nothing is reclaimable/);
+  // Over the cap with an unreadable reclaimable size: the cap cannot be confirmed either way.
+  d = fakeDocker({ cache: "104.2GB", reclaimable: "" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /reclaimable size .* is unreadable/);
   // A one-off stopped over a day ago is still there: the container step did not do its work.
   d = fakeDocker({ containers: [{ id: "left", running: "false", finished: "30", oneoff: true }] });
   r = d.run("ops/prune-docker-verify.sh");

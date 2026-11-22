@@ -178,6 +178,30 @@ test("a timeout-wrapped container step still resolves to the applied checkout", 
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
 });
 
+test("timeout's `--` and an invalid duration are read the way GNU timeout reads them", { skip: NOT_LINUX }, async () => {
+  const base = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(base, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(base, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${base}\n`);
+  const steps = (exec) => [
+    exec,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-verify.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  ].join("\n") + "\n";
+  const runWith = async (argv) => {
+    writeFileSync(join(base, "execstart"), steps(`{ path=/usr/bin/timeout ; argv[]=${argv} ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`));
+    return run(base);
+  };
+  // `timeout -- 5m cmd`: `--` before the duration only ends option parsing, so this is valid and resolves.
+  let r = await runWith("/usr/bin/timeout -- 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  // `timeout 5m -- cmd`: here `--` is the command timeout would run, which never runs the prune, so the check fails.
+  r = await runWith("/usr/bin/timeout 5m -- /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  FAIL  docker prune timer runs the applied checkout's container step/m, r.out);
+  // A duration GNU timeout rejects (`5min`) means the script never runs: the check must not pass it.
+  r = await runWith("/usr/bin/timeout 5min /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  FAIL  docker prune timer runs the applied checkout's container step/m, r.out);
+  assert.match(r.out, /not one timeout accepts/);
+});
+
 test("the image step's wrapper and the docker command it runs are both applied-checkout paths", { skip: NOT_LINUX }, async () => {
   // The image prune is an `env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune ...`: the
   // check must resolve the script after env and after splitting, not the trailing docker words as a script name.

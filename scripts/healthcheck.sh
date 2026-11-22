@@ -265,19 +265,28 @@ unit_runs_applied() { # service, name [env]
   # Skip its options: `-s/--signal`, `-k/--kill-after`, `--foreground`, `-v/--verbose`, `--preserve-status`, the duration
   # (the first operand), and a leading `--`.
   if [ "$(basename "$program")" = timeout ]; then
+    # GNU timeout is `timeout [OPTION]... DURATION COMMAND [ARG]...`: options end at the duration, so a `--` before it only
+    # ends option parsing, while a `--` after it is the command (`timeout 5m -- cmd` runs a program named `--`, which never
+    # runs the prune). The duration must be one GNU timeout accepts.
     duration=""
     while [ "$i" -lt "${#argv[@]}" ]; do
-      case "${argv[i]}" in
-        --) i=$((i + 1)); program="${argv[i]:-}"; i=$((i + 1)); break ;;
+      arg="${argv[i]}"
+      case "$arg" in
+        --) i=$((i + 1)); continue ;; # end of options; the duration still comes next
         -s|--signal|-k|--kill-after) i=$((i + 2)) ;;
         --signal=*|--kill-after=*|-s?*|-k?*) i=$((i + 1)) ;;
         --foreground|--preserve-status|-v|--verbose) i=$((i + 1)) ;;
-        --*|-*) echo "cannot resolve the command from timeout option ${argv[i]}: $line"; return 1 ;;
-        *) if [ -z "$duration" ]; then duration=1; i=$((i + 1)); continue; fi
-           program="${argv[i]}"; i=$((i + 1)); break ;;
+        -*) echo "cannot resolve the command from timeout option $arg: $line"; return 1 ;;
+        *) printf '%s' "$arg" | grep -Eq '^[0-9]+([.][0-9]+)?[smhd]?$' \
+             || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
+           duration="$arg"; i=$((i + 1)); break ;;
       esac
     done
-    [ -n "$duration" ] && [ -n "$program" ] || { echo "the unit's ExecStart names no command after timeout: $line"; return 1; }
+    [ -n "$duration" ] || { echo "the unit's ExecStart names no duration after timeout: $line"; return 1; }
+    # Whatever follows the duration is the command; `--` there is not one.
+    program="${argv[i]:-}"
+    [ -n "$program" ] && [ "$program" != "--" ] || { echo "the unit's ExecStart names no command after timeout: $line"; return 1; }
+    i=$((i + 1))
   fi
   if [ "$(basename "$program")" = env ]; then
     while [ "$i" -lt "${#argv[@]}" ]; do
