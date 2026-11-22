@@ -158,6 +158,13 @@ test("the repaired root still names the directory it set up, not one swapped in 
   const named = lstatSync(root);
   assert.ok(named.isDirectory());
   assert.equal(statSync(root).mode & 0o777, 0o700);
+  // The repair itself is descriptor-anchored: a 0300 directory is repaired without read access, and a link planted at the
+  // root's name is refused rather than chmod'ed through.
+  chmodSync(root, 0o300);
+  try {
+    ensureStateDirs(base);
+    assert.equal(statSync(root).mode & 0o777, 0o700);
+  } finally { chmodSync(root, 0o700); }
   // And a path that was replaced by a symlink before the call is refused, never repaired through.
   const outside = join(dir, "outside");
   mkdirSync(join(outside, "state"), { recursive: true });

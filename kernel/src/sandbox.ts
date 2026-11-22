@@ -115,42 +115,71 @@ function ensureStateDir(p: string) {
       if ((st.mode & 0o300) !== 0o300) throw new Error("it is not owner-writable and owner-searchable (mode has no 0300)");
       accessSync(p, constants.W_OK | constants.X_OK);
     } else mkdirSync(p, { recursive: true, mode: 0o700 });
-    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. The mode is
-    // applied to the directory this very open resolved, not to the name again: `O_NOFOLLOW | O_DIRECTORY` refuses a path that
-    // became a symlink or a non-directory in between, and `fchmod` can't reach a replacement the way a second `chmod(name)` would.
-    const openDir = () => openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-    let fd: number;
-    try { fd = openDir(); } catch (e) {
-      // A directory we own but can't read (mode 0300, or a umask that masked the create mode) can't be opened O_RDONLY, and
-      // repairing it is the point of this function. Node has no `chmod` by descriptor, so this one mode is set by name; it is
-      // fenced on both sides — the directory is the one just `lstat`ed before, and the reopened descriptor is that same inode
-      // after — so a path swapped in either window is refused here rather than repaired.
-      if ((e as NodeJS.ErrnoException).code !== "EACCES") throw e;
-      const now = lstatSync(p);
-      if (!now.isDirectory() || (st && (now.dev !== st.dev || now.ino !== st.ino))) throw new Error("it changed while its mode was being repaired");
-      chmodSync(p, 0o700);
-      fd = openDir();
-      if (st) {
-        const again = fstatSync(fd);
-        if (again.dev !== st.dev || again.ino !== st.ino) { closeSync(fd); throw new Error("it was replaced while its mode was being repaired"); }
-      }
-    }
-    let repaired: { dev: number; ino: number };
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isDirectory()) throw new Error("it became a non-directory while being set up");
-      fchmodSync(fd, 0o700);
-      repaired = { dev: stat.dev, ino: stat.ino };
-    } finally { closeSync(fd); }
+    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. Everything
+    // here is descriptor-anchored, never a second lookup of the name: `O_NOFOLLOW | O_DIRECTORY` refuses a path that became a
+    // symlink or a non-directory, and the mode is set on the directory this very open resolved.
+    const st2 = setStateMode(p);
     // The descriptor was repaired, but the name is what `jobs.ts` goes on to use. Re-read it: a symlink anywhere on the path, or
     // a different directory now wearing the name, is refused, so a swap in the window above can't hand a caller a path outside
-    // the state tree. Checked after the close, so the name is the last word and the fs is quiet.
+    // the state tree.
     if (symlinkOnPath(p)) throw new Error("it became a symlink while it was being set up");
     const named = lstatSync(p, { throwIfNoEntry: false });
-    if (!named || !named.isDirectory() || named.dev !== repaired.dev || named.ino !== repaired.ino) throw new Error("it no longer names the directory that was set up");
+    if (!named || !named.isDirectory() || named.dev !== st2.dev || named.ino !== st2.ino) throw new Error("it no longer names the directory that was set up");
   } catch (e) {
     throw stateRootFailure(p, because(e), e);
   }
+}
+
+/** `O_PATH` (Linux): a descriptor naming a file for use as a handle — no read permission needed, so a directory at mode 0300 can
+ * still be repaired — with `O_NOFOLLOW | O_DIRECTORY` refusing a symlink or a non-directory. Not in Node's constants. */
+const O_PATH = 0o10000000;
+
+/**
+ * `<p>` set to 0700 through a descriptor, never by a second lookup of its name: the directory is opened (`O_PATH` needs no read
+ * permission, so one we own but can't read — 0300, or a umask that masked the create mode — is repaired like any other),
+ * `fstat` confirms it is a directory, and the chmod goes through `/proc/self/fd/<fd>`, which the kernel resolves to that
+ * descriptor's inode. A path swapped for a symlink or another directory in the window is refused (`ELOOP`/`ENOTDIR`) rather
+ * than written. Returns the `dev`/`ino` repaired, so the caller can confirm the name still means it.
+ */
+function setStateMode(p: string): { dev: number; ino: number } {
+  let fd: number;
+  try { fd = openSync(p, O_PATH | constants.O_NOFOLLOW | constants.O_DIRECTORY); } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // No `O_PATH` on this platform: a plain descriptor is the fallback, still descriptor-anchored. Every other failure (a
+    // symlink or non-directory at the name, no search permission) is the caller's to report, not something to work around.
+    if (code !== "EINVAL" && code !== "EPERM" && code !== "ENOENT") throw e;
+    const plain = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    try {
+      const st = fstatSync(plain);
+      if (!st.isDirectory()) throw new Error("it became a non-directory while being set up");
+      fchmodSync(plain, 0o700);
+      return { dev: st.dev, ino: st.ino };
+    } finally { closeSync(plain); }
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isDirectory()) throw new Error("it became a non-directory while being set up");
+    try { chmodSync(`/proc/self/fd/${fd}`, 0o700); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return chmodByName(p);
+      throw e;
+    }
+    return { dev: st.dev, ino: st.ino };
+  } finally { closeSync(fd); }
+}
+
+/** The fallback where no descriptor route exists: set the mode by name, but only on the inode just `lstat`ed, then confirm the
+ * reopened name is still that inode. */
+function chmodByName(p: string) {
+  const before = lstatSync(p);
+  if (!before.isDirectory()) throw new Error("it is not a directory");
+  chmodSync(p, 0o700);
+  const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+  try {
+    const after = fstatSync(fd);
+    if (after.dev !== before.dev || after.ino !== before.ino) throw new Error("it was replaced while its mode was being repaired");
+    fchmodSync(fd, 0o700);
+    return { dev: after.dev, ino: after.ino };
+  } finally { closeSync(fd); }
 }
 
 /**
