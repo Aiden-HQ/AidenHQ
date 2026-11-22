@@ -467,10 +467,18 @@ test("a refused post's notice stops once its pull request is closed, even where 
   await w.tick({ github: false });
   assert.equal(w.posted.length, 1);
   w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  // Every delivery fails for now (the kernel's record can't be read), so the notice stays pending, asking again.
   w.acksDown = 40;
   await w.tick({ github: false });
   const pending = w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(r!.id);
   assert.equal(pending.notice, "pending");
+  // The author pushed a newer head: the unwatched repo is never polled, so only GitHub's own head says A's notice is superseded.
+  w.prs.get(11)!.head = sha("d");
+  w.acksDown = 40;
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(r!.id).notice, "failed");
+  assert.equal(w.acks.length, 0, "no acknowledgement is posted for a head the pull request has moved past");
   // The pull request closed unmerged on GitHub; the unwatched repo is never polled, so only a fresh read of it can say so.
   w.prs.get(11)!.open = false;
   w.later(20 * 60_000);
