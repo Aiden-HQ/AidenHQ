@@ -131,8 +131,9 @@ function ensureStateDir(p: string) {
 /**
  * The engine state root and its logs dir, healed 0700 before any job folder. A disk reclaim that removed them (or a root
  * another user made) must not turn every launch into the same EACCES: a missing root is recreated, and one still unusable is
- * reported as one need per episode (`report`, with the episode's key) before it throws. The root keeps the form it was
- * configured in (a relative `state_dir` stays relative): the launcher compares it to `path.join(computers.json state_dir, …)`.
+ * reported as one need per episode (`report`, with the episode's key) before it throws. The root is normalized but not made
+ * absolute, so it matches the launcher's `path.join(computers.json state_dir, …)` comparison: a relative `state_dir` stays
+ * relative, with its `.`/`..` segments collapsed.
  */
 export function ensureStateDirs(stateDir: string, report?: (e: Error, episode: string) => void) {
   // One form for validation, filesystem calls and the launcher's path comparison: `normalize` collapses `a/../b` lexically (as
