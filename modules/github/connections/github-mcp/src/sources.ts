@@ -184,11 +184,12 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
           seen.add(n.id);
           if (st.baselined && unread.has(n.id) && !refused.has(i)) {
             // The board's own columns go the normal way (their changes are logged); only the newly read content is a backfill.
-            // The url rides along (untracked) so a change logged here links to the issue.
+            // The newly read content goes first, as a backfill (url included, so it is no difference below); then the board's own
+            // columns the normal way: their changes are logged, with the url the change record links to.
             const full = itemRow(project, n);
-            await put(ITEM, { ...itemRow(project, n, true), url: full.url }, false);
             const { fields: _f, archived: _a, removed: _r, source_updated_at: _s, ...content } = full;
             await put(ITEM, content, true);
+            await put(ITEM, { ...itemRow(project, n, true), url: full.url }, false);
           } else await put(ITEM, itemRow(project, n, refused.has(i)), !st.baselined);
         }
         cur = items?.pageInfo?.hasNextPage ? items.pageInfo.endCursor : null;
