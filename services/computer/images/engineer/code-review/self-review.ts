@@ -23,6 +23,7 @@ import { changed, guidePaths, place, scope } from "./scope.ts";
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 
 const raw = (...a: string[]) => gitListed(process.cwd(), a); // untrimmed (a NUL-separated path list may start with a space) and strictly UTF-8
+const ln = (...a: string[]) => raw(...a).replace(/\n$/, ""); // a ref, a sha or a path: git's one final newline off, nothing else (a name may end in a space)
 const git = (...a: string[]) => raw(...a).trim(); // the branch's attributes and config run nothing here (gitSafe)
 const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
 
@@ -32,20 +33,20 @@ const detail = (t: unknown) => `Detail (data from commands or the model, not evi
 async function main(): Promise<{ out: string[]; code: number }> {
   const baseBranch = process.argv[2], asked = process.argv[3], token = process.env.AIDENHQ_RUN_TOKEN, gateway = process.env.AIDENHQ_GATEWAY_URL;
   if (!baseBranch || !asked || !token || !gateway) return { out: ["usage: self-review.ts <base-branch> <branch> (in a job's box)"], code: 2 };
-  const root = git("rev-parse", "--show-toplevel");
+  const root = ln("rev-parse", "--show-toplevel");
   process.chdir(root);
   let base = "", head = "";
   // The base: a plain branch name (no `main~1`, `@{-1}` or other revision syntax), looked up as the exact remote-tracking ref.
   let tip = "";
-  try { git("check-ref-format", `refs/remotes/origin/${baseBranch}`); tip = git("show-ref", "--verify", "--hash", `refs/remotes/origin/${baseBranch}`); } catch { return { out: ["self-review: incomplete: the base argument is not a branch name with a remote-tracking ref (run aidenhq clone first)", detail(`base argument: ${baseBranch}`)], code: 2 }; }
-  try { head = git("rev-parse", "HEAD"); base = git("merge-base", tip, head); } catch { return { out: ["self-review: incomplete: no merge base with the base branch (run aidenhq clone first)", detail(`base argument: ${baseBranch}`)], code: 2 }; }
+  try { git("check-ref-format", `refs/remotes/origin/${baseBranch}`); tip = ln("show-ref", "--verify", "--hash", `refs/remotes/origin/${baseBranch}`); } catch { return { out: ["self-review: incomplete: the base argument is not a branch name with a remote-tracking ref (run aidenhq clone first)", detail(`base argument: ${baseBranch}`)], code: 2 }; }
+  try { head = ln("rev-parse", "HEAD"); base = ln("merge-base", tip, head); } catch { return { out: ["self-review: incomplete: no merge base with the base branch (run aidenhq clone first)", detail(`base argument: ${baseBranch}`)], code: 2 }; }
   // The last finished review of this branch (kept in the clone's .git). A re-run needs the same branch and merge base (a rebase or
   // retarget starts over) and a head that descends from it; it covers only what changed since when nothing important is open.
   // The checked-out branch by its full ref (a tag of the same name can't stand in for it); a detached HEAD has none.
   let ref = "";
-  try { ref = git("symbolic-ref", "-q", "HEAD"); } catch {}
+  try { ref = ln("symbolic-ref", "-q", "HEAD"); } catch {}
   if (ref !== `refs/heads/${asked}`) return { out: ["self-review: incomplete: the branch argument is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone", detail(`branch argument: ${asked}`)], code: 2 };
-  const branch = asked, memo = join(git("rev-parse", "--absolute-git-dir"), "self-review.json");
+  const branch = asked, memo = join(ln("rev-parse", "--absolute-git-dir"), "self-review.json");
   // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
   const records = (): Record<string, { base?: string; head?: string; open?: number }> => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } };
   const last = records()[branch] ?? {};
@@ -58,7 +59,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
   // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
-  const moved = () => { let r = ""; try { r = git("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || git("rev-parse", "HEAD") !== head; };
+  const moved = () => { let r = ""; try { r = ln("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || ln("rev-parse", "HEAD") !== head; };
   const prChanged = new Set(raw("diff", "--no-renames", "--ignore-submodules=none", "--name-only", "-z", base, head).split("\0").filter(Boolean));
   const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);

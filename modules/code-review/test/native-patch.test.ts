@@ -493,3 +493,17 @@ test("what the caller typed never reaches an evidence line: a newline and a fake
     assert.match(out, /incomplete/);
   }
 });
+
+test("a branch whose name ends in a no-break space is still the checked-out branch", async () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const name = "topic\u00a0";
+  sh(repo, "checkout", "-q", "-b", name);
+  writeFileSync(join(repo, "dirty.txt"), "x\n"); // stops the run at its next check, after the branch check
+  const out = await new Promise<string>((ok) => {
+    const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", name], { cwd: repo, env: { ...process.env, AIDENHQ_GATEWAY_URL: "http://127.0.0.1:9", AIDENHQ_RUN_TOKEN: "t" }, stdio: ["ignore", "pipe", "pipe"] });
+    let s = ""; c.stdout.on("data", (d) => (s += d)); c.stderr.on("data", (d) => (s += d)); c.on("close", () => ok(s));
+  });
+  assert.match(out, /incomplete: uncommitted changes/, out);
+  assert.match(out, /^self-review: branch topic\u00a0 base /m);
+});
