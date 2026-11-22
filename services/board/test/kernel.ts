@@ -23,6 +23,8 @@ export async function fakeKernel(): Promise<{
   /** What the next save_secret reports as restarted services: the module's own, unless a test sets it ([] after a recreate began). */
   restarted: { services: string[] | null };
   close: () => void;
+  /** Drop the code exchange's socket (a transport failure, no HTTP), or answer it with a status (a kernel-side refusal). */
+  refuseExchange: (on: boolean | number) => void;
 }> {
   const codes = new Map<string, { account: FakeAccount; origin: string; state: string }>();
   const sessions = new Map<string, FakeAccount>();
@@ -33,6 +35,7 @@ export async function fakeKernel(): Promise<{
   const saved: Record<string, boolean> = {};
   const restarted: { services: string[] | null } = { services: null };
   const ops: Record<string, [number, unknown]> = {};
+  let refuseExchange: boolean | number = false;
   const server: Server = createServer(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
@@ -42,6 +45,8 @@ export async function fakeKernel(): Promise<{
     if (req.headers.authorization !== `Bearer ${BOARD_KEY}`) return send(401, { error: { message: "the board's key is required" } });
     switch (req.url) {
       case "/v1/auth/exchange": {
+        if (typeof refuseExchange === "number") return send(refuseExchange, { error: { message: "the board's key is not valid" } });
+        if (refuseExchange) return void req.socket.destroy();
         const c = codes.get(body.code);
         codes.delete(body.code);
         if (!c || c.origin !== body.origin || c.state !== body.state) return send(400, { error: { message: "invalid or expired handoff" } });
@@ -127,5 +132,6 @@ export async function fakeKernel(): Promise<{
     ops,
     restarted,
     close: () => server.close(),
+    refuseExchange: (on) => void (refuseExchange = on),
   };
 }
