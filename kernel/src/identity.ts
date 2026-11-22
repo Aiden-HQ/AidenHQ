@@ -56,15 +56,20 @@ export function heldRoles(agents: Record<string, Grant | undefined> | undefined,
 }
 
 /**
- * The fast chat lane (a module holding kernel.lane) calling a tool for one of its agents, named by id: that agent's grants,
- * roles and chat task from the grants table, never the request's say-so. An agent without a chat task has no lane. It carries
+ * The fast chat lane (a module holding kernel.lane) calling a tool for one of its agents, named by id: that agent's lane tools
+ * (`chat_tools`, within its grants), roles and chat task from the grants table, never the request's say-so. An agent without a chat task has no lane. It carries
  * no job, so nothing only a job may do (memory, settings, waits, model calls billed to a run) is open to it.
  */
 export function laneCaller(mod: Identity, agent: string, agents: Record<string, Grant>): Identity {
   if (mod.kind !== "module" || !mod.roles.includes("kernel.lane")) throw new Unknown("only the fast chat lane (role kernel.lane) calls as one of its agents");
   const g = Object.hasOwn(agents, agent) ? agents[agent] : undefined;
   if (!g?.key || typeof g.chat_task !== "string" || !g.chat_task) throw new NoGrants(`agent ${agent.slice(0, 60)} has no fast chat lane`);
-  return { kind: "run", agent, key: g.key, name: g.key, roles: rolesOf(g), tools: Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]])), task: g.chat_task, credential: "" };
+  const tools: Record<string, string[]> = {};
+  for (const ct of Array.isArray(g.chat_tools) ? g.chat_tools : []) {
+    const [c = "", t = ""] = String(ct).split(".");
+    if (g.tools?.[c]?.includes(t)) tools[c] = [...(tools[c] ?? []), t];
+  }
+  return { kind: "run", agent, key: g.key, name: g.key, roles: rolesOf(g), tools, task: g.chat_task, credential: "" };
 }
 
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */

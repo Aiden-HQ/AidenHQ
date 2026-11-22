@@ -542,8 +542,9 @@ function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, str
   table.routine_keys = { ...routineKeys };
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];
-  // Each lane agent's chat task (ensureChatTasks): the kernel writes the fast lane's turns there, and only there.
-  for (const [key, a] of Object.entries(agents)) if (chatTasks[key]) table.agents[a.id].chat_task = chatTasks[key];
+  // Each lane agent's chat task (ensureChatTasks): the kernel writes the fast lane's turns there, and only there; and its lane
+  // tools (chat.tools), all the lane may call as it (kernel identity.ts laneCaller).
+  for (const [key, a] of Object.entries(agents)) if (chatTasks[key]) Object.assign(table.agents[a.id], { chat_task: chatTasks[key], chat_tools: cfg.agents[key].chat?.tools ?? [] });
   // Each agent's skills (compile resolved them): the runner copies exactly these into its jobs' engine home.
   for (const [key, a] of Object.entries(agents)) if (agentSkills(cfg, key).length) table.agents[a.id].skills = agentSkills(cfg, key);
   const file = join(configDir, "grants", "grants.json");
