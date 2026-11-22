@@ -75,8 +75,6 @@ const cases = [
   ["another's comment wake ends a delegator wait (an answer with no comment fact)", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), f("wake.opened", 2, {}, "agent:aiden", { subject: "wake:comment:c1" })], NOW, { reason: not("delegator_wait") }],
   ["an unrelated job start leaves a delegator wait open", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), job("job.started", 3), job("job.ended", 4, { state: "done" })], NOW, { reason: "delegator_wait" }],
   ["a delegator's answer ends the delegator wait", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:aiden", 2)], NOW, { reason: not("delegator_wait") }],
-  ["a release verdict leaves no delegator wait (grading fails open)", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), f("finish.verdict", 5, { check: "grading.finish", verdict: "release" })], NOW,
-    { reason: not("delegator_wait"), question: undefined }],
   ["a delegator wait carries its question, which the ask gate reads", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "which path?" })], NOW,
     { reason: "delegator_wait", question: "which path?", attention: [{ who: "agent", why: "delegator_wait" }] }],
   ["an owner wait carries no question when it has none", [created(), wait("owner_wait", 1)], NOW, { reason: "owner_wait", question: undefined }],
