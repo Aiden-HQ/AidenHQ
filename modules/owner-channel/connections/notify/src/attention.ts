@@ -87,4 +87,4 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
 
 /** The digest lines waiting for their slot, as ledger rows (not yet told: the digest hasn't gone). */
 export const waitingDigest = (store: Store): (Omit<ToldRow, "id"> & { queued: true })[] =>
-  (JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).map((i) => ({ at: i.at ?? 0, source: i.source ?? "kernel", task: i.task ?? null, kind: i.kind ?? "fyi", text: i.text, queued: true as const }));
+  (JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !i.told).map((i) => ({ at: i.at ?? 0, source: i.source ?? "kernel", task: i.task ?? null, kind: i.kind ?? "fyi", text: i.text, queued: true as const }));
