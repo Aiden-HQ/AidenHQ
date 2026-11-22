@@ -183,6 +183,15 @@ test("a cited repo resolves exactly first, then by dashes and case only when one
   assert.equal(r.repo, "acme/app");
 });
 
+test("a dash-only variant never hides the cited repo: the job is looked for there too", async () => {
+  const seen: string[] = [];
+  const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return repo === "acme/my-app" ? { name: "ci", state: "completed", conclusion: "success" } : null; } });
+  const [job] = citedIds(["ci: https://github.com/acme/my-app/actions/runs/1/job/7"], "WOR-9");
+  const r = await resolveCitation(job!, deps, ["acme/myapp"]);
+  assert.deepEqual(seen, ["acme/myapp", "acme/my-app"]);
+  assert.equal(r.repo, "acme/my-app");
+});
+
 test("a repo listed twice is not ambiguous; a bare citation refused everywhere is shown once as unreadable", async () => {
   const seen: string[] = [];
   const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return { name: "ci", state: "completed", conclusion: "success" }; } });

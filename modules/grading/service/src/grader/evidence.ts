@@ -704,13 +704,14 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     return { citation: c, id: c.id, exists: true, state: String(r.state ?? "unknown"), outcome: { ...(typeof r.ok === "boolean" ? { ok: r.ok } : r.outcome?.ok !== undefined ? { ok: Boolean(r.outcome.ok) } : {}), text: String(text ?? "") } };
   }
   // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): an exact (case-insensitive) match among
-  // the graded PRs' and report's repos wins; otherwise the one known repo that differs only by dashes and case is the real owner/name.
+  // the graded PRs' and report's repos wins; otherwise the one known repo that differs only by dashes and case is tried first, then
+  // the cited spelling itself (dashes can make two real repos equal, and a job id exists in one repo only).
   const lower = (r: string) => r.toLowerCase();
   const nodash = (r: string) => lower(r).replace(/-/g, "");
   const exact = repos.find((r) => c.repo && lower(r) === lower(c.repo));
   const variants = [...new Set(repos.filter((r) => c.repo && nodash(r) === nodash(c.repo)).map(lower))];
   const known = exact ?? (variants.length === 1 ? repos.find((r) => lower(r) === variants[0]) : undefined);
-  const candidates = c.repo ? [known ?? c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  const candidates = c.repo ? [...new Set([known ?? c.repo, c.repo])] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
   let refused: { repo: string; message: string } | undefined;
   for (const repo of candidates) {
     let j: any;
@@ -723,8 +724,7 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
       // x-ratelimit-remaining: 0 or a retry-after header) and any other failure are rethrown: the next look retries them.
       const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
       if (rateLimited(err) || ![403, 404].includes(status)) throw err;
-      // A cited repo answers with its refusal at once. A bare citation records the first refusal and tries the next candidate.
-      if (c.repo) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
+      // The first refusal is kept and the next candidate tried.
       refused ??= { repo, message: String(err.message ?? err) };
       continue;
     }
