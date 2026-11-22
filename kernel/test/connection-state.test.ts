@@ -121,6 +121,16 @@ test("a stale row expires, so its old since never makes a new blip count as last
   assert.equal(w.queued.length, 1);
 });
 
+test("a stale unreported need hit again before cleanup restarts its clock (a new blip is not lasting)", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.tick(25 * 60_000); // no tick ran in between: the old row is still there
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.s.tick();
+  assert.deepEqual(w.queued, []);
+  assert.deepEqual(w.s.liveKeys(), []);
+});
+
 test("liveKeys lists only reported needs, until a success clears them (8d78a12e, 69369161, e863bb45)", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });

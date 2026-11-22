@@ -143,7 +143,7 @@ export function createConnectionState(o: {
       const module = moduleOf(connection);
       const key = stateKey(connection, n);
       const t = now(), today = day(t), full = FULL.has(n.cause), label = o.label(module);
-      q("INSERT INTO connection_state (key, module, cause, account, detail, url, since, last_hit) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET detail = excluded.detail, url = excluded.url, last_hit = excluded.last_hit").run(key, connection, n.cause, n.account ?? "", n.detail, n.url ?? null, t, t);
+      q(`INSERT INTO connection_state (key, module, cause, account, detail, url, since, last_hit) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET detail = excluded.detail, url = excluded.url, since = CASE WHEN reported_day IS NULL AND told = 0 AND COALESCE(last_hit, since) < excluded.last_hit - ${STALE} THEN excluded.since ELSE since END, last_hit = excluded.last_hit`).run(key, connection, n.cause, n.account ?? "", n.detail, n.url ?? null, t, t);
       const row = q("SELECT * FROM connection_state WHERE key = ?").get(key) as Row;
       const background = `${label} isn't connected (${agentWords[n.cause]}): the owner is told if it lasts. Skip this source for now and carry on.`;
       let c: Awaited<ReturnType<typeof chain>>;
