@@ -349,3 +349,17 @@ test("a check that records an operational failure in its state still exits non-z
   assert.equal(refused.checkFailed, undefined);
   assert.match(String(refused.error), /was refused/);
 });
+
+test("a refused main move is the answer for that pass: a release-lookup failure in the same pass doesn't turn it into a failed pass", async () => {
+  // Update now for a main commit: release discovery runs first in the pass, then the move is verified. When the host refuses the
+  // move (not on main, already running, …) that is the answer; a discovery failure from the same pass must not leave
+  // `checkFailed` set, or the child exits non-zero and the parent retries a refusal and pages the owner as if it were an outage.
+  const w = world();
+  const dl = w.d.download;
+  const s = await check({ ...w.d, now: () => NIGHT, download: async (u) => { if (/\/releases(\?|\/tags)/.test(u)) throw new Error("api.github.com answered 503"); return dl(u); } }, { release: "0".repeat(40), by: "owner" });
+  assert.equal(s.checkFailed, undefined, "the refusal is not an operational failure");
+  assert.match(String(s.error), /isn't in|doesn't descend|already runs/);
+  // The same discovery failure with no main move asked for is still operational: it must page.
+  const r = await check({ ...w.d, now: () => NIGHT, download: async (u) => { if (/\/releases(\?|\/tags)/.test(u)) throw new Error("api.github.com answered 503"); return dl(u); } });
+  assert.equal(r.checkFailed, true);
+});

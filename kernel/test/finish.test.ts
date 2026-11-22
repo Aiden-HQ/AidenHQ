@@ -30,7 +30,7 @@ async function setup(t, verdict, { agentsScope, checks, checkResolver, graded = 
   const issues = { [TASK]: issue, [DELEGATED]: delegated, ...extra };
   const byRef = (ref: string) => issues[ref] ?? Object.values(issues).find((i) => i.identifier === ref);
   const writes = [];
-  const ctl = { failPatch: 0 }; // PATCHes the control plane answers 502 to
+  const ctl = { failPatch: 0, failLabels: 0, labeled: 0 }; // PATCHes the control plane answers 502 to, and label reads it counts
   let k;
   const todo = await moduleServer(t, { key: "todo-key", tools: ["task_finish"], answer: async (msg, req) => {
     const r = await fetch(`${k.url}/v1/cp/agent/api/issues/${msg.params.arguments.task}`, { method: "PATCH", headers: { authorization: "Bearer todo-key", "x-aidenhq-caller": req.headers["x-aidenhq-caller"], "content-type": "application/json" }, body: JSON.stringify(msg.params.arguments.body) });
@@ -48,7 +48,11 @@ async function setup(t, verdict, { agentsScope, checks, checkResolver, graded = 
     onControl: async (req, body, auth) => {
       const ref = /^\/api\/issues\/([^/?]+)$/.exec(req.url ?? "")?.[1];
       if (req.method === "GET" && ref && byRef(decodeURIComponent(ref))) return { body: byRef(decodeURIComponent(ref)) };
-      if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }, { id: "lbl-grading", name: "grading" }] };
+      if (req.method === "GET" && req.url === "/api/companies/co/labels") {
+        ctl.labeled++;
+        if (ctl.failLabels) { ctl.failLabels--; return { status: 503, body: {} }; }
+        return { body: [{ id: "lbl-x", name: "x" }, { id: "lbl-held", name: "held" }, { id: "lbl-grading", name: "grading" }] };
+      }
       if (req.method === "PATCH" && ctl.failPatch) { ctl.failPatch--; return { status: 502, body: {} }; }
       if (req.method === "PATCH") { const b = JSON.parse(body); const i = byRef(decodeURIComponent(ref ?? "")) ?? issue; writes.push({ as: auth, body: b }); Object.assign(i, b); return { body: i }; }
       if (req.url === "/api/agents/me" && auth === "ada-key") return { body: { id: ADA, companyId: "co" } };
@@ -224,4 +228,19 @@ test("two checks hold a task: a reopen by one ends both holds, so a later submis
   answers.judge = { verdict: "ok" };
   assert.equal((await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok" }, "judge-tok")).status, 200);
   assert.equal(s.issue.status, "done", "ok closes: no stale sibling row stops it");
+});
+
+test("a check without a label resolves while the company's labels can't be read: no label operation, no failed verdict", async (t) => {
+  // An unlabelled check's hold needs no label read to end. Asking for it anyway made the whole verdict a 502 whenever that one
+  // endpoint was out, even though the task's own reads and writes worked and nothing about the label had to change.
+  const s = await setup(t, () => ({ verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }), {
+    checks: { "judge.finish": { module: "judge", at: "task.finish", url: "http://127.0.0.1:9/check/finish", auth_secret: "judge_check_key" } },
+  });
+  assert.equal((await s.finish({ status: "done" })).status, 202);
+  const reads = s.ctl.labeled;
+  s.ctl.failLabels = 1;
+  const r = await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok" }, "judge-tok");
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(s.issue.status, "done");
+  assert.equal(s.ctl.labeled, reads, "the labels endpoint was never asked");
 });

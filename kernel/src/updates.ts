@@ -452,7 +452,14 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
         // retry it (and later say it didn't start) while its update is already prepared. The next regular check sees that failure.
         delete s.checkFailed;
         delete s.error;
-      } catch (e) { if (!(e instanceof Refused)) s.checkFailed = true; s.error = plain((e as Error).message); why(plain((e as Error).message, 200)); }
+      } catch (e) {
+        // The ask itself was answered too, when the host refuses the move outright: that is not a failed pass, so a release
+        // discovery failure from the same pass is not re-reported as one (the parent would retry a refusal it must not).
+        if (e instanceof Refused) delete s.checkFailed;
+        else s.checkFailed = true;
+        s.error = plain((e as Error).message);
+        why(plain((e as Error).message, 200));
+      }
     }
     writeState(d, s);
     return s;

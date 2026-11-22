@@ -314,9 +314,11 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // keeps its row and the label it wrote with it (a later submission's own hold) rather than losing its row alone.
     const recordedNow = ends ? (db.prepare("SELECT check_id FROM check_holds WHERE task = ?").all(i.id) as { check_id: string }[]).map((r) => r.check_id) : [];
     const ended = new Set<string>([id, ...recordedNow]);
-    // One read of the company's labels, however many checks the verdict ends.
+    // One read of the company's labels, however many checks the verdict ends — and only when some hold being ended has a label
+    // to take off. A check without one needs no label operation, so an outage of that endpoint must not stop its verdict.
     const named = new Map(finishing());
-    const labels = await labelsOf(i);
+    const wanted = [...ended].some((x) => named.get(x)?.label);
+    const labels = wanted ? await labelsOf(i) : [];
     const drop = new Set<string>();
     for (const x of ended) {
       const name = named.get(x)?.label;
