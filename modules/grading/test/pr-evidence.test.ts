@@ -180,7 +180,7 @@ const withChecks = (n, head, merge, checks, files = ["kernel/src/x.ts"]) => ({
  * It carries no job link and sits in an unrelated check suite, exactly as real posted checks do (see the docblock in
  * evidence.ts); the job record and the `post-checks` job are what the fact binds to.
  */
-const PASS = (name, external) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external, app: { slug: "github-actions" } });
+const PASS = (name, external) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external, checkSuite: { app: { slug: "github-actions" } } });
 /**
  * The command facts' reads: `file` answers `areas.json` at a base, `ci.yml` at the head and its base, and the map; `job`
  * answers the shard's Actions job (null is the 404 a check with no job behind it gets); `run` answers the workflow run CI
@@ -365,8 +365,8 @@ test("a check that only claims a job's id mints nothing: a real job, run and pos
   // record, the repository's own CI run on the head, and the `post-checks` job that ran in the shard's own attempt.
   const forged = (extra) => ({ ...PASS("kernel#1", "7/150/1"), ...extra });
   const cases: [string, any, any, string][] = [
-    ["another App", forged({ app: { slug: "aidenhq" } }), {}, "posted by something other than GitHub Actions"],
-    ["no App at all", forged({ app: null }), {}, "a check with no App"],
+    ["another App", forged({ checkSuite: { app: { slug: "aidenhq" } } }), {}, "posted by something other than GitHub Actions"],
+    ["no App at all", forged({ checkSuite: null }), {}, "a check with no App"],
     ["no job behind its id", PASS("kernel#1", "7/150/1"), { jobs: { 150: null } }, "a job GitHub has no record of"],
     ["a job of another run", PASS("kernel#1", "7/151/1"), { jobs: { 151: { run_id: 8 } } }, "a job in a different run"],
     ["a job whose shard disagrees", PASS("kernel#1", "7/152/1"), { jobs: { 152: { name: "packages (2)" } } }, "a job for another shard"],

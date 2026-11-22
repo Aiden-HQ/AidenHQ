@@ -88,7 +88,8 @@ test("the PR query asks for each check's external_id and whether the check list 
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../service/src/ops.ts", import.meta.url), "utf8");
   const query = /const PR_QUERY = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
-  assert.match(query, /CheckRun \{ name status conclusion externalId app \{ slug \} \}/,
+  // `app` is a field of CheckSuite, never of CheckRun: selecting it on the run itself is a schema error that fails the whole read.
+  assert.match(query, /CheckRun \{ name status conclusion externalId checkSuite \{ app \{ slug \} \} \}/,
     "a suite check carries its external_id and the App that posted it");
   assert.match(query, /statusCheckRollup \{ contexts\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated check list is refused, not read as complete");
   assert.match(query, /files\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated file list is refused too");

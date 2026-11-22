@@ -132,7 +132,7 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     // GitHub Actions' own App. The check suite and runner-form URL that would look stronger are unusable here (see this
     // function's comment): GitHub files an API-posted check in the head's older App suite and gives it no job link. A check
     // from another App is refused outright.
-    if (String(c.app?.slug ?? "") !== "github-actions") return undefined;
+    if (String(c.checkSuite?.app?.slug ?? "") !== "github-actions") return undefined;
     const j: any = await read(`job/${jobId}`, () => deps.job(repo, jobId));
     // A made-up or posted check has no such job, or one from another run or another shard: never a fact.
     if (!j || String(j.run_id ?? "") !== run || j.name !== `packages (${shard})` && j.name !== `modules (${shard})`) return undefined;
