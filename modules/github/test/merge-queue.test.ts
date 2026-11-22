@@ -70,7 +70,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, graphql, repo = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, graphql, repo = () => 404, pull = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const waits = [];
   const taken = new Set();
@@ -101,6 +101,8 @@ async function setup(t, { prs, connected = { on: true }, hold, holdReason, cache
       if (m === "PUT" && p.endsWith("/merge") && putFails()) throw new Error("The operation was aborted due to timeout");
       // The repo read the queue confirms an absent repository with: `repo(slug)` is its status (404: really gone).
       if (m === "GET" && /^\/repos\/[^/]+\/[^/]+$/.test(p)) return { status: repo(p.slice("/repos/".length)), body: { full_name: p.slice("/repos/".length) }, headers: new Headers() };
+      // The PR read the queue confirms a PR-named NOT_FOUND with (a 404: really gone; a 200: only invisible to this token).
+      if (m === "GET" && /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(p)) return { status: pull(), body: { number: 1 }, headers: new Headers() };
       if (p === "/graphql" && graphql) return { ...(await graphql()), headers: new Headers() };
       return { ...(await github.gh(m, p, b)), headers: new Headers() };
     },
@@ -184,6 +186,22 @@ test("a deleted repo (GraphQL NOT_FOUND) ends the record as not merged with a re
   await nullNode.handle.stepMerges();
   await nullNode.handle.stepMerges();
   assert.equal(nullNode.outcomes.length, 0, "a null repository node with no confirmation waits");
+  // A NOT_FOUND naming the pull request (not the repository) is the same definitive answer, confirmed by reading that PR: the
+  // queued PR never existed, so the record ends instead of waiting out the error window.
+  outcomes.length = 0;
+  const prGone = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: null, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a PullRequest with the number of 1." }] } }) });
+  await prGone.merge("k-00000000000000d6", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await prGone.handle.stepMerges();
+  await prGone.settle();
+  assert.equal(prGone.outcomes[0]?.ok, false, JSON.stringify(prGone.outcomes));
+  assert.match(String(prGone.outcomes[0]?.text), /repository or PR no longer exists/i);
+  // The same answer on a PR that is there but invisible to this token (the PR read answers 200): the merge waits, never "gone".
+  outcomes.length = 0;
+  const prBlind = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: null, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a PullRequest with the number of 1." }] } }), pull: () => 200 });
+  await prBlind.merge("k-00000000000000d7", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await prBlind.handle.stepMerges();
+  await prBlind.handle.stepMerges();
+  assert.equal(prBlind.outcomes.length, 0, "a PR the token can't see waits, it is not ended as gone");
   // Any other GraphQL error is not definitive: the record waits (and is not failed), as before.
   outcomes.length = 0;
   const other = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: null, errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }] } }) });
