@@ -59,13 +59,13 @@ const lines = (n: number, v: number, step: number, width = 60) => Array.from({ l
 const patchOf = (repo: string, base: string, p: string) => execFileSync("git", ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", base, "HEAD", "--", p], { cwd: repo, encoding: "utf8" });
 const sent = (r: any) => JSON.stringify(r.input);
 
-async function review(repo: string, base: string, files: string[], model: Awaited<ReturnType<typeof endpoint>>) {
+async function review(repo: string, base: string, files: string[], model: Awaited<ReturnType<typeof endpoint>>, left: string[] = []) {
   const dir = codexDir();
   if (dir === null) return null;
   if (dir) process.env.PATH = `${dir}:${process.env.PATH}`;
   process.env.OPENROUTER_BASE_URL = model.url;
   process.env.OPENROUTER_API_KEY = "test-token";
-  return runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files, minutes: 3, scratch: mkdtempSync(join(tmpdir(), "native-scratch-")), own: true });
+  return runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files, left, minutes: 3, scratch: mkdtempSync(join(tmpdir(), "native-scratch-")), own: true });
 }
 
 test("an ordinary change goes out in one request holding the exact patch, its last hunk included", { timeout: 240_000 }, async (t) => {
@@ -198,5 +198,16 @@ test("self-review counts what the PR check would: an important finding in a file
     });
     assert.equal(out.status, 0, out.stdout);
     assert.match(out.stdout, /: clean \(/);
+  } finally { model.close(); }
+});
+
+test("an important finding in a file the scope leaves out (here a deleted lockfile) is dropped by design, not lost", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n`, "package-lock.json": (v) => (v ? "" : "{}\n") });
+  sh(repo, "rm", "-q", "--ignore-unmatch", "package-lock.json");
+  const model = await endpoint([], join(realpathSync(repo), "package-lock.json"));
+  try {
+    const r = await review(repo, base, ["s.txt"], model, ["package-lock.json"]);
+    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    assert.equal(r.incomplete, undefined);
   } finally { model.close(); }
 });

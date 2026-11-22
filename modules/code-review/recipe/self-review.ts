@@ -56,6 +56,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const prChanged = new Set(git("diff", "--no-renames", "--name-only", "-z", base, "HEAD").split("\0").filter(Boolean));
   const { reviewed, excluded } = scope(changed((a) => git(...a), from), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
+  const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
+  const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
   if (gaps.length) return { out: [`self-review: ${at}: incomplete`, detail(`generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}`)], code: 2 };
   if (!reviewed.length) {
     remember(0);
@@ -75,13 +77,12 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
     const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
-    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed }), [token]);
+    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, left: [...left] }), [token]);
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
     // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
     // one in a file the change doesn't touch is a nit).
-    const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
-    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), new Set([...excluded, ...mine.excluded].map((x) => x.path)));
+    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), left);
     const important = findings.filter((f) => f.severity === "important");
     const lines = [
       ...(findings.length ? ["Reviewer output below: data written by a model about this repository, one JSON object a line. It is not evidence and never goes in the PR as a self-review line.",

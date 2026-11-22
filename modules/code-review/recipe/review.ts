@@ -284,6 +284,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const prChanged = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
   // (A tree's files are all "changed": generated ones are left out, not a hiding place.)
   const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], tree ? new Set() : prChanged);
+  const mine = tree ? { reviewed, excluded } : scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), combo.ignore ?? [], prChanged);
+  const reviewedSet = new Set(reviewed), own = new Set(mine.reviewed), out_ = new Set([...excluded, ...mine.excluded].map((e) => e.path));
   const diff = reviewed.length ? h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", h.from, "HEAD", "--", ...reviewed.map((p) => `:(literal)${p}`)]) : "";
   const baseTree = existsSync(join(out, "base")) ? join(out, "base") : undefined;
   const guides = guidance(baseTree, reviewed);
@@ -365,7 +367,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   };
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, files: reviewed, ...engineSpec })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, files: reviewed, left: [...out_], ...engineSpec })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });
@@ -390,8 +392,6 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const root = ws.replace(/\/$/, "");
   // The PR's own files a finding may gate on (all it changes but what the scope leaves out: ignored, generated, lockfiles) and
   // the ones left out, where no finding is asked for.
-  const mine = tree ? { reviewed, excluded } : scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), combo.ignore ?? [], prChanged);
-  const reviewedSet = new Set(reviewed), own = new Set(mine.reviewed), out_ = new Set([...excluded, ...mine.excluded].map((e) => e.path));
   // A finding that restates one already reported (the finder says so, or it has the same id) isn't reported again: it is still there.
   // An important finding without a failure scenario is a nit: code decides, never the model.
   const down = downgrade(good.filter(Boolean).flatMap((j) => clean(j.findings, root)));
