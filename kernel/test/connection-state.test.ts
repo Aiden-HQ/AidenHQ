@@ -13,11 +13,16 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT); CREATE TABLE provenance (task TEXT PRIMARY KEY, created_by_job TEXT)");
   const queued: any[] = [], waits: any[] = [], opened: any[] = [];
+  const state = {
+    failQueue: false,
+    // A queue that can fail the way a failed owner_notify insert does: after the caller's marker, before its notice lands.
+    queue: (n: any) => { if (state.failQueue) throw new Error("owner_notify is locked"); queued.push(n); },
+  };
   const s = createConnectionState({
     db,
     idle: { wait: async (caller: unknown, b: unknown) => (waits.push({ caller, b }), {}) as never },
     wakes: { open: (b: unknown) => void opened.push(b) },
-    queue: (n) => void queued.push(n),
+    queue: state.queue,
     issue: async (id) => issues[id] as never,
     comments: async (id) => (comments[id] ?? []) as never,
     agentName: async () => "Aiden",
@@ -28,7 +33,7 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
     now: () => clock,
   });
   const who = (task: string) => ({ kind: "run" as const, agent: "a1", key: "kai", task, roles: [], tools: {}, credential: "" });
-  return { db, s, queued, waits, opened, who, tick: (ms: number) => (clock += ms), now: () => clock };
+  return { db, s, queued, waits, opened, who, state, tick: (ms: number) => (clock += ms), now: () => clock };
 }
 
 // WOR-1 is the owner's chat; WOR-2 its delegated child; WOR-3 the grandchild the job runs on.
@@ -244,4 +249,41 @@ test("a module's own restricted need is recorded for its org and goes to the dig
   assert.equal(w.queued.length, 1);
   assert.match(w.queued[0].text, /0xPolygon restricts outside apps.*cid/);
   await assert.rejects(w.s.report("google", "github", need));
+});
+
+test("a digest notice and its reported_day marker commit together: a failed notice leaves the need reportable", async () => {
+  const w = world({}); // no task chain: background work
+  w.state.failQueue = true;
+  await assert.rejects(w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" }), /owner_notify is locked/);
+  assert.equal((w.db.prepare("SELECT reported_day FROM connection_state").get() as { reported_day: string | null }).reported_day, null, "the marker rolled back with the notice");
+  // The next attempt reports it once the queue works again.
+  w.state.failQueue = false;
+  await w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" });
+  assert.equal(w.queued.length, 1);
+  assert.ok((w.db.prepare("SELECT reported_day FROM connection_state").get() as { reported_day: string | null }).reported_day);
+});
+
+test("the owner-asked decision notice and its told marker commit together too", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  w.state.failQueue = true;
+  await assert.rejects(w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" }), /owner_notify is locked/);
+  assert.equal((w.db.prepare("SELECT told FROM connection_state").get() as { told: number }).told, 0, "the marker rolled back with the notice");
+  w.state.failQueue = false;
+  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  assert.equal(w.queued.filter((n) => n.kind === "decision").length, 1);
+});
+
+test("tick's digest line and its marker commit together: a failed notice is retried on the next tick", async () => {
+  // A background need plus a task waiting on it: tick owes that need a digest line.
+  const w = world({});
+  await w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" });
+  w.db.prepare("INSERT INTO connection_waits (module, account, task, agent, at, full) VALUES ('github', '', 'w1', 'a1', ?, 0)").run(w.now());
+  w.db.prepare("UPDATE connection_state SET reported_day = NULL").run();
+  w.queued.length = 0;
+  w.state.failQueue = true;
+  assert.throws(() => w.s.tick(), /owner_notify is locked/);
+  assert.equal((w.db.prepare("SELECT reported_day FROM connection_state").get() as { reported_day: string | null }).reported_day, null, "the marker rolled back with the notice");
+  w.state.failQueue = false;
+  w.s.tick();
+  assert.equal(w.queued.length, 1);
 });

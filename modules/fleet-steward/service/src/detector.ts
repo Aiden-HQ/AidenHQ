@@ -99,7 +99,7 @@ export function failingRoutines(jobs: JobRow[], since: Record<string, string> = 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
 export interface Incident { key: string; reason: string; critical?: boolean; /** The task the flag is about, when its key names a card rather than a task. */ task?: string }
 /** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: the chief of staff was told the gate stayed jammed (open two hours). Each once, apart. */
-interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean; task?: string; /** When the gate's activity lookup first failed while the gate was past its two hours. */ lookup_failed_at?: string }
+interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean; task?: string; /** When the gate's activity lookup first failed while the gate was past its two hours. */ lookup_failed_at?: string; /** The newest activity observed for this flag, kept so a later lookup that finds none, or fails, doesn't rewind the clock. */ last_activity?: string }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
 
@@ -177,10 +177,15 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     if (!JAMMED.test(key) || o.jammed || Date.parse(at) - Date.parse(o.at) <= GATE_ESCALATE_MS) continue;
     // A review-stall's key is a card id; its task came with the flag. The other keys name their task.
     const task = o.task ?? /^(?:gate|unresumed):(.+)$/.exec(key)?.[1];
-    let last: string | undefined;
+    // The newest activity seen so far for this flag, kept across ticks: a job that ran and ended between ticks, or a lookup that
+    // finds nothing now, must not rewind the clock to the flag's own age.
+    let last = o.last_activity;
     if (task && acting) {
-      try { last = await acting(task); o.lookup_failed_at = undefined; }
-      catch {
+      try {
+        const found = await acting(task);
+        o.lookup_failed_at = undefined;
+        if (found) o.last_activity = last = found;
+      } catch {
         // An unreadable task is not inactivity: one transient failure must not file a false jam line, so the flag waits one more
         // window before the clock alone decides. A lookup that keeps failing past that window still escalates, so a persistent
         // failure can't suppress it either.
@@ -250,21 +255,26 @@ const MAX_LOOKUPS = 20;
  * Undefined when neither. Throws when the task can't be read: a failed lookup is unknown activity, never inactivity.
  */
 export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (task: string) => Promise<string | undefined> {
-  // The agents that act on a gate for the fleet (role fleet-audit), read at most once every five minutes.
-  let audit: { at: number; ids: Set<string> } | undefined;
-  const auditors = async () => {
+  // The agent directory, read at most once every five minutes: the holder key (the kernel's `assignee_changed.to`) and the agents
+  // that act on a gate for the fleet (role fleet-audit). Paperclip names a comment's author by agent ID, so the holder key is
+  // resolved to its ID before the two are compared.
+  let directory: { at: number; holders: Map<string, string>; auditors: Set<string> } | undefined;
+  const dir = async () => {
     const t = (d.now ?? Date.now)();
-    if (audit && t - audit.at < 5 * MIN) return audit.ids;
-    const dir = (await d.kernel.call("GET", "/v1/agents")) as { agents?: Record<string, { roles?: string[] }> };
-    const ids = new Set(Object.entries(dir.agents ?? {}).filter(([, g]) => (g?.roles ?? []).includes("fleet-audit")).map(([id]) => id));
-    audit = { at: t, ids };
-    return ids;
+    if (directory && t - directory.at < 5 * MIN) return directory;
+    const r = (await d.kernel.call("GET", "/v1/agents")) as { agents?: Record<string, { key?: string; roles?: string[] }> };
+    const agents = r.agents ?? {};
+    const holders = new Map(Object.entries(agents).filter(([id, g]) => g?.key).map(([id, g]) => [g.key!, id]));
+    const auditors = new Set(Object.entries(agents).filter(([, g]) => (g?.roles ?? []).includes("fleet-audit")).map(([id]) => id));
+    return (directory = { at: t, holders, auditors });
   };
   return async (task) => {
     const row = ((await d.kernel.call("GET", `/v1/tasks/state?ids=${encodeURIComponent(task)}`)).tasks ?? [])[0] as StateRow | undefined;
     if (row && ["job_running", "job_queued"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
-    const [comments, stewards] = await Promise.all([d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>, auditors()]);
-    return comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId === row?.holder || (c.authorAgentId != null && stewards.has(c.authorAgentId))))?.createdAt;
+    const [comments, { holders, auditors }] = await Promise.all([d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>, dir()]);
+    // The holder is a key; an agent no grant maps to (the raw id) is compared as it is.
+    const holder = row?.holder ? holders.get(row.holder) ?? row.holder : undefined;
+    return comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === holder || auditors.has(c.authorAgentId))))?.createdAt;
   };
 }
 
