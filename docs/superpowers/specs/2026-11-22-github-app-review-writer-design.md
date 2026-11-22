@@ -26,9 +26,9 @@ When the limit is hit, GitHub answers "submitted too quickly" and every writer s
 2. **One review writer.** `ReviewPoster.writer(repo)` in github-mcp (`modules/github/connections/github-mcp/src/review-post.ts`)
    handles every review write: the post, inline and file comments, the summary, resolves, the status, notices and acks.
    - It returns a `GitHub` client bound to the App's installation (`gh.as(identity)`, still behind `guard`) or the owner's.
-   - Only two cases pick the owner: the App isn't set up, or GitHub answers 404 for `GET /repos/{repo}/installation`.
-   - Any other failure throws: a bad key, a suspension, a permission error, a rate limit. A review never moves to the owner
-     because the App broke.
+   - The owner is picked when the App isn't set up, when its saved files are incomplete or unreadable (the App is optional:
+     the card row warns), or when GitHub answers 404 for `GET /repos/{repo}/installation`.
+   - Any other failure of a working App throws: a bad key GitHub rejects, a suspension, a permission error, a rate limit.
    - Installation lookups are cached for 10 minutes. Tokens are cached per installation until 5 minutes before `expires_at`.
 3. **Pacing per identity.** github-mcp's client (`client.ts`) keeps one `Pace` per identity: the owner, or `app:<installation
    id>`. Each has its own rate buckets, serial write queue and secondary-limit backoff, and `Retry-After` is honoured. A new

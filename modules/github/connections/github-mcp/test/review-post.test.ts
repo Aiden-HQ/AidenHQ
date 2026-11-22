@@ -335,11 +335,13 @@ describe("code review's GitHub App", () => {
     // Removed (the admin page deletes its files): no old failure lingers on the card.
     for (const f of ["app_id", "key.pem", "slug"]) rmSync(join(dir, f));
     expect(app.failure()).toBeUndefined();
-    // A saved App that is incomplete is broken, never "not set up": no review falls back to the owner.
+    // A saved App that is incomplete posts as the owner (the App is optional), and its card row says what is wrong.
     const half = mkdtempSync(join(tmpdir(), "ghapp-"));
     writeFileSync(join(half, "app_id"), "4242");
-    await expect(poster(w, gitHubApp({ dir: half })).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "pass", important: 0 })).rejects.toThrow(/missing or unreadable/);
-    expect(w.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    const halfApp = gitHubApp({ dir: half });
+    await poster(w, halfApp).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "pass", important: 0 });
+    expect(w.calls.filter((c) => c.method !== "GET").map((c) => c.auth)).toEqual(["Bearer gho_owner"]);
+    expect(halfApp.failure()).toMatch(/missing or unreadable/);
   });
 
   it("a write the installation refuses (a permission it wasn't granted) shows on the App's row until a write as it works", async () => {

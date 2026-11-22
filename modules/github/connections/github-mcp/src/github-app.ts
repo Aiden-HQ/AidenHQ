@@ -26,8 +26,9 @@ export type GitHubApp = ReturnType<typeof gitHubApp>;
 export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: string; fetchImpl?: typeof fetch; now?: () => number }) {
   const read = (name: string) => { try { return readFileSync(join(dir, name), "utf8").trim(); } catch { return ""; } };
   /**
-   * The App's id, key and slug; undefined only when none of its files exists (the App isn't set up). A set that is there but
-   * incomplete or unreadable is the App broken, never "not set up": it throws, so a review doesn't quietly post as the owner.
+   * The App's id, key and slug; undefined when none of its files exists (the App isn't set up). A set that is there but
+   * incomplete or unreadable throws here, for the card's warning; reviews treat it as no App (`quiet`) and post as the owner:
+   * the App is optional, and the owner is the intended fallback (owner, 2026-11-22).
    */
   const creds = () => {
     if (!["app_id", "key.pem", "slug"].some((f) => existsSync(join(dir, f)))) return undefined;
@@ -64,12 +65,12 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
 
   return {
     /**
-     * The App's installation on `repo` (owner/name): its id, or null when the App isn't set up or GitHub confirms it isn't
+     * The App's installation on `repo` (owner/name): its id, or null when the App isn't set up (or its saved files are broken) or GitHub confirms it isn't
      * installed there (404). Any other answer (a bad key, a suspended App, a rate limit) throws: a review never quietly moves
      * to the owner's account because the App broke.
      */
     installation: (repo: string): Promise<number | null> => track(async () => {
-      const c = creds();
+      const c = quiet();
       if (!c) return null;
       if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo) || repo.split("/").some((p) => /^\.+$/.test(p))) throw new AppError(`not a repository: ${repo.slice(0, 200)}`);
       const k = `${c.id}:${repo.toLowerCase()}`;
