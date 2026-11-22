@@ -696,6 +696,30 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
   assert.deepEqual(scanFile("Dockerfile", `${base}\n${redirected}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
 });
 
+test("pins: a pin a racing source file feeds is dated from every possible winner", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const dir = "/etc/apt/sources.list.d";
+  const raced = `FROM debian:bookworm${d}\nRUN echo 'deb https://old.example/apt bookworm main' > ${dir}/v.list | echo 'deb https://fresh.example/apt bookworm main' > ${dir}/v.list\nRUN apt-get install -y foo=1.0\n`;
+  const pin = scanFile("Dockerfile", raced).pins.filter((p) => p.kind === "apt")[0];
+  // Either stage's repository can be the one the file ends holding, so both are candidates.
+  assert.deepEqual(pin.sources, ["https://old.example/apt bookworm main", "https://fresh.example/apt bookworm main"]);
+  const tried: string[] = [];
+  const lookup = async (_k, _n, { source }) => {
+    tried.push(source);
+    if (source.startsWith("https://old.example")) return { published: day(30), via: "test" };
+    if (source.startsWith("https://fresh.example")) return { published: day(1), via: "test" };
+    throw Object.assign(new Error("not listed"), { notListed: true });
+  };
+  // The newest record across the candidates is the one that counts: 30 days in one, 1 day in the other, fails.
+  assert.equal((await dateApt(pin, lookup)).published, day(1));
+  assert.deepEqual(tried, ["https://old.example/apt bookworm main", "https://fresh.example/apt bookworm main"]);
+  // A file only one command wrote keeps the old behaviour: the first repository that lists the version answers it.
+  const single = scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN echo 'deb https://old.example/apt bookworm main' > ${dir}/v.list\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0];
+  tried.length = 0;
+  assert.equal((await dateApt(single, lookup)).published, day(30));
+  assert.equal(tried.length, 1);
+});
+
 test("pins: a removal's reach ends at each install, not at any later ||", () => {
   const d = "@sha256:" + "f".repeat(64);
   const write = "RUN echo 'deb https://vendor.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list";

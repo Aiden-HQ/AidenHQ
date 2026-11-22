@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
 import type { Exception, FetchError } from "./best-version.ts";
 
-export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
+export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string; raced?: boolean }
 // Apt repository state. `files` are the source files the stage has (each used for dating, and whether it was removed);
 // `entries` holds the repositories, one string per `deb` line and one `url suite component` per Deb822 stanza, filed
 // under the source file it was written to (`undefined` for a line naming no file, which accumulates); `added` is whether
@@ -43,14 +43,14 @@ export interface Pin { kind: string; name: string; package: string; version?: st
 // have created and may not have: a `cp -n` onto one may replace, so it is neither certainly skipped nor certainly applied.
 // A name in none of them is one the scanner can't see (an image file), which `-n` treats like `maybe` but a replace
 // overwrites.
-interface State { files: Set<string>; empty: Set<string>; maybe: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+interface State { files: Set<string>; empty: Set<string>; maybe: Set<string>; raced: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
 // Each repository once, in the order its file first held it: two source files naming the same repository (a `mv -n`
 // that keeps both) are one place to date a pin from.
 const sources = (s: State) => [...new Set([...s.entries.values()].flat())];
 // A fresh filesystem: no source files, no repository.
-const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), entries: new Map(), added: false, releases: new Set() });
+const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), raced: new Set(), entries: new Map(), added: false, releases: new Set() });
 // A deep copy, so one stage's later writes never reach another's (a stage inherits a snapshot, not a live view).
-const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), raced: new Set(s.raced), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
 // Whether a stage holds any repository a later install would see: any entry (a `deb` line or a Deb822 stanza, filed under
 // its file or the `undefined` bucket), or a file whose content we can't read. Content, not existence: a repository a
 // guarded write may have left still counts, since an install after it may well see it.
@@ -235,7 +235,7 @@ const writtenKind = (text: string): Pick<Written, "content" | "text"> => {
 // `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
 // sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads. `body` is the here-document
 // the logical line carries, which is what `cat > file <<EOF` or `tee file <<EOF` writes.
-function writtenFiles(segment: string, body?: string, knownSource?: (path: string) => string[] | undefined): Written[] {
+function writtenFiles(segment: string, body?: string, knownSource?: (path: string) => string[] | undefined): Written[] & { racedPaths?: Set<string> } {
   const out: Written[] = [];
   // Every write's path and the command that made it, so a name two commands write can be spotted as a race.
   const writes: { path: string; cmd: number }[] = [];
@@ -510,7 +510,8 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     const repos = racedRepos.get(w.path);
     if (repos) { w.entries = repos; w.text = undefined; w.content = "deb"; }
   }
-  return out;
+  // The caller files these names so a pin they feed can be dated from every possible winner (see `dateApt`).
+  return Object.assign(out, { racedPaths: new Set(racedRepos.keys()) });
 }
 
 // Install commands on one logical line: pins found, problems found.
@@ -577,7 +578,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     const taken = new Map([...state.entries].map(([f, v]) => [f, [...v]] as const));
     const held = new Set(state.files);
     const removed = named.filter((f) => /\.(list|sources)$/.test(f));
-    const blank = new Set(state.empty), unsure = new Set(state.maybe);
+    const blank = new Set(state.empty), unsure = new Set(state.maybe), race = new Set(state.raced);
     // A skipped removal leaves the file it would have dropped, so its entries are back even when the line also
     // rewrote that name (`test -f m && rm x && printf … > x || true` leaves the old repository when the test fails):
     // both possible sources are kept (the safe direction).
@@ -585,16 +586,17 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       for (const [f, v] of taken) state.entries.set(f, [...new Set([...(state.entries.get(f) ?? []), ...v])]);
       held.forEach((f) => state.files.add(f));
       blank.forEach((f) => state.empty.add(f));
+      race.forEach((f) => state.raced.add(f));
       unsure.forEach((f) => state.maybe.add(f));
       state.added = hasRepo(state);
     };
     if (removed.length) {
-      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.maybe.delete(f); state.entries.delete(f); });
+      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.maybe.delete(f); state.raced.delete(f); state.entries.delete(f); });
       state.added = hasRepo(state);
       return undo;
     }
     if (!named.length) {
-      state.entries.clear(); state.files.clear(); state.empty.clear(); state.maybe.clear();
+      state.entries.clear(); state.files.clear(); state.empty.clear(); state.maybe.clear(); state.raced.clear();
       state.added = false;
       return undo;
     }
@@ -629,13 +631,14 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // The repositories a file holds now, to put them back when a guarded change is undone (merged with whatever a later
   // command on the line wrote, so neither is lost).
   const snapshot = (...names: (string | undefined)[]) => {
-    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n), n === undefined ? false : state.maybe.has(n)] as const);
+    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n), n === undefined ? false : state.maybe.has(n), n === undefined ? false : state.raced.has(n)] as const);
     return () => {
-      for (const [n, entries, held, blank, unsure] of before) {
+      for (const [n, entries, held, blank, unsure, race] of before) {
         if (entries) state.entries.set(n, [...new Set([...(state.entries.get(n) ?? []), ...entries])]);
         if (held && n !== undefined) state.files.add(n);
         if (blank && n !== undefined) state.empty.add(n);
         if (unsure && n !== undefined) state.maybe.add(n);
+        if (race && n !== undefined) state.raced.add(n);
       }
       state.added = hasRepo(state);
     };
@@ -666,6 +669,9 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     // What a `cat` of a file this stage wrote copies: its filed entries, and undefined for a file it never wrote.
     const knownSource = (path: string) => { const name = sourceName(path); return name && state.files.has(name) ? (state.entries.get(name) ?? []) : undefined; };
     const files = writtenFiles(segment, body, knownSource);
+    // A name two racing commands wrote may end holding either one's repositories, which dating must all check.
+    const racedHere = new Set(files.racedPaths ? [...files.racedPaths] : []);
+    for (const path of racedHere) { const name = sourceName(path); if (name) state.raced.add(name); }
     // Only `.list` and `.sources` are loaded: a write to `vendor.list.disabled` is a repository neither APT nor a later
     // install sees, so it neither requires pins nor dates them.
     const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
@@ -699,6 +705,9 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         // repository in place, so those entries are kept beside whatever this write brought rather than cleared.
         const prior = w.append || w.retain ? (state.entries.get(w.file!) ?? []) : [];
         state.entries.set(w.file!, [...new Set([...prior, ...written])]);
+        // A later write that certainly replaces the file leaves exactly what it wrote, so an earlier race over it no
+        // longer leaves another repository possible. A write that is itself part of this line's race keeps the name.
+        if (!w.append && !racedHere.has(w.path)) state.raced.delete(w.file!);
         // A write behind a condition may have been skipped, so it leaves the file as it was (the undo puts back what it
         // held) — or it ran, and the file is as the write left it. Either way a `-n` copy onto it is neither certainly
         // skipped nor certainly applied, so the name is only `maybe` known while a later command may skip it.
@@ -773,7 +782,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         .replace(/(?:>>?|<<?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " "));
       for (const a of args.filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
         const [pkg, ver] = a.split("=") as [string, string | undefined];
-        if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
+        if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at, ...(state.raced.size ? { raced: true } : {}) });
         else if (state.added) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
       }
     }
@@ -1112,9 +1121,23 @@ async function datePin(p: Pin) {
  */
 export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt) {
   const release = p.release ?? DEFAULT_RELEASE;
-  for (const source of [...p.sources!.map((s) => onRelease(s, release, p.distro)), ...distroSources(release, p.distro)]) {
-    try { return await lookup("apt", p.name, { version: p.version, source }); } catch (e) { if (!(e as FetchError).notListed) throw e; }
+  // A raced source file may end up holding any one of the repositories its commands wrote, so a version it lists must
+  // be old enough in every one of them: the newest publication date across the file's sources is the one that counts.
+  // Otherwise a version a losing stage writes (dated 30 days ago there) would pass on a winner's yesterday record.
+  const own = p.sources!.map((s) => onRelease(s, release, p.distro));
+  let newest: Awaited<ReturnType<typeof publishedAt>> | undefined;
+  for (const source of [...own, ...distroSources(release, p.distro)]) {
+    // Only the file's own sources are race candidates; the distro's pockets are where a pin is dated when none of them
+    // lists it, so the first pocket that does answers it.
+    const inFile = own.includes(source);
+    if (!inFile && newest) break;
+    try {
+      const found = await lookup("apt", p.name, { version: p.version, source });
+      if (!p.raced) return found;
+      if (!newest || found.published > newest.published) newest = found;
+    } catch (e) { if (!(e as FetchError).notListed) throw e; }
   }
+  if (newest) return newest;
   throw new Error(`${p.name}=${p.version}: no apt repository in this file, nor ${release}'s own, lists it`);
 }
 
