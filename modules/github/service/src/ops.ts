@@ -44,8 +44,8 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
-      baseRef { target { ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion externalId checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }
+      baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
     }
   }
 }`;
@@ -125,7 +125,49 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     // A permission refusal (the access layer already types rate limits and sign-in problems) stays a 403: the caller may try another repo.
     if (r.status >= 300) throw fail(r.status === 403 ? 403 : 502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
     const j = r.body;
-    return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, url: j.html_url } };
+    return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, run_attempt: j.run_attempt ?? null, url: j.html_url } };
+  }
+  // A workflow run's identity: which workflow, what event, which head, and the base CI read its own inputs from. A 404 is
+  // "no such run", never an error.
+  if (b.kind === "run") {
+    const r = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}`);
+    if (r.status === 404) return { status: 200, json: null };
+    if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/runs/${b.id}: ${r.status}`);
+    const u = r.body;
+    const w = u?.workflow_id ? await ctx.access.rest("GET", `/repos/${s.slug}/actions/workflows/${u.workflow_id}`).then((a) => (a.status < 300 ? a.body : undefined), () => undefined) : undefined;
+    // The run's own jobs, so a command fact can require the `post-checks` job that posted the per-suite checks (the one part
+    // of that evidence a poster cannot invent). Across every attempt: a re-run keeps an earlier attempt's passing shard, and
+    // the poster must have run in that same attempt. An unreadable list is no jobs at all, never a guess.
+    const post: { run_attempt: number | null; state: string | null; conclusion: string | null }[] = [];
+    // Each shard job's latest instance: `filter=latest` answers the newest attempt of every job name, so a shard that passed,
+    // published and was then re-run keeps only the re-run here. A suite check naming the superseded instance is stale (the
+    // shard's latest run did not pass), and one naming the latest is the shard's own current record. `latest` is a map of
+    // `packages (N)`/`modules (N)` to that instance; a name with no entry is a shard this run has no job for.
+    const latest: Record<string, { id: number | null; run_attempt: number | null; state: string | null; conclusion: string | null }> = {};
+    for (let page = 1; page <= 10; page++) {
+      const jr = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}/jobs?filter=all&per_page=100&page=${page}`);
+      if (jr.status >= 300) break;
+      const jobs: any[] = Array.isArray(jr.body?.jobs) ? jr.body.jobs : [];
+      for (const j of jobs) if (j?.name === "post-checks") post.push({ run_attempt: j.run_attempt ?? null, state: j.status ?? null, conclusion: j.conclusion ?? null });
+      if (jobs.length < 100) break;
+    }
+    for (let page = 1; page <= 10; page++) {
+      const lr = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}/jobs?filter=latest&per_page=100&page=${page}`);
+      if (lr.status >= 300) break;
+      const jobs: any[] = Array.isArray(lr.body?.jobs) ? lr.body.jobs : [];
+      for (const j of jobs) {
+        if (typeof j?.name !== "string" || !/^(packages|modules) \(\d{1,6}\)$/.test(j.name)) continue;
+        latest[j.name] = { id: j.id ?? null, run_attempt: j.run_attempt ?? null, state: j.status ?? null, conclusion: j.conclusion ?? null };
+      }
+      if (jobs.length < 100) break;
+    }
+    // The run's own base: main as it was when this run started, as this run recorded it. One value only — two PRs on one run,
+    // or two bases, are an ambiguity, never a pick. GitHub drops the `pull_requests` entry once the PR merges, which is why a
+    // merged run answers no base; the PR's own `baseRef` is the branch tip now, not this, and is never used in its place.
+    const bases = new Set((u?.pull_requests ?? []).filter((p: any) => p?.head?.sha === u?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
+    return { status: 200, json: { id: u.id, run_attempt: u.run_attempt ?? null, event: u.event ?? null, head_sha: u.head_sha ?? null, status: u.status ?? null,
+      workflow_id: u.workflow_id ?? null, workflow_path: w?.path ?? null, workflow_state: w?.state ?? null, base_sha: bases.size === 1 ? String([...bases][0]) : null,
+      post_checks: post, latest_shard_jobs: latest } };
   }
   // prs: every open PR, newest page first up to 500.
   const prs: { number: number; sha: string; base: string; head_repo: string | null }[] = [];
@@ -135,6 +177,57 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (r.length < 100) break;
   }
   return { status: 200, json: prs };
+}
+
+/**
+ * A listed file at an exact commit: its text as it is, a parsed JSON body back out as JSON (never "[object Object]").
+ *
+ * The path must be a regular blob in the commit's tree, and is read from the tree first. The contents API follows a symlink whose
+ * target is a regular file in the repository and answers with that target's bytes — under every media type, `raw` and the plain
+ * JSON object alike — so a listed path that is a symlink there would hand back a file the grant does not name. A tree entry is the
+ * literal object at that path: `blob` at mode `100644`/`100755` is a file, `120000` is a symlink, `160000` a submodule, a `tree`
+ * a directory, and a missing entry is nothing. Anything but a regular blob refuses (404), and the contents read is not made.
+ */
+async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const path = String(b.path), ref = String(b.ref);
+  // The commit's own tree, listed once: `git/trees/{sha}` resolves a commit to the tree it records, and a recursive listing names
+  // every entry by its full path, so the entry at `path` is the literal object there.
+  const t = await ctx.access.rest("GET", `/repos/${s.slug}/git/trees/${ref}?recursive=1`);
+  if (t.status === 404) return { status: 404, json: { error: `${s.slug} has no ${path} at ${ref}` } };
+  if (t.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/git/trees/${ref}: ${t.status}`);
+  // A truncated tree (over 100,000 entries) cannot say whether this path is a blob or something else, so it proves nothing.
+  if (t.body?.truncated !== false) throw fail(502, `GitHub's tree for ${s.slug}@${ref} is truncated: ${path} cannot be placed`);
+  const entry = (Array.isArray(t.body?.tree) ? t.body.tree : []).find((e: any) => e?.path === path);
+  if (!entry || entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) return { status: 404, json: { error: `${s.slug} has no regular file ${path} at ${ref}` } };
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(path)}?ref=${ref}`, undefined, { accept: "application/vnd.github.raw+json" });
+  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${path} at ${ref}` } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${path}: ${r.status}`);
+  return { status: 200, text: typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null) };
+}
+
+/**
+ * A commit's parents, first parent first: the tree a merge was made on. For a merged PR, whose CI run no longer records its own
+ * base (`pull_requests` is dropped on merge), the merge commit's first parent is that base. A commit GitHub has no answer for
+ * is 404 to the caller; its parent list is the API's own order, and nothing here reorders or picks a different one.
+ */
+async function commitOf(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/commits/${String(b.ref)}`);
+  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no commit ${String(b.ref)}` } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/commits/${String(b.ref)}: ${r.status}`);
+  const parents = Array.isArray(r.body?.parents) ? r.body.parents.map((p: any) => String(p?.sha ?? "")).filter(Boolean) : [];
+  return { status: 200, json: { sha: String(r.body?.sha ?? ""), parents } };
+}
+
+/**
+ * Whether a path is a directory at an exact commit, as CI's own `post-checks` decides it before posting a suite's check
+ * (`.github/workflows/ci.yml`): the contents API lists a directory as an array, 404s for a missing one, and an unreadable
+ * answer is neither. A 404 is "not there" (a real answer); anything else unreadable throws, so the caller mints nothing.
+ */
+async function exists(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`, undefined, { accept: "application/vnd.github+json" });
+  if (r.status === 404) return { status: 200, json: { exists: false } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
+  return { status: 200, json: { exists: Array.isArray(r.body) } };
 }
 
 async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
@@ -184,6 +277,9 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
   const s = slugOf(b.repo);
   if (op === "fetch") return bundleOf(ctx, s, String(b.ref));
   if (op === "head") return { status: 200, json: { sha: String((await ok(ctx, "GET", `/repos/${s.slug}/branches/${enc(String(b.ref))}`)).body?.commit?.sha ?? "") } };
+  if (op === "read" && b.kind === "file") return file(ctx, s, b);
+  if (op === "read" && b.kind === "exists") return exists(ctx, s, b);
+  if (op === "read" && b.kind === "commit") return commitOf(ctx, s, b);
   if (op === "read") return read(ctx, s, b);
   if (op === "comment") {
     const body = withFooter(String(b.body), String(b.module ?? "AidenHQ"));

@@ -21,6 +21,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
       { module: "github", fetch: { repos: ["*/*"] }, read: { repos: ["*/*"] }, comment: { repos: ["*/*"] }, commit: { repos: ["@instance"], paths: ["apps.yaml"] }, runner: { orgs: ["acme", "@agents", "@orgs"] }, snapshot: { repos: ["*/*"] } },
       { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
       { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
+      { module: "grading", read: { repos: ["*/*"] }, evidence: { repos: ["*/*"], paths: [".github/ci/areas.json", ".github/workflows/ci.yml"] }, exists: { repos: ["*/*"] } },
       { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
     ],
     repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"], orgs: ["partner"] }),
@@ -117,6 +118,29 @@ test("dot-only repo segments and hostile refs never reach the code host", async 
   assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "a..b" })).status, 400);
   assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "main@{1}" })).status, 400);
   assert.equal(seen.length, 0);
+});
+
+test("a file read needs the evidence grant and a listed path; the general read never reaches it", async (t) => {
+  const { call, seen } = await setup(t);
+  const ref = "a".repeat(40);
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref });
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/workflows/ci.yml", ref })).status, 200, "the workflow the fact compares");
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/workflows/release.yml", ref })).status, 403, "an unlisted path");
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: "../secrets", ref })).status, 400, "not a path in the repo");
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "main" })).status, 400, "a full sha");
+  assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref })).status, 403, "a read grant is not an evidence grant");
+  // `exists` is its own grant and takes any path: it answers only whether it is a directory, never contents, so it is not
+  // tied to the evidence paths a `file` read needs.
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "exists", path: "kernel", ref })).status, 200, "an exists read");
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "exists", path: "../../etc", ref })).status, 400, "still a repo path");
+  assert.equal((await call("reviewer", "read", { repo: "acme/x", kind: "exists", path: "kernel", ref })).status, 403, "a module without the exists grant");
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "run", id: 7 })).status, 200, "a run is an ordinary read");
+  assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "run", id: 7 });
+  // A commit's parents are an ordinary read (`pr` and the rest), and its ref is a full sha like every other.
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "commit", ref })).status, 200, "a commit read");
+  assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "commit", ref });
+  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "commit", ref: "main" })).status, 400, "a full sha");
 });
 
 // The real code host's ops (modules/github/service/src/ops.ts) behind the kernel's broker, with a fake GitHub: whatever an op
