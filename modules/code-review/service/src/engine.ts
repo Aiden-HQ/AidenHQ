@@ -1764,9 +1764,11 @@ export function createEngine(d: EngineDeps) {
     let e = treeReads.get(key);
     if (!e || now() - e.at > 120_000) {
       const p = d.codehost.tree(repo, ref);
-      e = { p, at: now() };
-      treeReads.set(key, e);
-      p.catch(() => { if (treeReads.get(key)?.p === p) treeReads.delete(key); });
+      // `at` is when the read settled: one still under way never expires, so a retry after a slow read always finds it.
+      const entry = { p, at: Infinity };
+      e = entry;
+      treeReads.set(key, entry);
+      p.then(() => { entry.at = now(); }, () => { if (treeReads.get(key)?.p === p) treeReads.delete(key); });
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
