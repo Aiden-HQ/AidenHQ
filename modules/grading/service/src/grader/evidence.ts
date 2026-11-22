@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
+import { closedBy } from "../aidenhq-sdk/closed-event.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
@@ -698,18 +699,20 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   if (!i) return { awaiting: `issue ${ref || "(none)"} can't be read yet` };
   const comments: any[] = i.comments?.nodes ?? [];
   const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
-  const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
-  // Anyone with close rights can close an issue: a close counts only by an owner, member or collaborator (the fleet acts as the owner).
-  // GitHub's own close through a merged PR's closing keyword ("Fixes #N"): the close event's `closer` is that PR, structured, so
-  // it counts as closed and cited by it when it merged in this issue's repo, whoever merged it.
-  const by = i.closedEvents?.nodes?.[0]?.closer;
-  const keywordPr = i.state === "CLOSED" && by?.__typename === "PullRequest" && by.state === "MERGED" && String(by.repository?.nameWithOwner ?? "").toLowerCase() === repo.toLowerCase() ? by : undefined;
-  const trusted = Boolean(keywordPr) || Boolean(closer) && ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation);
+  const owned = (c: any) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.authorAssociation);
+  // The closing comment is the closer's own, up to the close; else the one an owner, member or collaborator (the fleet acts as the
+  // owner) leaves after it citing a PR, which is how the Maintainer cites the PR whose Fixes line closed the issue another way.
+  const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) ?? comments.findLast((c) => owned(c) && Date.parse(c.createdAt) > Date.parse(i.closedAt) && findPrs(c.body).length) : undefined;
+  // Anyone with close rights can close an issue: a close counts only through a merged PR in this repo (GitHub's own record of the
+  // closer: "Fixes #N"), or a comment by an owner, member or collaborator that cites the PR.
+  const by = closedBy(i)?.pull_request;
+  const keywordPr = i.state === "CLOSED" && by?.merged && String(by.repo ?? "").toLowerCase() === repo.toLowerCase() ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
+  const trusted = Boolean(keywordPr) || owned(closing);
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (keywordPr) {
-    merges.push(keywordPr.mergeCommit?.oid ?? "");
-    facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.mergedAt ? ` at ${keywordPr.mergedAt}` : ""}${keywordPr.mergeCommit?.oid ? ` (merge commit ${keywordPr.mergeCommit.oid})` : ""}`);
+    merges.push(keywordPr.merge_commit_sha ?? "");
+    facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.merge_commit_sha ? ` (merge commit ${keywordPr.merge_commit_sha})` : ""}`);
   } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
   else if (closing) {
     const prs = findPrs(closing.body).slice(0, 3);

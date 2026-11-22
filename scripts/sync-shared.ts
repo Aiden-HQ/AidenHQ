@@ -84,7 +84,7 @@ export function sharedCopies(root = repo) {
   // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools and the code host's PR watch read.
   "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/github/service/src/aidenhq-sdk/maintained-repos.ts"],
   // What closed an issue (the newest ClosedEvent): the code host's issue read for the grader and github-mcp's github_issue_read.
-  "kernel/sdk/src/closed-event.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/closed-event.ts", "modules/github/service/src/aidenhq-sdk/closed-event.ts"],
+  "kernel/sdk/src/closed-event.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/closed-event.ts", "modules/github/service/src/aidenhq-sdk/closed-event.ts", "modules/grading/service/src/aidenhq-sdk/closed-event.ts"],
   "kernel/sdk/src/attribution.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/attribution.ts", "modules/github/service/src/aidenhq-sdk/attribution.ts"],
   // Code churn: the code host's churn pass and backfill (codehost-local calls the original from the kernel).
   "kernel/sdk/src/churn.ts": ["modules/github/service/src/aidenhq-sdk/churn.ts"],
