@@ -18,7 +18,7 @@ third-party module). Only the sha runs. Entering or moving a fork is the owner's
 
 **Daily switch-back run.** For each fork in `instance.yaml`:
 
-1. `gh pr view <upstream_pr> --json state,mergeCommit`. Open: note "waiting on <upstream_pr>". Closed unmerged: note "upstream
+1. No `upstream_pr` recorded: note "no upstream PR recorded" and go on. Else `gh pr view <upstream_pr> --json state,mergeCommit`. Open: note "waiting on <upstream_pr>". Closed unmerged: note "upstream
    closed it; the fork stays until the owner removes it".
 2. Merged at M: find the official revision containing it.
    - Kernel and official modules: the newest product `main` commit containing M (`git merge-base --is-ancestor M <sha>` in
@@ -27,11 +27,13 @@ third-party module). Only the sha runs. Entering or moving a fork is the owner's
      `sha:`. Check in the module's own repo whether that listing's revision contains M; if not, walk the marketplace's commits after the
      pinned one, newest first: the first whose listing contains M is the card's new marketplace `sha:`; never an older or
      unrelated commit (it would roll other modules back). A marketplace has one pin: choose it jointly for every fork on it,
-     remove only forks whose fix that pin contains, and leave the others in place.
+     remove only forks whose fix that pin contains, and leave the others in place, but only when each retained fork's own base still descends from the base that pin resolves to
+     (else the whole apply is refused): the same check applies to `product:` and any fork left in place.
    - None yet: note "merged, waiting for a release".
 3. On `fleet/fork-switchback-<date>`, for each ready fork delete `product_fork:`, or the entry's `fork:` and `upstream_pr:`
    (keep the module's full id, e.g. `twin@acme`), and change only the pin from step 2, to a revision you verified in
    step 2 (never an unchecked M). Leave every other pin as it is. Commit and `aidenhq apply <instance repo> <branch>`
    (the "fork → official" card, the AI reviewer's); its reply names any other module whose revision a marketplace `sha:`
    change moves.
-4. Close with one line per fork: switched back (card), waiting on the PR, or waiting for a release.
+4. Keep the task open while the apply card is pending and report "switched back" only after the apply succeeded; close with
+   one line per fork: switched back, card pending, waiting on the PR, or waiting for a release.
