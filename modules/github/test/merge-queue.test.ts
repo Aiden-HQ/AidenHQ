@@ -382,6 +382,40 @@ test("an unanswered PUT whose merge lands is still credited when the retry is re
   assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"], "named as made here");
 });
 
+test("a refused retry whose re-read still lags keeps the earlier call's nonce, so the merge it made is not lost", async () => {
+  // The first PUT merges on GitHub's side and never answers. A later poll's read still lags, so a retry goes out and GitHub refuses
+  // it (the PR is in fact merged). That refusal answers the retry only: the first call's nonce must survive, and the PR must be
+  // looked at again rather than failed, or a merge this queue made lands with no evidence at all.
+  const mergeSha = "c".repeat(40);
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", lag: 3 } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let puts = 0;
+  const gh = async (m, p, b) => {
+    if (m === "PUT" && String(p).endsWith("/merge")) {
+      puts += 1;
+      if (puts === 1) { await github.gh(m, p, b); throw new Error("The operation was aborted due to timeout"); }
+      throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 });
+    }
+    return github.gh(m, p, b);
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-refused-lag-")), gh, fleetOrg: "acme-agents",
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000cd", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step(); // the PUT merges it and goes unanswered
+  await merges.step(); // the stale read says open: the retry is refused, and the re-read lags too
+  assert.equal(puts, 2, "the queue retried once");
+  assert.equal(merges.status("k-00000000000000cd").state, "running", "a lagging re-read is not yet a refusal to fail on");
+  for (let i = 0; i < 6 && merges.status("k-00000000000000cd").state === "running"; i++) await merges.step();
+  await new Promise((r) => setTimeout(r, 20));
+  const done = merges.status("k-00000000000000cd");
+  assert.equal(done.state, "done", JSON.stringify(done));
+  assert.deepEqual(done.objects, [`github:acme-agents/widget@${mergeSha}`], "the first call's merge is still named as the queue's");
+  assert.deepEqual(JSON.parse(done.text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "and it is on the evidence line");
+});
+
 test("a refusal with no earlier unanswered attempt is still a failure, and a refused head is never PUT again", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);

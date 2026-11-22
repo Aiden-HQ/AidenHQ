@@ -23,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -177,6 +177,7 @@ export function createMerges(d: {
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
         delete p.mergeCalls;
+        delete p.refusal;
         delete p.wait;
         if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         if (ours) { bypassed(p); merged.add(p.repo.toLowerCase()); }
@@ -229,22 +230,32 @@ export function createMerges(d: {
         // Only a 4xx is GitHub's answer. A timeout or a 5xx may have merged: the next poll reads the PR and sees which.
         const status = (e as { status?: number }).status ?? 0;
         if (status >= 400 && status < 500) {
-          // A retry can be refused because an earlier unanswered PUT already merged it, while this poll's read still lagged. That
-          // refusal answers this attempt only, so read the PR once more: a commit carrying any of this record's nonces is its own
-          // merge, credited; anything else is a real refusal and fails the PR.
-          if ((p.mergeCalls?.length ?? 0) > 1) {
+          // A 4xx answers this attempt: GitHub did not merge with it. An earlier PUT that went unanswered may still have merged,
+          // though, and this poll's read can lag. Drop only this attempt, read once more, and credit a commit carrying any earlier
+          // call's nonce. When that read still lags, keep those nonces and look again next poll instead of failing the PR and
+          // losing a merge that landed; a second refusal with still nothing to show is the end.
+          const earlier = (p.mergeCalls ?? []).filter((c) => c !== attempt);
+          if (earlier.length) p.mergeCalls = earlier;
+          else delete p.mergeCalls;
+          if (earlier.length) {
             const again = await readPr(p.repo, p.number).catch(() => undefined);
             const pr = again?.repository?.pullRequest;
             const mergedSha = String(pr?.mergeCommit?.oid ?? "");
-            const ours = mergedSha && pr?.headRefOid === p.head ? mergedBy(pr.mergeCommit, mergedSha, p.mergeCalls) : undefined;
+            const ours = mergedSha && pr?.headRefOid === p.head ? mergedBy(pr.mergeCommit, mergedSha, earlier) : undefined;
             if (ours) {
               Object.assign(p, { status: "merged", sha: ours, mergedAt: pr?.mergedAt ?? now().toISOString() });
               delete p.mergeCalls;
+              delete p.refusal;
               delete p.wait;
               bypassed(p);
               d.flow?.merged(p.repo, p.number, p.head, ours, pr?.mergedAt ?? undefined, String(pr?.title ?? ""), String(pr?.body ?? ""));
               merged.add(p.repo.toLowerCase());
               return void q.said.push(`Merged ${p.url}.`);
+            }
+            const n = p.refusal?.head === p.head ? p.refusal.n + 1 : 1;
+            if (n < 2) {
+              p.refusal = { head: p.head, n };
+              return wait("retry");
             }
           }
           return fail(`GitHub refused the merge: ${says(e)}`);
@@ -255,6 +266,7 @@ export function createMerges(d: {
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
       delete p.mergeCalls;
+      delete p.refusal;
       bypassed(p);
       d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
