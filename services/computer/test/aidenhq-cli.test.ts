@@ -87,6 +87,9 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // An explicitly empty body file is refused too: it would leave a stale description behind a new head.
   writeFileSync(join(ws, "empty.md"), " \n");
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "empty.md")), (e) => e.code === 2 && /is empty/.test(e.stderr));
+  // `--opt=value` in the value position is still a missing value, and an option another command owns is refused here.
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title=fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--file=body.md"), (e) => e.code === 2 && /--file isn't an option of aidenhq publish/.test(e.stderr));
   // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
   const before = seen.length;
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--fixes", "acme/app#8"), (e) => e.code === 2 && /--fixes needs --body-file/.test(e.stderr));

@@ -63,11 +63,16 @@ if (!COMMANDS.includes(command)) fail(usage, 2);
 const flags = {};
 const words = [];
 const fixes = [];
-// A value may itself start with `--` (a file named --notes.md); only a missing one, or the next option, is refused.
-const OPTIONS = ["--fixes", "--title", "--body-file", "--file", "--keep", "-h", "--help"];
+// Each command's own options: one used by another command is refused, so `publish --file body.md` can never look like
+// a body it doesn't send.
+const TAKES = { publish: ["--title", "--body-file", "--fixes"], review: ["--title", "--body-file", "--fixes"], advise: ["--file"], clone: ["--keep"] };
+const allowed = (opt) => (TAKES[command] ?? []).includes(opt);
+// A value may itself start with `--` (a file named --notes.md); only a missing one, or an option this command takes, is
+// refused. `--opt=value` is recognised the same way, so `--body-file --title=x` is "needs a value", not a filename.
+const OPTION = /^(--fixes|--title|--body-file|--file|--keep)(=|$)/;
 const value = (i) => {
   const v = rest[i + 1];
-  if (v === undefined || OPTIONS.includes(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
+  if (v === undefined || OPTION.test(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
   return v;
 };
 for (let i = 0; i < rest.length; i++) {
@@ -78,12 +83,17 @@ for (let i = 0; i < rest.length; i++) {
     console.log(usage);
     process.exit(0);
   } else if (inline) {
+    if (!allowed(inline[1])) fail(`${inline[1]} isn't an option of aidenhq ${command}\n${usage}`, 2);
     if (inline[1] === "--fixes") fixes.push(inline[2]);
     else flags[inline[1].slice(2)] = inline[2];
-  } else if (arg === "--fixes") fixes.push(value(i)), i++;
-  else if (["--title", "--body-file", "--file"].includes(arg)) flags[arg.slice(2)] = value(i), i++;
-  else if (arg === "--keep" && command === "clone") flags.keep = true;
-  else if (arg.startsWith("--")) fail(`unknown option ${arg}\n${usage}`, 2);
+  } else if (arg === "--fixes" || ["--title", "--body-file", "--file"].includes(arg)) {
+    if (!allowed(arg)) fail(`${arg} isn't an option of aidenhq ${command}\n${usage}`, 2);
+    if (arg === "--fixes") fixes.push(value(i)), i++;
+    else flags[arg.slice(2)] = value(i), i++;
+  } else if (arg === "--keep") {
+    if (!allowed(arg)) fail(`--keep isn't an option of aidenhq ${command}\n${usage}`, 2);
+    flags.keep = true;
+  } else if (arg.startsWith("--")) fail(`unknown option ${arg}\n${usage}`, 2);
   else words.push(arg);
 }
 // Help is answered above, before this: `aidenhq publish --help` works outside a job's computer.
