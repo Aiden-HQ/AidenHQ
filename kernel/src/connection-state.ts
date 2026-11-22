@@ -37,7 +37,7 @@ const DAY = 864e5;
 const FULL_WAIT = 7 * DAY - 60_000;
 /** A need reaches the digest (tick) only once its row is this old: a success deletes it first. */
 const LASTING = 10 * 60_000;
-/** A row nobody hit for this long (and no owner is waiting on) is a finished blip: a row that exists means a need still failing. */
+/** An unconfirmed row (never reported, no owner waiting) nobody hit for this long was a finished blip: only a row that keeps failing is confirmed. */
 const STALE = 2 * LASTING;
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
 const NAME = /^[\w.:/@-]{1,100}$/;
@@ -241,10 +241,10 @@ export function createConnectionState(o: {
       return out;
     },
 
-    /** The keys of the needs confirmed down now (reported, still being hit or owner-told, on a connection that exists): the owner channel keeps a queued digest line only while its key is here. */
+    /** The keys of the needs confirmed down now (reported, on a connection that exists, until a success or a Connect clears them): the owner channel keeps a queued digest line only while its key is here. */
     liveKeys(): string[] {
       const live = Object.keys(o.connections());
-      const rows = q(`SELECT key FROM connection_state WHERE reported_day IS NOT NULL AND (told = 1 OR COALESCE(last_hit, since) >= ?) AND module IN (${live.map(() => "?").join(", ")})`).all(now() - STALE, ...live) as { key: string }[];
+      const rows = q(`SELECT key FROM connection_state WHERE reported_day IS NOT NULL AND module IN (${live.map(() => "?").join(", ")})`).all(...live) as { key: string }[];
       return rows.map((r) => r.key);
     },
 
@@ -259,7 +259,7 @@ export function createConnectionState(o: {
       q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
       // A need nobody hit lately has stopped failing (a success would have cleared it only with a sign-in's word): expire it. An owner's
       // wait keeps its row until Connect or the wait's end.
-      q("DELETE FROM connection_state WHERE told = 0 AND COALESCE(last_hit, since) < ?").run(t - STALE);
+      q("DELETE FROM connection_state WHERE told = 0 AND reported_day IS NULL AND COALESCE(last_hit, since) < ?").run(t - STALE);
       // The owner-asked path is reminded only while a task still waits; a background need needs no waiter.
       const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND since <= ? AND (told = 0 OR EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account)))`).all(today, t - LASTING) as Row[];
       for (const r of rows) {

@@ -121,7 +121,7 @@ test("a stale row expires, so its old since never makes a new blip count as last
   assert.equal(w.queued.length, 1);
 });
 
-test("liveKeys lists only reported needs that are still hit or owner-told, on connections that exist (921d7114)", async () => {
+test("liveKeys lists only reported needs, until a success clears them (8d78a12e, 69369161, e863bb45)", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
   assert.deepEqual(w.s.liveKeys(), [], "unconfirmed");
@@ -134,7 +134,7 @@ test("liveKeys lists only reported needs that are still hit or owner-told, on co
   w.tick(LASTED);
   w.s.tick();
   w.tick(25 * 60_000);
-  assert.deepEqual(w.s.liveKeys(), [], "nobody hit it lately");
+  assert.deepEqual(w.s.liveKeys(), ["github:not_connected"], "a confirmed need stays until recovery");
 });
 
 test("Connect that lands while a wait is being armed still wakes the task (7bcb9ba7)", async () => {
@@ -163,9 +163,6 @@ test("every confirmed down account is listed", async () => {
   w.tick(LASTED);
   w.s.tick();
   assert.deepEqual(w.s.downFor("a1").map((d) => d.account), ["a@x.com", "b@x.com"]);
-  w.tick(25 * 60_000);
-  w.s.tick();
-  assert.deepEqual(w.s.downFor("a1"), []);
 });
 
 test("an owner-asked need is not reminded once its waits are gone (34e4dd09)", async () => {
