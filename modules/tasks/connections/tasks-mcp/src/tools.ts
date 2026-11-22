@@ -859,24 +859,33 @@ async function withStates(list: Json[], state: unknown, attention: unknown) {
 }
 /** The most rows one Paperclip page (and one kernel state read) spans. */
 const PAGE = 200;
+/** A page advances half its length: rows shifted up by a task leaving the list are still on the next page. */
+const STEP = PAGE / 2;
 /**
  * A company's issues, newest first, one page at a time: Paperclip's `offset` paging, as scripts/modules.ts and the board
- * read it. Yields only rows not seen yet (a task inserted ahead of the offset shifts the next page), advancing the offset by
- * the page's length; it stops at an empty page, or one with nothing new (a server that ignores `offset`).
+ * read it. Yields rows not seen yet.
+ *
+ * The list moves under the read, and the offset is not a stable cursor: a task inserted ahead of it repeats a row (dropped
+ * by `seen`), and one removed or leaving the status set pulls every later row up, which a plain next-page offset would skip.
+ * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
+ * empty page, at the last partial page, or at a page with nothing new (a server that ignores `offset`).
  */
 async function* issuePages(q: URLSearchParams) {
   const seen = new Set<string>();
-  for (let offset = 0; ; ) {
+  let scanned = 0;
+  for (let offset = 0; ; offset += STEP) {
     const p = new URLSearchParams(q);
     p.set("limit", String(PAGE));
     p.set("offset", String(offset));
     const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
     if (!Array.isArray(page) || !page.length) return;
     const fresh = page.filter((i: Json) => !seen.has(i.id));
-    if (!fresh.length) return;
+    // Nothing new past everything read so far: the end, or a server that ignores `offset` and repeats a page.
+    if (!fresh.length && offset >= scanned) return;
     for (const i of fresh) seen.add(i.id);
-    yield fresh;
-    offset += page.length;
+    if (fresh.length) yield fresh;
+    scanned = Math.max(scanned, offset + page.length);
+    if (page.length < PAGE) return;
   }
 }
 
@@ -953,25 +962,32 @@ const TOOLS: Record<string, Tool> = {
       if (updated_since) q.set("updatedSince", String(updated_since));
       // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; a walk
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
-      const capped = async (query: URLSearchParams, accept: (i: Json) => boolean = () => true) => {
+      // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
+      const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i) => {
         const kept: (readonly [Json, Json])[] = [];
         for await (const page of issuePages(query)) {
-          for (const [i, s] of await matchingStates(page.filter(accept), kinds, one)) {
+          const ready = (await Promise.all(page.map(prepare))).filter(Boolean) as Json[];
+          for (const [i, s] of await matchingStates(ready, kinds, one)) {
             kept.push([i, s]);
             if (kept.length >= max) return kept;
           }
         }
         return kept;
       };
-      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.updatedAt ?? i.createdAt ?? "")) || 0;
+      // Paperclip's own newest-first order is by createdAt; both sources are merged on that one key, so the cap keeps the
+      // same rows a single newest-first walk would.
+      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.createdAt ?? "")) || 0;
+      /** One row per task, first in Paperclip's order kept. */
+      const deduped = (rows: (readonly [Json, Json])[]) => [...new Map(rows.map((r) => [r[0].id, r])).values()];
       let out: (readonly [Json, Json])[];
       if (!me) out = await capped(q);
       else {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
-        const mineOnly = (i: Json) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i);
+        const mineOnly = async (i: Json) => (i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i) ? i : null);
         const assigned = await capped(q, mineOnly);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
+        // Paperclip cuts a long description in a list, which can cut the marker off the end: read the full task then.
         const owner = await ownerUserId();
         const chats: (readonly [Json, Json])[] = [];
         if (owner) {
@@ -980,10 +996,15 @@ const TOOLS: Record<string, Tool> = {
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          chats.push(...(await capped(theirs, (i: Json) => !i.assigneeAgentId && mark.test(i.description ?? ""))));
+          const aChat = async (row: Json) => {
+            if (row.assigneeAgentId) return null;
+            const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`) : row;
+            return mark.test(full.description ?? "") ? full : null;
+          };
+          chats.push(...(await capped(theirs, aChat)));
         }
         // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
-        out = [...assigned, ...chats].sort((a, b) => at(b) - at(a)).slice(0, max);
+        out = deduped([...assigned, ...chats]).sort((a, b) => at(b) - at(a)).slice(0, max);
       }
       return { tasks: await Promise.all(out.map(([i, s]) => brief(i, s))) };
     },

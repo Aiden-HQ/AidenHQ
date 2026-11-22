@@ -51,7 +51,7 @@ test("two agents on one server: each its own run counts, its own task and its ow
 
 // task_list filters on the kernel kind and attention while it pages: a match past the first page of candidates is found, and
 // no more than `limit` come back. Paperclip serves issues newest first, paged with `offset`.
-function issueBoard({ rows, me = "me" }) {
+function issueBoard({ rows, me = "me", full = {} }) {
   return async (req, res) => {
     for await (const _ of req) void _;
     const send = (x) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(x));
@@ -60,11 +60,20 @@ function issueBoard({ rows, me = "me" }) {
     if (p === "/api/agents/me") return send({ id: me, companyId: "co" });
     if (p.endsWith("/companies/co/issues")) {
       const status = new Set(String(url.searchParams.get("status") ?? "").split(",").filter(Boolean));
+      const agent = url.searchParams.get("assigneeAgentId"), user = url.searchParams.get("assigneeUserId");
       const offset = Number(url.searchParams.get("offset") ?? 0), limit = Number(url.searchParams.get("limit") ?? 100);
-      return send(rows.filter((r) => !status.size || status.has(r.status)).slice(offset, offset + limit));
+      return send(rows
+        .filter((r) => !status.size || status.has(r.status))
+        .filter((r) => !agent || r.assigneeAgentId === agent)
+        .filter((r) => !user || r.assigneeUserId === user)
+        .slice(offset, offset + limit));
     }
     if (p.endsWith("/companies/co/agents")) return send([]);
     if (p === "/api/companies/co") return send({ id: "co", defaultResponsibleUserId: "owner" });
+    if (p.startsWith("/api/issues/")) {
+      const id = p.slice("/api/issues/".length);
+      return send(full[id] ?? rows.find((r) => r.id === id) ?? {});
+    }
     return send([]);
   };
 }
@@ -115,4 +124,43 @@ test("task_list returns no more than limit matches even when more pages hold mat
   const { call } = bridge({ handler: issueBoard({ rows }), states });
   const out = parse(await call("task_list", { state: "idle", limit: 3 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["idle-0", "idle-1", "idle-2"], "newest first, capped at limit");
+});
+
+test("task_list(mine) merges assigned work and handed-back chats newest first before the limit", async () => {
+  const old = { ...row("assigned-1", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" };
+  const chat = { ...row("chat-1", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const states = { "assigned-1": noAttention("working"), "chat-1": noAttention("waiting") };
+  const { call } = bridge({ handler: issueBoard({ rows: [chat, old] }), states });
+  const out = parse(await call("task_list", { mine: true, limit: 1 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["chat-1"], "the newer chat is not crowded out by older assigned work");
+  const both = parse(await call("task_list", { mine: true, limit: 10 }));
+  assert.deepEqual(both.out.tasks.map((t) => t.id), ["chat-1", "assigned-1"]);
+  assert.equal(new Set(both.out.tasks.map((t) => t.id)).size, 2, "no task is listed twice");
+});
+
+test("task_list(mine) finds a handed-back chat whose marker was cut from the list description", async () => {
+  const chat = { ...row("chat-2", "todo"), assigneeUserId: "owner", description: "a long opening with no marker", descriptionTruncated: true };
+  const full = { "chat-2": { ...chat, description: `the whole message\n\n<!-- aidenhq-chat-agent:me -->`, descriptionTruncated: false } };
+  const { call } = bridge({ handler: issueBoard({ rows: [chat], full }), states: { "chat-2": noAttention("waiting") } });
+  const out = parse(await call("task_list", { mine: true, limit: 5 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["chat-2"]);
+});
+
+test("task_list pages overlap so a row pulled up by a task leaving the list is not skipped", async () => {
+  // Page one (t-0..t-199) is read, then its first row leaves: every later row moves up one, and a plain offset of 200 would
+  // now start at t-201, skipping t-200.
+  let reads = 0;
+  const rows = Array.from({ length: 300 }, (_, n) => row(`t-${n}`, "todo"));
+  const board = issueBoard({ rows });
+  const handler = async (req, res) => {
+    if ((req.url ?? "").includes("/issues?")) {
+      if (reads++ === 1) rows.shift();
+    }
+    return board(req, res);
+  };
+  // Only t-200 matches, so the scan must page; the row is the first of page two before the shift and would be skipped after it.
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "t-200" ? "waiting" : "working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["t-200"]);
 });
