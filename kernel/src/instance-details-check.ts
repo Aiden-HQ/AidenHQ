@@ -7,7 +7,10 @@ import { instanceDetailsIn } from "../sdk/src/reviewer.ts";
 
 export function check({ details, args }: { details?: string; args?: unknown } = {}) {
   const parts = [String(details ?? "")];
-  JSON.parse(JSON.stringify(args ?? null), (_k, v) => { if (typeof v === "string") parts.push(v); return v; });
+  // The args' text that can reach a comment: not the review's list of reviewed files, which no comment publishes.
+  const { review, ...rest } = (args ?? {}) as { review?: { coverage?: unknown } };
+  const { coverage: _coverage, ...published } = review ?? {};
+  JSON.parse(JSON.stringify({ ...rest, review: published }), (_k, v) => { if (typeof v === "string") parts.push(v); return v; });
   const leaked = instanceDetailsIn(parts.join("\n"));
   return leaked.length
     ? { verdict: "deny", rule: "instance-details", reason: `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.` }

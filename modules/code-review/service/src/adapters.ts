@@ -159,11 +159,11 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     }
     return tasks.get(key)!;
   };
-  // A filing the kernel refuses (422: a check's deny or a plan refusal) is deterministic: asking again sends the same text, so
-  // the refusal is final (no `retry`), and the run's notice says so at once.
+  // The instance-details check's refusal is deterministic (asking again sends the same text), so it is final (no `retry`) and the
+  // run's notice says so at once. Any other failure to file (a plan that couldn't reach github-mcp) is retried as before.
   const filed = async (file: () => Promise<{ id: string; state: string }>): Promise<Posted> => {
     try { const r = await file(); return { ...settled(r), write: r.id }; } catch (e) {
-      if ((e as { status?: number }).status === 422) return { state: "refused", why: String((e as Error).message).slice(0, 300) };
+      if ((e as { status?: number }).status === 422 && /check \(instance-details\)/.test(String((e as Error).message))) return { state: "refused", why: String((e as Error).message).slice(0, 300) };
       throw e;
     }
   };
