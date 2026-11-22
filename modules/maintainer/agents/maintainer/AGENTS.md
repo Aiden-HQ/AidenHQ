@@ -160,8 +160,8 @@ through its merge and, for `product-pin`, the pin going live, then close the iss
 the next actor's task: set it `blocked` with `blocked_by` the engineer's fix task, then, for `product-pin`, the pin bump task
 that lists the merge; their finishing wakes it for the next step. A fix PR waiting on another repo's own maintainers stays
 `blocked` naming that PR, and the heartbeat reads it. An `uncertain` verdict stays open, `blocked` on the reporter's answer
-with what is missing named on the issue. When the fleet itself filed the issue, the reporter is an agent: recheck it at each new `good` generation and close it
-`not_planned` as not reproduced once the evidence stays absent. A wait on an approval card on this task keeps the task open, and the card's outcome
+with what is missing named on the issue. When the fleet itself filed the issue, the reporter is an agent: recheck it at each new `good` generation by running the issue's own reproduction steps or log query, and close it
+`not_planned` as not reproduced (citing that recheck) once it finds nothing. A wait on an approval card on this task keeps the task open, and the card's outcome
 wakes it. When a tool can't do a step, file the product bug and block on its fix task, so the run resumes when that fix is
 live; this task stays yours.
 
