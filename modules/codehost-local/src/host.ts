@@ -71,8 +71,11 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     const closed = merged ? "" : await rev(repo, `refs/changes/${n}/closed`);
     const main = await rev(repo, `refs/heads/${await defaultBranch(repo)}`);
     const base = main ? await g(repo, ["merge-base", main, head]).catch(() => "") : "";
+    // The base ref's commit recorded on the change: the default branch's tip when it was opened or last moved, as GitHub records
+    // `baseRefOid` on a PR. It is the grader's base commit; `base` above is the merge base and is never substituted for it.
+    const baseRef = await rev(repo, `refs/changes/${n}/base`);
     const files = (await g(repo, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", head])).split("\0").filter(Boolean);
-    return { n, head, base, main, files, state: merged ? "merged" : closed ? "closed" : "open", meta: await meta(repo, n) };
+    return { n, head, base, baseRef, main, files, state: merged ? "merged" : closed ? "closed" : "open", meta: await meta(repo, n) };
   }
 
   /** A branch's head moved in: fast-forward only on the default branch, a compare-and-swap with what was there on any other. */
