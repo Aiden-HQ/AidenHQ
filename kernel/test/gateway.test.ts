@@ -8,7 +8,7 @@ import http from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGateway } from "../src/gateway/lib.ts";
+import { createGateway, usageTap } from "../src/gateway/lib.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { modelsList } from "./models-list.ts";
 
@@ -312,4 +312,145 @@ test("gateway: Anthropic format: a check token's call settles at the streamed us
   const refused = await call({ model: "anthropic/claude-haiku-5.5", max_tokens: 1024, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: [] });
   assert.equal(refused.status, 403);
   assert.equal(seen.length, 1);
+});
+// An in-stream failure as OpenRouter sends it (seen live on 2026-11-22): HTTP 200 and a generation, the answer opened, then failed.
+const sse = (events) => events.map((e) => `data:${JSON.stringify(e)}\n\n`).join(""); // no space after the colon: valid SSE
+// Each opening event echoes the request (Codex's instructions and tools: well over 64 KiB).
+const opened = (id, echo = "") => [{ type: "response.created", response: { id, status: "in_progress", error: null, instructions: echo } }, { type: "response.in_progress", response: { id, status: "in_progress", error: null, instructions: echo } }];
+const failed = (id, code) => ({ type: "response.failed", response: { id, status: "failed", error: { code, message: "secret provider text" } } });
+const streamed = (body) => (res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(`: OPENROUTER PROCESSING\n\n${body}data: [DONE]\n\n`); };
+const completed = sse([...opened("gen-ok"), { type: "response.output_text.delta", delta: "Hi" }, { type: "response.completed", response: { id: "gen-ok", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } }]);
+
+async function streamRig(t, settings = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "gw-"));
+  writeFileSync(join(dir, "gateway.json"), JSON.stringify(settings));
+  const rig = { answers: [], posts: 0, logged: [] };
+  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => { rig.posts++; rig.answers.shift()(res); }); });
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0, 0], streamIdleMs: 300, log: (m, f) => rig.logged.push([m, f]) });
+  const front = await serve((req, res) => gw.handle(req, res));
+  t.after(() => { upstream.s.closeAllConnections?.(); upstream.s.close(); front.s.close(); gw.close(); });
+  const token = mintToken("job-secret", { kind: "reviewer" });
+  // A 30 KB prompt: reserved at about 10,000 input tokens x $1/M = $0.01.
+  rig.body = { model: "m", stream: true, input: "x".repeat(30_000) };
+  rig.call = async (path = "responses", body = rig.body) => { const r = await fetch(`${front.url}/api/v1/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); return { status: r.status, text: await r.text() }; };
+  rig.rows = () => gw.db.prepare("SELECT status, cost_usd, input, output FROM calls ORDER BY rowid").all().map((x) => ({ ...x }));
+  rig.fresh = () => { gw.db.exec("DELETE FROM calls"); rig.posts = 0; };
+  return rig;
+}
+
+test("gateway: a stream that fails in-band is booked free as stream_error (OpenRouter bills none), its tokens kept", async (t) => {
+  const rig = await streamRig(t);
+
+  // Output streamed, then an error event: free, visible as stream_error.
+  rig.answers = [streamed(sse([...opened("gen-a"), { type: "response.output_text.delta", delta: "Hel" }, failed("gen-a", "server_error")]))];
+  assert.match((await rig.call()).text, /response\.failed/);
+  let [row] = rig.rows();
+  assert.deepEqual([row.status, row.cost_usd], ["stream_error", 0]);
+  assert.equal(rig.logged.find(([m]) => m === "upstream stream error")[1].reason, "error event: server_error");
+
+  // A usage block named the input (Anthropic's message_start): its tokens are kept, still at $0.
+  rig.fresh();
+  rig.answers = [streamed(sse([{ type: "message_start", message: { id: "msg_1", model: "m", usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 1 } } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "a" } }, { type: "error", error: { type: "overloaded_error", message: "secret provider text" } }]))];
+  await rig.call("messages", { model: "m", stream: true, max_tokens: 64, messages: [{ role: "user", content: "x".repeat(30_000) }] });
+  [row] = rig.rows();
+  assert.deepEqual([row.status, row.input, row.cost_usd], ["stream_error", 100, 0]);
+
+  // A usage block on an error event is never taken as completion.
+  rig.fresh();
+  rig.answers = [streamed(sse([{ id: "gen-u", choices: [{ delta: { content: "Hi" } }] }, { id: "gen-u", error: { code: 502, message: "secret provider text" }, usage: { prompt_tokens: 50, completion_tokens: 1 } }]))];
+  await rig.call("chat/completions", { model: "m", stream: true, messages: [{ role: "user", content: "x".repeat(30_000) }] });
+  [row] = rig.rows();
+  assert.deepEqual([row.status, row.input, row.cost_usd], ["stream_error", 50, 0]);
+
+  // A completion whose JSON spans two data fields of one event is read whole: billed, not failed.
+  rig.fresh();
+  const done = JSON.stringify({ type: "response.completed", response: { id: "gen-s", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } });
+  rig.answers = [streamed(`${sse(opened("gen-s"))}data: ${done.slice(0, done.indexOf(",") + 1)}\ndata: ${done.slice(done.indexOf(",") + 1)}\n\n`)];
+  await rig.call();
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
+
+  // A clean end with neither usage nor a finish (no error event) fails the same way.
+  rig.fresh();
+  rig.answers = [streamed(sse([...opened("gen-c"), { type: "response.output_text.delta", delta: "Hi" }]))];
+  await rig.call();
+  assert.deepEqual(rig.rows().map((x) => x.status), ["stream_error"]);
+  assert.doesNotMatch(JSON.stringify(rig.logged), /secret provider text/, "provider and model text stay out of the journal");
+});
+
+test("gateway: an answer that failed before any output is re-run once when its error is transient; one that streamed output or completed never is", async (t) => {
+  const rig = await streamRig(t);
+
+  // The incident's shape: opened (echoing a large request), then failed (rate limited). Nothing reached the caller, so it is
+  // re-run; the caller gets the completed answer and the failed attempt keeps its own free stream_error row.
+  rig.answers = [streamed(sse([...opened("gen-x", rig.body.input + "y".repeat(80_000)), failed("gen-x", "rate_limit_exceeded")])), streamed(completed)];
+  rig.body = { ...rig.body, input: rig.body.input + "y".repeat(80_000) };
+  const rerun = await rig.call();
+  assert.equal(rerun.status, 200);
+  assert.doesNotMatch(rerun.text, /gen-x|secret provider text/, "nothing of the failed attempt reaches the caller");
+  assert.match(rerun.text, /^: OPENROUTER PROCESSING[\s\S]*response\.created[\s\S]*response\.completed/, "the chosen attempt's opening events are replayed once");
+  assert.equal(rig.posts, 2);
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02], ["stream_error", 0]]);
+  assert.equal(rig.logged.find(([m]) => m === "upstream retry")[1].stream_error, "rate_limit_exceeded");
+
+  // Only once: a second failure goes to the caller as it came (Codex retries on its own).
+  rig.fresh();
+  rig.answers = [streamed(sse([...opened("gen-y"), failed("gen-y", "rate_limit_exceeded")])), streamed(sse([...opened("gen-z"), failed("gen-z", "rate_limit_exceeded")])), streamed(completed)];
+  assert.match((await rig.call()).text, /gen-z[\s\S]*response\.failed/);
+  assert.equal(rig.posts, 2);
+  assert.deepEqual(rig.rows().map((x) => x.status), ["stream_error", "stream_error"]);
+
+  // A Responses `error` event, its code at the top: read as transient too.
+  rig.fresh();
+  rig.answers = [streamed(sse([...opened("gen-e"), { type: "error", code: "server_error", message: "secret provider text" }])), streamed(completed)];
+  assert.match((await rig.call()).text, /response\.completed/);
+  assert.equal(rig.posts, 2);
+
+  // A chat stream's role-only first chunk is no output: a transient error after it is re-run too.
+  rig.fresh();
+  rig.answers = [streamed(sse([{ id: "gen-r", choices: [{ delta: { role: "assistant", content: "" } }] }, { id: "gen-r", error: { code: 502, message: "secret provider text" }, choices: [{ delta: {}, finish_reason: "error" }] }])), streamed(completed)];
+  assert.match((await rig.call("chat/completions", { model: "m", stream: true, messages: [] })).text, /response\.completed/);
+  assert.equal(rig.posts, 2);
+
+  // A permanent error before any output: not re-run.
+  rig.fresh();
+  rig.answers = [streamed(sse([...opened("gen-p"), failed("gen-p", "invalid_prompt")])), streamed(completed)];
+  await rig.call();
+  assert.equal(rig.posts, 1);
+
+  // A transient error after output was streamed: never re-run (the caller already has part of the answer).
+  rig.fresh();
+  rig.answers = [streamed(sse([...opened("gen-o"), { type: "response.output_text.delta", delta: "Hi" }, failed("gen-o", "server_error")])), streamed(completed)];
+  await rig.call();
+  assert.equal(rig.posts, 1);
+
+  // A completed answer followed by an error event: billed what OpenRouter billed, never re-run.
+  rig.fresh();
+  rig.answers = [streamed(completed + sse([failed("gen-ok", "server_error")])), streamed(completed)];
+  await rig.call();
+  assert.equal(rig.posts, 1);
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
+
+  // A re-run is cap-checked: once the call's own reservation ($0.01) is past the install's day limit ($0.005 here), it goes to the caller as it came.
+  const capped = await streamRig(t, { install_day_usd: 0.005 });
+  capped.answers = [streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")])), streamed(completed)];
+  assert.match((await capped.call()).text, /response\.failed/);
+  assert.equal(capped.posts, 1);
+  assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error"]);
+
+  // Keep-alives past the first-output wait (a quarter of the idle cut here): passed through as they come, and still billed.
+  rig.fresh();
+  rig.answers = [(res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(": OPENROUTER PROCESSING\n\n"); setTimeout(() => res.end(completed), 150); }];
+  assert.match((await rig.call()).text, /^: OPENROUTER PROCESSING[\s\S]*response\.completed/);
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
+});
+
+test("usage tap: an echoed finish_reason is no finish, and completed usage outlives a later error chunk's", () => {
+  const sseOf = (...events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+  const echoed = usageTap(true);
+  echoed.feed(sseOf({ type: "response.created", response: { id: "gen-1", error: null, tools: [{ parameters: { example: { finish_reason: "stop" } } }] } }));
+  echoed.done();
+  assert.match(echoed.failure() ?? "", /no usage or finish/);
+  const completed = usageTap(true);
+  completed.feed(sseOf({ id: "gen-2", model: "m", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.02 } }, { id: "gen-2", error: { code: 500 }, usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } }));
+  assert.deepEqual([completed.done()?.output, completed.done()?.costUsd, completed.failure()], [5, 0.02, undefined]);
 });
