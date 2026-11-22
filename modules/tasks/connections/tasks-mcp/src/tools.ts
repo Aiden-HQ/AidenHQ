@@ -1246,10 +1246,9 @@ const TOOLS: Record<string, Tool> = {
           const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
           isChat = async ([row], rest) => {
             if (row.assigneeAgentId) return false;
-            // Only a detail read is bounded by the chat budget: a description the list already returned is in hand, so it is
-            // still checked (and can still match) after the cutoff.
-            const needsRead = Boolean(row.descriptionTruncated);
-            if (needsRead && Date.now() > chatUntil) {
+            // Only starting a detail read is bounded by the chat budget. A description the list returned, or one already
+            // fetched for this row (prefetched earlier in the merge), is in hand and is still checked after the cutoff.
+            if (row.descriptionTruncated && !detail.has(row.id) && Date.now() > chatUntil) {
               complete = false;
               return false;
             }
