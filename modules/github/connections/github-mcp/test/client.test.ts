@@ -332,7 +332,7 @@ it("two writes in one tool invocation share one budget: the second fails fast at
   const err = await withWriteBudget(async () => {
     await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "note" });
     return access.rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" }).catch((e) => e);
-  });
+  }, () => clock);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need).toEqual({ cause: "write_busy" });
   // Only the note was sent; the close never reached fetch and nothing ran past the shared budget.
@@ -340,7 +340,35 @@ it("two writes in one tool invocation share one budget: the second fails fast at
   expect(clock - start).toBeLessThanOrEqual(240_000);
 });
 
+it("a tool invocation's budget is fixed at its entry, so its preflight reads spend it", async () => {
+  let clock = 1_000_000;
+  const time = fakeTime();
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    timer: time.timer,
+    fetchImpl: async () => answer(200, {}),
+  });
+  const start = clock;
+  // The tool enters, then spends 100 s on a read before its first write.
+  await withWriteBudget(async () => {
+    clock += 100_000;
+    return access.rest("GET", "/repos/acme/api");
+  }, () => clock);
+  expect(clock - start).toBe(100_000);
+  // A write-only tool whose entry is followed by a long preflight: 215 s in, 25 s is left, so nothing can start.
+  clock = start;
+  const err = await withWriteBudget(async () => {
+    clock += 215_000;
+    return access.rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
+  }, () => clock);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "write_busy" });
+});
+
 it("a tool invocation's later writes never start a fresh budget beyond the first", async () => {
+  // The budget is fixed at entry, so a fake clock without any preflight starts at 0 s spent.
   let clock = 1_000_000;
   const sent: { at: number; method: string }[] = [];
   const access = createAccess({
@@ -358,7 +386,7 @@ it("a tool invocation's later writes never start a fresh budget beyond the first
     await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
     await access.rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" });
     return access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "b" }).catch((e) => e);
-  });
+  }, () => clock);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need).toEqual({ cause: "write_busy" });
   // Under a fresh per-write budget the third write would have started at 222 s and sent; the shared one refuses it.

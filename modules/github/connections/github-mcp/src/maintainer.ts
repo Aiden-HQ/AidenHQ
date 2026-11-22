@@ -3,6 +3,7 @@
 // (comment, label, state). A label is trusted only when a collaborator whose role is one of that repo's `trusted` roles added
 // it (the owner's login is an admin, so its labels count); the issue's text or author never decide trust.
 import { GitHubRefused } from "./github.js";
+import { GitHubNeed } from "./client.js";
 import { scrubProblems, scrubText } from "./scrub.js";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
@@ -477,7 +478,17 @@ export class Maintainer {
     await this.assertTrusted(r, number);
     const posted = text === undefined ? undefined : await this.postComment(r, number, withFooter(text, agent));
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
-    const res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
+    let res: Awaited<ReturnType<GitHubAccess["rest"]>>;
+    try {
+      res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
+    } catch (e) {
+      // The note is already on the issue: retrying the whole call would post it twice, so say what is left, and when.
+      if (posted && e instanceof GitHubNeed) {
+        const when = e.need.cause === "rate_limited" ? ` after ${e.need.until}` : "";
+        throw new GitHubRefused(`the note was posted (${posted.url}); the issue is still open — call this again with the same state and no note${when}`);
+      }
+      throw e;
+    }
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})`.trim());
     return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, ...(posted ? { objects: posted.objects } : {}) };
   }
