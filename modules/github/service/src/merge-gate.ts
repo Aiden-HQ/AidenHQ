@@ -31,8 +31,8 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
 
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
-/** The UI Reviewer's design review: advisory in the named checks, required on a UI PR in the agents org (owner, 2026-11-13) until its wait of `minutes` (asked twice) ends with no verdict: then advisory for that head. */
-export const DESIGN_REVIEW = { name: DESIGN_REVIEW_CHECK, minutes: 120 };
+/** The UI Reviewer's design review: advisory in the named checks, required on a UI PR in the agents org (owner, 2026-11-13) until its wait of `minutes` (asked twice) ends with no verdict: then advisory for that head. `asks`: how many times a second ask that nobody received may be retried before the review is advisory for that head too (a wait that can never end is no wait). */
+export const DESIGN_REVIEW = { name: DESIGN_REVIEW_CHECK, minutes: 120, asks: 3 };
 
 /**
  * Files that change what people see: styles, markup and component files, the usual UI folders, the vendored design system,
