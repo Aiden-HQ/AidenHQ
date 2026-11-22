@@ -19,6 +19,10 @@ function fake(opts: {
   files?: Record<string, string>;
   tree?: { path: string; type: string }[];
   failTimeline?: number[];
+  /** Issues whose single-issue read fails (a 500), so a state read can't be trusted. */
+  failIssue?: number[];
+  /** The ordinal of the first single-issue GET that fails (1 is assertTrusted's, 2 an issue-state re-read). */
+  failIssueFrom?: number;
   longTimeline?: number;
   /** A status the permission route answers with instead of a role (e.g. 403 when the token can't read it). */
   failPermission?: number;
@@ -29,19 +33,21 @@ function fake(opts: {
   /** Issues' lastEditedAt (GraphQL), by number; unset is never edited. */
   edited?: Record<number, string>;
   /** Issue comments that already exist (a note an earlier call posted). */
-  comments?: { id: number; html_url: string; body: string }[];
+  comments?: { id: number; html_url: string; body: string; created_at?: string }[];
   /** A test's own answer to a state PATCH, consulted at each call (so one Maintainer can meet a failure, then succeed). */
   patch?: (body: any) => Response | { status: number; json: () => Promise<unknown>; headers?: Record<string, string> } | undefined;
 }) {
   const calls: Call[] = [];
   const posted: { path: string; body: any }[] = [];
   /** The issue comments a reader sees; `seedComments` starts with some (a note an earlier call posted). */
-  const comments: { id: number; html_url: string; body: string }[] = [...(opts.comments ?? [])];
+  const comments: { id: number; html_url: string; body: string; created_at?: string }[] = [...(opts.comments ?? [])];
   // The owner's login is an admin collaborator: a label it adds counts, as any admin's does.
   const permissions: Record<string, string> = { owner1: "admin", ...(opts.permissions ?? {}) };
-  // Each issue's state, as a reader sees it after the writes so far; `edits` stamps the close/reopen events they add.
+  // Each issue's state, as a reader sees it after the writes so far; `stamp` orders the timeline's events as GitHub does.
   const stateOf: Record<number, string> = {};
-  let edits = 0;
+  let singleReads = 0;
+  let stamp = 0;
+  const nextAt = () => new Date(Date.parse("2026-01-02T00:00:00Z") + stamp++ * 1000).toISOString();
   const fetchFn = (async (url: string, init: RequestInit) => {
     const u = new URL(url);
     const method = init.method ?? "GET";
@@ -76,6 +82,7 @@ function fake(opts: {
     const one = u.pathname.match(/^\/repos\/[^/]+\/[^/]+\/issues\/(\d+)$/);
     if (one && method === "GET") {
       const n = Number(one[1]);
+      if (opts.failIssue?.includes(n) || (opts.failIssueFrom !== undefined && ++singleReads >= opts.failIssueFrom)) return json(500, { message: "boom" });
       const i = (opts.issues ?? []).find((x) => x.number === n);
       // The issue's state is what the real API keeps: a landed PATCH changes it, and edits (reopen/close) land in the timeline.
       return i ? json(200, { number: n, state: stateOf[n] ?? "open", labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
@@ -87,7 +94,7 @@ function fake(opts: {
       const n = Number(one[1]);
       if (body.state && stateOf[n] !== body.state) {
         stateOf[n] = body.state;
-        const at = new Date(Date.parse("2026-01-02T00:00:00Z") + edits++).toISOString();
+        const at = nextAt();
         const events = (opts.timelines ??= {});
         (events[n] ??= []).push({ event: body.state === "closed" ? "closed" : "reopened", created_at: at });
       }
@@ -95,8 +102,12 @@ function fake(opts: {
     }
     if (u.pathname.endsWith("/comments") && method === "POST") {
       posted.push({ path: u.pathname, body });
-      comments.push({ id: comments.length + 1, html_url: `https://github.com/x#c${comments.length + 1}`, body: body.body });
-      return json(201, { id: comments.length, html_url: `https://github.com/x#c${comments.length}` });
+      const id = comments.length + 1;
+      const at = nextAt();
+      comments.push({ id, html_url: `https://github.com/x#c${id}`, body: body.body, created_at: at });
+      const n = Number(u.pathname.match(/issues\/(\d+)\/comments$/)![1]);
+      ((opts.timelines ??= {})[n] ??= []).push({ event: "commented", id, created_at: at });
+      return json(201, { id, html_url: `https://github.com/x#c${id}`, created_at: at });
     }
     // The comments an earlier call posted: what a retry reads to see whether its note is already there.
     if (u.pathname.endsWith("/comments") && method === "GET") return json(200, comments);
@@ -430,6 +441,94 @@ it("a close after a reopen that follows a landed close posts its own note, not t
   // The second close posted its own comment (a new object), not the one the first call left behind.
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(2);
   expect(out.objects).toEqual([`github:${PRODUCT}#1/comment/2`]);
+});
+
+it("a state read that fails is not treated as proof, so a retry does not post the note twice", async () => {
+  let failPatch = true;
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    patch: () => (failPatch ? new Response(JSON.stringify({ message: "Validation Failed" }), { status: 422 }) : undefined),
+  });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e)).not.toBeInstanceOf(GitHubNeed);
+  // The retry can read the label (assertTrusted) but not the issue's state (noteApplies): it fails rather than assume
+  // "not closed, so post the note again".
+  failPatch = false;
+  f.opts.failIssueFrom = 2;
+  await expect(m.state(PRODUCT, 1, "closed", "completed", note)).rejects.toThrow(/couldn't read acme\/product#1's state \(GitHub said 500\)/);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+  // Once the state can be read, the retry reuses the posted note and only changes the state.
+  f.opts.failIssueFrom = undefined;
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("a timeline read that fails is not read as no close since, so a new close after a reopen posts its note", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(await m.state(PRODUCT, 1, "open")).toMatchObject({ state: "open" });
+  // A close after the reopen must post its own note; an unreadable timeline can never be read as "no reopen".
+  f.opts.failTimeline = [1];
+  await expect(m.state(PRODUCT, 1, "closed", "completed", note)).rejects.toThrow(/couldn't read/);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+  f.opts.failTimeline = undefined;
+  const out = await m.state(PRODUCT, 1, "closed", "completed", note);
+  expect(out).toMatchObject({ state: "closed" });
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(2);
+  expect(out.objects).toEqual([`github:${PRODUCT}#1/comment/2`]);
+});
+
+it("a timeline longer than the page cap is refused, never read as if its tail were the end", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(await m.state(PRODUCT, 1, "open")).toMatchObject({ state: "open" });
+  // A reopen may sit past the cap: the retry refuses rather than reuse the note for what may be a new close.
+  f.opts.longTimeline = 1;
+  await expect(m.state(PRODUCT, 1, "closed", "completed", note)).rejects.toThrow(/longer than 1000 events/);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("a retry orders the note and a reopen by GitHub's event order, not by a shared second", async () => {
+  // The reopen and the note land in the same second, with the reopen listed first: a time-only comparison ("a reopen at or
+  // after the note") would call this retry a new close and post the note twice. GitHub's own order says nothing happened
+  // after the note, so the retry reuses it.
+  let failPatch = true;
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    patch: () => (failPatch ? new Response(JSON.stringify({ message: "Validation Failed" }), { status: 422 }) : undefined),
+  });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e)).not.toBeInstanceOf(GitHubNeed);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+  // The reopen is listed before this call's own comment at the same second: it is not a close that came after the note.
+  f.opts.timelines![1] = [
+    labeled("owner1", "2026-01-01T00:00:00Z"),
+    { event: "reopened", created_at: "2026-01-02T00:00:00Z" },
+    { event: "commented", id: 1, created_at: "2026-01-02T00:00:00Z" },
+  ];
+  failPatch = false;
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("an overlapping close waits for the first one's state change, so it neither duplicates the note nor loses provenance", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  const [a, b] = await Promise.all([m.state(PRODUCT, 1, "closed", "completed", note), m.state(PRODUCT, 1, "closed", "completed", note)]);
+  // Each answer carries the one comment: the second close waited and reused it.
+  expect(a.objects).toEqual([`github:${PRODUCT}#1/comment/1`]);
+  expect(b.objects).toEqual([`github:${PRODUCT}#1/comment/1`]);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+  expect(f.posted.filter((p) => p.path.endsWith("/issues/1"))).toHaveLength(2);
 });
 
 it("a close whose note carries owner data rejects at the comment step, before the state is changed", async () => {

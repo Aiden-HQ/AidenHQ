@@ -105,13 +105,15 @@ function noDots(v: string) {
   if (v.split("/").some((seg) => seg === "." || seg === "..")) throw new GitHubRefused(`${v.slice(0, 200)} has a . or .. segment`);
 }
 
-/** A close note this process posted: its comment, whether the state change was confirmed, and when it was posted. */
-type NoteRecord = { url: string; objects: string[]; done: boolean; at: number };
+/** A close note this process posted: its comment (id, URL and objects), whether the state change was confirmed, when GitHub
+ * says it was created (the timeline's own order), and when this process recorded it (for the TTL). */
+type NoteRecord = { id: number; url: string; objects: string[]; confirmed: boolean; createdAt: string; at: number };
 
 export class Maintainer {
   private roles = new Map<string, { role: string | null; at: number }>();
   /** Close notes this process posted (see `state`), by repo, issue, state and note text: what it posted, whether the state
-   * change was confirmed, and when. Only a note this process posted is here, so no comment on the issue can suppress one. */
+   * change was confirmed, and GitHub's creation time. Only a note this process posted is here, so no comment on the issue can
+   * suppress one. */
   private readonly noted = new Map<string, NoteRecord>();
   /** The key whose note is being decided and posted right now: a second, overlapping close of the same thing waits for it. */
   private readonly noteLocks = new Map<string, Promise<unknown>>();
@@ -446,7 +448,14 @@ export class Maintainer {
   private async postComment(r: MaintainedRepo, number: number, text: string) {
     const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
     if (res.status !== 201) throw new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim());
-    return { repo: r.repo, number, url: res.body.html_url, id: res.body.id, objects: [`${this.ref(r, number)}/comment/${res.body.id}`] };
+    return {
+      repo: r.repo,
+      number,
+      url: res.body.html_url,
+      id: Number(res.body.id),
+      createdAt: String(res.body.created_at ?? ""),
+      objects: [`${this.ref(r, number)}/comment/${res.body.id}`],
+    };
   }
 
   /**
@@ -500,25 +509,55 @@ export class Maintainer {
     while (this.noted.size > Maintainer.NOTED_CAP) this.noted.delete(this.noted.keys().next().value!);
   }
 
-  /** Whether the issue is currently in `state`. */
-  private async inState(r: MaintainedRepo, number: number, state: "open" | "closed"): Promise<boolean> {
+  /** The issue's current state. A read that fails throws: its state is what decides whether a note is reused, so guessing it
+   * could post a second note (or skip one). */
+  private async issueState(r: MaintainedRepo, number: number): Promise<string> {
     const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
-    return res.status === 200 && String(res.body?.state ?? "") === state;
+    if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number}'s state (GitHub said ${res.status})`);
+    return String(res.body?.state ?? "");
   }
 
-  /** Whether the issue was closed at or after `at`: after our note that means a close (then a reopen), so this is a new close. */
-  private async closedSince(r: MaintainedRepo, number: number, at: number): Promise<boolean> {
-    const floor = Math.floor(at / 1000) * 1000;
-    const events = await this.readAll(r, `/issues/${number}/timeline`).catch(() => []);
-    return events.some((e) => e?.event === "closed" && Date.parse(String(e.created_at ?? "")) >= floor);
+  /** Every page of the issue's timeline, refusing one longer than the page cap: a part read could hide a reopen after the
+   * note, which would reuse the note for a new close. */
+  private async timeline(r: MaintainedRepo, number: number): Promise<any[]> {
+    const events: any[] = [];
+    let page = 1;
+    for (; page <= PAGE_CAP; page++) {
+      const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}/timeline?per_page=100&page=${page}`);
+      if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number}'s timeline (GitHub said ${res.status})`);
+      const items = (Array.isArray(res.body) ? res.body : []) as any[];
+      events.push(...items);
+      if (items.length < 100) break;
+    }
+    if (page > PAGE_CAP) throw new GitHubRefused(`#${number}'s timeline is longer than ${PAGE_CAP * 100} events, so whether it was reopened since the note can't be read; refusing to guess`);
+    return events;
   }
 
-  /** Whether a note this process posted still stands for this call: a landed close while the issue is still in `state`, or a
-   * note whose state change never landed and no close has happened since (a retry). Otherwise this is a new close. */
-  private async noteApplies(r: MaintainedRepo, number: number, state: "open" | "closed", rec: NoteRecord): Promise<boolean> {
-    if (await this.inState(r, number, state)) return true;
-    if (rec.done) return false;
-    return !(await this.closedSince(r, number, rec.at));
+  /**
+   * Whether GitHub recorded a reopen after the note `rec` posted. A close whose note was this one ends at that reopen: anything
+   * closed after it is a new close and gets its own note. The order is GitHub's own: the note's `commented` event's position in
+   * the timeline when GitHub lists it there, otherwise the events stamped at or after the comment's own `created_at`. A timeline
+   * that can't be read throws, and is never read as "nothing happened since" (that would reuse a note for a new close).
+   */
+  private async reopenedAfter(r: MaintainedRepo, number: number, rec: NoteRecord): Promise<boolean> {
+    const events = await this.timeline(r, number);
+    const at = events.findIndex((e) => e?.event === "commented" && Number(e?.id) === rec.id);
+    if (at >= 0) return events.slice(at + 1).some((e) => e?.event === "reopened");
+    const created = Date.parse(rec.createdAt);
+    if (!Number.isFinite(created)) throw new GitHubRefused(`#${number}'s note has no time GitHub can order its events against`);
+    return events.some((e) => e?.event === "reopened" && Date.parse(String(e.created_at ?? "")) >= created);
+  }
+
+  /**
+   * Whether a note this process posted still stands for this close: a reopen has not happened since, and either the state change
+   * was confirmed and the issue is still in that state, or it was not confirmed (its PATCH may have landed without an answer, so
+   * the retry sends only the state change). Otherwise this is a new close, which posts its own note.
+   */
+  private async noteApplies(r: MaintainedRepo, number: number, rec: NoteRecord): Promise<boolean> {
+    const state = await this.issueState(r, number);
+    if (await this.reopenedAfter(r, number, rec)) return false;
+    if (!rec.confirmed) return true;
+    return state === "closed";
   }
 
   /**
@@ -526,11 +565,11 @@ export class Maintainer {
    * the same owner-data scrub as `comment` and signed by `agent` (the AidenHQ footer), and the state changes only once it is posted. A note citing a PR only as a bare
    * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
    *
-   * The note goes once. A call that posted it and did not confirm the state change (a typed need, a refusal, a lost answer)
-   * remembers that, and the retry sends only the state change. A repeat of a call that finished is skipped while the issue is
-   * still in that state, so a lost answer can't post the note again; a close after a reopen is a different issue state and
-   * posts its note. The record is this process's own and keyed by the issue, the state and the note's text, so no comment on
-   * the issue (whose author this can't verify) can suppress a note.
+   * The note goes once, and this process records the comment it posted (id, GitHub's `created_at`) keyed by the issue, the state
+   * and the note's text; no comment on the issue (whose author this can't verify) can suppress a note. A retry whose note was
+   * not confirmed sends only the state change, unless GitHub recorded a reopen after the note (a new close, its own note). A
+   * confirmed close is reused while the issue is still closed with no reopen since. Both decisions read the issue's state and
+   * the timeline, and a failed read throws rather than guessing: guessing would post the note twice or skip a new one.
    */
   async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string, agent = "AidenHQ") {
     const r = this.target(repo);
@@ -542,18 +581,30 @@ export class Maintainer {
     const text = note === undefined ? undefined : this.scrubbed(r, note);
     await this.assertTrusted(r, number);
     const key = text === undefined ? undefined : Maintainer.noteKey(r, number, state, text);
-    // The note goes once. Under the key's lock, a retry of the same call (the note posted, the state change not confirmed) reuses
-    // it, an overlapping second close waits and reuses it too, and a close after a reopen posts its own. The record is this
+    // The note goes once. The decision, the post and the state change run under the key's lock, so an overlapping close of the
+    // same note waits for the first to finish and then reuses it instead of posting a duplicate. A retry of the same call (the
+    // note posted, the state change not confirmed) reuses it too; a close after a reopen posts its own. The record is this
     // process's own, so no comment on the issue (whose author this can't verify) can suppress a note.
-    const found = key === undefined ? undefined : await this.withNoteLock(key, async () => {
+    if (key === undefined) return this.applyState(r, number, state, reason);
+    return this.withNoteLock(key, async () => {
       const earlier = this.noted.get(key);
-      if (earlier && (await this.noteApplies(r, number, state, earlier))) return { note: earlier, posted: false };
-      const p = await this.postComment(r, number, withFooter(text!, agent));
-      const rec: NoteRecord = { url: p.url, objects: p.objects, done: false, at: Date.now() };
-      this.rememberNote(key, rec);
-      return { note: rec, posted: true };
+      const rec = earlier && (await this.noteApplies(r, number, earlier)) ? earlier : await this.rememberPosted(r, number, key, text!, agent);
+      const out = await this.applyState(r, number, state, reason, rec);
+      this.rememberNote(key, { ...rec, confirmed: true });
+      return out;
     });
-    const noteObj = found?.note;
+  }
+
+  /** Posts this call's note and records it (unconfirmed) so a retry or an overlapping close reuses it. */
+  private async rememberPosted(r: MaintainedRepo, number: number, key: string, text: string, agent: string): Promise<NoteRecord> {
+    const p = await this.postComment(r, number, withFooter(text, agent));
+    const rec: NoteRecord = { id: p.id, url: p.url, objects: p.objects, confirmed: false, createdAt: p.createdAt, at: Date.now() };
+    this.rememberNote(key, rec);
+    return rec;
+  }
+
+  /** The state change that follows the note, or the only write when there is none. */
+  private async applyState(r: MaintainedRepo, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", noteObj?: NoteRecord) {
     const url = noteObj?.url;
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
     /** What a caller must hear when the note is on the issue and the state change is not. */
@@ -575,7 +626,6 @@ export class Maintainer {
     // A refusal that isn't a typed need (a 422 and the like) leaves the note posted just the same: say so, or a retry doubles it.
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})${url ? `. ${reset}` : ""}`.trim());
     // The comment is this call's own GitHub object whether it posted it or reused it: the kernel records it for provenance.
-    if (key && noteObj) this.rememberNote(key, { ...noteObj, done: true });
     return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, ...(noteObj ? { objects: noteObj.objects } : {}) };
   }
 
