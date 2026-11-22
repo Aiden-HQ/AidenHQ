@@ -17,12 +17,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { gitSafe, runEngine } from "./engines.ts";
+import { gitListed, gitSafe, runEngine } from "./engines.ts";
 import { changed, guidePaths, place, scope } from "./scope.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 
-const raw = (...a: string[]) => gitSafe(process.cwd(), a); // untrimmed: a NUL-separated path list may start with a space
+const raw = (...a: string[]) => gitListed(process.cwd(), a); // untrimmed (a NUL-separated path list may start with a space) and strictly UTF-8
 const git = (...a: string[]) => raw(...a).trim(); // the branch's attributes and config run nothing here (gitSafe)
 const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
 
@@ -35,7 +35,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const root = git("rev-parse", "--show-toplevel");
   process.chdir(root);
   let base = "", head = "";
-  try { head = git("rev-parse", "HEAD"); base = git("merge-base", `refs/remotes/origin/${baseBranch}`, head); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
+  // The base is the exact remote-tracking ref: a tag or local branch of that name is not it.
+  try { head = git("rev-parse", "HEAD"); base = git("merge-base", git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${baseBranch}^{commit}`), head); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
   // The last finished review of this branch (kept in the clone's .git). A re-run needs the same branch and merge base (a rebase or
   // retarget starts over) and a head that descends from it; it covers only what changed since when nothing important is open.
   // The checked-out branch by its full ref (a tag of the same name can't stand in for it); a detached HEAD has none.

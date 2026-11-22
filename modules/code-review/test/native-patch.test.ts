@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { PREP_TIMEOUT, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
+import { PREP_TIMEOUT, gitListed, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
 import { place } from "../recipe/scope.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -383,4 +383,28 @@ test("self-review reviews the eligible files even when a generated file leaves a
     assert.match(JSON.stringify(model.requests[0]), /a\.txt/);
     assert.match(out.stdout, /generated files this change adds are not reviewed: dist\/out\.js/);
   } finally { model.close(); }
+});
+
+test("a file name that isn't valid UTF-8 in a change list is an error, named, never a lossy path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "list-utf-")), repo = join(dir, "r");
+  mkdirSync(repo); sh(repo, "init", "-q");
+  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repo, input: "x\n", encoding: "utf8" }).trim();
+  const tree = (name: Buffer) => execFileSync("git", ["mktree", "-z"], { cwd: repo, input: Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), name, Buffer.from("\0")]), encoding: "utf8" }).trim();
+  const commit = (t: string) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit-tree", t, "-m", "x"], { cwd: repo, encoding: "utf8" }).trim();
+  const ok = commit(tree(Buffer.from("fine.txt"))), bad = commit(tree(Buffer.from([0x62, 0xff, 0x61])));
+  assert.equal(gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", ok]), "fine.txt\0");
+  assert.throws(() => gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", bad]), /not valid UTF-8/);
+});
+
+test("self-review takes the exact remote-tracking ref as the base, whatever a tag of the same name points at", async () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  sh(repo, "tag", "origin/main", "HEAD"); // a tag named like the remote-tracking branch, at the head
+  writeFileSync(join(repo, "dirty.txt"), "x\n"); // stops the run at the evidence line, before any model
+  const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+  const out = await new Promise<string>((ok) => {
+    const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env: { ...process.env, AIDENHQ_GATEWAY_URL: "http://127.0.0.1:9", AIDENHQ_RUN_TOKEN: "t" }, stdio: ["ignore", "pipe", "pipe"] });
+    let s = ""; c.stdout.on("data", (d) => (s += d)); c.stderr.on("data", (d) => (s += d)); c.on("close", () => ok(s));
+  });
+  assert.ok(out.includes(`base ${base.slice(0, 12)} (merge base)`), out);
 });

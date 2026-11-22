@@ -461,6 +461,12 @@ function gitBy(deadline: number, root: string, args: string[], extraEnv: Record<
   try { return gitSafe(root, args, extraEnv, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
 }
 
+/** git's answer (a -z path list) decoded strictly: a file name that isn't valid UTF-8 can't be listed faithfully, so it is an error, named. */
+export function gitListed(cwd: string, args: string[]) {
+  const out = execFileSync("git", args, { cwd, maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv() }, stdio: ["ignore", "pipe", "ignore"] });
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(out); } catch { throw new Error("a file name in the change is not valid UTF-8, so the change can't be listed faithfully"); }
+}
+
 /** A git call within the deadline that answers in bytes (a patch is decoded strictly, never lossily). */
 function gitBytes(deadline: number, root: string, args: string[]) {
   try { return execFileSync("git", args, { cwd: root, timeout: Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined, maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv() }, stdio: ["ignore", "pipe", "ignore"] }); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
