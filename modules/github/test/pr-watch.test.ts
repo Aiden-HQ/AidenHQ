@@ -131,7 +131,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -148,7 +148,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
-    if (path.endsWith("/update-branch")) return { status: update, body: update === 422 ? { message: "merge conflict between base and head" } : {} };
+    if (path.endsWith("/update-branch")) { const m = updateByMethod?.[body?.update_method]; return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) }; }
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
@@ -222,6 +222,46 @@ test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refuse
   await e.watch.tick(); await e.watch.tick();
   assert.equal(e.gh.filter((g) => g === "PUT /repos/acme/app/pulls/7/update-branch rebase").length, 1, "a 5xx is asked again after its backoff, not every tick");
   assert.equal(e.woke.length, 0, "no wake while the update will retry");
+});
+
+test("an update-branch refusal is retried unless it is permanent (a conflict or no permission), so a rate limit or a 5xx isn't final", async (t) => {
+  // A 403 worded as a rate limit: not a refusal of the rebase, asked again after the backoff (not every tick, and no wake).
+  const rate = await rig(t, { behind: 2, update: 403, updateBody: { message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." } });
+  rate.set([rate.agentPr(11, redPr(11))]);
+  await rate.watch.tick(); await rate.watch.tick();
+  assert.equal(rate.gh.filter((g) => g === "PUT /repos/acme/app/pulls/11/update-branch rebase").length, 1, "asked once, then backed off");
+  assert.equal(rate.woke.length, 0, "a rate limit is not final and wakes nobody while it retries");
+  // A 5xx on both methods: still retryable, never cached as final for that head.
+  const five = await rig(t, { behind: 2, update: 502 });
+  five.set([five.agentPr(12, redPr(12))]);
+  await five.watch.tick(); await five.watch.tick();
+  assert.equal(five.gh.filter((g) => g === "PUT /repos/acme/app/pulls/12/update-branch rebase").length, 1, "a 5xx is retried after its backoff");
+  assert.equal(five.woke.length, 0);
+  // A 403 with no rate limit wording is no right to update: final at that head+base, and the task is woken to fix it.
+  const denied = await rig(t, { behind: 2, update: 403, updateBody: { message: "Resource not accessible by integration" } });
+  denied.set([denied.agentPr(14, redPr(14))]);
+  await denied.watch.tick(); await denied.watch.tick();
+  assert.equal(denied.gh.filter((g) => g === "PUT /repos/acme/app/pulls/14/update-branch rebase").length, 1, "no permission is final");
+  assert.equal(denied.woke.length, 1);
+  // A 422 on the rebase is not the decision: the merge fallback's own answer is. A non-conflict 422 on rebase and a confirmed
+  // conflict on merge ends final (once), and the task is woken to rebase it.
+  const mixed = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 422, body: { message: "Update branch is temporarily unavailable" } }, merge: { status: 422, body: { message: "merge conflict between base and head" } } } });
+  mixed.set([mixed.agentPr(15, redPr(15))]);
+  await mixed.watch.tick(); await mixed.watch.tick();
+  assert.deepEqual(mixed.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/15/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "both methods tried once, then final: no re-ask");
+  assert.equal(mixed.woke.length, 1);
+  // A conflict on the rebase but a retryable answer on the merge fallback is not final: the last method decides.
+  const mixedRetry = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 422, body: { message: "merge conflict between base and head" } }, merge: { status: 502, body: {} } } });
+  mixedRetry.set([mixedRetry.agentPr(16, redPr(16))]);
+  await mixedRetry.watch.tick(); await mixedRetry.watch.tick();
+  assert.equal(mixedRetry.gh.filter((g) => g === "PUT /repos/acme/app/pulls/16/update-branch rebase").length, 1, "a 5xx on the fallback keeps it retryable");
+  assert.equal(mixedRetry.woke.length, 0, "no wake while it retries");
+  // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
+  const conflict = await rig(t, { behind: 2, update: 422 });
+  conflict.set([conflict.agentPr(13, redPr(13))]);
+  await conflict.watch.tick(); await conflict.watch.tick();
+  assert.equal(conflict.gh.filter((g) => g === "PUT /repos/acme/app/pulls/13/update-branch rebase").length, 1, "a conflict is final");
+  assert.equal(conflict.woke.length, 1);
 });
 
 test("a green agent PR has its merge filed by the kernel for its task, once per head; a head its task's PR didn't push wakes the task", async (t) => {

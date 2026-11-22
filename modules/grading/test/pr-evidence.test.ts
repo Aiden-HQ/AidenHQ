@@ -3,7 +3,7 @@
 // merged PR in the same repo beside the superseded branch, the merged PR is the one graded.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseCommitOf, localPullRequest, prEvidence } from "../service/src/grader/evidence.ts";
+import { baseCommitOf, localPullRequest, prEvidence, presentNow } from "../service/src/grader/evidence.ts";
 
 const REPO = "acme-agents/app";
 const SHA = (c) => c.repeat(40);
@@ -67,6 +67,29 @@ test("the same holds when the task's merge records, not its branch rows, name bo
   assert.ok(ev.version, "the merged record's PR is graded");
   assert.match(ev.version, /#224@/);
   assert.deepEqual(ev.prs.map((p) => p.number), [224]);
+});
+
+test("a merge-records read that failed is an unreadable deliverable, never 'the task has no PR'", async () => {
+  // No branch row names a PR, so the runner's own records are the only way to the merge. When that read fails, the answer is
+  // "could not be read": reading it as absent would let a versionless close land done/ungraded with the merge ungraded.
+  const down = await presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => [], taskMerged: async () => { throw new Error("kernel GET /v1/merges → 502"); }, pr: async () => ({}) });
+  assert.deepEqual([down.present, down.unknown], [false, true], "a failed records read is unknown, not an absence");
+  assert.match(down.facts.join("; "), /merge records for this task could not be read just now/);
+  // With the records readable, the same call finds the PR they name and holds it open (not merged yet) rather than absent.
+  const open = merged(224, "b", "c");
+  Object.assign(open, { state: "OPEN", mergedAt: null, mergeCommit: null });
+  const there = await presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => [], taskMerged: async () => [{ repo: REPO, number: 224, url: url(224), headRef: "branch-b" }], pr: async () => ({ repository: { pullRequest: open } }) });
+  assert.deepEqual([there.present, there.unknown], [false, false], "a readable record naming an open PR is a known answer");
+  assert.match(there.facts.join("; "), /open, not merged yet/);
+});
+
+test("a failed merge-records read in prEvidence is an evidence wait, never 'no pull request yet'", async () => {
+  // "no pull request yet" is a missing deliverable (it closes the task after MISSING_WAIT_MS). A 502 on the records that are
+  // the only route to the merge is unavailable evidence: the row waits, and nothing is closed on it.
+  const ev = await prEvidence([], "", { ...depsFor([]), taskMerged: async () => { throw new Error("kernel GET /v1/merges → 502"); } });
+  assert.match(ev.awaiting, /merge records for this task could not be read just now/);
+  assert.equal(ev.missing, undefined, "an unreadable record is not 'no pull request yet'");
+  assert.equal(ev.version, undefined);
 });
 
 test("when every PR the task names is closed, the hold applies: no verdict either way", async () => {

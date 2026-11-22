@@ -4,13 +4,13 @@
 // sets (the planner and the apply executor have their own tests).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { Refused, candidateMarked, check, createUpdates, gitOwn, ownCredentials, readState, verify, verifyMain } from "../src/updates.ts";
+import { Refused, candidateMarked, check, createUpdates, gitOwn, ownCredentials, readState, runCheck, verify, verifyMain } from "../src/updates.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 
 // The owner's own git config (signing, hooks) never reaches the fixtures or the updater's commits.
@@ -287,4 +287,65 @@ test("the instance checkout is fetched with its own credential helper; a URL tha
   assert.throws(() => gitOwn(tmpdir(), ["clone", "-q", "--", join(w.root, "missing"), "c"], ownCredentials(w.d.inst)), (e) => /^git clone failed/.test(e.message) && !/secret|credential/.test(e.message));
   // Only "none configured" (exit 1) is no credentials; an unreadable checkout throws.
   assert.throws(() => ownCredentials(join(w.root, "missing")));
+});
+test("the check's child exits non-zero when a pass hits an operational failure, so the kernel's failing counter (and its page) sees it", async () => {
+  // A real child: node kernel/src/updates.ts check, with the instance checkout missing so its git fetch can't run. The pass
+  // records the failure in the state's error and used to exit 0, which the kernel's runCheck read as a clean pass.
+  const dir = mkdtempSync(join(tmpdir(), "upd-child-")), data = join(dir, "data"), state = join(dir, "state");
+  const inst = join(dir, "missing-instance");
+  const env = { ...process.env, AIDENHQ_INSTANCE_DIR: inst, AIDENHQ_DATA_DIR: data, AIDENHQ_STATE_DIR: state };
+  await new Promise((ok, no) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "../src/updates.ts"), "check"], { env, timeout: 60_000 }, (e, _out, err) => (e ? no(Object.assign(e, { stderr: String(err) })) : ok()))).then(
+    () => assert.fail("an operational failure must not exit 0"),
+    (e) => { assert.notEqual(e.code, 3, "not a refusal"); assert.notEqual(e.code, 0); },
+  );
+  // runCheck (what the kernel's pass calls) is pointed at the same temporary fixture, never a developer's live instance.
+  const keep = { inst: process.env.AIDENHQ_INSTANCE_DIR, data: process.env.AIDENHQ_DATA_DIR, state: process.env.AIDENHQ_STATE_DIR };
+  Object.assign(process.env, { AIDENHQ_INSTANCE_DIR: inst, AIDENHQ_DATA_DIR: data, AIDENHQ_STATE_DIR: state });
+  try {
+    await assert.rejects(runCheck(join(import.meta.dirname, "../.."))(null), /git fetch failed|update: check failed/i);
+  } finally {
+    for (const [k, v] of [["AIDENHQ_INSTANCE_DIR", keep.inst], ["AIDENHQ_DATA_DIR", keep.data], ["AIDENHQ_STATE_DIR", keep.state]] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test("the real child exits non-zero for an operational failure the pass recorded (not only one it threw), so a stalled train pages", async () => {
+  // A release-following checkout whose distro can't be reached: the pass records the failure in its state and returns it. Before,
+  // that path exited 0, so the kernel's runCheck read a stalled release train as a clean pass and `failing` never reached its page.
+  const dir = mkdtempSync(join(tmpdir(), "upd-recorded-")), src = join(dir, "src");
+  mkdirSync(src);
+  git(src, "init", "-q");
+  writeFileSync(join(src, "instance.yaml"), `product: ${"a".repeat(40)}\nrelease: { name: "2026.11.2", source: { source: github, repo: Aiden-HQ/aidenhq-distro }, sha: ${"b".repeat(40)} }\n`);
+  git(src, "add", "-A"); git(src, "commit", "-qm", "instance");
+  git(dir, "clone", "-q", "--bare", src, join(dir, "inst.git"));
+  git(dir, "clone", "-q", join(dir, "inst.git"), "inst");
+  const data = join(dir, "data"), state = join(dir, "state");
+  const env = {
+    ...process.env, AIDENHQ_INSTANCE_DIR: join(dir, "inst"), AIDENHQ_DATA_DIR: data, AIDENHQ_STATE_DIR: state,
+    // git's own URL rewrite: the official distro fetch lands on a path that doesn't exist (an unreachable host in miniature).
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.${join(dir, "missing-distro")}.insteadOf`, GIT_CONFIG_VALUE_0: "https://github.com/Aiden-HQ/aidenhq-distro.git",
+  };
+  const code = await new Promise((ok) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "../src/updates.ts"), "check"], { env, timeout: 60_000 }, (e) => ok(e ? (e as { code?: unknown }).code : 0)));
+  assert.notEqual(code, 0, "the recorded operational failure is a failed pass");
+  assert.notEqual(code, 3, "not a refusal: the host's answer is not this");
+  const recorded = readState(join(data, "updates"));
+  assert.equal(recorded.checkFailed, true);
+  assert.match(String(recorded.error), /ls-remote|fetch failed/);
+});
+
+test("a check that records an operational failure in its state still exits non-zero; a refusal stays exit 3", async () => {
+  // In-process: a releases API failure is operational and recorded (not a release the server refused), so the pass is marked.
+  const w = world();
+  const dl = w.d.download;
+  w.d.download = async (u) => { if (/\/releases(\?|\/tags)/.test(u)) throw new Error("api.github.com answered 403"); return dl(u); };
+  const s = await check({ ...w.d, now: () => NIGHT });
+  assert.equal(s.checkFailed, true);
+  assert.match(String(s.error), /403/);
+  // A release that fails this server's checks is an answer, not a failed pass.
+  const r = world({ next: { kernel: "0".repeat(40) } });
+  const refused = await check({ ...r.d, now: () => NIGHT });
+  assert.equal(refused.checkFailed, undefined);
+  assert.match(String(refused.error), /was refused/);
 });

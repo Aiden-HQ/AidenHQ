@@ -186,3 +186,42 @@ test("the finish gate never fails open: a change store the kernel can't read kee
   assert.deepEqual(s.writes, []);
 });
 
+test("two checks hold a task: a reopen by one ends both holds, so a later submission held only by the other closes on ok", async (t) => {
+  // Two real check servers: both hold the first submission, so both write a check_holds row. One reopens; the other's row must
+  // not survive to match the task's next submission, or that submission's `ok` would see it as "another check still holds".
+  const answers = { judge: { verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" }, grading: { verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" } };
+  const serveCheck = async (which) => {
+    const s = await serve(async (req, res) => { await readBody(req); res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answers[which])); });
+    t.after(() => s.s.close());
+    return s.url;
+  };
+  const judgeUrl = await serveCheck("judge"), gradingUrl = await serveCheck("grading");
+  const checks = {
+    "judge.finish": { module: "judge", at: "task.finish", url: `${judgeUrl}/check/finish`, auth_secret: "judge_check_key", label: "held" },
+    "grading.finish": { module: "grading", at: "task.finish", url: `${gradingUrl}/check/finish`, auth_secret: "judge_check_key", label: "grading" },
+  };
+  const s = await setup(t, () => ({ verdict: "ok" }), { checks });
+  const rows = () => s.k.records.db.prepare("SELECT check_id FROM check_holds WHERE task = ? ORDER BY check_id").all(TASK).map((r) => r.check_id);
+  assert.equal((await s.finish({ status: "done" })).status, 202);
+  assert.deepEqual(rows(), ["grading.finish", "judge.finish"], "both holds recorded");
+  // Grading reopens through its own token: the review is over, so judge's stale row goes with it.
+  answers.grading = { verdict: "reopen", reason: "rework it" };
+  assert.equal((await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "reopen", reason: "rework it" }, "grading-tok")).status, 200);
+  assert.deepEqual(rows(), [], "the sibling hold ended with the review");
+  assert.equal(s.issue.status, "todo");
+  // The sibling's label goes with its row: a label left behind is what holds() reads as a hold, so a task that later comes
+  // back in review would authorize judge's token with no recorded hold.
+  assert.deepEqual(s.issue.labelIds, ["lbl-x"], "both checks' labels are off, not only the resolving one's");
+  // Each ended hold has its own verdict fact, so task state pairs held and verdict per check and reads neither as unresolved.
+  const sibling = s.k.records.db.prepare("SELECT data FROM facts WHERE task = ? AND type = 'finish.verdict' AND json_extract(data, '$.check') = 'judge.finish' ORDER BY seq DESC LIMIT 1").get(TASK);
+  assert.equal(JSON.parse(String(sibling?.data)).verdict, "reopen", "the sibling hold's fact says its verdict too");
+  // Resubmitted and finished again: judge holds it, grading passes it, and judge's own ok then closes the task.
+  Object.assign(s.issue, { status: "in_progress" });
+  answers.judge = { verdict: "pending", state: "pending", reason: "r", until: "2026-11-17T12:00:00.000Z" };
+  answers.grading = { verdict: "ok" };
+  assert.equal((await s.finish({ status: "done" })).status, 202);
+  assert.deepEqual(rows(), ["judge.finish"], "the resubmission's hold is judge's alone");
+  answers.judge = { verdict: "ok" };
+  assert.equal((await s.k.v1("POST", `/v1/checks/${TASK}`, { verdict: "ok" }, "judge-tok")).status, 200);
+  assert.equal(s.issue.status, "done", "ok closes: no stale sibling row stops it");
+});

@@ -40,6 +40,8 @@ const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop(
 export const MERGED_LINE = "merged-prs: ";
 /** What the kernel keeps of an outcome (kernel/src/records.ts OUTCOME_MAX): the first line and the summary after it must fit. */
 export const OUTCOME_MAX = 6_000;
+/** GitHub answered that the PR or its repository doesn't exist (a deleted repo, a PR that was never there): a definitive end. */
+class Gone extends Error {}
 
 export function createMerges(d: {
   dir: string;
@@ -85,11 +87,54 @@ export function createMerges(d: {
   const waiters = new Map<string, { promise: Promise<Outcome>; resolve: (o: Outcome) => void }>();
   const delivering = new Set<string>();
 
+  /**
+   * Whether the repository is really gone, or only invisible to this token: GitHub answers `repository: null` / a NOT_FOUND
+   * error both for a deleted repo and for a private one an installation lost access to, and ending an approved merge on the
+   * second is the failure the header promises never happens. A repo read is GitHub's own answer on the same token: a 404 is
+   * the repo absent, any other answer (a 200, a 403, a 5xx) means the merge waits and the next tick asks again.
+   */
+  async function repoAbsent(repo: string): Promise<boolean> {
+    try {
+      const r = await d.gh("GET", `/repos/${repo}`);
+      return r.status === 404;
+    } catch {
+      return false;
+    }
+  }
   async function readPr(repo: string, number: number) {
     const [owner, name] = repo.split("/");
     const r = await d.gh("POST", "/graphql", { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
-    if (r.status >= 300 || r.body?.errors?.length) throw new Error(`GitHub GraphQL: ${r.body?.errors?.map((e: any) => e.message).join("; ") ?? `HTTP ${r.status}`}`);
-    return withGate(r.body?.data);
+    const errors: any[] = Array.isArray(r.body?.errors) ? r.body.errors : [];
+    const data = r.body?.data;
+    const node = data && typeof data === "object" ? data.repository : undefined;
+    const pr = node?.pullRequest;
+    // The same answer on both shapes: a NOT_FOUND about the repository (never a nested field) with no PR node, or a null
+    // repository node. It is confirmed absent by the repo read before it ends the record, so a token that lost access only
+    // makes the merge wait. Every other answer (an empty body, a partial answer, a nested NOT_FOUND, a 5xx) throws, so the
+    // poll's catch logs it and the next tick asks again rather than ending an approved merge on an answer it can't act on.
+    const repoGone = errors.length > 0 && errors.every((e) => e?.type === "NOT_FOUND" && /repository/i.test(String(e?.message ?? "")));
+    if (r.status >= 300 || errors.length) {
+      if (!pr && (repoGone || node === null) && (await repoAbsent(repo))) throw new Gone();
+      throw new Error(`GitHub GraphQL: ${errors.map((e) => e.message).join("; ") || `HTTP ${r.status}`}`);
+    }
+    if (!data || typeof data !== "object") throw new Error("GitHub GraphQL: no answer");
+    if (node === null) {
+      if (await repoAbsent(repo)) throw new Gone();
+      throw new Error("GitHub GraphQL: the repository answered null (deleted, or this token can no longer see it)");
+    }
+    if (!node || typeof node !== "object") throw new Error("GitHub GraphQL: the answer omitted the repository");
+    if (!pr) {
+      // The requested repository fields decide whether the PR was looked up at all: a node that answered none of them is a
+      // partial answer, not a repository whose PR is gone.
+      const answered = ["defaultBranchRef", "squashMergeAllowed", "mergeCommitAllowed", "rebaseMergeAllowed"].some((k) => k in node);
+      if (!answered) throw new Error("GitHub GraphQL: the answer omitted the requested fields");
+      throw new Gone();
+    }
+    // The gate reads these per field. An omitted key is a partial answer that proves nothing about the PR, so the queue asks
+    // again; an explicit null is GitHub's answer that the field is empty, which the gate reads and ends or waits on with its
+    // own reason rather than waiting for an answer that is already here.
+    if (["state", "headRefOid", "baseRefName"].some((k) => !(k in pr))) throw new Error("GitHub GraphQL: the answer omitted the pull request's fields");
+    return withGate(data);
   }
   async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
@@ -298,6 +343,8 @@ export function createMerges(d: {
       merged.add(p.repo.toLowerCase());
       q.said.push(`Merged ${p.url}.`);
     } catch (e) {
+      // A repository or PR that no longer exists is finished with a reason, never waited on: nothing will bring it back.
+      if (e instanceof Gone) return fail("the repository or PR no longer exists (or this token can no longer see it)");
       log("merge poll failed", { repo: p.repo, number: p.number, err: says(e) });
       wait("error");
     }

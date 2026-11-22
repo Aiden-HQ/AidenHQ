@@ -418,7 +418,11 @@ export class Store {
       if (last && last < today) {
         this.db.prepare("UPDATE placements SET carried = carried + 1 WHERE bucket = 'today'").run();
         const max = (this.db.prepare("SELECT MAX(rank) AS m FROM placements WHERE bucket = 'today'").get() as { m: number | null }).m ?? -1;
-        const rows = this.db.prepare("SELECT issue_id FROM placements WHERE bucket = 'tomorrow' ORDER BY rank").all() as { issue_id: string }[];
+        // A card with a pending scheduled move is parked where it is until that date (App.tsx's snoozeCard parks a snooze in
+        // Tomorrow with its own move to Today): applySchedules() moves it then. The rollover must not pull it into Today first,
+        // or it lands a day early and applySchedules() has nothing left to move. The date is deliberately not part of this:
+        // a snooze for tomorrow is parked in Tomorrow today, and its move is tomorrow's.
+        const rows = this.db.prepare("SELECT p.issue_id FROM placements p WHERE p.bucket = 'tomorrow' AND NOT EXISTS (SELECT 1 FROM scheduled_moves m WHERE m.issue_id = p.issue_id) ORDER BY p.rank").all() as { issue_id: string }[];
         const stmt = this.db.prepare("UPDATE placements SET bucket = 'today', rank = ?, carried = 0, updated_at = ? WHERE issue_id = ?");
         const now = new Date().toISOString();
         rows.forEach((r, i) => stmt.run(max + 1 + i, now, r.issue_id));

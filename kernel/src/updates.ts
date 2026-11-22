@@ -117,6 +117,9 @@ export type State = {
   checkedAt?: string;
   available?: Candidate | null;
   error?: string;
+  /** This pass hit an operational failure (the instance, GitHub or git couldn't be read), not a release that failed its checks:
+   * the check's child exits non-zero on it, so the kernel's failing counter counts the pass and can page the owner. */
+  checkFailed?: boolean;
   last?: Last;
   failed?: string[];
   /** Prepared by the check, filed by the kernel. */
@@ -134,28 +137,47 @@ export type State = {
 
 const url = (d: Pick<Deps, "base">, repo: string) => `${d.base}/${repo}.git`;
 const at = (d: Pick<Deps, "base">, repo: string, sha: string): Where => ({ url: url(d, repo), path: "", sha, owned: true });
-const runGit = (cred: string[], cwd: string, args: string[], input?: string) => {
+/** git's own per-command settings, from git's config env (GIT_CONFIG_COUNT/KEY_n/VALUE_n) rather than argv: the checkout's credential.* values are not for `ps`. */
+type GitConfig = [key: string, value: string][];
+// Its entries come after any GIT_CONFIG_* the process already has (the harnesses set their own), so both apply and these win.
+const configEnv = (settings: GitConfig) => {
+  const base = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10);
+  const from = Number.isFinite(base) && base > 0 ? base : 0;
+  return settings.length ? Object.fromEntries([...settings.flatMap(([k, v], i) => [[`GIT_CONFIG_KEY_${from + i}`, k], [`GIT_CONFIG_VALUE_${from + i}`, v]]), [`GIT_CONFIG_COUNT`, String(from + settings.length)]]) : {};
+};
+const runGit = (settings: GitConfig, cwd: string, args: string[], input?: string, foreign = false) => {
   try {
-    return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", ...cred, ...args], {
-      cwd, encoding: "utf8", input, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+    // `credential.helper=` on the command line is the one reset that must outrank an inherited GIT_CONFIG_PARAMETERS helper:
+    // it holds no secret itself, and git applies that after the inherited settings, so a release or distro remote never gets
+    // the owner's helper. It is only for those foreign URLs: the instance's own repo (gitOwn, and the read in ownCredentials)
+    // must keep the checkout's helper, or a private origin can't be fetched.
+    const reset = foreign ? ["-c", "credential.helper="] : [];
+    return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", ...reset, ...args], {
+      cwd, encoding: "utf8", input, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_DIR: undefined, GIT_WORK_TREE: undefined, ...configEnv(settings) },
     });
   } catch (e) {
-    // The failure's own words (git's first stderr line) go with the subcommand, so a log or an alert says why. Never the argv:
-    // it carries the checkout's credential.* settings.
+    // The failure's own words (git's first stderr line) go with the subcommand, so a log or an alert says why. Never the argv
+    // or the env: both carry the checkout's credential.* settings.
     const why = String((e as { stderr?: unknown }).stderr ?? "").trim().split("\n")[0];
     const sub = args.find((a, i) => !a.startsWith("-") && !["-c", "--git-dir"].includes(args[i - 1] ?? "")) ?? "command";
     throw Object.assign(new Error(`git ${sub} failed${why ? `: ${why}` : ""}`), { status: (e as { status?: number }).status });
   }
 };
 /** git for a URL that isn't ours (the release repos, the distro): no credential helper, so none is ever offered to it. */
-const git = (cwd: string, args: string[], input?: string) => runGit(["-c", "credential.helper="], cwd, args, input);
+const git = (cwd: string, args: string[], input?: string) => runGit([], cwd, args, input, true);
 /** git for the owner's own instance repo, in its checkout (or with `cred`, in a clone of it): the checkout's configured credentials. */
-export const gitOwn = (cwd: string, args: string[], cred: string[] = []) => runGit(cred, cwd, args);
-/** The checkout's credential.* settings as -c arguments, for a fresh clone of its origin (which has none of its own). */
-export function ownCredentials(inst: string): string[] {
+export const gitOwn = (cwd: string, args: string[], cred: GitConfig = []) => runGit(cred, cwd, args);
+/** The checkout's credential.* settings as git config, for a fresh clone of its origin (which has none of its own). */
+export function ownCredentials(inst: string): GitConfig {
   let out = "";
-  try { out = runGit([], inst, ["config", "--get-regexp", "^credential\\."]); } catch (e) { if ((e as { status?: number }).status !== 1) throw e; /* none configured: exit 1 */ }
-  return out.split("\n").filter(Boolean).flatMap((l) => ["-c", l.replace(/ /, "=")]);
+  // NUL-separated records, each `key\nvalue`: a subsection may contain a space, and a valueless flag (a bare `useHttpPath`)
+  // has no newline at all, which is not the same as a deliberately empty value (`credential.helper =`). Git reads a bare
+  // boolean as true, so it is passed on as such.
+  try { out = runGit([], inst, ["config", "--null", "--get-regexp", "^credential\\."]); } catch (e) { if ((e as { status?: number }).status !== 1) throw e; /* none configured: exit 1 */ }
+  return out.split("\0").filter(Boolean).map((record) => {
+    const nl = record.indexOf("\n");
+    return (nl === -1 ? [record, "true"] : [record.slice(0, nl), record.slice(nl + 1)]) as [string, string];
+  });
 }
 /** Whether commit a is an ancestor of b in repo: false when it isn't (or a isn't there at all); any other git failure throws. */
 function isAncestor(repo: string, a: string, b: string): boolean {
@@ -382,6 +404,7 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
   s.auto = autoOn(instance);
   s.timezone = String((isMap(instance.settings) && instance.settings.timezone) || "UTC");
   delete s.error;
+  delete s.checkFailed;
   s.available = null;
   let next = "";
   if (cur) {
@@ -408,7 +431,12 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
           event(s, `refused:${tag.name}`, `AidenHQ ${tag.name} was published but failed this server's checks (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
         }
       }
-    } catch (e) { s.error = plain((e as Error).message); }
+    } catch (e) {
+      // A release this server refused is an answer, never a failed pass; anything else (the network, git, the releases API)
+      // is operational, and the check's child reports it as a failure so a stalled release train pages the owner.
+      if (!(e instanceof Refused)) s.checkFailed = true;
+      s.error = plain((e as Error).message);
+    }
   }
   const a = s.available;
   const busy = s.ready ?? s.flight;
@@ -418,7 +446,13 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
     if (!cur) why("this instance doesn't follow a release");
     else if (busy) why(`${labelOf(busy.release)} is already being installed`);
     else {
-      try { s.ready = prepareMain(d, await verifyMain(d, text, asked.release), text, String(asked.by).slice(0, 100)); } catch (e) { s.error = plain((e as Error).message); why(plain((e as Error).message, 200)); }
+      try {
+        s.ready = prepareMain(d, await verifyMain(d, text, asked.release), text, String(asked.by).slice(0, 100));
+        // The ask itself succeeded: an operational failure from release discovery in the same pass must not make the parent
+        // retry it (and later say it didn't start) while its update is already prepared. The next regular check sees that failure.
+        delete s.checkFailed;
+        delete s.error;
+      } catch (e) { if (!(e instanceof Refused)) s.checkFailed = true; s.error = plain((e as Error).message); why(plain((e as Error).message, 200)); }
     }
     writeState(d, s);
     return s;
@@ -430,6 +464,7 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
     try {
       s.ready = { ...prepare(d, a, text, next, by), ...(candidate ? { candidate: a.sha } : {}) };
     } catch (e) {
+      if (!(e instanceof Refused)) s.checkFailed = true;
       s.error = plain((e as Error).message);
       if (e instanceof Refused) event(s, `refused:${a.name}`, `AidenHQ ${a.name} failed this server's checks when it was prepared (${plain(e.message, 200)}), so it won't be installed. Nothing changed here.`);
       else if (asked) event(s, `now:${now.toISOString()}`, `Update now didn't start: ${plain((e as Error).message, 200)}. Nothing changed; try again in a while.`);
@@ -694,12 +729,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     dir: join(data, "updates"), board: join(state, "board/updates.json"),
   };
   const [cmd, a, b] = process.argv.slice(2);
+  // The check's own pass state, read again after the catch so a failure the branch itself doesn't run into (a throw from
+  // `check` before it writes, say) still counts. `check` writes `checkFailed` on every operational failure it records.
+  // `started`: the state read after a throw counts only when this pass wrote it, never a previous pass's failure reported as
+  // this run's.
+  const started = new Date().toISOString();
+  let checkPass: State | undefined;
   try {
     if (cmd === "check") {
       // The candidate exception asks for its release by name, so a check can't take a pre-release it wasn't sent for.
       const candidate = process.env[CANDIDATE_ENV] ?? "";
       if (candidate && candidate !== a) throw new Error(`${CANDIDATE_ENV} names ${plain(candidate, 40)}: run check ${plain(candidate, 40)} <by>`);
-      const s = await check(d, a && b ? { release: a, by: b } : null, candidate);
+      checkPass = await check(d, a && b ? { release: a, by: b } : null, candidate);
+      const s = checkPass;
       console.log(s.ready ? `release ${s.ready.release} prepared at ${s.ready.sha} (${s.ready.branch})` : s.available ? `release ${s.available.name} available (running ${s.current?.name})` : s.error ? `update check: ${s.error}` : `release: ${s.current?.name ?? "none followed"}, nothing newer`);
     } else if (cmd === "verify" && a && b) {
       // The planner's check of a release move (apply-tier.ts): the instance.yaml this base moves to, every check passed. A
@@ -717,6 +759,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } catch (e) {
     console.error(`update: ${e instanceof Refused ? "refused: " : ""}${(e as Error).message.split("\n")[0]}`);
     process.exitCode = e instanceof Refused ? 3 : 1;
+    // A throw from the check itself: the state it wrote this pass still tells whether it was operational. A state older than
+    // this run is a previous pass's failure, so it is not read as this one's.
+    if (cmd === "check" && !checkPass) {
+      const wrote = readState(d.dir);
+      if (typeof wrote.checkedAt === "string" && wrote.checkedAt >= started) checkPass = wrote;
+    }
+  }
+  // An operational failure the pass recorded is not a clean pass: the kernel's runCheck counts only a clean exit, so its
+  // failing-pass counter (and its page at ALERT_AFTER) sees a check stalled on the instance, GitHub or git. A refusal (3,
+  // the host's own answer) is not a failure.
+  if (process.exitCode !== 3 && checkPass?.checkFailed) {
+    console.error(`update: check failed: ${checkPass.error ?? "an operational step failed"}`);
+    process.exitCode = 1;
   }
 }
 

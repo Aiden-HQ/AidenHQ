@@ -418,13 +418,24 @@ const appUnknown = (name: string | undefined) => `the apps registry could not be
 export async function presentNow(deliverable: any, deps: any) {
   const kind = deliverable?.kind;
   const facts: string[] = [];
+  // `unknown` is an answer it could not get (GitHub or the apps registry unreachable), never "absent": a caller deciding
+  // whether work exists must wait and ask again, not read a failed lookup as nothing there.
+  let unknown = false;
   if (kind === "pr") {
     let prs = byRef((await deps.taskPrs?.()) ?? [], deliverable.ref);
-    if (!prs.length && deps.taskMerged) prs = byRef(taskMergePrs(await deps.taskMerged().catch(() => [])), deliverable.ref);
+    if (!prs.length && deps.taskMerged) {
+      // No branch row names one: the runner's own records may. A records read that failed proves nothing about the PR, so it
+      // is "could not be read" (unknown), never "the task has no PR": reading it as absent would let a versionless close land
+      // done/ungraded while the merge the record holds is exactly the deliverable.
+      const records = await deps.taskMerged().then((r: any[]) => ({ rows: taskMergePrs(r) }), () => undefined);
+      if (!records) return { present: false, unknown: true, facts: ["the runner's own merge records for this task could not be read just now"] };
+      prs = byRef(records.rows, deliverable.ref);
+    }
     let merged: { repo: string; sha: string } | undefined;
     for (const p of prs.slice(0, 5)) {
       const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
       if (!pr) {
+        unknown = true;
         facts.push(`${p.url} could not be read just now`);
         continue;
       }
@@ -452,13 +463,14 @@ export async function presentNow(deliverable: any, deps: any) {
       const d = rows.find((r: any) => r.status === "healthy");
       if (app) facts.push(d ? `app ${app.name}: ${merged.sha.slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: no healthy deploy of ${merged.sha ? merged.sha.slice(0, 12) : "the merge commit"}`);
     }
-    return { present: Boolean(merged), facts };
+    return { present: Boolean(merged), unknown, facts };
   }
   if (kind === "app") {
     const app = await deps.app?.(deliverable.ref).catch(() => undefined);
-    if (app == null) return { present: false, facts: [app === undefined ? appUnknown(deliverable.ref) : appNotRun(deliverable.ref)] };
-    const d = (await deploysOf(app, app.sha, deps)).rows.find((r: any) => r.status === "healthy");
-    return { present: Boolean(d), facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
+    if (app == null) return { present: false, unknown: app === undefined, facts: [app === undefined ? appUnknown(deliverable.ref) : appNotRun(deliverable.ref)] };
+    const deploys = await deploysOf(app, app.sha, deps);
+    const d = deploys.rows.find((r: any) => r.status === "healthy");
+    return { present: Boolean(d), unknown: !d && !deploys.complete, facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
   }
   if (kind === "apply") {
     const applied = latestCard(((await deps.approvals?.()) ?? []).filter((a: any) => cardAction(a) === "apply" && a.state === "used" && a.outcome));
@@ -508,7 +520,14 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   // which PR delivered it, so they are read rather than reporting "no pull request yet" for a merge whose row a cleanup, a
   // prune or a state reset took away. Never a comment: its runner marker is text any writer can copy, so it proves nothing.
   const byRecord = !prs.length && Boolean(deps.taskMerged);
-  if (byRecord) prs = byRef(taskMergePrs(await deps.taskMerged().catch(() => [])), ref);
+  if (byRecord) {
+    // A records read that failed is evidence that could not be read, not "no pull request yet": the latter is a missing
+    // deliverable that closes the task after MISSING_WAIT_MS, so a 502 on the kernel's own records would close a task whose
+    // merge is exactly what those records hold.
+    const records = await deps.taskMerged().then((r: any[]) => ({ rows: taskMergePrs(r) }), () => undefined);
+    if (!records) return { awaiting: "the runner's own merge records for this task could not be read just now" };
+    prs = byRef(records.rows, ref);
+  }
   if (!prs.length) return { awaiting: "no pull request yet", missing: true };
   const facts: string[] = (prs as any).elsewhere ? [(prs as any).elsewhere] : [];
   const versions: string[] = [];

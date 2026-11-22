@@ -784,13 +784,15 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # every named check green, none truncated, the base's gate check present). Nothing in the
 # queue updates, rebases, retargets, re-runs, deletes or closes: a moved head or base goes back to the PR's own path. Its only
 # other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure, so the code
-# host can only hold a merge, never pass the review). The record is the review in our own repos; a product merge is never
-# Tier 0. Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
+# host can only hold a merge, never pass the review). Its only other GitHub call is a repo read (`GET /repos/:slug`), which
+# tells a deleted repo from one this token can no longer see before a NOT_FOUND ends an approved merge. The record is the
+# review in our own repos; a product merge is never Tier 0. Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"; rdr="modules/github/service/src/design-review.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+[ "$(grep -c 'd\.gh(' "$rq")" = 3 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+  && grep -qF 'const r = await d.gh("GET", `/repos/${repo}`);' "$rq" \
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
   && grep -qF 'mergedAt mergedBy { login } mergeCommit { oid message }' "$rm_" \
   && grep -qF 'return calls.some((call) => call.method !== "rebase" && Boolean(call.token) && message.includes(call.token)) ? sha : undefined;' "$rq" \

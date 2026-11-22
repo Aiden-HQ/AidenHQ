@@ -241,14 +241,26 @@ export function startPrWatch(o: PrWatchOptions) {
       log(r.status < 300 ? "red policy re-run" : "policy re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
       return r.status < 300;
     }
-    /** Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and head of main. True when it did. */
+    /**
+     * Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and
+     * head of main. True when it did. A refusal is cached only when it is permanent (a merge conflict, or no right to
+     * update): a 403 rate limit, a 5xx, a sha race or an unrecognized 422 may pass, so it is asked again after a backoff
+     * rather than made final for that head.
+     */
     async function updateBranch(pr: Json, base: string) {
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${base}`;
       const prior: string | undefined = state.updated[key];
       if (prior === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
       if (prior === "final") return false;
       if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return "retry";
-      let retry = false;
+      // Permanent: a merge conflict, or no permission (or the PR/repo is gone: a 404 can't be fixed by asking again). A 403
+      // worded as a rate limit is a slow-down, not a refusal, and a 422 worded as a conflict is the only 422 that is final.
+      const permanent = (r: { status: number; body?: any }) => {
+        const message = String(r.body?.message ?? "");
+        if (r.status === 403) return !/rate limit|abuse/i.test(message);
+        return r.status === 404 || (r.status === 422 && /conflict/i.test(message));
+      };
+      let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
         const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
         if (r.status < 300) {
@@ -258,14 +270,20 @@ export function startPrWatch(o: PrWatchOptions) {
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
-        // Only a merge conflict or no right to update is permanent; a 5xx, a 429, a sha race or any other 422 may pass.
-        if (!(r.status === 403 || r.status === 404 || (r.status === 422 && /conflict/i.test(String(r.body?.message ?? ""))))) retry = true;
+        last = r;
       }
-      if (!retry) { state.updated[key] = "final"; save(); return false; }
-      // Asked again in five minutes, and no task is woken meanwhile: the update owns this rebase until it is final.
+      // Neither method could: the merge fallback's own answer decides. A conflict (or no permission) on it is terminal; a 5xx,
+      // a rate-limited 403 or any other 422 ends on a retry, so the next tick asks again.
+      if (!last || !permanent(last)) return retryLater(key);
+      state.updated[key] = "final";
+      save();
+      return false;
+    }
+    /** A transient refusal: asked again in five minutes, and no task is woken meanwhile (the update owns this rebase until it is final). */
+    function retryLater(key: string) {
       state.updated[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
       save();
-      return "retry";
+      return "retry" as const;
     }
     /** The breaker tripped: whoever asked for the task hears it once, the checks and the last failure's summary fenced as data. */
     async function tellAsker(pr: Json, task: string, red: string[], why: string): Promise<"sent" | "failed"> {
