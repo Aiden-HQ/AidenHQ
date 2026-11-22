@@ -473,13 +473,6 @@ describe("posting", () => {
     expect(got).toMatchObject({ id: "T_ok", comment: 41 });
   });
 
-  it("says when a thread's replies run past the one page read, instead of passing it off as the whole history", async () => {
-    const t = thread("T_long", "f_long", "owner1", 41);
-    (t.comments as { pageInfo?: { hasNextPage: boolean } }).pageInfo = { hasNextPage: true };
-    const [got] = await poster(world({ threads: [t] })).threads({ owner: "acme", repo: "payments", number: 12 });
-    expect(got).toMatchObject({ comment: 41, more_replies: true });
-  });
-
   it("a notice is the acknowledgement alone, from fixed words", async () => {
     const w = world();
     const p = poster(w);

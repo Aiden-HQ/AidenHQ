@@ -49,14 +49,12 @@ export interface Thread {
   url: string;
   /** The run whose file comment this is (its run marker), or null. */
   run: string | null;
-  /** Replies, oldest first, as data (untrusted text); only the first `comments(first:)` page is read. */
+  /** Replies, oldest first, as data (untrusted text). */
   replies: { id: number; author: string; body: string }[];
-  /** The thread has more replies than were read: `replies` is incomplete. */
-  more_replies: boolean;
 }
 /** A review comment, with its 64-bit id in `fullDatabaseId` (a JSON string; `databaseId` is 32-bit and deprecated). */
 type RawComment = { fullDatabaseId?: string | null; url: string; body: string; author: { __typename: string; login: string } | null };
-type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; viewerCanResolve: boolean; path: string; line: number | null; comments: { pageInfo?: { hasNextPage: boolean }; nodes: RawComment[] } };
+type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; viewerCanResolve: boolean; path: string; line: number | null; comments: { nodes: RawComment[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
 type Kind = "post" | "notice" | "status" | "reply";
 
@@ -161,8 +159,6 @@ export class ReviewPoster {
           id: n.id, comment, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
           ours: finding !== null && us.some((w) => isWho(w, first.author)), author, bot: first.author?.__typename === "Bot", can_resolve: n.viewerCanResolve, url: first.url,
           replies: rest.flatMap((c) => { const id = reviewCommentId(c); return id === null ? [] : [{ id, author: c.author?.login ?? "", body: c.body.slice(0, 2000) }]; }),
-          // A thread's replies are read one page: say so rather than let a caller take what it read for the whole history.
-          more_replies: n.comments.pageInfo?.hasNextPage ?? false,
         });
       }
       if (!t.pageInfo.hasNextPage) break;
