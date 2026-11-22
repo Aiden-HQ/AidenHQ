@@ -224,15 +224,25 @@ test("an MCP preflight refusal does not erase the session a real run left behind
   assert.equal(refused.pid, 0); // no engine was spawned, so it never ran
   // A job that got a box but never spawned an engine is no more a session's newest word than a refusal: pid 0 (a clone that
   // couldn't finish), and exit 127 (the box's shell ran, the engine binary was missing: jobs.ts's ENOENT rule).
-  const notStarted = (id, pid, exit, at) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, exit, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', ?, '', '', ?, '[]', 0, 0, 'failed', ?, '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(id, pid, at, exit);
-  notStarted("j-boxed", 0, 1, Date.now() + 5000);
-  notStarted("j-no-engine", 7, 127, Date.now() + 6000);
-  // With the configuration repaired, the next run resumes the session the real run left.
+  const notStarted = (id, pid, exit, at, session = null, offset = 0) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, exit, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', ?, '', '', ?, '[]', 0, 0, 'failed', ?, '{}', ?, ?, 1, '{\"container\":\"c\"}')").run(id, pid, at, exit, session, offset);
+  // Each is newer than the run before it, so each must be skipped for the earlier session to come back.
+  let at = Date.now();
+  for (const [id, pid, exit] of [["j-boxed", 0, 1], ["j-no-engine", 7, 127]]) {
+    notStarted(id, pid, exit, (at += 1000));
+    h.declared["agent-1"] = ["slack", "tasks"];
+    const next = await h.admit("task-1");
+    // Not `undefined`: the skipped row must not turn the resume into a fresh start.
+    assert.ok(session(next), `${id} must not mask the session the run before it left`);
+    h.release();
+    await until(`${id}: the next job's end`, () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(next.id).state === "done");
+  }
+  // An exit 127 *after* events is a run that started: its session is newer and is the one to resume.
+  notStarted("j-started-127", 8, 127, (at += 1000), "s-late", 400);
   h.declared["agent-1"] = ["slack", "tasks"];
-  const next = await h.admit("task-1");
-  assert.equal(session(next), "s-real");
+  const last = await h.admit("task-1");
+  assert.equal(session(last), "s-late");
   h.release();
-  await until("the next job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(next.id).state === "done");
+  await until("the last job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(last.id).state === "done");
 });
 
 test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {
