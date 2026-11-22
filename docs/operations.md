@@ -228,7 +228,9 @@ is only ever judged on its own result, and the ceiling's only tolerance is the p
 
 Each step's exit status is recorded for the verification: the `-` prefix keeps a failure from skipping the next step, and
 the verification reads the record, so a failed prune still fails the unit without running the same 48 h prune a second
-time. The image step is wrapped by `ops/prune-docker-step.sh`, which writes it; `ops/prune-docker-containers.sh` writes its
+time. The two builder forms are read as a pair: one failing is the expected `unknown flag` on a CLI that lacks that form,
+but both failing is no cap at all, and the verification fails the unit for it — under the ceiling the size alone would
+read clean. The image step is wrapped by `ops/prune-docker-step.sh`, which writes it; `ops/prune-docker-containers.sh` writes its
 own, since a container listing that failed while the daemon was unreachable can recover before the verification's
 re-listing, and that fresh listing alone would read as a clean scan. A `build-cache` snapshot that could not be read is
 reported as unknown, never as "nothing cached".

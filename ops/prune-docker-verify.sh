@@ -22,8 +22,10 @@
 #      not a clean run);
 #   4. the image and container steps' recorded exit status is 0 (their `-` prefix keeps a failure from skipping the next
 #      step, and this is how it still fails the unit — a container listing that failed while the daemon was unreachable can
-#      recover before the re-listing below, so the fresh listing alone would read as a clean scan), and the `build-cache`
-#      step — which took the snapshot the ceiling is judged on — could run and save it;
+#      recover before the re-listing below, so the fresh listing alone would read as a clean scan), the `build-cache`
+#      step — which took the snapshot the ceiling is judged on — could run and save it, and at least one of the two
+#      builder forms exited 0 (one is expected to fail with `unknown flag`; both failing is no cap at all, which the size
+#      alone would miss under the ceiling);
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
@@ -42,8 +44,8 @@ echo "prune-docker: verify"
 # image prune on a large host doubles the work and can outlast the unit's timeout). Under systemd a missing record means
 # the wrapper ran but could not record its result, which is unknown, not a pass; a run outside systemd (no INVOCATION_ID)
 # has no record to expect, and the direct checks below still apply. The two builder forms are alternatives — one is
-# expected to fail with `unknown flag` on a CLI that lacks the other — so their status is not read; the cache size is what
-# says whether the prune capped anything.
+# expected to fail with `unknown flag` on a CLI that lacks the other — so one failing is not held against the run. Both
+# failing is: no flag form capped the cache, so the prune did nothing whatever the size under the ceiling says.
 state="${AIDENHQ_STATE_DIR:-${HOME:-/nonexistent}/.local/state/aidenhq}/prune-docker"
 step_status() { # name -> the status of this invocation's step, or nothing (the step's one record: `<run> <rc>`, then rows)
   local f="$state/$1" run rc
@@ -52,6 +54,18 @@ step_status() { # name -> the status of this invocation's step, or nothing (the 
   [ "$run" = "${INVOCATION_ID:-manual-$$}" ] && printf '%s' "$rc"
   return 0
 }
+# Both builder forms failing is a prune that did nothing. One failing is the expected `unknown flag` on a CLI that lacks
+# that form, so only the pair is judged: a small cache would otherwise pass a run where neither prune ran.
+buildx_rc="$(step_status builder-buildx)"
+classic_rc="$(step_status builder-classic)"
+for pair in "buildx:$buildx_rc" "classic:$classic_rc"; do
+  form="${pair%%:*}"; rc="${pair#*:}"
+  [ -n "$rc" ] || [ -z "${INVOCATION_ID:-}" ] || bad+=("the $form builder prune left no status, so its result is unknown")
+done
+if [ -n "$buildx_rc" ] && [ -n "$classic_rc" ] && [ "$buildx_rc" != 0 ] && [ "$classic_rc" != 0 ]; then
+  bad+=("neither builder prune ran (buildx exited $buildx_rc, the classic builder $classic_rc): no flag form capped the cache")
+fi
+
 for name in images containers; do
   rc="$(step_status "$name")"
   case "$rc" in
