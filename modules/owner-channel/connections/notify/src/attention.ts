@@ -80,7 +80,7 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
   const sent = new Set(q.map((i) => i.id));
   store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
-  if (out === true) for (const i of q) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: i.text }, now);
+  if (out === true) for (const i of q) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }
