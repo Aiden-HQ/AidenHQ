@@ -7,12 +7,15 @@
 #
 # It checks these, each one a way the reclaim can silently not happen:
 #   1. the daemon answers (`docker info`);
-#   2. the build cache is under the 20 GB cap (with 1 GB of slack for `docker system df`'s rounded sizes);
+#   2. the build cache was under the 20 GB cap (with 1 GB of slack for `docker system df`'s rounded sizes) right after the
+#      builder prunes — the snapshot the `build-cache` step took then, not a `docker system df` taken here, which a build
+#      started since could have grown past 20 GB (that growth is not a failed prune);
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
 #      should have removed it), and every container it lists can be read (an unreadable one is a cleanup it could not do,
 #      not a clean run);
 #   4. the image step's recorded exit status is 0 (its `-` prefix keeps a failure from skipping the next step, and this is
-#      how it still fails the unit).
+#      how it still fails the unit), and the `build-cache` step — which took the snapshot the cap is judged on — could run
+#      and save it;
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
@@ -51,10 +54,27 @@ for name in images; do
   esac
 done
 
-# The cache: the same rows host-metrics.sh publishes as the aidenhq_docker_* gauges, parsed by key (the JSON's field order
-# is not a contract).
-df_out="$(timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null)"; df_rc=$?
-[ "$df_rc" -eq 0 ] || bad+=("docker system df failed (exit $df_rc), so the build-cache cap cannot be confirmed")
+# The cache: the rows the `build-cache` step saved right after the builder prunes (invoked as
+# `prune-docker-step.sh build-cache .../docker system df --format '{{json .}}'`), parsed by key (the JSON's field order is
+# not a contract). Judging that snapshot instead of running `docker system df` again here is what keeps a build that grew
+# the cache after the prune from reading as a prune that capped nothing. Run by hand (no INVOCATION_ID) no step ran and
+# there is no snapshot, so it reads the cache now, which is the same result when nothing else is building.
+df_file="$state/build-cache.df"
+df_out=""
+# df_ok says the snapshot (or the read made in its place) is there to judge: a read that failed is reported, and the
+# `case "$cache"` below must not then read an empty reading as "nothing cached".
+df_ok=1
+if [ -n "$(step_status build-cache)" ] || [ -n "${INVOCATION_ID:-}" ]; then
+  case "$(step_status build-cache)" in
+    "") bad+=("the build-cache step left no status, so the snapshot the cap is judged on is unknown"); df_ok="" ;;
+    0) if [ -f "$df_file" ]; then df_out="$(cat "$df_file" 2>/dev/null)"; else
+         bad+=("the build-cache step saved no snapshot, so the 20 GB cap cannot be confirmed"); df_ok=""
+       fi ;;
+    *) bad+=("the build-cache step could not read the cache (exit $(step_status build-cache)), so the 20 GB cap cannot be confirmed"); df_ok="" ;;
+  esac
+elif ! df_out="$(timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null)"; then
+  bad+=("docker system df failed, so the build-cache cap cannot be confirmed"); df_ok=""; df_out=""
+fi
 rows="$(
   printf '%s\n' "$df_out" | awk '
     function field(key,  re, s) {
@@ -72,7 +92,7 @@ cache="${rows%%"	"*}"
 # failure. A read that FAILED is a different thing (above), and so is a row whose size is unreadable. The check is only
 # reached with a successful read.
 case "$cache" in
-  "") [ "$df_rc" -eq 0 ] && echo "prune-docker: no Build Cache row: nothing cached, so the 20 GB cap holds" ;;
+  "") [ -n "$df_ok" ] && echo "prune-docker: no Build Cache row: nothing cached, so the 20 GB cap holds" ;;
   *)
     bytes="$(awk -v s="$cache" 'BEGIN {
       sub(/[[:space:]].*$/, "", s)

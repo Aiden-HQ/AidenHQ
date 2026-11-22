@@ -216,12 +216,16 @@ that was restarted in between is kept rather than deleted on a stale reading. No
 `-v`). That step is `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its
 rebuilds. Each prune command has its own `timeout` under the unit's `TimeoutStartSec`, so one that hangs cannot stop
 systemd reaching the later steps and the verification; the apply-time steps are bounded the same way, since `|| true`
-only helps once the command exits. The verification treats a cache over 20 GB with nothing reclaimable as a build holding
-that cache in use (the cap holds), rather than as a prune that failed.
+only helps once the command exits. The verification judges the cache on a snapshot taken right after the two builder
+prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker system df`), so a build that grows the cache
+past 20 GB while the image and container prunes run does not read as a prune that capped nothing; in that snapshot, over
+20 GB with nothing reclaimable is a build holding that cache in use (the cap holds), while any reclaimable bytes at all
+mean the cap did not hold.
 
 The image and container steps run through `ops/prune-docker-step.sh`, which records the step's exit status for the
 verification: the `-` prefix keeps a failure from skipping the next step, and the verification reads the record, so a
-failed image prune still fails the unit without running the same 48 h prune a second time.
+failed image prune still fails the unit without running the same 48 h prune a second time. A `build-cache` snapshot that
+could not be read is reported as unknown, never as "nothing cached".
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

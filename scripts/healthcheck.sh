@@ -222,6 +222,10 @@ split_argv() { # a systemd-printed argv[] string -> argv, on unquoted whitespace
   done
   [ -z "$word" ] || argv+=("$word")
 }
+# A duration GNU timeout accepts: `5m`, `.5m`, `5.m`, `0.5`, `3e2s`, `1e-2h`. Both branches of the timeout parsing below
+# use it, so a duration after `--` is validated exactly like one without.
+DURATION_RE='^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?[smhd]?$'
+
 unit_runs_applied() { # service, name [env]
   local service="$1" name="$2" env="${3:-$2}" line path argv_text executable program script applied i
   local -a argv
@@ -275,7 +279,7 @@ unit_runs_applied() { # service, name [env]
       if [ -n "$options_done" ]; then
         # After `--` nothing is an option any more: the very next token is the duration, so `timeout -- --verbose 5m cmd`
         # is rejected here exactly as GNU timeout rejects it (`--verbose` as a duration) instead of skipping it.
-        printf '%s' "$arg" | grep -Eq '^([0-9]+([.][0-9]*)?|[.][0-9]+)[smhd]?$' \
+        printf '%s' "$arg" | grep -Eq "$DURATION_RE" \
           || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
         duration="$arg"; i=$((i + 1)); break
       fi
@@ -285,7 +289,7 @@ unit_runs_applied() { # service, name [env]
         --signal=*|--kill-after=*|-s?*|-k?*) i=$((i + 1)) ;;
         --foreground|--preserve-status|-v|--verbose) i=$((i + 1)) ;;
         -*) echo "cannot resolve the command from timeout option $arg: $line"; return 1 ;;
-        *) printf '%s' "$arg" | grep -Eq '^([0-9]+([.][0-9]*)?|[.][0-9]+)[smhd]?$' \
+        *) printf '%s' "$arg" | grep -Eq "$DURATION_RE" \
              || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
            duration="$arg"; i=$((i + 1)); break ;;
       esac

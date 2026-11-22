@@ -44,7 +44,7 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   assert.ok(!execs.at(-1).startsWith("-"), "the verification's exit code must reach systemd");
   // A pruning command that hangs must not hold the oneshot until TimeoutStartSec and take the later steps with it: each
   // one has a timeout well under the service's ceiling.
-  for (const e of execs.slice(0, -1)) assert.match(e, /^-(\/usr\/bin\/timeout \d+m|\/usr\/bin\/env bash .*\/usr\/bin\/timeout \d+m)/, `no per-command timeout: ${e}`);
+  for (const e of execs.slice(0, -1)) assert.match(e, /^-(\/usr\/bin\/timeout \d+m|\/usr\/bin\/env bash .*\/usr\/bin\/timeout \d+m|\/usr\/bin\/env bash .*\/usr\/bin\/timeout \d+ )/, `no per-command timeout: ${e}`);
   const ceiling = Number(/^TimeoutStartSec=(\d+)min$/m.exec(service)?.[1]);
   const sum = execs.slice(0, -1).map((e) => Number(/(\d+)m\b/.exec(e)?.[1] ?? 0)).reduce((a, b) => a + b, 0);
   assert.ok(ceiling > sum, `TimeoutStartSec ${ceiling}min must exceed the per-command timeouts (${sum}min)`);
@@ -56,6 +56,9 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
   assert.ok(execs.some((e) => e === "-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
+  // The cache right after the builder prunes is snapshotted by its own prefixed step, so the verification judges the result
+  // of pruning rather than a later read a concurrent build may have grown past the cap.
+  assert.ok(execs.slice(0, -1).some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh build-cache /usr/bin/timeout 30 /usr/bin/docker system df --format '{{json .}}'"), `cache snapshot: ${execs.join(" | ")}`);
   assert.match(service, /^Environment=AIDENHQ_DIR=/m);
   assert.match(service, /^EnvironmentFile=-%h\/\.config\/aidenhq-prune-docker\.env$/m, "the applied checkout wins over the one setup recorded");
   // Enabling is not starting: on a fresh host a prune run can fail (a cold `docker system df` past its cap) and must not
@@ -199,6 +202,7 @@ exit 0
 `);
   chmodSync(join(bin, "docker"), 0o755);
   return {
+    bin,
     calls: () => readFileSync(calls, "utf8"),
     run: (script, extraEnv = {}) => {
       const r = spawnSync("bash", [join(repo, script)], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker"), ...extraEnv }, encoding: "utf8" });
@@ -429,6 +433,33 @@ test("the step wrapper runs the prune once and records its status for the verifi
   r = spawnSync("bash", [step, "images", "bash", "-c", "exit 7"], { env: { PATH: "/usr/bin:/bin", AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-b" }, encoding: "utf8" });
   assert.equal(r.status, 7, "the step's own status still reaches the prefixed ExecStart");
   assert.equal(readFileSync(join(state, "prune-docker/images.status"), "utf8").trim(), "inv-b 7");
+});
+
+test("the cap is judged on the cache right after pruning, not on a later read a build has grown", () => {
+  const state = mkdtempSync(join(tmpdir(), "prune-snapshot-"));
+  const step = (d, name = "build-cache", ...cmd) => spawnSync("bash", [join(repo, "ops/prune-docker-step.sh"), name, ...(cmd.length ? cmd : ["docker", "system", "df", "--format", "{{json .}}"])],
+    { env: { PATH: `${d.bin}:/usr/bin:/bin`, AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-run" }, encoding: "utf8" });
+  // The image step ran too (with its own status): the verification reports every missing record, and this test is about
+  // the cache snapshot.
+  const pruned0 = fakeDocker();
+  assert.equal(step(pruned0, "images", "docker", "image", "prune", "-af").status, 0);
+  // The builder prunes finished at 10.52 GB: the step right after them records exactly that.
+  const pruned = fakeDocker({ cache: "10.52GB" });
+  assert.equal(step(pruned).status, 0);
+  assert.match(readFileSync(join(state, "prune-docker/build-cache.df"), "utf8"), /10\.52GB/);
+  // A build has since added 5 GB of reclaimable cache: a fresh `docker system df` would show 30 GB, over the cap. The
+  // prune did cap the cache, so the verification judges the snapshot and does not call this a failed prune.
+  const later = fakeDocker({ cache: "30GB", reclaimable: "5GB" });
+  const r = later.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-run", DOCKER: join(later.bin, "docker") });
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /verified/);
+  assert.doesNotMatch(r.calls, /^system df$/m, "the verification reads the snapshot, not a second disk walk");
+  // A snapshot step that could not read the cache is not "nothing cached": the cap is unknown, so the unit fails.
+  const down = fakeDocker({ systemDfFails: true });
+  assert.notEqual(step(down).status, 0, "the snapshot step reports a failed read");
+  const r2 = later.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-run", DOCKER: join(later.bin, "docker") });
+  assert.equal(r2.status, 1, r2.out);
+  assert.match(r2.out, /could not read the cache/);
 });
 
 test("docker.prom is cached for 5 minutes: the 30 s timer does not walk every image, container and volume each run", () => {

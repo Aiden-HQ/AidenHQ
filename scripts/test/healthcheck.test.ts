@@ -209,6 +209,13 @@ test("timeout's `--` and an invalid duration are read the way GNU timeout reads 
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
   r = await runWith("/usr/bin/timeout -k 30s -- .5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  // GNU timeout also accepts exponent notation (`3e2s` is 300 s) and a bare number of seconds: both resolve.
+  for (const d of ["3e2s", "1e-2h", ".5", "90"]) {
+    r = await runWith(`/usr/bin/timeout ${d} /usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh`);
+    assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, `${d}: ${r.out}`);
+    r = await runWith(`/usr/bin/timeout -- ${d} /usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh`);
+    assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, `-- ${d}: ${r.out}`);
+  }
   // A duration GNU timeout rejects (`5min`) means the script never runs: the check must not pass it.
   r = await runWith("/usr/bin/timeout 5min /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
   assert.match(r.out, /^  FAIL  docker prune timer runs the applied checkout's container step/m, r.out);

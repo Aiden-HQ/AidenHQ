@@ -27,6 +27,10 @@ ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr
 # script (ops/prune-docker-containers.sh) checks `State.FinishedAt` — `docker container prune --filter until=` filters on
 # created time, so it could remove a compose service an apply's generation snapshot had just stopped.
 ExecStart=-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
+# The cache as it is once the builder prunes above have finished, read here so the verification judges the cap on that
+# result: a build that grows the cache past 20 GB while the image and container prunes run would otherwise look like a prune
+# that capped nothing. Prefixed like every other step; its status and rows are what the verification reads.
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh build-cache /usr/bin/timeout 30 /usr/bin/docker system df --format '{{json .}}'
 # Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, cache under 20 GB,
 # no one-off stopped over a day still there — and reads the image prune's recorded status, so a prune that did nothing at
 # all is a failed unit (UnitFailed), not a silent success, while each step above still ran whatever the ones before it did.
@@ -40,7 +44,7 @@ EnvironmentFile=-%h/.config/aidenhq-prune-docker.env
 Type=oneshot
 # A 100 GB build cache takes longer than systemd's 90 s default to prune; a start timeout would kill it mid-run and mark
 # the unit failed while it was working. It is the ceiling for the whole run, so it is above the per-command timeouts
-# (15 + 15 + 10 + 5 min) plus the verification.
+# (15 + 15 + 10 + 5 min + 30 s) plus the verification.
 TimeoutStartSec=50min
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
