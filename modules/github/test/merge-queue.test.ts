@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createService } from "../service/src/service.ts";
+import { askerKey, createService } from "../service/src/service.ts";
 import { createMerges } from "../service/src/merges.ts";
 import { decide } from "../service/src/merge-gate.ts";
 import { createReviewGate } from "../service/src/review-gate.ts";
@@ -26,7 +26,8 @@ function fakeGitHub(prs) {
     if (path === "/graphql") {
       const v = body.variables;
       const repo = `${v.owner}/${v.repo}`;
-      const p = prs[repo];
+      const p = prs[`${repo}#${v.number}`] ?? prs[repo];
+      if (!p) return { status: 400, body: { errors: [{ message: `fake GitHub: no PR ${repo}#${v.number}` }] } };
       if (body.query.includes("pullRequest(number")) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
@@ -40,19 +41,30 @@ function fakeGitHub(prs) {
       return { status: 400, body: { errors: [{ message: "fake GitHub: unknown query" }] } };
     }
     if (method !== "GET") {
-      const m = /^\/repos\/([^/]+\/[^/]+)\/pulls\/\d+\/merge$/.exec(path);
+      const m = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)\/merge$/.exec(path);
       if (m) {
-        prs[m[1]].state = "MERGED";
-        return { status: 200, body: { sha: "c".repeat(40) } };
+        const p = prs[`${m[1]}#${m[2]}`] ?? prs[m[1]];
+        p.state = "MERGED";
+        p.merged = p.merged ?? "c".repeat(40);
+        // The merge commit carries the message GitHub made: the queue's commit_message (with its trailer) for a queue merge.
+        p.message = String(body?.commit_message ?? "");
+        return { status: 200, body: { sha: p.merged } };
       }
       return { status: 200, body: {} };
+    }
+    const commit = /^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})$/.exec(path);
+    if (commit) {
+      const one = prs[commit[1]] as { message?: string } | undefined;
+      const all = Object.entries(prs).filter(([k]) => k.startsWith(`${commit[1]}#`)).map(([, p]) => p) as { message?: string; merged?: string }[];
+      const found = all.find((p) => p.merged === commit[2]) ?? one;
+      return { status: 200, body: { commit: { message: String(found?.message ?? "") } } };
     }
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const taken = new Set();
   const kernel = await listen(async (req, res) => {
@@ -71,7 +83,12 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   const access = {
     connected: () => connected.on, token: async () => "tok", scopes: () => [], status: () => ({ scopes: [], problems: [] }),
     identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
-    rest: async (m, p, b) => { if (!connected.on) throw Object.assign(new Error("GitHub isn't connected"), { need: { cause: "not_connected" } }); return { ...(await github.gh(m, p, b)), headers: new Headers() }; },
+    rest: async (m, p, b) => {
+      if (!connected.on) throw Object.assign(new Error("GitHub isn't connected"), { need: { cause: "not_connected" } });
+      // A merge call that never answers: GitHub may or may not have merged it (merges.ts p.unanswered).
+      if (m === "PUT" && p.endsWith("/merge") && putFails()) throw new Error("The operation was aborted due to timeout");
+      return { ...(await github.gh(m, p, b)), headers: new Headers() };
+    },
     graphql: async () => ({}),
   };
   const handle = createService({
@@ -84,7 +101,15 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     const r = await fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: "Bearer ch-key", "content-type": "application/json" }, body: JSON.stringify(body) });
     return r.json();
   };
-  const merge = (id, prsArgs) => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id });
+  // The asker of a planned write (service.ts plan's noteAsker), which execute carries none of: the queue's record task comes from it.
+  const merge = (id, prsArgs, task = "WOR-9") => {
+    const args = { prs: prsArgs };
+    const file = join(cacheDir, "askers.json");
+    const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    all[askerKey("github.merge", args)] = { requester: { agent: "eng", key: "eng", name: "Eng", roles: ["platform-engineer"], kind: "run", task }, task };
+    writeFileSync(file, JSON.stringify(all));
+    return call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args, digest: "d", idempotency_key: id });
+  };
   const settle = async () => { for (let i = 0; i < 100 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
   return { handle, github, outcomes, call, merge, settle, cacheDir, clock };
 }
@@ -257,8 +282,10 @@ test("a merge-queue wait and its end become waiting and resumed facts with the r
 
 test("a PR already merged at its bound head before the queue polled it is merged evidence with its merge commit", async (t) => {
   const mergeSha = "d".repeat(40);
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
-  const { handle, github, outcomes, merge, settle } = await setup(t, { prs });
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-merged-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha }, "acme-agents/lib": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
   await merge("k-00000000000000c4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
   await settle();
@@ -267,10 +294,19 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.match(outcomes[0].text, /was already merged/);
   const [line] = outcomes[0].text.split("\n");
   const listed = JSON.parse(line.replace(/^merged-prs: /, ""));
-  assert.deepEqual(listed, [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the bound head and its real merge commit, what the grader reads");
+  assert.deepEqual(listed, [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the bound head and its real merge commit, what the grader reads as verified merges");
   assert.match(listed[0].head, /^[0-9a-f]{40}$/);
   assert.match(listed[0].sha, /^[0-9a-f]{40}$/);
   assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's, so it names no object as made here");
+
+  // Already merged at the bound head, but hyphenated with no task (an unrelated historical PR): never this task's evidence.
+  outcomes.length = 0;
+  await merge("k-00000000000000c6", [{ repo: "acme-agents/lib", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, "still a no-op success: the PR did merge at its head");
+  assert.match(outcomes[0].text, /was already merged/);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, JSON.stringify(outcomes[0].text));
 
   // Merged by someone else at another head: never evidence for this record's bound head.
   outcomes.length = 0;
@@ -281,6 +317,60 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.equal(outcomes[0]?.ok, false);
   assert.match(outcomes[0].text, /^merged-prs: \[\]/);
   assert.match(outcomes[0].text, /merged by someone else at/);
+});
+
+test("an owner's merge at the bound head after an unanswered merge call stays skipped: it is no commit this queue made", async (t) => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", merged: "f".repeat(40), message: "Owner's own squash merge" } };
+  // The first merge PUT times out (GitHub merged nothing), then the owner merges it at the bound head before the next poll: the
+  // commit carries no queue trailer, so the queue must not claim it, name it as its object, or call it "Merged".
+  let timeouts = 1;
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir, putFails: () => timeouts-- > 0 });
+  await merge("k-00000000000000c7", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges(); // the PUT went unanswered: it waits
+
+  prs["acme-agents/widget"].state = "MERGED";
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/, "the owner merged it, not the queue");
+  assert.doesNotMatch(outcomes[0].text, /Merged https:/, "never credited to the queue");
+  // The PR is the task's own and merged at its bound head, so it is evidence all the same (an owner merge at the bound head is
+  // what the already-merged path is for); what must not happen is the queue claiming the commit as its own.
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "f".repeat(40) }], "the owner's merge commit, listed as evidence");
+  assert.equal(outcomes[0].objects, undefined, "no object of the owner's merge is named as made here");
+});
+
+test("a maximum-size batch keeps the whole evidence line: every merge is on it, whole JSON under the kernel's cap", async (t) => {
+  // The grading reader takes the outcome's first line, and 30 PRs on a long repo name run it past the kernel's old 4,000-character
+  // cap by themselves: it must stay whole JSON inside what the kernel now keeps (records.ts OUTCOME_MAX) rather than be cut mid-entry.
+  const repo = "acme-agents/widget", heads = new Map();
+  const prs = {}, tasks = {};
+  for (let n = 1; n <= 30; n++) {
+    const head = String(n % 10).repeat(40);
+    heads.set(n, head);
+    prs[`${repo}#${n}`] = { head, checks: "SUCCESS" };
+    tasks[`https://github.com/${repo}/pull/${n}`] = { task: "WOR-9", branch: "feature" };
+  }
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-size-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify(tasks));
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
+  const args = Array.from({ length: 30 }, (_, i) => ({ repo, number: i + 1, head: heads.get(i + 1)! }));
+  await merge("k-00000000000000d1", args);
+  // One merge per repository per poll (the queue's own pace): 30 polls land all 30, each at its bound head.
+  for (let i = 0; i < 40 && !outcomes.length; i++) { await handle.stepMerges(); await new Promise((r) => setTimeout(r, 5)); }
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, String(outcomes[0]?.text ?? "").slice(0, 600));
+  const [line] = outcomes[0].text.split("\n");
+  const OUTCOME_MAX = 6000; // kernel/src/records.ts
+  assert.ok(line.length <= OUTCOME_MAX, `the evidence line fits the kernel's outcome cap; it is ${line.length}`);
+  const kept = JSON.parse(line.replace(/^merged-prs: /, ""));
+  assert.equal(kept.length, 30, `all 30 of this queue's merges are on the line, not truncated; it has ${kept.length}`);
+  // The grading reader's contract, pinned here without importing it (verifiedMerges, kernel-loop.ts: 40 hex either side).
+  const SLUG = /^[\w.-]+\/[\w.-]+$/, SHA = /^[0-9a-f]{40}$/;
+  assert.ok(kept.every((p) => SLUG.test(p.repo) && Number.isInteger(p.number) && SHA.test(p.head) && SHA.test(p.sha)), "every row is one the grading reader keeps");
+  assert.deepEqual(kept.map((p) => p.number), args.map((p) => p.number), "in the record's order");
 });
 
 test("a merge call that times out after GitHub merged is reported merged, and an outcome the kernel didn't take is delivered again", async () => {

@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
-import { mergeable, withTrailer } from "./git-auth.ts";
+import { hasTrailer, mergeable, withTrailer } from "./git-auth.ts";
 import { DESIGN_REVIEW, PR_QUERY, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
@@ -23,7 +23,7 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; unanswered?: boolean; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean };
+type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
@@ -45,6 +45,8 @@ export function createMerges(d: {
   flow?: Flow;
   /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
   designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
+  /** The task that opened a PR (pr-tasks.json, pr-watch.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
+  taskOf?: (repo: string, n: number) => string | null;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -74,6 +76,20 @@ export function createMerges(d: {
     const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
     if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
+  }
+  /**
+   * What this poll proves about who merged the PR: its sha when the merge commit is the one this queue's own merge call would make.
+   * A squash or merge commit carries the queue's trailer (mergePut's commit_message), so a PR merged by the owner or GitHub's
+   * auto-merge has a commit without it. A rebase merge makes no commit of its own (the PR's commits land as they are), so there
+   * nothing tells this queue's merge from anyone else's and it is never counted as ours. `unanswered` (a PUT that timed out) says
+   * only that a merge call *may* have landed, never that the commit was its own: it gets the same check, so an owner's merge after
+   * a timed-out call stays skipped, and only a confirmed one is the queue's.
+   */
+  async function mergedBy(repo: string, number: number, method: string, sha: string, unanswered: boolean): Promise<string | undefined> {
+    if (!unanswered || method === "rebase") return undefined;
+    const [owner, name] = repo.split("/");
+    const c = await d.gh("GET", `/repos/${owner}/${name}/commits/${sha}`).catch(() => undefined);
+    return hasTrailer(String(c?.body?.commit?.message ?? "")) ? sha : undefined;
   }
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
@@ -118,6 +134,9 @@ export function createMerges(d: {
       const uiReview = inFleetOrg(p.repo);
       let v = decide(data, p.head, { uiReview, designAdvisory: p.reviewExpired === p.head });
       const pull = data.repository.pullRequest;
+      // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Never let the
+      // flag outlive the poll that answers it, or a later owner merge at the bound head would be credited to this queue.
+      if (v.do !== "done") delete p.unanswered;
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
       const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
       if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
@@ -127,15 +146,18 @@ export function createMerges(d: {
       // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
       if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
-        // Merged after a merge call that got no answer: that call merged it. Merged at the bound head without our call (GitHub's
-        // own auto-merge, or the owner): it stays skipped, so it gates no further merge here, but its merge commit is evidence.
-        const sha: string | undefined = pull?.mergeCommit?.oid ?? undefined;
-        const ours = Boolean(p.unanswered && sha);
-        if (ours) { Object.assign(p, { status: "merged", sha, mergedAt: pull.mergedAt ?? now().toISOString() }); bypassed(p); }
+        // Merged at the bound head. It is this queue's merge only when a merge call of ours went unanswered and the merge commit
+        // is the one such a call would make (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge commit
+        // at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
+        const sha = String(pull?.mergeCommit?.oid ?? "");
+        const ours = sha ? await mergedBy(p.repo, p.number, mergeMethod(data.repository) ?? "", sha, Boolean(p.unanswered)) : undefined;
+        if (sha && !ours && p.unanswered) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
+        if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
-        if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
+        delete p.unanswered;
         delete p.wait;
-        if (ours) merged.add(p.repo.toLowerCase());
+        if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
+        if (ours) { bypassed(p); merged.add(p.repo.toLowerCase()); }
         return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
       }
       if (v.do === "wait") {
@@ -193,18 +215,23 @@ export function createMerges(d: {
    * ok only when every PR the record named merged (or was merged already). The text's first line is MERGED_LINE and the PRs that
    * merged at their bound head, as JSON ({ repo, number, head, sha }, an empty list when none): this queue's own merges and the
    * ones already merged when it polled them (a merge commit at the bound head, its sha), what readers of the record (the grading
-   * module) take as merged, never the record's args. `objects` names only the merge commits this queue made. Then what the queue
-   * said, last word last.
+   * module) take as merged, never the record's args. An already-merged PR is evidence only when it links to the task this merge is
+   * for (pr-tasks.json): a matching head and merge commit prove what GitHub merged, not that it delivered this task. `objects`
+   * names only the merge commits this queue made. Then what the queue said, last word last.
    */
   function finish(id: string, q: Queue) {
-    const ok = q.prs.every((p) => p.status === "merged" || p.status === "skipped");
-    const n = q.prs.filter((p) => p.status === "merged" || p.status === "skipped").length;
+    const settled = (p: Pr) => p.status === "merged" || p.status === "skipped";
+    const ok = q.prs.every(settled);
+    const n = q.prs.filter(settled).length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
-    // A skipped row (already merged at the bound head) is evidence with its merge commit too, but it isn't ours.
-    const evidence = (p: Pr) => (p.status === "merged" || p.status === "skipped") && typeof p.sha === "string";
-    const merged = q.prs.filter(evidence).map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha }));
+    const linked = (p: Pr) => Boolean(q.task) && d.taskOf?.(p.repo, p.number) === q.task;
+    const evidence = (p: Pr) => settled(p) && typeof p.sha === "string" && (p.status === "merged" || linked(p));
+    // The queue's own merges first, then the ones already merged at their bound head, each in the record's order.
+    const merged = q.prs.filter(evidence).sort((a, b) => Number(b.status === "merged") - Number(a.status === "merged"))
+      .map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha! }));
     const objects = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
-    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-12_000)}`, ...(objects.length ? { objects } : {}) };
+    // The first line is machine-readable and whole (the grading module reads it); the human summary after it is what gets cut.
+    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-8_000)}`, ...(objects.length ? { objects } : {}) };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });
     deliver(id, q);
@@ -253,15 +280,17 @@ export function createMerges(d: {
 
   return {
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
-    enqueue(id: string, args: { prs: { repo: string; number: number; head: string }[] }): Promise<Outcome> {
+    enqueue(id: string, args: { prs: { repo: string; number: number; head: string }[] }, task?: string): Promise<Outcome> {
       const had = s.queues[id];
       if (had?.outcome) return Promise.resolve(had.outcome);
       if (!had) {
         const prs = args.prs.map((p) => ({ repo: p.repo, number: p.number, head: p.head, url: `https://github.com/${p.repo}/pull/${p.number}`, status: "pending" }));
-        s.queues[id] = { state: "running", startedAt: now().toISOString(), prs, said: [] };
+        s.queues[id] = { state: "running", startedAt: now().toISOString(), prs, said: [], ...(task ? { task } : {}) };
         save();
         log("merges queued", { record: id, prs: prs.length });
       }
+      // The record's task (a kernel restart carries it again): the linkage an already-merged PR must show to be evidence.
+      else if (task && had.task !== task) { had.task = task; save(); }
       // A repeat enqueue on a running queue shares the first caller's promise.
       let w = waiters.get(id);
       if (!w) {

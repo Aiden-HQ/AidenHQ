@@ -40,10 +40,17 @@ type Changed = { path: string; add?: number; del?: number };
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
+
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle } from "./aidenhq-sdk/box-bundle.ts";
 import { noteKept } from "./tidy.ts";
+
+/**
+ * The requester of a planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and args: it
+ * recovers the asker of a held write after a restart, and the task a merge queue's record is for (its already-merged evidence).
+ */
+export const askerKey = (kind: string, args: unknown) => createHash("sha256").update(JSON.stringify([kind, args ?? {}])).digest("hex");
 
 const run = promisify(execFile);
 
@@ -325,7 +332,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {});
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, readAskers()[askerKey(rec.kind, rec.args)]?.task);
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -380,7 +387,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a);
+      if (action === "merge") return merges.enqueue(rec.id, a, readAskers()[askerKey(rec.kind, rec.args)]?.task);
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
@@ -421,7 +428,6 @@ export function createService(o: Options) {
   // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
   // args, for the held re-check. The last 500 only.
   const askersFile = join(o.cacheDir, "askers.json");
-  const askerKey = (kind: string, args: unknown) => createHash("sha256").update(JSON.stringify([kind, args ?? {}])).digest("hex");
   const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
   function noteAsker(kind: string, args: unknown, who: Asker) {
     const all = readAskers();
@@ -535,7 +541,7 @@ export function createService(o: Options) {
     git: (dir, args) => git(dir, args),
   });
   const merges = createMerges({
-    flow,
+    flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
