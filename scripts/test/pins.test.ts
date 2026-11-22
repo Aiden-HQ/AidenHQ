@@ -354,6 +354,10 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   // The removed file itself is still put back: the line's install may have skipped the removal, and the next line sees
   // the repository either way.
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list; echo done\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A `;` ends the `&&`/`||` chain, so a conditional removal before it is put back before the next command is checked:
+  // the install after `;` may still see the repository.
+  const chainEnd = `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list; apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", chainEnd).problems.length, 1);
   // A quoted `;` or `&&` is text: it does not start a new command, so a message naming `rm` removes nothing.
   for (const message of [`echo 'note; rm -f /etc/apt/sources.list.d/vendor.list'`, `echo 'test && rm -f /etc/apt/sources.list.d/vendor.list'`])
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${message}\nRUN apt-get install -y foo\n`).problems.length, 1, message);

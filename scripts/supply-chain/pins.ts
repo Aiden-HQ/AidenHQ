@@ -243,11 +243,25 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     return (end < 0 ? chain : chain.slice(0, end)).includes("||");
   };
   const applies = (i: number) => opBefore(i) === "&&" && !laterOr(i);
-  // Files a conditional removal took away, at the state each still had: put back where the rest of the line left them
-  // absent, since the removal may have been skipped and a later line would still see them.
+  // Files a conditional removal took away, at the state each still had: put back where the rest of its chain left them
+  // absent, since the removal may have been skipped and a later command would still see them. A `;` ends the chain, so
+  // the restore happens there too — `test -f m && rm x; apt install` reaches the install with x possibly present.
   const undone = new Map<string | undefined, { listed?: string[]; held: boolean; entry?: string[] }>();
+  const flush = () => {
+    for (const [k, s] of undone) {
+      const present = k === undefined ? state.entries.has(undefined) : state.files.has(k) || state.holds.has(k) || state.entries.has(k);
+      if (present) continue;
+      if (s.listed && k !== undefined) state.files.set(k, [...s.listed]);
+      if (s.held) state.holds.add(k as string);
+      if (s.entry) state.entries.set(k, [...s.entry]);
+    }
+    if (undone.size) state.added = state.holds.size > 0 || state.entries.has(undefined);
+    undone.clear();
+  };
   for (let i = 0; i < parts.length; i += 2) {
     const segment = parts[i]!;
+    // A `;` ends the chain of any removal before it: put those files back before this command is checked.
+    if (i > 0 && opBefore(i) === ";") flush();
     const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
     // A removal is a command that runs `rm`/`unlink` on a sources.list.d name, not a quoted message mentioning one.
     const removal = /(?:^|\s)(?:sudo\s+)?(?:rm|unlink)\b/.test(unquoted(segment)) && /sources\.list\.d/.test(unquoted(segment));
@@ -307,15 +321,8 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       }
     }
   }
-  // A removal that may have been skipped is undone at the line's end: a later line can still see the file.
-  for (const [k, s] of undone) {
-    const present = k === undefined ? state.entries.has(undefined) : state.files.has(k) || state.holds.has(k) || state.entries.has(k);
-    if (present) continue;
-    if (s.listed && k !== undefined) state.files.set(k, [...s.listed]);
-    if (s.held) state.holds.add(k as string);
-    if (s.entry) state.entries.set(k, [...s.entry]);
-  }
-  if (undone.size) state.added = state.holds.size > 0 || state.entries.has(undefined);
+  // A removal that may have been skipped is undone when its chain ends: a later command can still see the file.
+  flush();
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
     pins.push({ kind: "github-release", name: m[1]!, package: m[1]!, version: m[2], at });
   }
