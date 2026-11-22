@@ -132,12 +132,16 @@ function writtenFiles(segment: string): Written[] {
   for (const m of clean.matchAll(/\btee\b([^|;&]*)/g)) {
     const arg = m[1]!;
     const raw = arg.replace(/(?:\d*>>?|\d*<<?|&>>?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " ");
-    const append = /(?:^|\s)(?:-a|--append)(?=\s|$)/.test(raw);
+    // `-a` may be combined with other short options (`tee -ai file`), and `--append` is the long form.
+    const append = /(?:^|\s)(?:-[a-zA-Z]*a[a-zA-Z]*|--append)(?=\s|$)/.test(raw);
     // What `tee` writes comes from its stdin: a `< file` overrides the pipe, and a producer whose own stdout a `>` sent
     // elsewhere leaves the pipe empty.
-    const input = /(?:^|\s)\d*<<?\s*("[^"]+"|'[^']+'|\S+)/.exec(arg)?.[1];
+    // Only fd 0 (`<`, `0<`) overrides the pipe; `3< /dev/null` redirects another descriptor and leaves stdin alone.
+    const input = /(?:^|\s)(?:0<|<)\s*("[^"]+"|'[^']+'|\S+)/.exec(arg)?.[1];
     const pipe = clean.lastIndexOf("|", m.index! - 1);
-    const producer = pipe >= 0 ? clean.slice(0, pipe) : "";
+    // The command immediately feeding `tee` is the one whose output it reads: an earlier command in the same pipeline
+    // (`a > /tmp/log | b | tee x`) sent its own stdout elsewhere and doesn't make this one empty.
+    const producer = pipe >= 0 ? clean.slice(clean.lastIndexOf("|", pipe - 1) + 1, pipe) : "";
     const content: Written["content"] = input
       ? strip(input) === "/dev/null" ? (append ? "none" : "empty") : "unknown"
       : producer.trim() && !stdoutRedirected(producer) ? "deb" : append ? "none" : "empty";

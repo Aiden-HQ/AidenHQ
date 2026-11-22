@@ -332,6 +332,15 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   // A redirect on the install line is not a package to pin.
   const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
   assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);
+  // Only the command feeding `tee` decides what it writes: an earlier stage of the pipeline redirecting its own stdout
+  // leaves this one's line intact.
+  const upstream = `FROM debian:bookworm${d}\nRUN printf x > /tmp/log | printf '%s\\n' 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", upstream).problems.length, 1);
+  // Only fd 0 overrides `tee`'s stdin and only `-a` in a short-option group means append.
+  const otherFd = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list 3< /dev/null\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", otherFd).problems.length, 1);
+  const grouped = `FROM debian:bookworm${d}\nRUN echo 'deb https://a.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN echo 'deb https://b.example/apt bookworm main' | tee -ai /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", grouped).pins.filter((p) => p.kind === "apt")[0].sources, ["https://a.example/apt bookworm main", "https://b.example/apt bookworm main"]);
 });
 
 test("pins: a disabled source file leaves no entry behind in apt dating", () => {
