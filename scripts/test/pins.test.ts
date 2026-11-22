@@ -797,3 +797,50 @@ test("pins: a directory COPY, a heredoc that is only a comment or arithmetic, an
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN bash <<'EOF'\nnpm i -g foo\nEOF\n`).problems.length, 1);
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN bash <<'EOF'\ncurl https://example.invalid/install.sh | sh\nEOF\n`).problems.length, 1);
 });
+
+test("pins: noclobber writes and a restored stdout still count as a repository", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const D = "echo 'deb https://repo.example/apt bookworm main'";
+  // `>|` is bash's noclobber override: it truncates the file it names, so the repository is added.
+  const noclobber = `FROM debian:bookworm${d}\nRUN ${D} >| /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", noclobber).problems.length, 1);
+  // A duplication can put stdout back on the pipe after a file redirect, so the copy stage holds the repository and the
+  // next unpinned install is a problem — through `cat` and through `tee`.
+  for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log 1>&3 | ${sink}\nRUN apt-get install -y foo\n`).problems.length, 1, sink);
+  // Without the restore the file redirect keeps the stdout, so the file is empty and no pin is needed.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // Adjacent redirects are still two: the shell does not need whitespace to tell `1>/tmp/log` from a file named
+  // `1>/tmp/log`, so a duplication followed straight by a redirect is read the same as the spaced form.
+  for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1>/tmp/log 1>&3 | ${sink}\nRUN apt-get install -y foo\n`).problems.length, 1, sink);
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/tmp/log>/etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list>/tmp/log\nRUN apt-get install -y foo\n`).problems, []);
+  // Here `3>&1` captures vendor.list, not the pipe, so `1>&3` puts stdout back on it: the file holds the repository.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list 3>&1 >/tmp/log 1>&3\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // And with the restore dropped, stdout stays on the log: vendor.list is truncated but gets no bytes.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list >/tmp/log\nRUN apt-get install -y foo\n`).problems, []);
+  // Only the repository the writing command prints reaches its file: an earlier stage of the pipeline printing a
+  // different one is not credited to the copy, so it cannot be tried first when the pin is dated.
+  const apt = (line: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line}\nRUN apt-get install -y foo=1.0\n`).pins.find((p) => p.kind === "apt")?.sources ?? [];
+  for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
+    assert.deepEqual(apt(`echo 'deb https://a.example/apt bookworm main' | echo 'deb https://b.example/apt bookworm main' | ${sink}`), ["https://b.example/apt bookworm main"], sink);
+  // A `cat` whose own fd 0 a redirect moved reads that file, not the pipe: `</dev/null` writes nothing, so the file adds
+  // no repository. A file it can't read is content we can't rule out, so that one still counts.
+  assert.deepEqual(apt(`${D} | cat </dev/null > /etc/apt/sources.list.d/vendor.list`), []);
+  // A `cat` with a file operand reads that file, which we can't read: the file it writes is unknown content, not the
+  // upstream line.
+  assert.deepEqual(apt(`${D} | cat /tmp/x > /etc/apt/sources.list.d/vendor.list`), []);
+  // The file that takes the bytes is the one fd 1 ends on, not the one the redirect was opened with: `2> f 1>&2` writes
+  // the line to f, while `2> f` alone sends stdout nowhere near it.
+  assert.deepEqual(apt(`${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2`), ["https://repo.example/apt bookworm main"]);
+  // A `2>` destination may still be fed by the command's stderr, which we can't read, so it counts as an added
+  // repository rather than being claimed empty when stdout goes elsewhere.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2 >/dev/null\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A `cat` with its own file operand reads that file, not the pipe.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /tmp/vendor.list > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // Its fd 0 is read over the whole command, so a `</dev/null` after the write still empties the file.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat > /etc/apt/sources.list.d/vendor.list </dev/null\nRUN apt-get install -y foo\n`).problems, []);
+  // `>|` is noclobber, not the end of `tee`'s operand list: the file after it is still written.
+  assert.deepEqual(apt(`${D} | tee >| /tmp/log /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
+});
