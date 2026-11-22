@@ -105,10 +105,12 @@ gens="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
 } | write generations.prom
 
 # Docker's own disk usage: which consumer is filling `/` (images, containers, build cache, local volumes), so DiskSpaceLow
-# can name it from a query instead of an inference. `docker system df` walks every image, container and volume, so it is
-# capped at 10 s; the file is rewritten every run either way. On success it carries `aidenhq_docker_collect_ok 1` and the
-# sizes. When the cap is hit or `docker system df` errors it carries `aidenhq_docker_collect_ok 0` and NO size series:
-# the last bytes must not stay on the scrape as if they were current, and a fresh install must still get a file (its
+# can name it from a query instead of an inference. `docker system df` walks every image, container and volume, which is far
+# too much work for this 30 s timer, so its answer is cached for 5 minutes ($data/modules/monitoring/docker-df.json): a run
+# inside that window republishes the cache, a run past it reads Docker again (capped at 10 s). docker.prom is rewritten
+# every run either way. It carries `aidenhq_docker_collect_ok 1` and the sizes when the bytes are from a read at most the
+# cache window old. A read that fails — the cap hit or `docker system df` erroring — is `collect_ok 0` and NO size series:
+# the bytes before it must not stay on the scrape as if they were current, and a fresh install must still get a file (its
 # mtime is what HostMetricsStale reads) rather than no series at all. `collect_ok 0` means the breakdown is unknown, never
 # that Docker holds nothing (that is `_size_bytes 0`).
 # Each row is flat JSON ({"Active":...,"Reclaimable":...,"Size":...,"TotalCount":...,"Type":...}); one gauge per type.
@@ -148,12 +150,22 @@ docker_sizes() { # the rows on stdin -> the gauges; a row it cannot read is skip
       r = nbytes(field("Reclaimable")); if (r != "") printf "aidenhq_docker_%s_reclaimable_bytes %.0f\n", g, r
     }'
 }
-gauges=""
-if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ]; then
-  gauges="$(printf '%s\n' "$df" | docker_sizes)"
+cache="$data/modules/monitoring/docker-df.json"
+cache_secs="${AIDENHQ_DOCKER_DF_CACHE_S:-300}"
+now="$(date +%s)"
+age="$( [ -f "$cache" ] && echo $(( now - $(stat -c %Y "$cache") )) || echo "" )"
+if [ -z "$age" ] || [ "$age" -ge "$cache_secs" ]; then
+  if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ]; then
+    mkdir -p "$(dirname "$cache")" && printf '%s\n' "$df" > "$cache.tmp" && mv -f "$cache.tmp" "$cache"
+    age=0
+  else
+    age="" # this run could not read Docker: report unknown, not the bytes before it
+  fi
 fi
+gauges=""
+[ -n "$age" ] && [ -f "$cache" ] && gauges="$(docker_sizes < "$cache")"
 {
-  echo "# HELP aidenhq_docker_collect_ok 1 when this run read docker system df; 0 when it failed or timed out, in which case no size is reported at all (unknown, not zero)."
+  echo "# HELP aidenhq_docker_collect_ok 1 when the sizes come from a docker system df read inside the cache window (5 min); 0 when the read failed or timed out, in which case no size is reported at all (unknown, not zero)."
   echo "# TYPE aidenhq_docker_collect_ok gauge"
   echo "aidenhq_docker_collect_ok $([ -n "$gauges" ] && echo 1 || echo 0)"
   if [ -n "$gauges" ]; then

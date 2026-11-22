@@ -206,15 +206,32 @@ fi
 # time: the apply writes the unit's last EnvironmentFile= on every apply, and systemd reads it after that file. `service` is
 # the unit, `name` its script's stem (ops/<name>.sh), and `env` (default: the same stem) the stem of that per-apply
 # environment file -- a unit that runs more than one script (prune-docker) has one file for the unit, not one per script.
+split_argv() { # a systemd-printed argv[] string -> argv, on unquoted whitespace; a quote only groups
+  local s="$1" word="" q="" c i=0
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"; i=$((i + 1))
+    if [ -n "$q" ]; then
+      if [ "$c" = "$q" ]; then q=""; else word+="$c"; fi
+    elif [ "$c" = " " ] || [ "$c" = $'\t' ]; then
+      [ -z "$word" ] || argv+=("$word"); word=""
+    elif [ "$c" = '"' ] || [ "$c" = "'" ]; then
+      q="$c"
+    else
+      word+="$c"
+    fi
+  done
+  [ -z "$word" ] || argv+=("$word")
+}
 unit_runs_applied() { # service, name [env]
   local service="$1" name="$2" env="${3:-$2}" line path argv_text executable program script applied i
   local -a argv
   line="$(systemctl --user show "$service" -p ExecStart --value 2>/dev/null)" \
     || { echo "could not read $service's ExecStart"; return 1; }
   # A unit with several ExecStart= lines (prune-docker) prints them one per line: the check reads the one that runs this
-  # script, whichever position it has. A unit with one line is unchanged.
+  # script, whichever position it has, matched on the printed argument rather than on a path split by a space. A unit with
+  # one line is unchanged.
   if [ "$(printf '%s\n' "$line" | grep -c 'argv\[\]=')" -gt 1 ]; then
-    line="$(printf '%s\n' "$line" | grep "argv\[\]=.*ops/$name\.sh" | head -1)"
+    line="$(printf '%s\n' "$line" | grep "argv\[\]=.*ops/$name\.sh\\(\"\| \\)\|argv\[\]=.*ops/$name\.sh\$" | head -1)"
     [ -n "$line" ] || { echo "$service runs no ops/$name.sh"; return 1; }
   fi
   # systemd prints the executable it starts and its argv. Check that argv[0] is that executable, not only a name in
@@ -228,8 +245,11 @@ unit_runs_applied() { # service, name [env]
     v="$(sed -n 's/^AIDENHQ_DIR=//p' "$f" 2>/dev/null | tail -1)"
     [ -z "$v" ] || dir="$v"
   done
+  # Split the way systemd does, on unquoted whitespace, so a checkout whose path has a space ("/home/me/aiden hq") stays
+  # one argument. A quote only groups; nothing here is ever evaluated.
   argv_text="${argv_text//\$\{AIDENHQ_DIR\}/$dir}"
-  read -r -a argv <<< "$argv_text"
+  argv=()
+  split_argv "$argv_text"
   [ -n "$path" ] && [ "${#argv[@]}" -gt 0 ] || { echo "the unit's ExecStart has no executable or argv: $line"; return 1; }
   executable="$(realpath "$path" 2>/dev/null || printf '%s' "$path")"
   program="$(realpath "${argv[0]}" 2>/dev/null || command -v "${argv[0]}" 2>/dev/null || printf '%s' "${argv[0]}")"

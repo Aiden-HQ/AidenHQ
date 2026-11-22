@@ -209,9 +209,13 @@ the alert line. It also removes one-off containers — a container with no compo
 `docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
 `docker container prune --filter until=`, which filters on created time and so would delete a compose service that an
 apply's generation snapshot had just stopped, and its own check reads `State.FinishedAt`; a container with no stop time
-(created and never started) is kept, since the day cannot be measured against it. No volume is touched (`docker rm`
-without `-v`). That step is `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps
-after its rebuilds.
+(created and never started) is kept, since the day cannot be measured against it. It only reaches containers that carry
+the opt-in label `aidenhq.oneoff=1` (the one `ops/security-sbom.sh` puts on its scan container): a container someone
+started by hand is never removed, however old. No volume is touched (`docker rm` without `-v`). That step is
+`ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its rebuilds.
+
+The verification step (`ops/prune-docker-verify.sh`, unprefixed) also re-runs the 48 h `docker image prune` so a failure
+there still fails the unit — each prune above is `-`-prefixed, so its own exit status is ignored by design.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

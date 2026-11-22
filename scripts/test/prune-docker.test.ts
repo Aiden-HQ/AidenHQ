@@ -92,26 +92,46 @@ test("the apply-time prunes are independent too, and keep the same retention", (
 
 // ops/prune-docker-containers.sh and ops/prune-docker-verify.sh against a fake docker: what the container step does, and
 // what the verification makes of the host afterwards.
-function fakeDocker({ containers = [], cache = "10.52GB", daemonUp = true } = {}) {
+function fakeDocker({
+  containers = [], cache = "10.52GB", daemonUp = true, cacheRow = true, imagePruneFails = false,
+  uninspectable = [], vanishOnRm = [], vanishOnInspect = [],
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prune-docker-"));
   const bin = join(dir, "bin");
   const calls = join(dir, "calls");
   mkdirSync(bin);
   writeFileSync(calls, "");
   // One row per container: id|running|hours-stopped (`never` for the zero time a container created and never started has)
-  // |compose service|computer label.
-  const rows = containers.map((c) => `${c.id}|${c.running}|${c.finished}|${c.service ?? ""}|${c.computer ?? ""}`).join("\n");
+  // |compose service|computer label|`labelled` when it carries the opt-in aidenhq.oneoff=1. `ps -aq --filter label=` lists
+  // only the labelled ones.
+  const rows = containers.map((c) => `${c.id}|${c.running}|${c.finished}|${c.service ?? ""}|${c.computer ?? ""}|${c.oneoff ? "labelled" : ""}`).join("\n");
+  const rowsFile = join(dir, "rows");
+  writeFileSync(rowsFile, rows + "\n");
   writeFileSync(join(bin, "docker"), `#!/usr/bin/env bash
+rows_file="${rowsFile}"
 printf '%s\\n' "$*" >> "${calls}"
 case "$1 $2" in
-  "info"*) exit ${daemonUp ? 0 : 1} ;;
-  "ps -aq") cut -d'|' -f1 <<'EOT'
-${rows}
-EOT
+  # \`docker info\` has no positional operand: match it on its whole line, before "$1 $2" ("info ").
+  "info ") exit ${daemonUp ? 0 : 1} ;;
+  "info") exit ${daemonUp ? 0 : 1} ;;
+  "ps -aq")
+    case "$*" in
+      *"label="*) grep 'labelled$' "\${rows_file}" | cut -d'|' -f1 ;;
+      *) cut -d'|' -f1 "\${rows_file}" ;;
+    esac
     exit 0 ;;
   "inspect -f")
     id="\${@: -1}"
-    while IFS='|' read -r cid running hours service computer; do
+    case " ${vanishOnInspect.join(" ")} " in
+      *" $id "*)
+        # Gone between the listing and its inspect (its own --rm): there is nothing left to check or reclaim.
+        grep -v "^$id|" "\${rows_file}" > "\${rows_file}.tmp"; mv "\${rows_file}.tmp" "\${rows_file}"
+        echo "Error: No such container: $id" >&2; exit 1 ;;
+    esac
+    case " ${uninspectable.join(" ")} " in
+      *" $id "*) echo "Error response from daemon: container $id is not running" >&2; exit 1 ;;
+    esac
+    while IFS='|' read -r cid running hours service computer oneoff; do
       [ "$cid" = "$id" ] || continue
       case "$hours" in
         never) finished=0001-01-01T00:00:00Z ;;
@@ -119,12 +139,23 @@ EOT
       esac
       printf '%s|%s|%s|%s\\n' "$running" "$finished" "$service" "$computer"
       exit 0
-    done <<'EOT'
-${rows}
-EOT
+    done < "\${rows_file}"
     exit 1 ;;
-  "rm "*|"rm") exit 0 ;;
-  "system df") printf '{"Size":"%s","Type":"Build Cache"}\\n' "${cache}"; exit 0 ;;
+  "rm "*|"rm")
+    id="\${@: -1}"
+    case " ${vanishOnRm.join(" ")} " in
+      *" $id "*)
+        # It went between the listing and the removal (its own --rm): the daemon's rm then fails, nothing is left.
+        grep -v "^$id|" "\${rows_file}" > "\${rows_file}.tmp"; mv "\${rows_file}.tmp" "\${rows_file}"
+        echo "Error: No such container: $id" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+  "system df")
+    ${cacheRow
+      ? `printf '{"Size":"%s","Type":"Build Cache"}\\n' "${cache}"`
+      : `printf '{"Size":"25.15GB","Type":"Images"}\\n'`}
+    exit 0 ;;
+  "image prune") exit ${imagePruneFails ? 1 : 0} ;;
 esac
 exit 0
 `);
@@ -141,12 +172,14 @@ exit 0
 test("only one-offs stopped over a day are removed, and never with their volumes", () => {
   const d = fakeDocker({
     containers: [
-      { id: "running", running: "true", finished: "30" },
-      { id: "young", running: "false", finished: "2" },
-      { id: "old", running: "false", finished: "30" },
-      { id: "service", running: "false", finished: "30", service: "warehouse", computer: "" },
-      { id: "box", running: "false", finished: "30", service: "", computer: "1" },
-      { id: "never", running: "false", finished: "never" },
+      { id: "running", running: "true", finished: "30", oneoff: true },
+      { id: "young", running: "false", finished: "2", oneoff: true },
+      { id: "old", running: "false", finished: "30", oneoff: true },
+      { id: "service", running: "false", finished: "30", service: "warehouse", oneoff: true },
+      { id: "box", running: "false", finished: "30", computer: "1", oneoff: true },
+      { id: "never", running: "false", finished: "never", oneoff: true },
+      // Not labelled aidenhq.oneoff: somebody's hand-started container. The cleanup does not reach it however old it is.
+      { id: "handmade", running: "false", finished: "30" },
     ],
   });
   const r = d.run("ops/prune-docker-containers.sh");
@@ -155,6 +188,10 @@ test("only one-offs stopped over a day are removed, and never with their volumes
   // lifecycle: neither is a one-off. A container created and never started has no stopped time to measure the day
   // against, so the retention rule gives no reason to remove it.
   assert.doesNotMatch(r.calls, /^rm (running|young|service|box|never)$/m, r.calls);
+  // Removal needs the container to say it is disposable: a hand-started one is never a candidate, however long it has been
+  // there. The listing asks the daemon for the label, so it does not even read them.
+  assert.doesNotMatch(r.calls, /^rm handmade$/m, r.calls);
+  assert.match(r.calls, /^ps -aq --filter label=aidenhq\.oneoff=1/m, r.calls);
   assert.match(r.out, /never: never started, kept/, r.out);
   assert.doesNotMatch(r.calls, /rm -[a-z]*v/, "docker rm takes no -v: volumes stay");
   assert.equal(r.status, 0, r.out);
@@ -182,30 +219,67 @@ test("the verification fails the unit when the daemon is down, the cache is over
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /over the 20 GB cap/);
   // A one-off stopped over a day ago is still there: the container step did not do its work.
-  d = fakeDocker({ containers: [{ id: "left", running: "false", finished: "30" }] });
+  d = fakeDocker({ containers: [{ id: "left", running: "false", finished: "30", oneoff: true }] });
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /container left is a one-off stopped over a day ago and still there/);
 });
 
+test("the verification reads an absent Build Cache row and a failed image prune as failures, not as clean", () => {
+  // Own-store `docker system df` without a Build Cache row: the cap cannot be confirmed, so the unit must not read clean.
+  let d = fakeDocker({ cacheRow: false });
+  let r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /no Build Cache row/);
+  // Every step is `-`-prefixed, so a failing `docker image prune` never reaches systemd by itself; the verification runs it
+  // again unprefixed, and its failure is what fails the unit.
+  d = fakeDocker({ imagePruneFails: true });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /image prune failed/);
+  assert.match(r.calls, /^image prune -af --filter until=48h$/m, r.calls);
+  // A labelled container the daemon lists but cannot inspect is a cleanup that could not be checked: a failure.
+  d = fakeDocker({ containers: [{ id: "ghost", running: "false", finished: "2", oneoff: true }], uninspectable: ["ghost"] });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /cannot be inspected/);
+});
+
+test("a container that disappears between the listing and its inspect or removal is benign, not a failure", () => {
+  // Its own `--rm` finished it between `ps` and `inspect`: nothing to inspect, nothing to reclaim, not a failed run.
+  let d = fakeDocker({ containers: [{ id: "gone", running: "false", finished: "30", oneoff: true }], vanishOnInspect: ["gone"] });
+  let r = d.run("ops/prune-docker-containers.sh");
+  assert.equal(r.status, 0, r.out);
+  assert.equal(r.status, 0, d.run("ops/prune-docker-verify.sh").status);
+  // Still listed, then removed by someone else before our `docker rm`: the removal failing is the wanted outcome.
+  d = fakeDocker({ containers: [{ id: "late", running: "false", finished: "30", oneoff: true }], vanishOnRm: ["late"] });
+  r = d.run("ops/prune-docker-containers.sh");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /gone before it was removed/);
+});
+
 // ops/host-metrics.sh with fake docker/systemctl: the textfile the node-exporter collector reads.
-function metrics({ df, timeout }) {
-  const dir = mkdtempSync(join(tmpdir(), "docker-prom-"));
+function metrics({ df, timeout, dir = mkdtempSync(join(tmpdir(), "docker-prom-")), env = {} }) {
   const bin = join(dir, "bin");
   const data = join(dir, "data");
-  mkdirSync(bin);
+  mkdirSync(bin, { recursive: true });
   mkdirSync(join(data, "modules/monitoring/textfile"), { recursive: true });
-  writeFileSync(join(bin, "docker"), `#!/usr/bin/env bash\n${df}\n`);
+  writeFileSync(join(bin, "docker"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${join(dir, "calls")}"
+${df}\n`);
   writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 1\n");
   // The real `timeout` with the same arguments, at a fraction of the cap: the behaviour, without a 10 s test.
   if (timeout) writeFileSync(join(bin, "timeout"), `#!/usr/bin/env bash\n[ "$1" = 10 ] || { echo "cap is not 10s: $1" >&2; exit 2; }\nshift 1\nexec /usr/bin/timeout 0.5 "$@"\n`);
   for (const n of ["docker", "systemctl", ...(timeout ? ["timeout"] : [])]) chmodSync(join(bin, n), 0o755);
   const r = execFileSync("bash", [join(repo, "ops/host-metrics.sh")], {
-    env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, AIDENHQ_DATA_DIR: data, AIDENHQ_STATE_DIR: join(dir, "state") },
+    env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, AIDENHQ_DATA_DIR: data, AIDENHQ_STATE_DIR: join(dir, "state"), ...env },
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
   });
   const file = join(data, "modules/monitoring/textfile/docker.prom");
-  return { r, file, body: existsSync(file) ? readFileSync(file, "utf8") : "" };
+  return {
+    r, file, dir, body: existsSync(file) ? readFileSync(file, "utf8") : "",
+    calls: existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "",
+  };
 }
 
 const ROWS = [
@@ -240,6 +314,25 @@ test("docker system df failing reports the breakdown as unknown, not as zero and
   assert.match(m.body, UNKNOWN);
   assert.doesNotMatch(m.body, /_size_bytes \d/m, m.body);
   assert.ok(existsSync(m.file), "the file is rewritten, so its mtime is current");
+});
+
+test("docker.prom is cached for 5 minutes: the 30 s timer does not walk every image, container and volume each run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "docker-prom-"));
+  const first = metrics({ dir, df: DF });
+  assert.match(first.body, /^aidenhq_docker_images_size_bytes 25150000000$/m);
+  // Second run inside the window: it republishes the cache and never calls Docker's disk walk again.
+  writeFileSync(join(dir, "calls"), "");
+  const second = metrics({ dir, df: `case "$*" in *"system df"*) echo "must not be called inside the cache window" >&2; exit 1 ;; *) exit 0 ;; esac` });
+  assert.doesNotMatch(second.calls, /system df/);
+  assert.match(second.body, /^aidenhq_docker_collect_ok 1$/m);
+  assert.match(second.body, /^aidenhq_docker_images_size_bytes 25150000000$/m);
+  assert.ok(existsSync(join(dir, "data/modules/monitoring/docker-df.json")));
+  // Past the window (`AIDENHQ_DOCKER_DF_CACHE_S=0` here) it reads Docker again, and a failed read is unknown, not the old
+  // bytes.
+  const third = metrics({ dir, env: { AIDENHQ_DOCKER_DF_CACHE_S: "0" }, df: `case "$*" in *"system df"*) echo down >&2; exit 1 ;; *) exit 0 ;; esac` });
+  assert.match(third.calls, /system df/);
+  assert.match(third.body, UNKNOWN);
+  assert.doesNotMatch(third.body, /_size_bytes \d/m, third.body);
 });
 
 test("docker system df timing out reports the breakdown as unknown and does not fail the metrics run", { skip: !existsSync("/usr/bin/timeout") && "needs coreutils timeout" }, () => {

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -158,6 +158,25 @@ test("the docker prune check passes when both steps run this checkout, through t
     verify: "${AIDENHQ_DIR}/ops/prune-docker-verify.sh",
   }));
   const r = await run(dir);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
+});
+
+test("a checkout path with a space is one argument, and still matches", { skip: NOT_LINUX }, async () => {
+  // The whole checkout lives under a directory whose name has a space: systemd prints such an argv quoted, and the check
+  // must split on unquoted whitespace only, so the path stays one argument instead of two.
+  const base = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(base, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  const spaced = join(base, "aiden hq");
+  mkdirSync(spaced);
+  for (const e of ["scripts", "ops", "bin", "config", "home", "healthz", "execstart"]) renameSync(join(base, e), join(spaced, e));
+  writeFileSync(join(spaced, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${spaced}\n`);
+  writeFileSync(join(spaced, "execstart"), [
+    `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker builder prune -f --max-used-space 20GB ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash "${spaced}/ops/prune-docker-containers.sh" ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash "${spaced}/ops/prune-docker-verify.sh" ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  ].join("\n") + "\n");
+  const r = await run(spaced);
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
 });
