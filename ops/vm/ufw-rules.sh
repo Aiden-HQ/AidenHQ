@@ -35,9 +35,11 @@ failed_cmds=()
 state_of() {
   local where="$1" line after
   while IFS= read -r line; do
-    # The whole destination, not a prefix: "10.231.0.1 8201/tcp on br+" is not the rule "10.231.0.1 8201/tcp on br+extra".
-    case "$line" in "$where"|"$where "*) ;; *) continue ;; esac
+    case "$line" in "$where"*) ;; *) continue ;; esac
     after="${line#"$where"}"
+    # The destination column ends at the action. A rule on one interface ("443/tcp on eth0") or IPv6 only
+    # ("443/tcp (v6)") is narrower than the rule this script needs, so it must not count as already present.
+    [[ "$after" =~ ^[[:space:]]+(ALLOW|DENY|LIMIT|REJECT)[[:space:]] ]] || continue
     case "$after" in
       *"ALLOW IN"*"Anywhere"*) echo allow; return 0 ;;
       *"DENY IN"*|*"LIMIT IN"*|*"REJECT IN"*) echo deny; return 0 ;;

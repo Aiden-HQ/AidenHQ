@@ -84,11 +84,17 @@ test("ufw-rules: an explicit DENY or LIMIT is preserved and warned about, not re
   assert.doesNotMatch(r.err, /sudo ufw allow/);
 });
 
-test("ufw-rules: the whole destination is matched, not a prefix of it", () => {
-  // "br+extra" is a different interface from "br+"; its allow must not skip the rule for br+.
-  const status = verbose(["10.231.0.1 3130/tcp on br+extra ALLOW IN Anywhere"]);
-  const r = run({ mode: "tailscale", status });
-  assert.ok(r.calls.includes("allow in on br+ to 10.231.0.1 port 3130 proto tcp comment AidenHQ containers to host services"));
+test("ufw-rules: the whole destination is matched, not a prefix or a narrower rule", () => {
+  // "br+extra" is a different interface from "br+"...
+  const tail = run({ mode: "tailscale", status: verbose(["10.231.0.1 3130/tcp on br+extra ALLOW IN Anywhere"]) });
+  assert.ok(tail.calls.includes("allow in on br+ to 10.231.0.1 port 3130 proto tcp comment AidenHQ containers to host services"));
+  // ...and a front-door allow limited to one interface or to IPv6 does not cover the unrestricted rule's traffic.
+  const front = run({ mode: "public", status: verbose(["443/tcp on eth0 ALLOW IN Anywhere", "8446/tcp (v6) ALLOW IN Anywhere (v6)"]) });
+  assert.ok(front.calls.includes("allow 443/tcp"), front.calls.join(" | "));
+  assert.ok(front.calls.includes("allow 8446/tcp"));
+  // An unrestricted front-door allow is still skipped.
+  const listed = run({ mode: "public", status: verbose(["443/tcp ALLOW IN Anywhere"]) });
+  assert.ok(!listed.calls.includes("allow 443/tcp"));
 });
 
 test("ufw-rules: a rule it can't add warns that sign-in will fail, with the commands", () => {
