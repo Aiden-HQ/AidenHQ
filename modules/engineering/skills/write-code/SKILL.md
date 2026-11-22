@@ -31,7 +31,6 @@ description: How code is changed here, in any repository - starting the branch, 
 
 ## Checks and reviews
 
-- Re-run a red check only for an infrastructure failure (runner lost, network), and say so in the PR.
 - The `code-review` check fails on critical and high findings: fix them. List its others in your reply under
   "Non-blocking code-review findings" with the PR link.
 - A refused check or a `Not reviewed` notice (code's refusal): fix the cause it names and publish the changed branch.

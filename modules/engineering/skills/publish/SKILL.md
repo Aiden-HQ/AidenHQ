@@ -22,8 +22,7 @@ description: Load right before every `aidenhq publish` (a new PR or a push to on
 
    `aidenhq publish` takes only a head self-review ran on, so run it after every new commit.
 2. **Title:** a Conventional Commit (`fix(scope): …`), from the branch's first commit or `--title`.
-3. **Body:** plain facts for the repository's reviewers: why, and what changed. Pass `--fixes <owner>/<repo>#<n>` for
-   each issue it fixes, on every publish. It ends with `## Evidence`:
+3. **Body:** pass `--fixes <owner>/<repo>#<n>` for each issue it fixes, on every publish. It ends with `## Evidence`:
    - every `self-review:` line, for each branch;
    - the commands you ran and their results;
    - before/after screenshots of a visible change (from `.aidenhq/out/`, each named), numbers for performance work;
