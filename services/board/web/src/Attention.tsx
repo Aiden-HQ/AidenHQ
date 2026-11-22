@@ -9,6 +9,7 @@ import { TaskState, needsOwner } from "./ui/TaskState";
 import type { NeedsYou } from "./types";
 
 type Item = NeedsYou["items"][number];
+const EMPTY = { needs: "Nothing needs you right now.", failed: "No task has failed.", idle: "No task sits idle unexplained." } as const;
 type Which = "needs" | "failed" | "idle";
 const UNEXPLAINED = new Set(["unpolled", "orphaned", "unknown", "history_expired"]);
 const IN: Record<Which, (i: Item) => boolean> = {
@@ -57,9 +58,9 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
               {words[w]}
             </button>
           ))}
-          {chosen && <span className="attn-order">oldest first</span>}
+          {chosen && rows.length > 0 && <span className="attn-order">oldest first</span>}
         </div>
-        {chosen && list}
+        {chosen && (list || <p className="attn-none">{EMPTY[chosen]}</p>)}
       </section>
     );
   }

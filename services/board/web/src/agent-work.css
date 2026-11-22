@@ -160,3 +160,4 @@
 .attn-count.on.attn-needs { color: var(--warn-text); font-weight: 600; }
 .attn-count.on.attn-failed { color: var(--bad-text); font-weight: 600; }
 .attn-count.on.attn-idle { color: var(--text); font-weight: 600; }
+.attn-none { margin: 0; font-size: var(--text-sm); color: var(--faint); }
