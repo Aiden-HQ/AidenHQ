@@ -1227,8 +1227,9 @@ const TOOLS: Record<string, Tool> = {
               return false;
             }
             // The rows that can be reached next are read together, a bounded batch at a time, so a page of truncated chats costs
-            // whole batches rather than one round trip each.
-            for (const [r] of rest.slice(0, PREPARE_AT_ONCE)) if (r.descriptionTruncated && !r.assigneeAgentId) void readFull(r, chatUntil);
+            // whole batches rather than one round trip each. A prefetch nobody reaches is drained: its failure is kept for the
+            // row that is reached, and an unread one must not leave a rejected promise to take the process down.
+            for (const [r] of rest.slice(0, PREPARE_AT_ONCE)) if (r.descriptionTruncated && !r.assigneeAgentId) readFull(r, chatUntil).catch(() => {});
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
             const full = row.descriptionTruncated ? await readFull(row, chatUntil) : row;

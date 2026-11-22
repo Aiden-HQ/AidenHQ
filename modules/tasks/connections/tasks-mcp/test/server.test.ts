@@ -315,6 +315,25 @@ test("task_list(mine) does not read a chat's description when a newer match alre
   assert.equal(details, 0, "no owner row was read in full behind the answer");
 });
 
+test("task_list(mine) survives a detail read failing on a chat it prefetched but never reached", async () => {
+  // Two truncated owner rows: the first is the chat that fills limit=1, the second is prefetched with it and its read fails.
+  // The failure is not the answer's, so it must neither fail the call nor leave an unhandled rejection behind.
+  const first = { ...row("chat-6", "todo"), assigneeUserId: "owner", updatedAt: "2026-03-01T00:00:00Z", description: "cut", descriptionTruncated: true, priority: "critical" };
+  const second = { ...row("chat-7", "todo"), assigneeUserId: "owner", updatedAt: "2026-02-01T00:00:00Z", description: "cut", descriptionTruncated: true, priority: "critical" };
+  const full = { "chat-6": { ...first, description: `hi\n\n<!-- aidenhq-chat-agent:me -->`, descriptionTruncated: false } };
+  const board = issueBoard({ rows: [first, second], full });
+  const handler = async (req, res) => {
+    if (req.url?.startsWith("/api/issues/chat-7")) {
+      res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: "boom" }));
+      return;
+    }
+    return board(req, res);
+  };
+  const { call } = bridge({ handler, states: { "chat-6": noAttention("waiting") } });
+  const out = parse(await call("task_list", { mine: true, limit: 1 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-6"], JSON.stringify(out));
+});
+
 test("task_list(mine) caps both sources on the list's own order, the order it returns", async () => {
   // The assigned task was touched last, and that is the order the issues list is served in: `limit: 1` keeps it.
   const assigned = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-03-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z" };
