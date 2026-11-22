@@ -429,8 +429,11 @@ export function createMerges(d: {
       return Boolean(row) && Boolean((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
     };
     // A PR the fleet never opened has no row to link, so the merge commit that landed on the default branch is what can credit
-    // it: its message names the task this merge is for. Whole-token only: a longer identifier sharing the prefix (WOR-99381 for
-    // WOR-9938) names another task, and an unknown identifier or an absent message keeps today's answer (not evidence).
+    // it: its message names the task this merge is for. The message is not independent of the PR: a squash merge builds it from
+    // the PR's title and body, so the attribution is whatever the PR's author supplied. It is accepted here because it is the
+    // merge that actually landed on the default branch and it is refused when another task's row already claims the PR; a title
+    // or a body alone is never read. Whole-token only: a longer identifier sharing the prefix (WOR-99381 for WOR-9938) names
+    // another task, and an unknown identifier or an absent message keeps today's answer (not evidence).
     const namesTask = (p: Pr) => {
       if (!q.taskIdentifier || !p.mergeMessage) return false;
       const token = q.taskIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
