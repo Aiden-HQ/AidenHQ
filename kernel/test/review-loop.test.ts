@@ -492,14 +492,16 @@ test("the card's details text is read decoded too, so a report's version is not 
   assert.equal(instanceDetails({ action: "conn.tool" }, big).length, 3000, "each private-range quad is still refused");
   assert.ok(Date.now() - started < 1000, `the scan is bounded (${Date.now() - started}ms)`);
 });
-test("a code review post or reply whose comment text names an instance host, home path or address is refused by code at filing; clean text and the PR's own names pass", async () => {
+test("a code review post or reply whose comment text names an instance host, home path or address is refused by code at filing; clean text passes", async () => {
   const { check } = await import("../src/instance-details-check.ts");
   const reply = (body: string) => check({ args: { repo: "acme/app", body } }).verdict;
   const post = (finding: Record<string, unknown>, coverage: Record<string, unknown> = {}) => check({ args: { repo: "acme/app", review: { coverage: { reviewed: [], excluded: [], incomplete: null, ...coverage }, findings: [{ path: "fixtures/192.0.2.10.json", title: "t", ...finding }] } } }).verdict;
   assert.equal(reply("Looks fine: the retry bound is read before it is defaulted (src/plan.ts line 41)."), "ok");
   for (const leak of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log", "fd7a:115c:a1e0::5", "fd12::34"]) assert.equal(reply(`seen on ${leak}`), "deny", leak);
   assert.equal(reply("version 1.2.3.456 is not an address; at 12:30:45:10; loopback ::1"), "ok");
-  assert.equal(post({}, { reviewed: ["fixtures/192.0.2.10.json"] }), "ok", "the PR's own file names and the reviewed list are not comment text");
+  assert.equal(post({ path: "src/plan.ts" }, { reviewed: ["fixtures/192.0.2.10.json"] }), "ok", "the reviewed list is never published");
+  assert.equal(post({}), "deny", "a finding's path is printed in the summary");
+  assert.equal(post({ path: "src/plan.ts", title: "a call to db::add" }), "ok", "a scoped name is not an address");
   assert.equal(post({ why: "seen on 10.0.0.7" }), "deny");
   assert.equal(post({}, { incomplete: "read failed at /home/ci/build.log on 10.0.0.7" }), "deny", "coverage.incomplete is published");
 });

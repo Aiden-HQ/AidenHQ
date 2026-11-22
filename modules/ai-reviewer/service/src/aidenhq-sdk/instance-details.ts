@@ -6,8 +6,8 @@
 export function instanceDetailsIn(text: string, versions = new Set<string>()): string[] {
   const found = [
     // An IPv6 address (a tailnet's fd7a:...): the full form (four groups or more, with a hex letter so a clock time is not one) or a
-    // compressed one (`fd12::34`, `fd7a::`); loopback (`::1`) is not.
-    ...[...text.matchAll(/(?<![\w:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?![\w:])/gi)].filter((m) => /::|[a-f]/i.test(m[0]) && !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0])),
+    // compressed one with a digit (`fd12::34`, `fd7a::`; never a scoped name like `db::add`); loopback (`::1`) is not.
+    ...[...text.matchAll(/(?<![\w:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?![\w:])/gi)].filter((m) => /::|[a-f]/i.test(m[0]) && (!m[0].includes("::") || /\d/.test(m[0])) && !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0])),
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
@@ -29,17 +29,19 @@ function addressShaped(text: string, at: number, length: number): boolean {
 
 /** The keys whose string values a review or reply publishes as comment text: what a model or run wrote, never the PR's own names. */
 const TEXT_KEYS = new Set(["title", "why", "evidence", "fix_brief", "option", "incomplete", "body", "stale_guidance"]);
-/** The comment text in a write's args: each string under a text key (and each one of a text list). */
+/** What the filing check reads: the comment text and a finding's path, which the summary prints (and the inline comment anchors by). */
+const PUBLISHED_KEYS = new Set([...TEXT_KEYS, "path"]);
+/** The text in a write's args that reaches a comment: each string under a published key (and each one of a text list). */
 export function publishedText(args: unknown): string[] {
   const out: string[] = [];
   const read = (x: unknown) => { if (typeof x === "string") out.push(x); else if (Array.isArray(x)) x.forEach(read); };
-  JSON.parse(JSON.stringify(args ?? null), (k, x) => { if (TEXT_KEYS.has(k)) read(x); return x; });
+  JSON.parse(JSON.stringify(args ?? null), (k, x) => { if (PUBLISHED_KEYS.has(k)) read(x); return x; });
   return out;
 }
 /**
  * The args with the instance's details removed from their comment text, in one pass (the longest match first, so a path that holds
- * a host goes whole) and by a marker shorter than any match, so no field outgrows its schema limit. A PR's own names (repo, file
- * paths) are left as they are: they are the target and the anchors of the comments.
+ * a host goes whole) and by a marker shorter than any match, so no field outgrows its schema limit. The repo and a finding's path are left as they
+ * are: they are the target and the anchor of the comments (the filing check still reads a path).
  */
 export function withoutInstanceDetails<T>(args: T): T {
   const clean = (t: string) => {
