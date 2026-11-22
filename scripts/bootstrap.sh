@@ -67,8 +67,6 @@ placeholder modules/google/google_oauth.json "{}"   # the google module's own va
 placeholder slack_live_app_token ""             # xapp- Socket Mode token
 placeholder slack_live_bot_token ""             # xoxb- bot token, posts DMs to the paired owner
 placeholder telegram_notify_bot_token ""       # BotFather token; the owner's Telegram chat with Aiden, and a channel for notify
-placeholder slack_live_triage_webhook_url ""    # the slack-triage routine's webhook; empty = no poke
-placeholder slack_live_triage_webhook_secret ""
 placeholder apps_incident_webhook_url ""       # the app-incident routine's webhook (paperclip-setup.ts writes it); empty = no wake
 placeholder apps_incident_webhook_secret ""
 placeholder app_request_webhook_url ""         # the app-request routine's webhook (the board fires it); empty = no wake

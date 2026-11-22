@@ -19,7 +19,7 @@ approve the app. For the advanced part ("Aiden in Slack, with your own app") pas
 - `slack`: reads such as `slack_search_public`, `slack_read_channel`, `slack_read_thread`; write
   `slack_send_message_draft`; destructive (reviewed, named grants only) `slack_send_message`, `slack_schedule_message`,
   `slack_add_reaction`, `slack_create_canvas` and others.
-- `slack_live` (advanced): read `slack_pending_events`, `slack_owner`, `slack_channel_context`; write `slack_post` and
+- `slack_live` (advanced): read `slack_owner`, `slack_channel_context`; write `slack_post` and
   `channel_memory`, granted per agent.
 - Every agent post is a record the AI reviewer reads first. A channel outside `slack_post_channels` needs your approval too.
 - One Slack thread bound to an agent is one task for it; its text is fenced data.

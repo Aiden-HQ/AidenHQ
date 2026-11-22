@@ -14,7 +14,7 @@ it("a kept Slack event is forwarded once, after owner routing, with its bot flag
   const delivered: string[] = [];
   const log = { info() {}, warn() {}, error() {} } as never;
   await startSocket({
-    appToken: "xapp-test", store: openStore(":memory:"), onKept: () => {}, forward, log,
+    appToken: "xapp-test", store: openStore(":memory:"), forward, log,
     chat: { owner: () => ({ user: "UOWNER", channel: "DOWNER" }), deliver: async (t) => void delivered.push(t) },
     pair: async () => false,
     bind: { command: async () => "", mention: async (ev: { channel?: string }) => ev?.channel === "CBOUND" },

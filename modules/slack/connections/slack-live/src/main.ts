@@ -1,9 +1,9 @@
 // slack-live: the instance's Slack app. The ONE Socket Mode consumer for its app token (two consumers split the events):
-// live events buffered for triage (slack_pending_events) with a debounced webhook poke, every event teed to src_slack with a
+// live events sent to the kernel's event router (routines' events), every event teed to src_slack with a
 // gap sync, and the owner's own messages in their command channel sent to the kernel as owner chat. It is a transport of the
 // owner's router (owner-channel): the kernel sends it one owner message at a time as a Slack DM (POST /transport/send,
 // send.ts). slack_post is the write kind slack.post (post.ts, the executor). No control-plane key.
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -58,36 +58,6 @@ const bind = binder(store, { get ownerId() { return cfg.ownerId; }, agents: asyn
 const memory = memoryWriter(store);
 const by = (kind: string) => (kind.endsWith(".bind") ? bind : kind.endsWith(".memory") ? memory : post);
 const executor = serveExecutor({ plan: (r) => by(r.kind).plan(r), execute: (r) => by(r.kind).execute(r) }, { key: inboundToken, kernelUrl, log: (msg, f) => log.warn(f ?? {}, msg) });
-
-// One triage run per minute at most, with every event that arrived in it: the first event after a quiet minute fires at
-// once, and the rest wait for the minute to end (one run per Slack event was 67 runs a day, 50 of them finding nothing;
-// a 30-minute window was too slow). An urgent event in a busy minute waits up to the window. Signed like scripts/trigger-meeting-scan.sh.
-const TRIAGE_WINDOW_MS = 60_000;
-const webhookUrl = env("TRIAGE_WEBHOOK_URL");
-const webhookSecret = env("TRIAGE_WEBHOOK_SECRET");
-let lastPoke = 0;
-let pokeTimer: NodeJS.Timeout | undefined;
-function poke(): void {
-  if (!webhookUrl || !webhookSecret || pokeTimer) return;
-  pokeTimer = setTimeout(async () => {
-    pokeTimer = undefined;
-    lastPoke = Date.now();
-    const ts = String(Math.floor(lastPoke / 1000));
-    const body = '{"event":"slack_events_pending"}';
-    const sig = createHmac("sha256", webhookSecret).update(`${ts}.${body}`).digest("hex");
-    try {
-      const res = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-paperclip-timestamp": ts, "x-paperclip-signature": `sha256=${sig}` },
-        body,
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (![202, 409].includes(res.status)) log.warn({ status: res.status }, "triage webhook failed");
-    } catch (err) {
-      log.warn({ err: String(err) }, "triage webhook failed");
-    }
-  }, Math.max(0, lastPoke + TRIAGE_WINDOW_MS - Date.now()));
-}
 
 function authorized(req: IncomingMessage): boolean {
   const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
@@ -201,5 +171,5 @@ const forward = async (e: unknown) => {
   if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");
 };
 
-if (appToken) void startSocket({ appToken, store, onKept: poke, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), log });
+if (appToken) void startSocket({ appToken, store, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");

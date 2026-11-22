@@ -203,8 +203,8 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
   const split = { "channel-telegram": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
-  // The connections build merged channel-slack into slack: slack keeps what both had (the sign-in's board link, the writer's warehouse and Paperclip links); the owner is the paired one, so no host variable carries over.
-  was.links.slack = ["board", "sources", "paperclip"];
+  // The connections build merged channel-slack into slack: slack keeps what both had (the sign-in's board link, the writer's warehouse link); the owner is the paired one, so no host variable carries over.
+  was.links.slack = ["board", "sources"];
   // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
   // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
   // One-way phase 2: and a pair link to apps-mcp for the grader's app reads (role apps.read), until 4c.
