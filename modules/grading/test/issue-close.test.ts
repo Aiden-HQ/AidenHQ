@@ -55,3 +55,11 @@ test("a not-planned close counts when its closer, an owner, said why just before
   assert.doesNotMatch(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [closer] } })), /does not count/);
   assert.match(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [{ ...closer, authorAssociation: "NONE" }] } })), /does not count/);
 });
+
+test("only a line posted since the latest reopen counts: an earlier close-and-reopen cycle's citation does not", async () => {
+  const reopenedAt = "2026-11-19T10:30:00Z";
+  const reopened = { reopenedEvents: { nodes: [{ createdAt: reopenedAt }] }, closedAt: "2026-11-19T12:00:00Z" };
+  assert.match(text(await run({ ...reopened, comments: { nodes: [said(line(), "OWNER", "2026-11-19T10:00:00Z")] } })), /the close does not count/);
+  assert.doesNotMatch(text(await run({ ...reopened, comments: { nodes: [said(line(), "OWNER", "2026-11-19T11:00:00Z")] } })), /does not count/);
+  assert.doesNotMatch(text(await run({ ...reopened, comments: { nodes: [said(line(), "OWNER", reopenedAt)] } })), /does not count/);
+});

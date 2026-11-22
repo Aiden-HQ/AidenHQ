@@ -701,17 +701,19 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
   const owned = (c: any) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.authorAssociation);
   // Path (b): the one machine line the Maintainer leaves, `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, in a comment by an
-  // owner, member or collaborator (the fleet acts as the owner), at any time. Only that line counts, and only for a PR the code
+  // owner, member or collaborator (the fleet acts as the owner), since the latest reopen. Only that line counts, and only for a PR the code
   // host reads as merged at that sha: no other text or link is scanned.
+  // Only a line posted at or after the issue's latest reopen belongs to this closure: an earlier close-and-reopen cycle's doesn't.
+  const reopened = Date.parse(i.reopenedEvents?.nodes?.[0]?.createdAt ?? "") || 0;
   const FIXED_BY = /^Fixed by ([\w.-]+\/[\w.-]+)#(\d+) \(merge ([0-9a-f]{40})\)\s*$/gm;
-  const lines = i.state === "CLOSED" ? comments.filter(owned).flatMap((c) => [...String(c.body ?? "").matchAll(FIXED_BY)].map((m) => ({ c, repo: m[1]!, number: Number(m[2]), sha: m[3]! }))) : [];
+  const lines = i.state === "CLOSED" ? comments.filter((c) => owned(c) && Date.parse(c.createdAt) >= reopened).flatMap((c) => [...String(c.body ?? "").matchAll(FIXED_BY)].map((m) => ({ c, repo: m[1]!, number: Number(m[2]), sha: m[3]! }))) : [];
   // Anyone with close rights can close an issue: a close counts only through a merged PR that GitHub records as its closer ("Fixes
   // owner/repo#N", in this repo or another), or that line.
   const by = closedBy(i)?.pull_request;
   const keywordPr = i.state === "CLOSED" && by?.merged ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
   // A close that is not a completion (not planned, a duplicate) carries no PR: it counts when its closer, an owner, member or collaborator (the
   // fleet acts as the owner), left a comment just before it saying why.
-  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && comments.some((c) => owned(c) && c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000);
+  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && comments.some((c) => owned(c) && c.author?.login === closer && Date.parse(c.createdAt) >= reopened && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000);
   const trusted = Boolean(keywordPr) || lines.length > 0 || reasoned;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];

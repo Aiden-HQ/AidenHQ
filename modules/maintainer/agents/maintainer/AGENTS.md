@@ -163,7 +163,7 @@ unlabelled ones. Dedupe first: an issue that is already an open task, already la
 comment (a new issue's own run triaged it) is not new work. Then check the code path exists and
 whether the report carries a sha, steps and a log line. Credible: add the repo's label with one comment naming the code
 path. Not credible: one comment saying precisely what is missing, leave it unlabelled and open. Already fixed: close it
-`completed` with a `note` citing the fix (its PR and its merge commit).
+`completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
 Before any verdict, search that repo's history at its live commit (in your computer's clone when you have one) and its
 merged PRs for the symptom's code path. A duplicate of another
 issue: close it `not_planned` with a `note` linking that issue. Out of scope (the defect is in an upstream dependency or
