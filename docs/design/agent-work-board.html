@@ -259,7 +259,7 @@ const card = (c) => {
   ${c.bad ? `<div class="callout bad"><b>${c.bad[0]}</b><span>${c.bad[1]}</span></div>` : ""}
   ${c.live ? `<div class="live"><i></i><span>${c.live[0]}</span></div>` : ""}
   ${c.status ? `<div class="statusline" style="--c:${c.status[1]}"><i></i>${c.status[0]}</div>` : ""}
-  <div class="c-foot"><span class="av ${t}">${m}</span><span class="who">${c.who}</span>${c.more ? `<span class="more-crew">+${c.more}</span>` : ""}<span class="sp"></span>${c.cost ? `<span>${c.cost}</span>` : ""}<span>${c.live ? c.live[1] : c.age}</span>${c.run ? `<a href="#/r/${c.run}" title="Open the run trace" aria-label="Open the run trace">↗</a>` : ""}</div>
+  <div class="c-foot"><span class="av ${t}">${m}</span><span class="who">${c.who}</span>${c.more ? `<span class="more-crew">+${c.more}</span>` : ""}<span class="sp"></span><span>${c.live ? c.live[1] : c.age}</span>${c.run ? `<a href="#/r/${c.run}" title="Open the run trace" aria-label="Open the run trace">↗</a>` : ""}</div>
 </article>`;
 };
 const D = {
