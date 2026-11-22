@@ -482,9 +482,9 @@ function graphqlNeed(errors: unknown, org: string, clientId?: string): { need?: 
     if (e?.type !== "FORBIDDEN") continue;
     const message = String(e.message ?? "").slice(0, 1000);
     const named = /the [`'"]?([A-Za-z0-9-]+)[`'"]? organization/i.exec(message)?.[1];
-    const who = named ?? org;
-    if (!who) continue;
     const fatal = !(Array.isArray(e.path) && e.path.includes("content"));
+    const who = named ?? (fatal ? org : ""); // an item's own refusal that names no org can't be pinned to the board's
+    if (!who) continue;
     if (e.extensions?.saml_failure === true) return { need: { cause: "sso", org: who, url: `https://github.com/orgs/${who}/sso`, message }, fatal };
     if (e.extensions?.ip_allow_list_failure === true) continue;
     if (/OAuth App|authorization credentials/i.test(message)) return { need: { cause: "restricted", org: who, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message }, fatal };
