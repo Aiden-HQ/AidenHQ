@@ -70,6 +70,10 @@ const allowed = (opt) => (TAKES[command] ?? []).includes(opt);
 // A value may itself start with `--` (a file named --notes.md); only a missing one, or an option this command takes, is
 // refused. `--opt=value` is recognised the same way, so `--body-file --title=x` is "needs a value", not a filename.
 const OPTION = /^(--fixes|--title|--body-file|--file|--keep)(=|$)/;
+const named = (opt, v) => {
+  if (v === undefined || v === "") fail(`${opt} needs a value\n${usage}`, 2);
+  return v;
+};
 const value = (i) => {
   const v = rest[i + 1];
   // A standalone help flag is help wherever it stands, never a filename: a file named --help is named with `=`.
@@ -78,19 +82,20 @@ const value = (i) => {
     process.exit(0);
   }
   if (v === undefined || OPTION.test(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
-  return v;
+  return named(rest[i], v);
 };
 for (let i = 0; i < rest.length; i++) {
   const arg = rest[i];
   // `--opt=value` names a value unambiguously, even one spelled like this CLI's own option (`--body-file=--help`).
-  const inline = /^(--fixes|--title|--body-file|--file)=(.*)$/.exec(arg);
+  const eq = arg.indexOf("=");
+  const inline = eq > 0 && ["--fixes", "--title", "--body-file", "--file"].includes(arg.slice(0, eq)) ? [arg, arg.slice(0, eq), arg.slice(eq + 1)] : null;
   if (arg === "-h" || arg === "--help") {
     console.log(usage);
     process.exit(0);
   } else if (inline) {
     if (!allowed(inline[1])) fail(`${inline[1]} isn't an option of aidenhq ${command}\n${usage}`, 2);
-    if (inline[1] === "--fixes") fixes.push(inline[2]);
-    else flags[inline[1].slice(2)] = inline[2];
+    if (inline[1] === "--fixes") fixes.push(named(inline[1], inline[2]));
+    else flags[inline[1].slice(2)] = named(inline[1], inline[2]);
   } else if (arg === "--fixes" || ["--title", "--body-file", "--file"].includes(arg)) {
     if (!allowed(arg)) fail(`${arg} isn't an option of aidenhq ${command}\n${usage}`, 2);
     if (arg === "--fixes") fixes.push(value(i)), i++;
