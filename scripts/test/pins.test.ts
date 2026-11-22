@@ -170,3 +170,28 @@ test("pins: a stage extending another inherits its apt repositories, and sibling
   assert.equal(problems.length, 1);
   assert.match(problems[0], /unpinned-now-a-problem/);
 });
+
+test("pins: a stage extending another keeps only the apt repositories it still has", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const write = `RUN echo "deb [trusted=yes] https://repo.example/apt trixie main" >/etc/apt/sources.list.d/r.list`;
+  const pkg = "RUN apt-get install -y jq=1.7.1-3";
+  const cases: [string, string[], string[]][] = [
+    ["kept", [write], ["https://repo.example/apt trixie main"]],
+    [`removed`, [write, "RUN rm -f /etc/apt/sources.list.d/r.list"], []],
+    ["rewritten", [write, 'RUN echo "deb [trusted=yes] https://repo.example/other trixie main" >/etc/apt/sources.list.d/r.list'], ["https://repo.example/other trixie main"]],
+  ];
+  for (const [why, lines, expected] of cases) {
+    const text = [`FROM debian:trixie-slim${d} AS base`, ...lines, "FROM base AS child", pkg].join("\n");
+    const r = scanFile("Dockerfile", text);
+    const [pin] = r.pins.filter((p) => p.kind === "apt");
+    assert.deepEqual(pin.sources, expected, why);
+    assert.deepEqual([pin.distro, pin.release], ["debian", "trixie"], why);
+    const tried = [];
+    await dateApt(pin, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+    // The file's own entry answers first; only without one does the base's Debian pocket.
+    assert.deepEqual(tried, expected.length ? expected : ["http://deb.debian.org/debian trixie main"], why);
+    // A removed repository no longer makes a later unpinned install a problem; a kept or rewritten one does.
+    const withUnpinned = scanFile("Dockerfile", [`FROM debian:trixie-slim${d} AS base`, ...lines, "FROM base AS child", "RUN apt-get install -y unpinned", pkg].join("\n"));
+    assert.equal(withUnpinned.problems.length, expected.length ? 1 : 0, why);
+  }
+});

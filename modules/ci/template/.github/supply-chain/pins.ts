@@ -32,7 +32,10 @@ import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts"
 import type { Exception, FetchError } from "./best-version.ts";
 
 export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
-interface State { repoAdded: boolean; sources: string[]; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+// `repos` holds the apt entries by sources.list.d file (key "" for a `deb` line naming no such file), so a stage that
+// extends another inherits the files it still has and an entry the parent rewrote or removed isn't carried over.
+interface State { repoAdded: boolean; repos: Map<string, string[]>; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+const sources = (s: State) => [...s.repos.values()].flat();
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
@@ -123,8 +126,20 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       else pins.push({ kind: "pypi", name: p[1]!.replace(/\[.*\]$/, ""), package: p[1]!.replace(/\[.*\]$/, ""), version: p[2], at });
     }
   }
-  if (/sources\.list\.d\//.test(cmd) && /(>|tee\b)/.test(cmd)) state.repoAdded = true;
-  for (const m of cmd.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)) state.sources.push(`${m[1]} ${m[2]} ${m[3]}`);
+  // Each `deb` line is filed under the sources.list.d file its own command writes, appends to or removes; one naming
+  // no file is kept apart. `rm` of a file (or of the whole directory) drops what it held.
+  for (const segment of cmd.split(/&&|\|\||;/)) {
+    const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
+    const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
+    const files = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
+    // A stage with no added repository left flags a later unpinned install again, as one that never added any does.
+    if (removes) { files.length ? files.forEach((f) => state.repos.delete(f)) : state.repos.clear(); state.repoAdded = state.repos.size > 0; continue; }
+    if (!debs.length) continue;
+    // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held.
+    const append = />>|\btee\b[^|;&]*\s-a\b/.test(segment);
+    for (const f of files.length ? files : [""]) state.repos.set(f, append ? [...(state.repos.get(f) ?? []), ...debs] : debs);
+    if (files.length) state.repoAdded = true;
+  }
   // Per-release arms: `case "$codename" in`, a label (`noble)`, `noble|resolute)`) then the arm's commands, `;;`, `esac`.
   if (/^\s*case\s+"?\$\{?(codename|VERSION_CODENAME)\b/.test(cmd)) state.releaseCase = true;
   else if (/^\s*esac\b/.test(cmd)) state.releaseCase = false;
@@ -133,7 +148,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   for (const m of cmd.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
     for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
       const [pkg, ver] = a.split("=") as [string, string | undefined];
-      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, releases: state.arm, ...(state.arm ? {} : state.base), at });
+      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
       else if (state.repoAdded) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
     }
   }
@@ -170,8 +185,8 @@ function hostPins(path: string, text: string): { pins: Pin[]; problems: string[]
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
-  const fresh = (): State => ({ repoAdded: false, sources: [], releases: new Set() });
-  const clone = (s: State): State => ({ ...s, sources: [...s.sources], releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+  const fresh = (): State => ({ repoAdded: false, repos: new Map(), releases: new Set() });
+  const clone = (s: State): State => ({ ...s, repos: new Map([...s.repos].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
   let state: State = fresh();
   const at = (n: number) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {
