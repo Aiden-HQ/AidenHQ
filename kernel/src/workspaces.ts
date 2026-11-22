@@ -41,14 +41,13 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
   engines: () => string[];
   log?: (msg: string, f?: Record<string, unknown>) => void; now?: () => number; used?: () => number;
 }) {
-  /** Who used a folder: the (agent, task) pairs of its jobs, and when the last one ended. */
-  type Use = { pairs: { agent: string; task: string }[]; last: number };
-  const add = (m: Map<string, Use>, key: string | null, agent: string, task: string, last: number) => {
-    if (!key) return;
-    const u = m.get(key) ?? { pairs: [], last: 0 };
-    u.pairs.push({ agent, task }); u.last = Math.max(u.last, last);
-    m.set(key, u);
-  };
+  /** Who used a folder: the (agent, task) pairs of its jobs, when the last one ended and when the last one started. */
+  type Use = { pairs: { agent: string; task: string }[]; last: number; started: number };
+  type Row = { agent: string; task: string; last: number; started: number };
+  const use = (rows: Row[]): Use | undefined => rows.length ? { pairs: rows.map(({ agent, task }) => ({ agent, task })), last: Math.max(...rows.map((r) => r.last)), started: Math.max(...rows.map((r) => r.started)) } : undefined;
+  // Read in the folder's own synchronous step, so a job that ended while the pass yielded counts.
+  const useIdent = (identifier: string) => use(db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE identifier = ? GROUP BY agent, task").all(identifier) as Row[]);
+  const usePairs = (pairs: { agent: string; task: string }[] = []) => use(pairs.flatMap(({ agent, task }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE task = ? AND agent = ? GROUP BY agent, task").all(task, agent) as Row[]));
   // In use: a job admitted or running, or one that ended within a day whose box is not released yet (release still reads the
   // workspace and the box keeps its mounts until then, boxes.ts tend; a release stuck for longer pins nothing).
   const LIVE = () => `(state IN ('admitted', 'running') OR (box IS NOT NULL AND (released IS NULL OR released < 0) AND COALESCE(ended, at) > ${Math.floor(now() - DAY)}))`;
@@ -64,20 +63,18 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
     const until = now() + budgetMs;
     const pressure = used() >= PRESSURE;
     const idleMs = (pressure ? 1 : IDLE_DAYS) * DAY, closedMs = pressure ? 0 : CLOSED_DAYS * DAY;
-    const byIdent = new Map<string, Use>(), byHome = new Map<string, Use>();
-    for (const r of db.prepare("SELECT agent, task, identifier, MAX(COALESCE(ended, at)) AS last FROM jobs GROUP BY agent, task, identifier").all() as { agent: string; task: string; identifier: string | null; last: number }[]) {
-      add(byIdent, r.identifier, r.agent, r.task, r.last);
-      add(byHome, homeName(r.agent, r.task), r.agent, r.task, r.last);
-    }
+    // An engine home's name is its (agent, task) (sandbox.ts engineState); the pairs that exist, by name.
+    const byHome = new Map<string, { agent: string; task: string }[]>();
+    for (const { agent, task } of db.prepare("SELECT DISTINCT agent, task FROM jobs").all() as { agent: string; task: string }[]) byHome.set(homeName(agent, task), [...(byHome.get(homeName(agent, task)) ?? []), { agent, task }]);
     const running = () => { try { return new Set((db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]).map((r) => checkAttempt(r.id, r.at))); } catch { return new Set<string>(); } };
     // Its sessions went with it: the next job starts fresh instead of resuming one whose files are gone (boxes.ts lastSession).
     const fresh = (u: Use, engine?: string) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = COALESCE(?, engine) AND NOT ${LIVE()}`).run(agent, task, engine ?? null); };
     const roots: { root: string; use: (name: string) => Use | undefined; busy: (name: string, u?: Use) => boolean; gone?: (u: Use) => void }[] = [
-      { root: join(workDir, "tasks"), use: (n) => byIdent.get(n), busy: liveIdent, gone: (u) => fresh(u) },
-      { root: join(workDir, ".cache-layers"), use: (n) => byIdent.get(n), busy: liveIdent },
+      { root: join(workDir, "tasks"), use: useIdent, busy: liveIdent, gone: (u) => fresh(u) },
+      { root: join(workDir, ".cache-layers"), use: useIdent, busy: liveIdent },
       { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
       ...engines().map((kind) => ({
-        root: join(stateDir, kind), use: (n: string) => byHome.get(n), busy: (_: string, u?: Use) => livePair(u),
+        root: join(stateDir, kind), use: (n: string) => usePairs(byHome.get(n)), busy: (_: string, u?: Use) => livePair(u),
         gone: (u: Use) => fresh(u, kind),
       })),
     ];
@@ -99,8 +96,9 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
         if (busy(name, u)) continue;
         const last = Math.max(u?.last ?? 0, st.mtimeMs);
         const closed = (u?.pairs ?? []).map(({ task }) => closedAt(task));
-        // Closed: every task of it closed for the grace, and no job since (work after a reopen is never the closed rule's).
-        const why = now() - last > idleMs ? "idle" : closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs && c >= last) ? "closed" : undefined;
+        // Closed: every task of it closed for the grace, and no job started since (the job that closed it may end after the
+        // close; work after a reopen is only ever the idle rule's).
+        const why = now() - last > idleMs ? "idle" : u && closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs && c >= u.started) ? "closed" : undefined;
         if (!why) continue;
         // One folder that can't be moved (its parent's mode, a race) is logged and skipped; the rest of the pass goes on.
         try {
