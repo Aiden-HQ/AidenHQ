@@ -556,18 +556,19 @@ it("attributes a restriction to the org GitHub names, keeps a refusal inside one
   await expect(bad.graphql("q", { org: "acme" })).rejects.toThrow(/answered 502/);
 });
 
-it("keeps an org's warning while another refused request still fails, and clears a board's across cursors", async () => {
+it("keeps an org's warning while another refused request fails, and clears a board's only after its full traversal", async () => {
   const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
-  let refuse = new Set(["a", "b"]);
-  const a = createAccess({ auth: auth(), fetchImpl: async (_u, init) => {
-    const v = JSON.parse(String((init as RequestInit).body)).variables;
-    return refuse.has(v.n) ? forbidden({ saml_failure: false }, msg) : answer(200, { data: { ok: 1 } });
-  } });
-  for (const n of ["a", "b"]) await a.graphql("q", { org: "acme", n }).catch(() => undefined);
-  refuse = new Set(["b"]);
-  await a.graphql("q", { org: "acme", n: "a" });
+  const refused = (hasNext: boolean) => answer(200, { data: { items: { pageInfo: { hasNextPage: hasNext } } }, errors: [{ type: "FORBIDDEN", path: ["items", "nodes", 0, "content"], extensions: { saml_failure: false }, message: msg }] });
+  const clean = (hasNext: boolean) => answer(200, { data: { items: { pageInfo: { hasNextPage: hasNext } } } });
+  let page2 = refused(false);
+  const a = createAccess({ auth: auth(), clientId: "cid", fetchImpl: async (_u, init) => (JSON.parse(String((init as RequestInit).body)).variables.after ? page2.clone() : clean(true)) });
+  await a.graphql("q", { org: "acme", n: 1 }); // clean first page, refused last page
+  await a.graphql("q", { org: "acme", n: 1, after: "c" });
   expect(a.status().problems).toHaveLength(1);
-  refuse = new Set();
-  await a.graphql("q", { org: "acme", n: "b", after: "cursor" }); // a later full read has no cursor the refused page carried
+  await a.graphql("q", { org: "acme", n: 1 }); // the next pass: first page clean, the refused page is read again
+  expect(a.status().problems).toHaveLength(1);
+  page2 = clean(false);
+  await a.graphql("q", { org: "acme", n: 1 });
+  await a.graphql("q", { org: "acme", n: 1, after: "c" }); // a full clean traversal
   expect(a.status().problems).toHaveLength(0);
 });

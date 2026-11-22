@@ -204,7 +204,7 @@ export function createAccess(o: {
   let grantedFor: string | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string }>();
   /** The GraphQL request that set a problem: only that same request succeeding clears it (REST's per-org clear leaves it). */
-  const read = new Map<string, string>(); // request (query and variables) -> the org its problem is recorded under
+  const read = new Map<string, Map<string, boolean>>(); // GraphQL read (query and variables, not the cursor) -> the orgs it was refused for, true when seen in the traversal under way
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
@@ -401,7 +401,7 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && ![...read.values()].includes(ownerOf(path)!.toLowerCase())) problems.delete(ownerOf(path)!.toLowerCase());
+    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && ![...read.values()].some((m) => m.has(ownerOf(path)!.toLowerCase()))) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -431,18 +431,26 @@ export function createAccess(o: {
       if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
       const org = typeof variables.org === "string" ? variables.org : "";
       const key = JSON.stringify([query, { ...variables, after: undefined }]); // a board's pages are one read: the cursor isn't part of it
-      const { need, fatal } = graphqlNeed(body?.errors, org, o.clientId);
-      if (need) {
+      const refused = graphqlNeeds(body?.errors, org, o.clientId);
+      // A board is read page by page: its first page starts a traversal, and what was refused before and isn't again by the last page
+      // is recovered.
+      const seen = read.get(key) ?? new Map<string, boolean>();
+      if (!variables.after) for (const k of seen.keys()) seen.set(k, false);
+      for (const { need, fatal } of refused) {
         // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content
         // (an issue of another org) is recorded but leaves the rest of the board readable.
-        read.set(key, need.org.toLowerCase());
+        seen.set(need.org.toLowerCase(), true);
+        read.set(key, seen);
         if (fatal) fail(need);
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}) });
-      } else if (read.has(key) && body?.data && !body.errors?.length) {
-        // Cleared only by the request that was refused succeeding again.
-        const orgOf = read.get(key)!;
-        read.delete(key);
-        if (![...read.values()].includes(orgOf)) problems.delete(orgOf); // another refused request keeps the org's warning
+      }
+      if (seen.size && body?.data && !JSON.stringify(body).includes('"hasNextPage":true')) {
+        for (const [k, fresh] of [...seen]) {
+          if (fresh) continue;
+          seen.delete(k);
+          if (![...read.values()].some((m) => m.has(k))) problems.delete(k); // another refused read keeps the org's warning
+        }
+        if (!seen.size) read.delete(key);
       }
       return body;
     },
@@ -478,7 +486,8 @@ export function createAccess(o: {
  * sign-in problem). The org is the one the message names (as REST's classifier reads it), else the one asked about. Any other
  * error is just an error. The full message is kept. `fatal`: the refusal hit the read itself, not one item's `content`.
  */
-function graphqlNeed(errors: unknown, org: string, clientId?: string): { need?: Extract<Need, { cause: "sso" | "restricted" }>; fatal: boolean } {
+function graphqlNeeds(errors: unknown, org: string, clientId?: string): { need: Extract<Need, { cause: "sso" | "restricted" }>; fatal: boolean }[] {
+  const out: { need: Extract<Need, { cause: "sso" | "restricted" }>; fatal: boolean }[] = [];
   for (const e of Array.isArray(errors) ? errors : []) {
     if (e?.type !== "FORBIDDEN") continue;
     const message = String(e.message ?? "").slice(0, 1000);
@@ -486,11 +495,10 @@ function graphqlNeed(errors: unknown, org: string, clientId?: string): { need?: 
     const fatal = !(Array.isArray(e.path) && e.path.includes("content"));
     const who = named ?? (fatal ? org : ""); // an item's own refusal that names no org can't be pinned to the board's
     if (!who) continue;
-    if (e.extensions?.saml_failure === true) return { need: { cause: "sso", org: who, url: `https://github.com/orgs/${who}/sso`, message }, fatal };
-    if (e.extensions?.ip_allow_list_failure === true) continue;
-    if (/OAuth App|authorization credentials/i.test(message)) return { need: { cause: "restricted", org: who, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message }, fatal };
+    if (e.extensions?.saml_failure === true) out.push({ need: { cause: "sso", org: who, url: `https://github.com/orgs/${who}/sso`, message }, fatal });
+    else if (e.extensions?.ip_allow_list_failure !== true && /OAuth App|authorization credentials/i.test(message)) out.push({ need: { cause: "restricted", org: who, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message }, fatal });
   }
-  return { fatal: false };
+  return out;
 }
 
 const RECONNECT = { label: "Reconnect", reconnect: true } as const;
