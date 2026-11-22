@@ -5,9 +5,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.ts";
 
-async function call({ blockers, tool = "task_finish", args = { comment: "Done: triaged." } }) {
+async function call({ blockers, tool = "task_finish", args = { comment: "Done: triaged." }, owners = false }) {
   const relations = new Map(blockers.map((b) => [b.id, b]));
-  const issue = { id: "cur", identifier: "WOR-2355", title: "Triage the fleet", status: "blocked", assigneeAgentId: "me", createdByAgentId: "aiden" };
+  // `owners`: a task the owner gave (only that one goes back to him on a handoff).
+  const issue = { id: "cur", identifier: "WOR-2355", title: "Triage the fleet", status: "blocked", assigneeAgentId: "me", ...(owners ? { createdByUserId: "owner" } : { createdByAgentId: "aiden" }) };
   const patches = [];
   const comments = [];
   const handler = (req, res) => {
@@ -54,7 +55,7 @@ test("task_finish closes a task whose only blocker is cancelled and names it", a
 });
 
 test("task_handoff releases a cancelled blocker too", async () => {
-  const { error, patches } = await call({ blockers: [cancelled], tool: "task_handoff", args: { issue: "cur", comment: "Back to you." } });
+  const { error, patches } = await call({ blockers: [cancelled], tool: "task_handoff", args: { issue: "cur", comment: "Back to you." }, owners: true });
   assert.equal(error, undefined);
   assert.deepEqual(patches, [{ assigneeUserId: "owner", assigneeAgentId: null, status: "todo", comment: "Back to you." }, { blockedByIssueIds: [] }, { assigneeUserId: "owner", assigneeAgentId: null, status: "todo", comment: "Back to you." }]);
 });

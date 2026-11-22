@@ -28,7 +28,7 @@ providers:
     url: http://apps-mcp:8090/aidenhq/v1/executor
     auth: apps_service_key
 # Each tool call below is filed as its kind. The plan checks the caller (an app's owner, or the DevOps Engineer during an
-# incident) and pins the exact commit; a stateful deploy is raised to the reviewer, with the panel when it touches a migration.
+# incident) and pins the exact commit; a stateful deploy is raised to the reviewer.
 writes:
   deploy:
     args: schemas/deploy.json

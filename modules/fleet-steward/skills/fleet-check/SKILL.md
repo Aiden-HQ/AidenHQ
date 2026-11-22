@@ -71,12 +71,12 @@ through their own card or the chief of staff, never through you: log it as `owne
     steps. An agent can do it (a command, a check, a config change): `task_route` it to that agent with the exact step. No
     agent can yet (a capability is missing): `task_route` it to the Engineer with "make this work without a person", the step
     as the spec. Only a sign-in or a credential the owner must create stays theirs: "The owner" below.
-- **A parked branch nobody moved** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch until the kernel
-  parked it, and nobody moved it since. Read the cards and the reviewer's notes (`task_approvals`, `task_comments`) and the
-  delegator's task, then rule. Only its delegator's or the chief of staff's decision lifts the park on that task, never your
-  comment, so you settle it by closing it: `task_finish` when the work already landed elsewhere, or `task_cancel` naming a
-  new, narrower task you file for the same agent (`task_delegate` to the Engineer) with what the reviewer needs or the diff
-  narrowed to the files the reviewer names. You change the work, never the reviewer's verdict.
+- **Repeated malice rejections** (`loop:<task>:<branch>`): the AI reviewer, which rejects only what it finds malicious,
+  rejected the same task's writes again and again, and nothing on it was approved since. Either an agent or a component may
+  be compromised, or the reviewer keeps misreading something. Read the cards and the reviewer's notes (`task_approvals`,
+  `task_comments`), then rule: `task_cancel` the work and have the agent looked at, or file the false reject as a planted
+  reviewer case through the product-bug path and `task_cancel` naming a new task for the same agent without what was
+  flagged. You change the work, never the reviewer's verdict.
 - **An answered wait that never resumed** (`unresumed:<task>`): `task_route` the task (no `to`) naming the answering comment
   and what is asked next. A task that still does not resume is a product bug (slug `answered-wait`) with the task, the wait's
   start and the answer's time.

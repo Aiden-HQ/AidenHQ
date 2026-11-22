@@ -23,7 +23,6 @@
     "../.github/ci/select.ts",
     "../modules/agent-builder/scripts/agent-eval.ts",
     "../modules/ai-reviewer/scripts/reviewer-eval.ts",
-    "../modules/ai-reviewer/service/src/review-checklist.ts",
     "../modules/ai-reviewer/service/src/review-files.ts",
     "../modules/ai-reviewer/service/src/review.ts",
     "../modules/ai-reviewer/service/src/server.ts",

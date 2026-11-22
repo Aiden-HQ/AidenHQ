@@ -30,19 +30,16 @@ async function gitHost(t, checks = platform) {
     n++;
     branches = [{ repo, branch: `agent/TASK-${n}/fix`, sha: SHA, files, defaultBranch: "main", empty: false }];
     const r = await k.writes.request({ kind: "module", module: "github", roles: [], tools: {} }, { kind: "github.push", args: { workspace: `TASK-${n}`, only: [{ repo, branch: branches[0].branch, sha: SHA }] }, task: `TASK-${n}` });
-    return [r.tier, r.panel, r.rule];
+    return [r.tier, r.rule];
   };
 }
 
-test("a product push touching the gate's core is the panel's; docs and app code aren't raised; the owner-approval file is the owner's and goes alone", async (t) => {
+test("a product push is the reviewer's; app code runs at once; the owner-approval file is reviewed and goes alone", async (t) => {
   assert.equal(github.push.paths && github.pr.paths && github.merge.paths, true, "github's git writes read their paths");
   const push = await gitHost(t);
-  assert.deepEqual(await push("acme/aidenhq", ["kernel/src/tier.ts", "docs/a.md"]), [1, true, "gate-core"]);
-  assert.deepEqual(await push("acme/aidenhq", ["compose.yaml"]), [1, true, "gate-core"]);
-  assert.deepEqual(await push("acme/aidenhq", ["modules/dispatch/module.yaml"]), [1, true, "gate-core"]);
-  assert.deepEqual(await push("acme/aidenhq", ["docs/a.md"]), [1, false, "product-push-branch"], "the plan's product floor, nothing more");
-  assert.deepEqual(await push("acme-agents/app", ["src/a.ts"]), [0, false, null], "an app branch runs at once");
-  assert.deepEqual(await push("acme-agents/app", [".github/supply-chain-source-exceptions.yaml"]), [2, false, "owner-path"], "the owner's, under full autonomy too");
+  for (const files of [["kernel/src/tier.ts", "docs/a.md"], ["compose.yaml"], ["modules/dispatch/module.yaml"], ["docs/a.md"]]) assert.deepEqual(await push("acme/aidenhq", files), [1, "product-push-branch"], files.join());
+  assert.deepEqual(await push("acme-agents/app", ["src/a.ts"]), [0, null], "an app branch runs at once");
+  assert.deepEqual(await push("acme-agents/app", [".github/supply-chain-source-exceptions.yaml"]), [1, "owner-path"], "the reviewer's, labelled the owner's path");
   await assert.rejects(push("acme-agents/app", [".github/supply-chain-source-exceptions.yaml", "src/a.ts"]), (e) => e.status === 422 && /owner-approval-alone/.test(e.message));
 });
 

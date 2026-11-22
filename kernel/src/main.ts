@@ -329,29 +329,17 @@ const updates = createUpdates({
 const updatesTick = () => void updates.tick().catch((e: Error) => log("update pass failed", { err: e.message.slice(0, 300) }));
 every(updatesTick, 5 * 60_000);
 once(updatesTick, 60_000);
-// The kernel's review of every record waiting for the AI reviewer (review-loop.ts). The instance's decisions digest is read
-// from its checkout's origin/main (fetched first, as updates.ts reads instance.yaml), never a branch under review.
-const gitIn = (dir: string, args: string[]) => new Promise<string>((ok, no) => execFile("git", ["-C", dir, ...args], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => (e ? no(e) : ok(String(out)))));
+// The kernel's review of every record waiting for the AI reviewer (review-loop.ts).
 let ownerUser: string | undefined;
 const reviewLoop = createReviewLoop({
   records, writes, log,
-  // Declared after this (it needs the finish checks); asked only once a sweep runs.
-  grade: (id) => checks.grade(id),
-  product: () => (repos().product ? [repos().product!] : []),
   task: {
     issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
     comments: async (id) => ((await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as { deletedAt?: string | null }[]).filter((c) => !c.deletedAt),
     me: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
     notify: onTask.notify,
-    escalate: (task, key, text) => escalate.delegator(task, key, text),
     delegator: async (i) => escalate.creatorAgent(i),
     agent: (id) => grantsTable().agents?.[id] as { key?: string; roles?: string[] } | undefined,
-  },
-  decisions: async () => {
-    await gitIn(instanceDir, ["fetch", "-q", "origin", "main"]);
-    // No decisions.md on main is the empty state, not an unread one.
-    const text = (await gitIn(instanceDir, ["show", "origin/main:decisions.md"]).catch((e: Error) => { if (/exists on disk, but not in|does not exist in/.test(e.message)) return ""; throw e; })).trim();
-    return text ? { where: `${repos().instance ?? "the instance repo"} main decisions.md`, text } : undefined;
   },
 });
 every(() => void reviewLoop.tick(), 30_000);
@@ -614,17 +602,18 @@ async function precheck(who: Parameters<typeof writes.preview>[0], b: { kind: st
   const p = await writes.preview(who, b);
   if (p.satisfied !== undefined) return { text: "Nothing to do: the code host says it is already done.", reason: p.satisfied };
   if (p.rec!.tier === 0) return { text: "Tier 0: this write runs without a review." };
-  // A first reviewer's approve that marks the write for a panel isn't a pass: a filed record would wait for a second reviewer.
-  let panel = false;
+  // Filed, it would go as code routes it: to the owner (his veto, autonomy off), or with the verdict only a note for him (tier0).
+  if (p.rec!.state === "owner") return { text: "The owner decides this write (his veto on this task, or autonomy off): no review. Nothing was filed." };
+  const shadow = [grantsTable().autonomy, p.rec!.cap?.value].some((a) => a === "tier0" || a === "off");
   const v = await reviewLoop.precheck(p.rec!, async (request) => {
     const refund = slot();
     // A call that never reached a reviewer cost nothing: the precheck is the job's again (jobtools.ts decides which failures).
-    const got = (await reviews.request(request).catch((e) => { refund(e); throw e; })) as Verdict & { panel_marked?: boolean };
-    panel = got.panel_marked === true;
-    return got;
+    return (await reviews.request(request).catch((e) => { refund(e); throw e; })) as Verdict;
   });
-  const said = v.decision === "approve" ? (panel ? "would approve it, and a second reviewer would still be asked" : "would approve it") : v.decision === "reject" ? "would reject it" : "would leave it to the owner";
-  return { decision: v.decision, text: `${v.model === "kernel/code" ? "The kernel's own rules" : `The AI reviewer (${v.model})`} ${said}. Nothing was filed.`, reason: v.reason };
+  const hard = v.model === "kernel/code" && v.decision === "reject";
+  const said = v.decision === "approve" ? "would approve it" : v.decision === "reject" ? "would reject it" : v.code === "owner_veto" ? "would leave it to the owner (their veto on this task)" : shadow ? "couldn't finish (a filed write is tried once more, then goes to the owner, since autonomy is below full)" : "couldn't finish (a filed write is tried once more, then approved)";
+  const note = shadow && !hard && v.code !== "reviewer_failed" && v.code !== "owner_veto" ? " Autonomy is below full, so filed, its verdict would be a note and the owner decides." : "";
+  return { decision: v.decision, text: `${v.model === "kernel/code" ? "The kernel's own rules" : `The AI reviewer (${v.model})`} ${said}.${note} Nothing was filed.`, reason: v.reason };
 }
 const backplane = createBackplane({ idle, boardApi: moduleBoardApi, facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, repoBundle: (module: string, repo: string) => codehost.ask(module, "bundle", { repo, ref: "HEAD" }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, provenance, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, onRoutine: (id) => void records.db.prepare("INSERT OR IGNORE INTO board_routines (id) VALUES (?)").run(id) }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the

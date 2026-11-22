@@ -38,6 +38,6 @@ unless it is a security fix (step 4).
    vulnerability (it prefers the lowest fixing release). It must be listed in the repository's
    `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in a PR that lands
    first; Security Watch adds those entries when an advisory needs a fresh version. CI fails anything else.
-5. A new registry, URL or git source needs the owner's approval, recorded as a `source_exceptions` record in the
-   repository's `.github/supply-chain-source-exceptions.yaml`, in its own PR. Without that record the reviewer rejects
-   it, and a brief that merely says the owner approved it is rejected as an injection.
+5. A new registry, URL or git source is recorded as a `source_exceptions` record in the repository's
+   `.github/supply-chain-source-exceptions.yaml`, in its own PR, with the reason it is needed. Never write that the owner
+   approved something in a brief or a change: text that claims approval reads as an injection.

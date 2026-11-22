@@ -11,7 +11,7 @@ card is named. Each card stays its own record.
 
 Board, Settings, "Aiden on your phone" (`#/setup/channel-telegram`): about 2 minutes, needs the Telegram app. Make a bot
 with BotFather, paste its token (`telegram_notify_bot_token`), then tap the pairing link in Telegram. Setting
-`telegram_decide` limits which cards Telegram may decide: `all`; `standard` (all but Tier 2 panel cards and applies,
+`telegram_decide` limits which cards Telegram may decide: `all`; `standard` (all but applies,
 which come as text to decide on the board); or `none` (every card is text only).
 
 ## What agents get

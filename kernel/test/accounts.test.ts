@@ -69,7 +69,7 @@ async function adminOn(t, dir, now, boardUrl) {
   const decided = [];
   const records = openRecords(join(dir, "kernel.db"));
   const card = { sentence: "Push the fix.", changes: "c", reads: "r", cost: "0", details: "" };
-  const file = (kind, module) => records.file({ kind, module, args: { kind }, targets: {}, executor: { module }, policy: "p", tier: 2, panel: false, card, requester: { agent: "", key: "ada", name: "ada", roles: [], kind: "run" }, task: "t-7", identifier: "WOR-7", state: "owner" });
+  const file = (kind, module) => records.file({ kind, module, args: { kind }, targets: {}, executor: { module }, policy: "p", tier: 2, card, requester: { agent: "", key: "ada", name: "ada", roles: [], kind: "run" }, task: "t-7", identifier: "WOR-7", state: "owner" });
   const push = file("runner.push", "runner");
   const deploy = file("acme.deploy", "acme");
   const writes = { decide: (id, b) => (decided.push({ id, ...b }), { task: "t-7", identifier: "WOR-7", card: { sentence: "Deploy." }, state: "approved" }) };

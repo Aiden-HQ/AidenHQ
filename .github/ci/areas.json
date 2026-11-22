@@ -36,7 +36,7 @@
     {"name": "modules/security", "secs": 1, "job": "modules", "run": "node --test test/*.test.ts", "paths": ["modules/security"]},
     {"name": "modules/engine-codex", "secs": 2, "job": "modules", "run": "NODE_PATH=../../scripts/node_modules node --test test/*.test.ts", "paths": ["modules/engine-codex", "kernel/sdk"]},
     {"name": "modules/ai-reviewer", "secs": 2, "job": "modules", "run": "npm test", "paths": ["modules/ai-reviewer", "kernel/src", "services/shared"]},
-    {"name": "modules/github", "secs": 15, "job": "modules", "run": "npm test", "paths": ["modules/github", "modules/ai-reviewer/service/security/checklist.json", "kernel/src", "kernel/sdk", "kernel/test/helpers.ts", "kernel/package-lock.json", "modules/engineering"]},
+    {"name": "modules/github", "secs": 15, "job": "modules", "run": "npm test", "paths": ["modules/github", "kernel/src", "kernel/sdk", "kernel/test/helpers.ts", "kernel/package-lock.json", "modules/engineering"]},
     {"name": "modules/codehost-local", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/codehost-local", "kernel/src", "kernel/sdk/src", "modules/github"]},
     {"name": "modules/platform", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/platform", "modules"]},
     {"name": "modules/grading", "secs": 4, "job": "modules", "run": "npm test", "paths": ["modules/grading", "kernel/src", "ops/grades-move.ts"]},

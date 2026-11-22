@@ -1,5 +1,5 @@
 name: ai-reviewer
-description: "The AI reviewer: decides Tier 1 requests (approve, reject, or the owner's), one schema-bound model call whose only tools read the request's own change (any size), a second reviewer of another family on an unsure or authority-expanding change."
+description: "The AI reviewer: blocks only explicit malice and approves everything else (fail open), one schema-bound model call of another family than the requester's whose only tools read the request's own change (any size)."
 license: MIT
 kernel: { reviewer: 1 }
 # reviewer@1 (kernel/sdk/src/reviewer.ts): the kernel sends each review to the service with ai_reviewer_key; the verdict goes
@@ -35,7 +35,7 @@ check_jobs:
       cwd: modules/ai-reviewer
       cases: test/reviewer-cases
       files: [ scripts/reviewer-eval.ts, test/case-pad.ts, service/src/aidenhq-sdk/pass-rule.ts, test/retired-cases.json ]
-      expect: [ expect, expect_code, expect_second, expect_flag ]
+      expect: [ expect, expect_code ]
 settings:
   # Whether the AI reviewer reviews code-host pushes and PRs: all (every one); none (no push or PR on any repo); or
   # unless_code_review_mandatory (none on a repo code review gates: a `mandatory: true` combo). A push or PR skipped is approved

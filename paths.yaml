@@ -1,16 +1,16 @@
 # The product repo's path inventory (spec §4.4): how carefully a change to each path is read, and which role owns it.
 # scripts/paths.ts compiles it with each official module's `paths:` (and every privileged module's folder, at least the
 # reviewer's) into config/kernel/paths.json, which the kernel's tier function reads (kernel/src/paths.ts). Sensitivity:
-# 0 runs at once, 1 the AI reviewer, panel the reviewer and a second one on another model family, 2 the owner. It only
-# raises: the highest entry a path matches wins. owner_role routes work to the role holding the path; it grants nothing.
+# 0 runs at once; 1 and 2 the AI reviewer (2 labels the owner's paths on the card). It only raises: the highest entry a path
+# matches wins. owner_role routes work to the role holding the path; it grants nothing.
 # Patterns: `**` any run, `*` one segment, `{a,b}` either, a trailing `/` the whole folder. `repo`: product (default),
 # modules (the official modules repo) or any.
 #
-# The gate's own core and anything that can bypass or widen it (owner, 2026-11-14) is the panel's: the approval path, the
+# The gate's own core and anything that can bypass or widen it (owner, 2026-11-14) is reviewed (labelled gate-core): the approval path, the
 # state it trusts and the code host's GitHub writes, the job jail, who an agent is and what it may call, the board's approval
 # records, decision routes and sign-in, the sandboxes, the kernel, host privileges, the security checks and the product's CI.
 paths:
-  - sensitivity: panel
+  - sensitivity: 1
     owner_role: platform-engineer
     patterns:
       - scripts/{computers,modules,paperclip-setup}.ts
@@ -33,14 +33,14 @@ paths:
       - .github/
       - "**/.github/"
       # Compose files: what runs on the host, with which mounts, privileges, networks and env. Any change, an image bump
-      # included, is the panel's.
+      # included, is reviewed.
       - "{,docker-}compose*.{yaml,yml}"
       - "**/{,docker-}compose*.{yaml,yml}"
   # The official modules' half of the gate's core: the engines a job runs, the channels, the AI reviewer, the code hosts (the
   # App's tokens, the merge gate, the git rules, the eval gate), the platform check, graded done, dispatch (which runs every
   # agent's job), and the apps platform's and Primer's write kinds and executors. kernel/test/paths.test.ts holds every file
-  # in these folders to a panel entry.
-  - sensitivity: panel
+  # in these folders to a reviewed entry.
+  - sensitivity: 1
     owner_role: platform-engineer
     patterns:
       - modules/engine-*/
