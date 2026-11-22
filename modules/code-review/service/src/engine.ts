@@ -1645,15 +1645,19 @@ export function createEngine(d: EngineDeps) {
 
   /**
    * A `fixed` claim recorded after its head's mandatory recheck started was never read by it, and with no newer commit no review
-   * ever would: one more mandatory recheck of that head is queued (low effort, the same model). Once per claim: any mandatory recheck
-   * of the head made since the claim (queued, running, or ended, skipped included) is the one it gets.
+   * ever would: one more mandatory recheck of that head is queued (low effort, the same model). Once per claim, once the head's runs have settled: any mandatory recheck
+   * of the head made since the claim (ended, skipped included) is the one it gets.
    */
   function recheckClaims(cfg: Repo) {
-    for (const p of all<{ number: number; head: string; base: string; author: string }>("SELECT number, head, base, author FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
-      const at = one<{ at: string | null }>("SELECT MAX(claimed_at) at FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND severity = 'important' AND claim LIKE 'fixed:%'", cfg.repo, p.number)?.at;
-      if (!at) continue;
+    for (const p of all<{ number: number; head: string; base: string; author: string; draft: number }>("SELECT number, head, base, author, draft FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+      if (p.draft && !cfg.drafts) continue;
+      const ids = openGating(cfg.repo, p.number).filter((f) => f.pending).map((f) => f.id);
+      if (!ids.length) continue;
+      const at = one<{ at: string | null }>(`SELECT MAX(claimed_at) at FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND claim LIKE 'fixed:%' AND id IN (${ids.map(() => "?").join(",")})`, cfg.repo, p.number, ...ids)?.at;
+      // Not while a mandatory run of the head is still queued or running: it settles first (the verdict keeps one run per combo, and it may still report).
+      if (!at || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND status IN ('queued', 'running')", cfg.repo, p.number, p.head)) continue;
       const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head);
-      if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR status = 'queued' OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
+      if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
       queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push" });
     }
   }
