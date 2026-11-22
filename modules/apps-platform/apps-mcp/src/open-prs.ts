@@ -26,7 +26,7 @@ const LIST_LIMIT = 500; // the code host's open-PR list stops here (ops.ts): a n
 /**
  * The open GitHub PRs among the refs the kernel recorded (issues included): state from the warehouse's row where it has one, else from
  * the code host's list of the repo's open PRs (one call per repo; the warehouse syncs only the configured orgs and lags by up to 15
- * minutes). A recorded PR absent from that list is closed. A repo outside the module's read grant (403) is not looked up; any other
+ * minutes). A recorded PR absent from that list is closed. A repo outside the module's read grant (403) or gone (404) is not looked up; any other
  * failure, or a list cut at its limit with a number still missing, throws. Repos are lower-cased: one identity per PR whichever source
  * answers.
  */
@@ -41,7 +41,7 @@ export async function recordedOpenPrs(ours: Recorded[], rows: WarehouseRow[], li
     try {
       list = await listOpen(repo);
     } catch (err) {
-      if ((err as { status?: number }).status === 403) continue;
+      if ([403, 404].includes((err as { status?: number }).status ?? 0)) continue;
       throw err;
     }
     const found = list.filter((p) => numbers.has(p.number));
