@@ -464,9 +464,9 @@ export function patchGroups(root: string, base: string, files: string[], budget 
     if (!cur.files.includes(file)) cur.files.push(file);
   };
   for (const path of files) {
-    // A literal pathspec also matches what lies under the path (a file that became a directory): only the path's own record is its patch.
-    const own = `diff --git a/${path} b/${path}\n`;
-    const patch = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, "HEAD", "--", `:(literal)${path}`]).split(/^(?=diff --git )/m).filter((r) => r.startsWith(own)).join("");
+    // The path's own patch, whatever git does to its name in a header (it quotes some): the files under it (a file that became a
+    // directory) are left out by an exclude pathspec, never by reading headers.
+    const patch = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, "HEAD", "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
     if (!patch) { oversize.push(`${path} (no patch could be made for it)`); continue; }
     if (patch.length <= budget) { add(patch.endsWith("\n") ? patch : `${patch}\n`, path); continue; }
     const [head = "", ...hunks] = patch.split(/^(?=@@ )/m);

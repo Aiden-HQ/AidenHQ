@@ -119,3 +119,13 @@ test("a file that became a directory: the path's patch is its own, not what lies
   assert.equal(g.groups.length, 1);
   assert.ok(g.groups[0]!.text.startsWith("diff --git a/config b/config\n") && !g.groups[0]!.text.includes("settings.ts"));
 });
+
+test("names git quotes (a space, a non-ASCII letter, a double quote) keep their patch", () => {
+  const names = ['caf\u00e9 x.txt', 'we"ird \u00e9.txt'];
+  const { repo, base } = repoWith(Object.fromEntries(names.map((n) => [n, (v: number) => `v${v}\n`])));
+  const g = patchGroups(repo, base, names);
+  assert.deepEqual(g.oversize, []);
+  assert.equal(g.groups.length, 1);
+  for (const n of names) assert.ok(g.groups[0]!.text.includes("+v1") && g.groups[0]!.files.includes(n), n);
+  assert.equal((g.groups[0]!.text.match(/^diff --git /gm) ?? []).length, 2);
+});
