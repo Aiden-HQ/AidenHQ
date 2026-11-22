@@ -204,12 +204,42 @@ else
 fi
 # A user timer's unit must run the applied checkout's script, not the one ~/.config/aidenhq-checkout.env recorded at install
 # time: the apply writes the unit's last EnvironmentFile= on every apply, and systemd reads it after that file. `service` is
-# the unit, `name` its script's stem (ops/<name>.sh) and the stem of that per-apply environment file.
-unit_runs_applied() { # service, name
-  local service="$1" name="$2" line path argv_text executable program script applied i
+# the unit, `name` its script's stem (ops/<name>.sh), and `env` (default: the same stem) the stem of that per-apply
+# environment file -- a unit that runs more than one script (prune-docker) has one file for the unit, not one per script.
+split_argv() { # a systemd-printed argv[] string -> argv, on unquoted whitespace; a quote only groups
+  local s="$1" word="" q="" c i=0
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"; i=$((i + 1))
+    if [ -n "$q" ]; then
+      if [ "$c" = "$q" ]; then q=""; else word+="$c"; fi
+    elif [ "$c" = " " ] || [ "$c" = $'\t' ]; then
+      [ -z "$word" ] || argv+=("$word"); word=""
+    elif [ "$c" = '"' ] || [ "$c" = "'" ]; then
+      q="$c"
+    else
+      word+="$c"
+    fi
+  done
+  [ -z "$word" ] || argv+=("$word")
+}
+# A duration GNU timeout accepts: `5m`, `.5m`, `5.m`, `0.5`, `3e2s`, `1e-2h`. Both branches of the timeout parsing below
+# use it, so a duration after `--` is validated exactly like one without.
+DURATION_RE='^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?[smhd]?$'
+
+unit_runs_applied() { # service, name [env]
+  local service="$1" name="$2" env="${3:-$2}" line path argv_text executable program script applied i
   local -a argv
   line="$(systemctl --user show "$service" -p ExecStart --value 2>/dev/null)" \
     || { echo "could not read $service's ExecStart"; return 1; }
+  # A unit with several ExecStart= lines (prune-docker) prints them one per line: the check reads the one that runs this
+  # script, whichever position it has, matched on the printed argument rather than on a path split by a space. A unit with
+  # one line is unchanged.
+  if [ "$(printf '%s\n' "$line" | grep -c 'argv\[\]=')" -gt 1 ]; then
+    # The script may be followed by arguments (the step wrapper takes the command to run), so match a path boundary, not
+    # only end of line or a closing quote.
+    line="$(printf '%s\n' "$line" | grep "argv\[\]=.*ops/$name\.sh\\(\"\| \|;\|$\\)\|argv\[\]=.*ops/$name\.sh\$" | head -1)"
+    [ -n "$line" ] || { echo "$service runs no ops/$name.sh"; return 1; }
+  fi
   # systemd prints the executable it starts and its argv. Check that argv[0] is that executable, not only a name in
   # front of arguments that look right; then follow env to the program it runs and take a shell's first script
   # argument rather than any later path that happens to end in ops/<name>.sh. A command string is refused.
@@ -217,12 +247,18 @@ unit_runs_applied() { # service, name
   argv_text="$(sed -n 's/.*argv\[\]=\([^;]*\).*/\1/p' <<< "$line")"
   # systemd shows ${AIDENHQ_DIR} unexpanded: resolve it as the unit does (its default, then its environment files in order).
   local dir="$HOME/aidenhq" f v
-  for f in "$HOME/.config/aidenhq-checkout.env" "$HOME/.config/aidenhq-$name.env"; do
+  for f in "$HOME/.config/aidenhq-checkout.env" "$HOME/.config/aidenhq-$env.env"; do
     v="$(sed -n 's/^AIDENHQ_DIR=//p' "$f" 2>/dev/null | tail -1)"
     [ -z "$v" ] || dir="$v"
   done
-  argv_text="${argv_text//\$\{AIDENHQ_DIR\}/$dir}"
-  read -r -a argv <<< "$argv_text"
+  # Split the way systemd does, on unquoted whitespace, so a checkout whose path has a space ("/home/me/aiden hq") stays
+  # one argument. A quote only groups; nothing here is ever evaluated. The checkout is substituted AFTER the split: doing
+  # it before would let a space in it split the one argument systemd printed as a quoted word.
+  argv=()
+  split_argv "$argv_text"
+  # The replacement is quoted: since bash 5.2 an unquoted `&` in it means "the matched text" (patsub_replacement), so a
+  # checkout at /home/me/A&B would resolve to /home/me/A${AIDENHQ_DIR}B and the check would fail a unit systemd runs fine.
+  for i in "${!argv[@]}"; do argv[i]="${argv[i]//\$\{AIDENHQ_DIR\}/"$dir"}"; done
   [ -n "$path" ] && [ "${#argv[@]}" -gt 0 ] || { echo "the unit's ExecStart has no executable or argv: $line"; return 1; }
   executable="$(realpath "$path" 2>/dev/null || printf '%s' "$path")"
   program="$(realpath "${argv[0]}" 2>/dev/null || command -v "${argv[0]}" 2>/dev/null || printf '%s' "${argv[0]}")"
@@ -230,6 +266,42 @@ unit_runs_applied() { # service, name
     || { echo "the unit starts $executable, but its argv names $program: $line"; return 1; }
   program="$executable"
   i=1
+  # `timeout`, when the unit bounds a step: it runs the command that follows its own options. Unwrap it first, so the
+  # `env`/shell handling below sees the command it runs (`timeout 5m /usr/bin/env bash .../ops/x.sh` -> ops/x.sh).
+  # Skip its options: `-s/--signal`, `-k/--kill-after`, `--foreground`, `-v/--verbose`, `--preserve-status`, the duration
+  # (the first operand), and a leading `--`.
+  if [ "$(basename "$program")" = timeout ]; then
+    # GNU timeout is `timeout [OPTION]... DURATION COMMAND [ARG]...`: options end at the duration, so a `--` before it only
+    # ends option parsing, while a `--` after it is the command (`timeout 5m -- cmd` runs a program named `--`, which never
+    # runs the prune). The duration must be one GNU timeout accepts.
+    duration=""
+    options_done=""
+    while [ "$i" -lt "${#argv[@]}" ]; do
+      arg="${argv[i]}"
+      if [ -n "$options_done" ]; then
+        # After `--` nothing is an option any more: the very next token is the duration, so `timeout -- --verbose 5m cmd`
+        # is rejected here exactly as GNU timeout rejects it (`--verbose` as a duration) instead of skipping it.
+        printf '%s' "$arg" | grep -Eq "$DURATION_RE" \
+          || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
+        duration="$arg"; i=$((i + 1)); break
+      fi
+      case "$arg" in
+        --) options_done=1; i=$((i + 1)) ;; # end of options; the duration still comes next
+        -s|--signal|-k|--kill-after) i=$((i + 2)) ;;
+        --signal=*|--kill-after=*|-s?*|-k?*) i=$((i + 1)) ;;
+        --foreground|--preserve-status|-v|--verbose) i=$((i + 1)) ;;
+        -*) echo "cannot resolve the command from timeout option $arg: $line"; return 1 ;;
+        *) printf '%s' "$arg" | grep -Eq "$DURATION_RE" \
+             || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
+           duration="$arg"; i=$((i + 1)); break ;;
+      esac
+    done
+    [ -n "$duration" ] || { echo "the unit's ExecStart names no duration after timeout: $line"; return 1; }
+    # Whatever follows the duration is the command; `--` there is not one.
+    program="${argv[i]:-}"
+    [ -n "$program" ] && [ "$program" != "--" ] || { echo "the unit's ExecStart names no command after timeout: $line"; return 1; }
+    i=$((i + 1))
+  fi
   if [ "$(basename "$program")" = env ]; then
     while [ "$i" -lt "${#argv[@]}" ]; do
       case "${argv[i]}" in
@@ -271,6 +343,18 @@ unit_runs_applied() { # service, name
   [ "$script" = "$applied" ] || { echo "the unit runs $script, not $applied"; return 1; }
 }
 
+# The Docker prune runs the unit's scripts from the checkout the last apply applied (its last EnvironmentFile= names it),
+# not the one ~/.config/aidenhq-checkout.env recorded at install time.
+if [ -e "$HOME/.config/systemd/user/prune-docker.timer" ]; then
+  check "docker prune timer runs the applied checkout's container step" unit_runs_applied prune-docker.service prune-docker-containers prune-docker
+  check "docker prune timer runs the applied checkout's verification" unit_runs_applied prune-docker.service prune-docker-verify prune-docker
+  # The image and container steps are `-`-prefixed, so their failures reach the verification through the status they record
+  # (ops/prune-docker-step.sh for the image step, ops/prune-docker-containers.sh itself for the container step). The wrapper
+  # is a script too, and a stale checkout's copy writes its records where the applied verification does not read them.
+  check "docker prune timer runs the applied checkout's step wrapper" unit_runs_applied prune-docker.service prune-docker-step prune-docker
+else
+  printf '  skip  docker prune (timer not installed)\n'
+fi
 if module_on monitoring; then
   if [ -e "$HOME/.config/systemd/user/aidenhq-host-metrics.timer" ]; then
     check "host metrics timer runs the applied checkout" unit_runs_applied aidenhq-host-metrics.service host-metrics

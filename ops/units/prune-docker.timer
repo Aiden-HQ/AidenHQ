@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily AidenHQ Docker cleanup
+Description=AidenHQ Docker cleanup every four hours (holds the space peak between prunes, not one nightly sweep)
 
 [Timer]
-OnCalendar=*-*-* 04:30
+OnCalendar=*-*-* 00,04,08,12,16,20:30
 Persistent=true
 
 [Install]
