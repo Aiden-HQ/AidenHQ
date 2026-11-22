@@ -833,30 +833,42 @@ switchOver() {
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
 }
 
+# A read the timeout branch makes while it holds the apply lock: a query stalled on storage must not hold the lock or delay
+# the automatic rollback, so it is bounded; a read that runs out reports 124.
+kernelRead() { timeout 5 "$@"; }
+
 # What blocked the kernel when /healthz went unanswered at the deadline, from what the apply can read on the host: the
-# health request's curl exit (7 = nothing listening, 28 = connected but no answer in --max-time 5), the unit's state and
-# the tail of its journal (bounded; the journal is what says why the unit is not answering). Best effort: a missing or
-# failing systemctl/journalctl loses only that part, never the timeout itself.
+# health request's curl exit, the unit's state and the tail of its journal (the journal is what says why the unit is not
+# answering). Both reads are bounded and best effort: a missing, failing or timed-out one marks its part unavailable and
+# the timeout itself stands. The journal query names the unit by its field, not through `--user`: after a full disk
+# journald writes to /run, where the per-user view misses new entries (docs/operations.md, "Logs and debugging a run").
 kernelTimeoutWhy() {
-  local rc="$1" unit="aidenhq-kernel.service" out src=0 why journal
+  local rc="$1" unit="aidenhq-kernel.service" out src=0 why journal jsrc=0 budget
+  # curl reports whether the exchange happened, not what is on the far side: no exit says a process was listening.
   case "$rc" in
     0) why="curl exit 0: /healthz answered, but not with ok" ;;
-    7) why="curl exit 7: could not connect, nothing listening on the health URL" ;;
+    7) why="curl exit 7: could not connect to the health URL" ;;
     22) why="curl exit 22: /healthz answered with an HTTP error" ;;
-    28) why="curl exit 28: connected, no answer within 5s" ;;
+    28) why="curl exit 28: the health request timed out after 5s without an answer" ;;
     *) why="curl exit $rc" ;;
   esac
-  # A missing tool fails like any other (127, no output): the part is reported unavailable and the timeout stands.
-  out="$(systemctl --user show "$unit" --property=ActiveState,Result,NRestarts 2>/dev/null)" || src=$?
+  out="$(kernelRead systemctl --user show "$unit" --property=ActiveState,Result,NRestarts 2>/dev/null)" || src=$?
   out="${out//$'\n'/ }"; out="${out% }"
-  if [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
+  if [ "$src" -eq 124 ]; then why+="; unit state unavailable, systemctl timed out"
+  elif [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
   elif [ -n "$out" ]; then why+="; unit $out"
   else why+="; unit state unavailable, systemctl printed nothing"; fi
-  journal="$(journalctl --user -u "$unit" -n 20 --no-pager 2>/dev/null)" || true
+  journal="$(kernelRead journalctl "_SYSTEMD_USER_UNIT=$unit" -n 20 --no-pager 2>/dev/null)" || jsrc=$?
   journal="${journal//$'\n'/ | }"
   while [ "${journal%" | "}" != "$journal" ]; do journal="${journal%" | "}"; done
-  [ "${#journal}" -le 400 ] || journal="${journal:0:400}..."
-  if [ -n "$journal" ]; then why+="; last journal: $journal"; else why+="; last journal empty or unavailable"; fi
+  # journalctl prints oldest first: a head cut would drop the error that says why nothing answers, so keep the newest.
+  budget=$(( 1099 - ${#why} - 15 )) # "last journal: " and the separator, inside the 1200 total
+  [ "$budget" -gt 400 ] && budget=400
+  [ "$budget" -lt 100 ] && budget=100
+  [ "${#journal}" -le "$budget" ] || journal="...${journal: -$((budget - 3))}"
+  if [ "$jsrc" -eq 124 ]; then why+="; last journal unavailable, journalctl timed out"
+  elif [ -n "$journal" ]; then why+="; last journal: $journal"
+  else why+="; last journal empty or unavailable"; fi
   [ "${#why}" -le 1200 ] || why="${why:0:1200}..."
   printf '%s' "$why"
 }
