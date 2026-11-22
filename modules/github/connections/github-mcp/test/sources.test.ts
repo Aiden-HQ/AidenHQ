@@ -83,3 +83,24 @@ it("src_github: only the item whose own error is the content refusal keeps its s
   expect("title" in rows.find((r) => r.item_id === "A")!).toBe(true);
   expect("title" in rows.find((r) => r.item_id === "B")!).toBe(false);
 });
+
+it("src_github: a board with a refused item is baselined (changes recorded) but read again next pass, closed or not", async () => {
+  const { store, scopes } = fakeStore();
+  let closed = false;
+  const nodes = [{ id: "A", updatedAt: "t", content: null, fieldValues: { nodes: [] } }];
+  let reads = 0;
+  const gh = {
+    account: async () => ({ user: false, projects: true }),
+    request: async (_o: string, _m: string, path: string, body?: any) => {
+      if (path.startsWith("/search/issues")) return { items: [] };
+      if (body.query.includes("projectsV2(")) return { data: { organization: { projectsV2: { pageInfo: { hasNextPage: false }, nodes: [{ number: 5, title: "R", url: "b", closed, updatedAt: "x" }] } } } };
+      reads++;
+      return { data: { organization: { projectV2: { items: { pageInfo: { hasNextPage: false }, nodes } } } }, errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 0, "content"], message: "m" }] };
+    },
+  };
+  closed = true;
+  await syncOrg(store, gh as any, "o", Date.parse("2026-11-11T00:00:00Z"));
+  expect(scopes.get("board:o/5")?.baselined).toBe(true);
+  await syncOrg(store, gh as any, "o", Date.parse("2026-11-11T00:01:00Z"));
+  expect(reads).toBe(2);
+});

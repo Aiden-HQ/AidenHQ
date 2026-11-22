@@ -168,9 +168,9 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
       const scope = `board:${project}`;
       const st = await store.scope(scope);
       await put(PROJECT, { project, org, number: b.number, title: b.title, url: b.url, closed: !!b.closed, source_updated_at: b.updatedAt }, !st.baselined);
-      if (st.baselined && (b.closed || now - Date.parse(st.cursor ?? "") < BOARD_EVERY)) continue;
+      if (st.baselined && Date.parse(st.cursor ?? "") > 0 && (b.closed || now - Date.parse(st.cursor!) < BOARD_EVERY)) continue;
       const seen = new Set<string>();
-      let partial = false; // an item's content was refused: the board is read again next pass, whatever its state
+      let partial = false; // an item's content was refused: the board is read again next pass, closed or not
       let cur: string | null = null;
       do {
         const p = await gh.request(org, "POST", "/graphql", { query: ITEMS, variables: { org, number: b.number, after: cur } });
@@ -186,7 +186,9 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
       } while (cur);
       const ours = await store.pool.query(`SELECT item_id FROM src_github.project_item WHERE project = $1 AND NOT removed`, [project]);
       for (const { item_id } of ours.rows) if (!seen.has(item_id)) await put(ITEM, { project, item_id, removed: true }, false);
-      if (!partial) await store.saveScope(scope, new Date(now).toISOString(), true);
+      // The inventory is complete either way, so the board is baselined (later changes are recorded); a partial read keeps the epoch as
+      // its cursor, which is read again next pass even on a closed board.
+      await store.saveScope(scope, new Date(partial ? 0 : now).toISOString(), true);
     }
     after = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
   } while (after);
