@@ -154,11 +154,15 @@ const bundle = (repo, branch, sha) => {
   const out = join(workspace, ".aidenhq", "bundles");
   mkdirSync(out, { recursive: true });
   // Written beside the final file and checked first: a bundle of a branch that moved since sha was read never replaces the good one.
+  // The file is named by the sha alone (what the code host opens), so it carries every local branch at that commit: another branch
+  // published at the same commit gets the same file, and the host finds its own ref in it.
   const tmp = join(out, `${sha}.${process.pid}.tmp`);
   try {
-    execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", tmp, `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
-    const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" });
-    if (!heads.split("\n").includes(`${sha} refs/heads/${branch}`)) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
+    const at = execFileSync("git", ["-C", dir, "for-each-ref", "--points-at", sha, "--format=%(refname)", "refs/heads/"], { encoding: "utf8" }).split("\n").filter(Boolean);
+    if (!at.includes(`refs/heads/${branch}`)) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
+    execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", tmp, ...at], { stdio: ["ignore", "ignore", "inherit"] });
+    const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" }).split("\n");
+    if (!heads.includes(`${sha} refs/heads/${branch}`)) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
     renameSync(tmp, join(out, `${sha}.bundle`));
   } finally {
     rmSync(tmp, { force: true });
