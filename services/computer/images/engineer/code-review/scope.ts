@@ -1,5 +1,6 @@
 // Which files a review covers: the changed files of a change and the scope's decision on each. One definition for the PR check
 // (review.ts) and an Engineer's own review before it publishes (self-review.ts), so both cover the same files.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, posix } from "node:path";
@@ -17,9 +18,9 @@ export interface Changed { path: string; added: number; removed: number; binary:
 const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum", "**/bun.lockb"];
 const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
 
-/** The changed files from `from` to the head with their line counts: [{ path, added, removed, binary }]. */
-export function changed(git: Git, from: string): Changed[] {
-  const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", from, "HEAD"]);
+/** The changed files from `from` to `to` (the head) with their line counts: [{ path, added, removed, binary }]. */
+export function changed(git: Git, from: string, to = "HEAD"): Changed[] {
+  const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", from, to]);
   return out.split("\0").filter(Boolean).map((l) => {
     const [a, r, ...p] = l.split("\t");
     return { path: p.join("\t"), added: a === "-" ? 0 : Number(a), removed: r === "-" ? 0 : Number(r), binary: a === "-" };
@@ -54,7 +55,15 @@ export function guidePaths(paths: string[]) {
 }
 
 /** The head file's lines for a tracked regular file the review read (never a link out of the tree), else undefined. */
-function linesOf(root: string, path: string, reviewed: Set<string>) {
+function linesOf(root: string, path: string, reviewed: Set<string>, head?: string) {
+  if (head) {
+    // The file as the reviewed commit has it (never the work tree, which may have moved on): a regular file only.
+    try {
+      const git = (...a: string[]) => execFileSync("git", a, { cwd: root, maxBuffer: 8 << 20, stdio: ["ignore", "pipe", "ignore"] });
+      if (!/^100(644|755) /.test(git("ls-tree", "-z", head, "--", `:(literal)${path}`).toString("utf8"))) return undefined;
+      return git("show", `${head}:${path}`).toString("utf8").split("\n");
+    } catch { return undefined; }
+  }
   if (!reviewed.has(path) && !existsSync(join(root, path))) return undefined;
   if (path.split("/").includes(".git") || !plain(root, path)) return undefined;
   const t = readSmall(join(root, path), 8 << 20);
@@ -66,13 +75,13 @@ function linesOf(root: string, path: string, reviewed: Set<string>) {
  * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
  * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
  * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
- * out (`left`) is dropped.
+ * out (`left`) is dropped. `head`: read the files from that commit, not the work tree.
  */
-export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>()) {
+export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>(), head?: string) {
   const out: Placed[] = [];
   for (const f of findings) {
     if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
-    const lines = linesOf(root, f.path, reviewed);
+    const lines = linesOf(root, f.path, reviewed, head);
     if (!lines || f.line > lines.length) continue;
     const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
     const anchor = lines[f.line - 1]!.trim();

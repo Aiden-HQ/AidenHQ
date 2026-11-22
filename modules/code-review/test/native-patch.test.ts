@@ -9,6 +9,7 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { patchGroups, runEngine } from "../recipe/engines.ts";
+import { place } from "../recipe/scope.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 const PIN = "0.166.0";
@@ -26,12 +27,13 @@ function codexDir() {
 }
 
 /** A model endpoint that records each request and answers with a review (a verdict of "patch is correct"), or fails the ones in `fail`. */
-async function endpoint(fail: number[] = [], found?: string, verdictOverride?: object) {
+async function endpoint(fail: number[] = [], found?: string, verdictOverride?: object, onRequest?: () => void) {
   const requests: any[] = [];
   const verdict = JSON.stringify(verdictOverride ?? { findings: found ? [{ title: "[P1] it breaks", body: "Failure scenario: a(1) returns 2", confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: found, line_range: { start: 1, end: 1 } } }] : [], overall_correctness: found ? "patch is incorrect" : "patch is correct", overall_explanation: "ok", overall_confidence_score: 0.9 });
   const server = http.createServer((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       requests.push(JSON.parse(b || "{}"));
+      onRequest?.();
       if (fail.includes(requests.length)) { res.writeHead(400, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: { message: "rejected" } })); }
       const sse = (type: string, d: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...d })}\n\n`);
       const item = { type: "message", role: "assistant", id: `m${requests.length}`, content: [{ type: "output_text", text: verdict }] };
@@ -211,4 +213,35 @@ test("an important finding in a file the scope leaves out (here a deleted lockfi
     assert.equal(JSON.parse(r.message).findings[0].path, "package-lock.json", "the review came back with the finding");
     assert.equal(r.incomplete, undefined);
   } finally { model.close(); }
+});
+
+test("self-review records nothing for a commit that was not the one it reviewed: the checkout moved during the review", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  // While the model answers, the Engineer's checkout gains a commit.
+  const model = await endpoint([], undefined, undefined, () => { writeFileSync(join(repo, "a.txt"), "moved\n"); sh(repo, "commit", "-qam", "moved"); });
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    assert.equal(out.status, 2, out.stdout);
+    assert.match(out.stdout, /^self-review: .*: incomplete$/m);
+    assert.match(out.stdout, /the checkout changed during the review/);
+    assert.equal(existsSync(join(repo, ".git", "self-review.json")), false, "no record for the commit that wasn't reviewed");
+  } finally { model.close(); }
+});
+
+test("findings are validated against the reviewed commit's tree, not the work tree", () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => (v ? "1\n2\n3\n" : "x\n") });
+  const head = sh(repo, "rev-parse", "HEAD");
+  writeFileSync(join(repo, "a.txt"), "1\n"); // the work tree moved on: one line
+  const f = { severity: "nit" as const, path: "a.txt", line: 3, title: "t", why: "w", evidence: "", fix_brief: "" };
+  assert.equal(place([f], repo, new Set(["a.txt"])).length, 0, "against the work tree line 3 is gone");
+  assert.equal(place([f], repo, new Set(["a.txt"]), undefined, undefined, head).length, 1, "against the commit it is there");
 });

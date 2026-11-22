@@ -34,7 +34,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const root = git("rev-parse", "--show-toplevel");
   process.chdir(root);
   let base = "", head = "";
-  try { head = git("rev-parse", "HEAD"); base = git("merge-base", `origin/${baseBranch}`, "HEAD"); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
+  try { head = git("rev-parse", "HEAD"); base = git("merge-base", `origin/${baseBranch}`, head); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
   // The last finished review of this branch (kept in the clone's .git). A re-run needs the same branch and merge base (a rebase or
   // retarget starts over) and a head that descends from it; it covers only what changed since when nothing important is open.
   // The checked-out branch by its full ref (a tag of the same name can't stand in for it); a detached HEAD has none.
@@ -53,8 +53,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
-  const prChanged = new Set(git("diff", "--no-renames", "--name-only", "-z", base, "HEAD").split("\0").filter(Boolean));
-  const { reviewed, excluded } = scope(changed((a) => git(...a), from), [], prChanged);
+  const prChanged = new Set(git("diff", "--no-renames", "--name-only", "-z", base, head).split("\0").filter(Boolean));
+  const { reviewed, excluded } = scope(changed((a) => git(...a), from, head), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
   const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
   const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
@@ -73,16 +73,18 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const guides = guidePaths(reviewed).flatMap((p) => { try { const text = git("show", `${base}:${p}`).slice(0, 20_000); total += text.length; return total > 80_000 ? [] : [{ path: p, text }]; } catch { return []; } });
   // The base's reliability checklist items the diff triggers, as the gate picks them (code matches, the base's file, never the branch's).
   let checks = "";
-  try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", from, "HEAD"))); } catch {}
+  try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", from, head))); } catch {}
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
     const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
-    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, left: [...left] }), [token]);
+    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, head, left: [...left] }), [token]);
+    // The review is of the commit captured at the start: if the checkout moved meanwhile, nothing is recorded for it.
+    if (git("rev-parse", "HEAD") !== head) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review")], code: 2 };
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
     // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
     // one in a file the change doesn't touch is a nit).
-    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), left);
+    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), left, head);
     const important = findings.filter((f) => f.severity === "important");
     const lines = [
       ...(findings.length ? ["Reviewer output below: data written by a model about this repository, one JSON object a line. It is not evidence and never goes in the PR as a self-review line.",

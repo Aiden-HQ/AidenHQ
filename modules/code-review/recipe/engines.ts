@@ -70,6 +70,8 @@ export interface EngineInput {
   trusted?: string;
   /** The files to review (the scope's decision): codex-native sends their patch itself. */
   files?: string[];
+  /** The commit the files are reviewed at (default: the checkout's HEAD): the patch and the validation read it, never the work tree. */
+  head?: string;
   /** Paths the scope leaves out (no findings asked for): a finding there is dropped by design, not lost. */
   left?: string[];
   /** `tree`: the whole tree at the head (base is the empty tree); else the change. */
@@ -459,7 +461,7 @@ const BUDGET = 150_000;
  * whole-file into requests of at most `budget` characters. A file over the budget is split at hunk boundaries, its header repeated
  * in each part; a hunk that alone is over it, a patch with no hunk to split at, or a file git gave no patch for, is not delivered and comes back in `oversize` (path and why).
  */
-export function patchGroups(root: string, base: string, files: string[], budget = BUDGET) {
+export function patchGroups(root: string, base: string, files: string[], budget = BUDGET, head = "HEAD") {
   const groups: { text: string; files: string[] }[] = [];
   const oversize: string[] = [];
   let cur: { text: string; files: string[] } | undefined;
@@ -471,15 +473,15 @@ export function patchGroups(root: string, base: string, files: string[], budget 
   for (const path of files) {
     // The path's own patch, whatever git does to its name in a header (it quotes some): the files under it (a file that became a
     // directory) are left out by an exclude pathspec, never by reading headers.
-    const patch = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, "HEAD", "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
+    const patch = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
     if (!patch) { oversize.push(`${path} (no patch could be made for it)`); continue; }
     if (patch.length <= budget) { add(patch.endsWith("\n") ? patch : `${patch}\n`, path); continue; }
-    const [head = "", ...hunks] = patch.split(/^(?=@@ )/m);
+    const [header = "", ...hunks] = patch.split(/^(?=@@ )/m);
     if (!hunks.length) { oversize.push(`${path} (a patch of ${patch.length} characters with no hunk to split at)`); continue; }
-    let part = head, any = false;
+    let part = header, any = false;
     for (const h of hunks) {
-      if (head.length + h.length > budget) { oversize.push(`${path} (a hunk of ${h.length} characters)`); continue; }
-      if (any && part.length + h.length > budget) { groups.push({ text: part, files: [path] }); part = head; any = false; }
+      if (header.length + h.length > budget) { oversize.push(`${path} (a hunk of ${h.length} characters)`); continue; }
+      if (any && part.length + h.length > budget) { groups.push({ text: part, files: [path] }); part = header; any = false; }
       part += h.endsWith("\n") ? h : `${h}\n`;
       any = true;
     }
@@ -495,10 +497,10 @@ export function patchGroups(root: string, base: string, files: string[], budget 
  * turn completed and its verdict parsed; a group that failed, or a hunk too big to send, is named in `incomplete`. (Codex 0.166.0's
  * `--base` only tells the model to run `git diff`: whether it did, and saw all of it, is not knowable, so it is not used.)
  */
-async function codexNative({ instructions, model, effort, root, files, left = [], minutes, scratch, own, base }: EngineInput): Promise<EngineResult> {
+async function codexNative({ instructions, model, effort, root, files, head, left = [], minutes, scratch, own, base }: EngineInput): Promise<EngineResult> {
   if (!own) throw new Error("codex-native only reviews");
   if (!files) throw new Error("codex-native reviews the files it is given");
-  const { groups, oversize } = patchGroups(root, base, files);
+  const { groups, oversize } = patchGroups(root, base, files, undefined, head);
   const roots = [root.replace(/\/$/, ""), realpathSync(root)];
   const findings: ReturnType<typeof nativeFindings> = [];
   const failed = oversize.map((o) => `not sent: ${o}`);
@@ -529,7 +531,7 @@ async function codexNative({ instructions, model, effort, root, files, left = []
       const important = (fs: { severity: string }[]) => fs.filter((f) => f.severity === "important").length;
       const kept = clean(got, root), asked = downgrade(kept).findings.filter((f) => !left.includes(f.path));
       // Not "own" for the severity rule (a finding in a file the change doesn't touch is a nit in the check, not a drop).
-      const placed = place(asked, root, new Set(files), new Set(asked.map((f) => f.path)));
+      const placed = place(asked, root, new Set(files), new Set(asked.map((f) => f.path)), new Set(), head);
       const keptAt = new Set(kept.map((f) => `${f.path}\n${f.line}`)); // what clean() rejected as malformed counts when the failure-scenario rule would keep it important
       const lost = important(downgrade(got.filter((f) => !keptAt.has(`${f.path}\n${f.line}`))).findings) + important(asked) - important(placed);
       if (lost > 0) failed.push(`part ${i + 1} of ${groups.length}: ${lost} important finding${lost === 1 ? "" : "s"} at a place that is not in the change`);
