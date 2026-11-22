@@ -503,8 +503,9 @@ export function createEngine(d: EngineDeps) {
         if (carried.has(f.id)) continue;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
-        const claimed = one<{ outcome: string; claim: string }>("SELECT outcome, claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id);
-        if (!claimed && run("UPDATE findings SET outcome = NULL, outcome_at = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
+        const claimed = one<{ outcome: string; claim: string }>("SELECT outcome, claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND (? = 0 OR outcome_at <= ?) ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id, r.mandatory ? 1 : 0, r.started ?? "");
+        // A claim recorded after this mandatory run started (its snapshot never held it) is not reviewed by it: reported again, the finding opens.
+        if (!claimed && run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
           dispose([f.id], r, "open", "reported again", `run:${r.id}`);
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed ? iso() : null, claimed?.claim ?? null);
       }
@@ -519,6 +520,8 @@ export function createEngine(d: EngineDeps) {
       for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
     });
+    // The replies already on a reopened finding's thread answered the claim that was just refused: never read as a new answer.
+    if (unsafe.length) for (const t of await d.source.threads(r.repo, r.number).catch(() => [])) if (t.finding && unsafe.includes(t.finding)) for (const x of t.replies) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", r.repo, `reply:${x.id}`);
     if (!stale) cover(r);
     const done = (status: Status, why: string | null, posted?: string) => {
       run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, posted ?? null, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
@@ -1040,6 +1043,7 @@ export function createEngine(d: EngineDeps) {
   const ANSWER = /^\s*(fixed|disputed|by design|won['’]?t fix)\b[\s:,.;\-–—]*([\s\S]*)$/i;
   /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
   const answerOf = (body: string) => {
+    if (body.includes("<!-- aidenhq-")) return undefined; // our own posts (a mirrored answer, a review) never answer a finding
     const m = ANSWER.exec(body.split("\n").filter((l) => !/\]\(https:\/\/aidenhq\.ai\b/.test(l)).join("\n"));
     const reason = m?.[2]?.trim() ?? "";
     return m && /\p{L}{2,}/u.test(reason) ? { word: m[1]!, reason } : undefined;
@@ -1061,14 +1065,15 @@ export function createEngine(d: EngineDeps) {
   function resolve(b: { repo?: unknown; number?: unknown; id?: unknown; word?: unknown; reason?: unknown; by?: unknown }) {
     const repo = String(b.repo ?? "").toLowerCase(), n = Number(b.number), id = String(b.id ?? "");
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(n) || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new RequestError("give repo, number and the finding's id");
-    const m = answerOf(`${String(b.word ?? "")} ${String(b.reason ?? "")}`.slice(0, 1600));
-    if (!m) throw new RequestError("word is fixed, disputed, by design or won't fix, and reason says what changed or why (letters, at most 1500 characters)");
+    const word = String(b.word ?? "").trim(), reason = typeof b.reason === "string" ? b.reason.trim() : "";
+    if (!/^(fixed|disputed|by design|won['’]?t fix)$/i.test(word)) throw new RequestError("word is one of fixed, disputed, by design or won't fix");
+    if (!/\p{L}{2,}/u.test(reason) || reason.length > 1500) throw new RequestError("reason says what changed or why (letters, at most 1500 characters)");
     const p = prRow(repo, n);
     if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
     const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
-    if (!answer(p, id, m.word, m.reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
-    // An important finding's answer is also replied on its thread (so it shows closed): queued here, posted by `replies` and never holding the outcome. A nit gets none.
-    if (severity === "important") run("INSERT OR IGNORE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${m.word.toLowerCase()}: ${m.reason}`.slice(0, 1600), now());
+    if (!answer(p, id, word, reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
+    // An important finding's answer is also replied on its thread (so it shows closed): queued here (a newer answer replaces an older queued one), posted by `replies` and never holding the outcome. A nit gets none.
+    if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't")}: ${reason}`.slice(0, 1600), now());
     return { resolved: id };
   }
 
@@ -1091,7 +1096,7 @@ export function createEngine(d: EngineDeps) {
         o = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
       }
       if (o.state === "pending") continue;
-      if (o.state === "posted" || !open || q.tries + 1 >= POST_TRIES) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
+      if (o.state === "posted" || !open || !o.retry || q.tries + 1 >= POST_TRIES) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
       log("answer reply not posted; filing it once more", { repo: q.repo, pr: q.number, why: String(o.why ?? "").slice(0, 200) });
       run("UPDATE replies SET write = NULL, tries = tries + 1, due = ? WHERE repo = ? AND number = ? AND finding = ?", now() + POST_RETRY * 2 ** Math.min(q.tries, 4), ...key);
     }
@@ -1208,6 +1213,8 @@ export function createEngine(d: EngineDeps) {
     verdict,
     dismiss,
     resolve,
+    /** The PR's open important findings with their ids (what a merge wait's cut text may leave out). */
+    openFindings(repo: string, number: number) { return openGating(repo.toLowerCase(), number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 120) })); },
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) {
       const r = runRow(id);

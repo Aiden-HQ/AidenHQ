@@ -111,7 +111,7 @@ connections:
     auth: code_review_service_key
     returns: untrusted
     tools:
-      read: [ code_review_config, code_review_runs ]
+      read: [ code_review_config, code_review_runs, code_review_findings ]
       write: [ code_review_run, code_review_configure, code_review_resolve ]
 # Posting: this service files a record per post, per acknowledgement and per status and executes it (executor@1) through
 # github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post is Tier 1 (the AI reviewer

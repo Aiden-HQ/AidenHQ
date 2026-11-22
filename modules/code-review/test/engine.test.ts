@@ -966,8 +966,9 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   w.finish(0, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }, { id: "n1", severity: "nit", path: "a.ts", line: 4, title: "n", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"]);
   assert.match(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /id f1/);
-  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "" }), /word is fixed/);
-  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is fixed/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "" }), /reason says/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed now", reason: "" }), /word is one of/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is one of/);
   assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" }), { resolved: "f1" });
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
   // The reply is posted for the agent (the important finding only, once its thread is known); a nit gets none.
@@ -978,6 +979,7 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   assert.deepEqual(w.replied.map((r) => [r.comment, r.body]), [[41, "fixed: moved the lock into pay.ts (abc1234)"]]);
   await w.tick({ github: false });
   assert.equal(w.replied.length, 1, "posted once");
+  assert.deepEqual(w.engine.openFindings(REPO, 2), [], "nothing left open to list");
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "again, for no reason" }), /isn't open/);
   const f = w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get();
   assert.deepEqual({ ...f }, { outcome: "fixed", claim: "fixed: moved the lock into pay.ts (abc1234)" });

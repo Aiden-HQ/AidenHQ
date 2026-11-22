@@ -102,7 +102,7 @@ description: How code is written, tested and published here, in any repository -
   names no requirement is met with the same question again, not a new head. A note that names a defect still present is
   answered by a changed branch, not by a wait.
 - Aiden's code review findings: the merge waits on each important one until it is answered. Find them (with their ids) in
-  the merge's wait reason or the review (`github_pr_threads`: `finding`), then answer each with `code_review_resolve`
+  the merge's wait reason, `code_review_findings` or the review (`github_pr_threads`: `finding`), then answer each with `code_review_resolve`
   (`repo`, `number`, `id`, `word`, `reason`), which writes nothing to GitHub: after fixing it and publishing the fix, word
   `fixed` and the reason `<what changed, commit>`; for one you judge wrong, `disputed` and `<reason, file:line>`. Recording
   the outcome is the whole job: code review posts the reply on an important finding's thread for you (later, if GitHub

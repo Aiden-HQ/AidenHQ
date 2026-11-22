@@ -311,7 +311,7 @@ export class ReviewPoster {
     const w = await this.writer(a.repo);
     await this.pull(ref);
     if (!(await this.threads(ref)).some((t) => t.comment === a.comment && t.ours)) throw new GitHubRefused(`comment ${a.comment} isn't the first comment of one of Aiden's own review threads on ${a.repo}#${a.pr}`);
-    const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(a.body, AGENT) } });
+    const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(`<!-- aidenhq-mirror -->\n${a.body}`, AGENT) } });
     return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, reply: r.html_url }), objects: [`${objectRef(ref)}/comment/${r.id}`] };
   }
 
