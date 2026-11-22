@@ -201,14 +201,14 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
   if ("create" in route) {
     if (repos && engines) return <RepoReviewPage config={config} engines={engines} />;
-    const retry = () => { setError(""); void loadSetup(); if (ready) { void loadRepos(); void loadEngines(); } };
+    const retry = () => { setError(""); void loadSetup(); if (ready) { void loadRuns(); void loadRepos(); void loadEngines(); } };
     return (
       <Page className="rv-page" label="New repo review">
         <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
         {error ? (
           <Banner tone="danger">Couldn't load what a repo review needs: {error} <Button onClick={retry}>Retry</Button></Banner>
         ) : setup && !ready ? (
-          <EmptyState action={<LinkButton variant="primary" href="#/reviews/reviews">{setup.module ? "Connect GitHub" : "Open the Code review module"}</LinkButton>}>
+          <EmptyState action={<LinkButton variant="primary" href={setup.module ? "#/settings/connections?connect=github" : "#/modules/code-review"}>{setup.module ? "Connect GitHub" : "Open the Code review module"}</LinkButton>}>
             {setup.module ? "Connect GitHub to review a repo." : "Code review is off on this instance. Turn on the Code review module to review a repo."}
           </EmptyState>
         ) : (
