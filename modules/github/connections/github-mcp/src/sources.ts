@@ -5,7 +5,7 @@
 //     assignees); items gone from a board are marked removed.
 // A first sync (an org's issues, a newly found board) is a baseline: rows marked baseline, no change log. No LLM.
 import type { Logger } from "pino";
-import type { Projects } from "./projects.js";
+import { isContentRefusal, type Projects } from "./projects.js";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 
 export const ISSUE: Table = {
@@ -95,7 +95,7 @@ const ITEMS = `query($org:String!,$number:Int!,$after:String){organization(login
   rateLimit{cost remaining}}`;
 
 /** A board item (GraphQL) as an item row; field values keyed by field name. */
-export function itemRow(project: string, n: any): Row {
+export function itemRow(project: string, n: any, refused = false): Row {
   const c = n.content ?? {};
   const fields: Record<string, unknown> = {};
   for (const v of n.fieldValues?.nodes ?? []) {
@@ -103,6 +103,9 @@ export function itemRow(project: string, n: any): Row {
     if (!name) continue;
     fields[name] = v.__typename.includes("Iteration") ? { title: v.title, start: v.startDate } : (v.name ?? v.date ?? capText(v.text).text ?? v.number ?? null);
   }
+  // GitHub refused this item's content (an issue of an org the sign-in can't read): only the board's own columns are written, so
+  // what was stored for the item stays. An item that simply has no content (a deleted issue) is written as returned.
+  if (refused) return { project, item_id: n.id, fields, archived: !!n.isArchived, removed: false, source_updated_at: n.updatedAt ?? null };
   return {
     project, item_id: n.id, content_type: c.__typename ?? null, title: capText(c.title ?? null).text, url: c.url ?? null, repo: c.repository?.nameWithOwner ?? null,
     number: c.number ?? null, state: c.state ?? null, assignees: logins(c.assignees?.nodes), labels: (c.labels?.nodes ?? []).map((l: any) => l.name).sort(),
@@ -113,6 +116,7 @@ export function itemRow(project: string, n: any): Row {
 type Gh = Pick<Projects, "request" | "account">;
 
 const BOARD_EVERY = 60 * 60_000;
+const CLOSED_EVERY = 7 * 24 * BOARD_EVERY;
 
 /** One org: issues and PRs since its cursor, then every board. Returns rows written with a difference. */
 export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Date.now(), log?: Pick<Logger, "info">): Promise<number> {
@@ -165,21 +169,32 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
       const scope = `board:${project}`;
       const st = await store.scope(scope);
       await put(PROJECT, { project, org, number: b.number, title: b.title, url: b.url, closed: !!b.closed, source_updated_at: b.updatedAt }, !st.baselined);
-      if (st.baselined && (b.closed || now - Date.parse(st.cursor ?? "") < BOARD_EVERY)) continue;
+      // Open boards are read hourly; a closed one weekly (it rarely changes, and an item whose content was refused is retried then).
+      if (st.baselined && now - Date.parse(st.cursor ?? "") < (b.closed ? CLOSED_EVERY : BOARD_EVERY)) continue;
       const seen = new Set<string>();
+      const stored = await store.pool.query(`SELECT item_id, content_type FROM src_github.project_item WHERE project = $1 AND NOT removed`, [project]);
+      const unread = new Set<string>(stored.rows.filter((x: any) => x.content_type === null).map((x: any) => x.item_id)); // stored without its content: its first read is a backfill, not a change
       let cur: string | null = null;
       do {
         const p = await gh.request(org, "POST", "/graphql", { query: ITEMS, variables: { org, number: b.number, after: cur } });
         const items = p.data?.organization?.projectV2?.items;
         cost += p.data?.rateLimit?.cost ?? 0;
-        for (const n of items?.nodes ?? []) {
+        const refused = new Set<number>((Array.isArray(p.errors) ? p.errors : []).filter(isContentRefusal).map((e: any) => e.path.at(-2)));
+        for (const [i, n] of (items?.nodes ?? []).entries()) {
           seen.add(n.id);
-          await put(ITEM, itemRow(project, n), !st.baselined);
+          if (st.baselined && unread.has(n.id) && !refused.has(i)) {
+            // The board's own columns go the normal way (their changes are logged); only the newly read content is a backfill.
+            // The newly read content goes first, as a backfill (url included, so it is no difference below); then the board's own
+            // columns the normal way: their changes are logged, with the url the change record links to.
+            const full = itemRow(project, n);
+            const { fields: _f, archived: _a, removed: _r, source_updated_at: _s, ...content } = full;
+            await put(ITEM, content, true);
+            await put(ITEM, { ...itemRow(project, n, true), url: full.url }, false);
+          } else await put(ITEM, itemRow(project, n, refused.has(i)), !st.baselined);
         }
         cur = items?.pageInfo?.hasNextPage ? items.pageInfo.endCursor : null;
       } while (cur);
-      const ours = await store.pool.query(`SELECT item_id FROM src_github.project_item WHERE project = $1 AND NOT removed`, [project]);
-      for (const { item_id } of ours.rows) if (!seen.has(item_id)) await put(ITEM, { project, item_id, removed: true }, false);
+      for (const { item_id } of stored.rows) if (!seen.has(item_id)) await put(ITEM, { project, item_id, removed: true }, false);
       await store.saveScope(scope, new Date(now).toISOString(), true);
     }
     after = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
