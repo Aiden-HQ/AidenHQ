@@ -339,16 +339,19 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
       const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
       const searched = (v.calls ?? []).some((c) => c.tool === "search");
-      // An answer that leaves an asked finding in neither `fixed` nor `still`, or a malformed `still`, is no usable answer (never read as "nothing is still there").
-      if (j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string") && ask.every((f) => f.claim || j.fixed.includes(f.id) || j.still.includes(f.id))) {
+      // A malformed `still` is no usable answer (never read as "nothing is still there").
+      if (j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string")) {
         const still: string[] = j.still;
+        // An answer that leaves an asked finding in neither `fixed` nor `still` is unfinished: it clears and fixes nothing (its `unsafe` verdicts still count).
+        const whole = ask.every((f) => f.claim || j.fixed.includes(f.id) || still.includes(f.id));
+        if (!whole) gaps.push("the recheck of earlier findings left some unanswered, so none is marked fixed or cleared");
         const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
-        for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !still.includes(f.id) && seen(f)) fixed.push(f.id);
+        for (const f of ask) if (whole && !f.claim && j.fixed.includes(f.id) && !still.includes(f.id) && seen(f)) fixed.push(f.id);
         for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
         // Open findings it was asked about, looked at and didn't call still there: an agent's pending `fixed` claim on one of them stands.
         // And the ones it looked at and called still there: shown to the agent who claimed them fixed.
         result.still = ask.filter((f) => !f.claim && still.includes(f.id) && seen(f)).map((f) => f.id);
-        result.cleared = ask.filter((f) => !f.claim && !still.includes(f.id) && seen(f)).map((f) => f.id);
+        result.cleared = ask.filter((f) => whole && !f.claim && !still.includes(f.id) && seen(f)).map((f) => f.id);
       } else {
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
