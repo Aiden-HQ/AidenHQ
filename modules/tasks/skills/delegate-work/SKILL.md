@@ -119,9 +119,10 @@ task settles it.
   commit's own changes are outside the PR's diff, a merged commit has no checks when the workflow runs only on
   `pull_request`, and a file in another repository can't be read: name the in-scope equivalent (the PR merged into its
   base; "deployed at the merged commit"), or ask the owner for that evidence.
-- **Pages.** The capture is a page's text from its top, cut at 8,000 characters: an item in a list, board or feed needs
-  the path that isolates it (`/slipped?q=CMBT`, not `/slipped`), or a page that shows that item alone. Write the path
-  itself: a URL's host is not read and an anchor is dropped.
+- **Pages.** The capture is a page's text from its top, bounded (up to 120,000 characters a page, 300,000 across the
+  pages a criterion names): an item in a list, board or feed still needs the path that isolates it
+  (`/slipped?q=CMBT`, not `/slipped`), or a page that shows that item alone. Write the path itself: a URL's host is not
+  read and an anchor is dropped.
 - **Merge jobs:** criteria on what the merge shows (the PR merged into its base, its head and merge commit, the gate's
   reply on the task), never a card or merge-request id: a Tier 0 merge answers "No card is needed.", and a card filed
   while the PR is a draft can be spent without a merge.

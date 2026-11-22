@@ -50,6 +50,26 @@ describe("rubricPaths", () => {
     plain(rubricPaths(["/items?next=/audit&q=1 shows it"])[1]!);
   });
 
+  it("resumes the scan after the query's encoded end, not its raw end", () => {
+    // The value "Big ETA" encodes longer than it was written; the scan must not land inside it and lose the route after it.
+    assert.deepEqual(rubricPaths(['/items?q="Big ETA" and /audit shows both']), ["/", "/items?q=Big%20ETA", "/audit"]);
+    // A multi-byte character is longer encoded still.
+    assert.deepEqual(rubricPaths(['/items?q="日本" then /changes shows it']), ["/", "/items?q=%E6%97%A5%E6%9C%AC", "/changes"]);
+  });
+
+  it("treats a quote closing a quoted URL as the URL's end, not as a value's opening quote", () => {
+    // The URL is wrapped in quotes and its own value is quoted: only the first quote closes the URL, the inner pair is the value.
+    assert.deepEqual(rubricPaths(['see "/items?q=x" then /audit']), ["/", "/items?q=x", "/audit"]);
+  });
+
+  it("encodes a quoted value before it joins other query parameters", () => {
+    // An `&` inside a quoted value must stay that value, not start a new parameter.
+    assert.equal(rubricPaths(['/items?q="a&b=c" lists it'])[1], "/items?q=a%26b%3Dc");
+    assert.equal(rubricPaths(['/items?q="a+b" lists it'])[1], "/items?q=a%2Bb");
+    assert.equal(rubricPaths(['/items?q="x/y" lists it'])[1], "/items?q=x%2Fy");
+    for (const p of rubricPaths(['/items?q="a&b=c" x'])) plain(p);
+  });
+
   it("bounds the list at five paths, as before", () => {
     assert.equal(rubricPaths(["/a /b /c /d /e /f"]).length, 5);
   });
@@ -99,6 +119,20 @@ describe("liveEvidence", () => {
     assert.ok(kept.every((n) => n === Math.floor(PAGE_TOTAL / 5)), "each page keeps its equal share");
     assert.ok(kept.reduce((a, b) => a + b, 0) <= PAGE_TOTAL, "the five blocks together stay within PAGE_TOTAL");
     assert.ok(ev.facts.every((f: string) => /text cut to its first \d+ of \d+ characters \(all pages together keep/.test(f)), "each cut page says which bound cut it");
+  });
+
+  it("gives the pages that were cut the share a short page did not use", async () => {
+    const long = "- row \"filler\"\n".repeat(9_000); // 126,000 characters: cut at its equal share
+    const short = "- heading \"Home\"\n"; // well under its share
+    const ev = await liveEvidence(APP, ["/a /b /c /d"], { view: view((p) => (p === "/a" ? short : long)) });
+    const lengths = Object.values(ev.data).map((text) => (text as string).length);
+    assert.ok(lengths.reduce((a, b) => a + b, 0) <= PAGE_TOTAL, "all pages together stay within PAGE_TOTAL");
+    // Paths are ["/", "/a", "/b", "/c", "/d"]: the second is the short one.
+    assert.ok((ev.data.LIVE_PAGE_2 as string).endsWith(short), "the short page keeps exactly its own text, uncut");
+    assert.doesNotMatch(ev.facts[1]!, /text cut/, "a page under its share says nothing was cut");
+    // A cut page (the first) takes what the short page left, above its equal share, so no budget goes unused.
+    assert.ok(lengths[0]! > Math.floor(PAGE_TOTAL / 5), "a cut page takes what the short page left, above its equal share");
+    assert.ok(lengths.every((n) => n <= PAGE_MAX), "no page exceeds PAGE_MAX");
   });
 
   it("puts a long page's whole text into its fenced block in the grader's prompt", async () => {
