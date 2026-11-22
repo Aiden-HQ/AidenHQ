@@ -79,7 +79,8 @@ it("pages by offset; past HubSpot's 10,000-result cap a window restarts from the
   expect(scopes.get("deals")?.baselined).toBe(true);
 
   const slow = fakeStore();
-  await syncObject(slow.store, async () => answer([deal("1", t(1))].concat(Array.from({ length: 199 }, (_, i) => deal(`f${i}`, t(1)))), 200, 5000), "deals", opts({ deadline: Date.now() - 1 }));
+  const full = [deal("1", t(1))].concat(Array.from({ length: 199 }, (_, i) => deal(`f${i}`, t(1))));
+  await syncObject(slow.store, async (_, args) => (args.filterGroups[0].filters[0].operator === "EQ" ? answer([]) : answer(full, 200, 5000)), "deals", opts({ deadline: Date.now() - 1 }));
   expect(slow.scopes.get("deals")).toEqual({ baselined: false, cursor: t(1) });
   expect(writes.length).toBeGreaterThan(WINDOW);
 });
@@ -88,6 +89,7 @@ it("more than WINDOW records at one modified time (a bulk edit) are read by id, 
   const TIE = "2026-09-01T04:00:00.000Z";
   const TOTAL = WINDOW + 450;
   const calls: Record<string, any>[] = [];
+  let later = true;
   // The contacts of one bulk edit (ids 1..TOTAL, all modified at TIE), then one later contact.
   const call = async (_: string, args: Record<string, any>) => {
     calls.push(args);
@@ -100,9 +102,9 @@ it("more than WINDOW records at one modified time (a bulk edit) are read by id, 
       const left = Math.max(0, TOTAL - from);
       return answer(Array.from({ length: Math.min(args.limit, left) }, (_, i) => contact(from + 1 + i)), 0, left);
     }
-    if (Number(mod.value) > Date.parse(TIE)) return answer([contact(TOTAL + 1, "2026-09-02T00:00:00.000Z")]); // after the tie
+    if (Number(mod.value) > Date.parse(TIE)) return answer(later ? [contact(TOTAL + 1, "2026-09-02T00:00:00.000Z")] : []); // after the tie
     const start = Number(args.offset ?? 0);
-    const all = Array.from({ length: TOTAL }, (_, i) => contact(i + 1)).concat([contact(TOTAL + 1, "2026-09-02T00:00:00.000Z")]);
+    const all = Array.from({ length: TOTAL }, (_, i) => contact(i + 1)).concat(later ? [contact(TOTAL + 1, "2026-09-02T00:00:00.000Z")] : []);
     const chunk = all.slice(start, start + 200);
     return answer(chunk, start + chunk.length, all.length);
   };
@@ -111,6 +113,14 @@ it("more than WINDOW records at one modified time (a bulk edit) are read by id, 
   await syncObject(store, call, "contacts", opts());
   expect(new Set(writes.map((w) => w.row.contact_id)).size).toBe(TOTAL + 1);
   expect(scopes.get("contacts")?.cursor).toBe("2026-09-02T00:00:00.000Z");
+
+  // When the bulk edit is the newest time, finishing it moves the cursor past it (no rereading it every pass).
+  later = false;
+  const newest = fakeStore();
+  newest.scopes.set("contacts", { baselined: true, cursor: TIE });
+  await syncObject(newest.store, call, "contacts", opts());
+  expect(newest.scopes.get("contacts")?.cursor).toBe(new Date(Date.parse(TIE) + 1).toISOString());
+  later = true;
 
   // A budget that runs out inside the tie saves "<time>#<id>"; the next pass starts after that id.
   const part = fakeStore();

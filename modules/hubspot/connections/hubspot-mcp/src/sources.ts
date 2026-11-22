@@ -151,16 +151,16 @@ export function selected(setting: string[]): string[] {
 }
 
 /**
- * Records modified since `sinceIso`, oldest first, paging and restarting windows past HubSpot's 10,000-result search cap. When more
- * than WINDOW records share one modified time (a bulk edit), that time is read by id instead (`afterId` resumes inside it) and
- * `state.tieId` is the id read last; it is undefined whenever the generator is not inside such a time.
+ * Records modified since `sinceIso`, oldest first, paging and restarting windows past HubSpot's 10,000-result search cap. A time
+ * shared by more than one page of records (a bulk edit) can't be paged by time, so it is read by id instead (`afterId` resumes
+ * inside it): `state.tieId` is the id read last (undefined outside such a time) and `state.doneMs` the latest such time read whole.
  */
-async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string }, deadline: number): AsyncGenerator<CrmRecord> {
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string; doneMs?: number }, deadline: number): AsyncGenerator<CrmRecord> {
   let since = Date.parse(from.sinceIso);
   let afterId = from.afterId;
   for (;;) {
-    // A time that holds more records than a window can read (checked first: a window of them costs a pass) is read by id.
-    if (afterId === undefined && (await searchTie(call, def, since, "0", 1)).total > WINDOW) afterId = "0";
+    // A window can't get past a time that holds more than a page of records, so that time is read by id (checked first).
+    if (afterId === undefined && (await searchTie(call, def, since, "0", 1)).total > SEARCH_LIMIT) afterId = "0";
     if (afterId === undefined) {
       let after: string | undefined;
       let seen = 0;
@@ -177,24 +177,23 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         if (after && Date.now() >= deadline) return void (state.ended = false);
       } while (after && seen < WINDOW);
       if (!after) return void (state.ended = true);
-      if (last > since) {
-        since = last; // overlap at the edge: unchanged rows are no-ops
-        continue;
-      }
-      afterId = "0";
+      if (last <= since) throw new Error(`${def.objectType}: a window of ${WINDOW} records made no progress past one modified time`);
+      since = last; // overlap at the edge: unchanged rows are no-ops
+      continue;
     }
     let id = afterId ?? "0";
     for (;;) {
-      const { records: page } = await searchTie(call, def, since, id);
+      const { records: page, more } = await searchTie(call, def, since, id);
       for (const r of page) {
         id = r.id;
         state.tieId = id;
         yield r;
       }
-      if (page.length < SEARCH_LIMIT) break;
+      if (!more) break;
       if (Date.now() >= deadline) return void (state.ended = false);
     }
     state.tieId = undefined;
+    state.doneMs = since;
     since += 1;
     afterId = undefined;
   }
@@ -215,7 +214,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   const [cursorTime, cursorId] = (st.cursor ?? "").split("#");
   let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
   let tieId = cursorId || undefined;
-  const state: { ended: boolean; tieId?: string } = { ended: false };
+  const state: { ended: boolean; tieId?: string; doneMs?: number } = { ended: false };
   try {
     for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
@@ -233,6 +232,8 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
       tieId = state.tieId;
     }
     tieId = state.tieId;
+    // A bulk-edit time read whole is the newest the cursor must pass, even when no later record came.
+    if (state.doneMs !== undefined && state.doneMs >= Date.parse(newest)) newest = new Date(state.doneMs + 1).toISOString();
   } finally {
     // The cursor moves with what was written, and the type is baselined only when its search ended.
     await store.saveScope(scope, tieId ? `${newest}#${tieId}` : newest, state.ended);

@@ -82,15 +82,16 @@ export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: num
     "search_crm_objects",
   );
   const records = parseRecords(o);
-  // `offset` answers where the next page starts; a short page, or one that reached `total`, is the last.
-  return { records, ...(records.length >= SEARCH_LIMIT && Number(o.offset) > 0 && Number(o.offset) < Number(o.total) ? { next: String(o.offset) } : {}) };
+  // `offset` answers where the next page starts; a short page (as HubSpot sent it), or one that reached `total`, is the last.
+  return { records, ...(o.results.length >= SEARCH_LIMIT && Number(o.offset) > 0 && Number(o.offset) < Number(o.total) ? { next: String(o.offset) } : {}) };
 }
 
 /**
- * One page of the records modified at exactly `ms` with an id above `afterId`, by id, and how many there are in all. A bulk edit
- * can give more than WINDOW records one modified time (search can't page past them by time), so such a time is read by id instead.
+ * One page of the records modified at exactly `ms` with an id above `afterId`, by id; `total` is how many there are in all and
+ * `more` whether the page was full. A time that holds more records than one page (a bulk edit) can't be paged by time, so it
+ * is read by id instead.
  */
-export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string, limit = SEARCH_LIMIT): Promise<{ records: CrmRecord[]; total: number }> {
+export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string, limit = SEARCH_LIMIT): Promise<{ records: CrmRecord[]; total: number; more: boolean }> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
@@ -101,7 +102,7 @@ export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, a
     }),
     "search_crm_objects",
   );
-  return { records: parseRecords(o), total: Number(o.total) || 0 };
+  return { records: parseRecords(o), total: Number(o.total) || 0, more: o.results.length >= limit };
 }
 
 /** A time property as an ISO string (HubSpot returns ISO strings or epoch milliseconds, as text). */
