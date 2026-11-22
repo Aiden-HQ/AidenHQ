@@ -833,18 +833,82 @@ switchOver() {
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
 }
 
+# A read the timeout branch makes while it holds the apply lock: a query stalled on storage must not hold the lock or delay
+# the automatic rollback, so the apply bounds it itself. `timeout` alone cannot do that here: it waits for its child, and a
+# journalctl stuck in uninterruptible I/O keeps even SIGKILL pending until the I/O returns, so the apply would wait with it.
+# The read therefore runs in the background, writing to a file instead of a pipe this shell reads to EOF, with the inherited
+# apply lock closed (fd 9): a reader that outlives the deadline holds neither the lock nor this shell, so the rollback still
+# starts. `timeout -k 2 5` still ends an ordinary stuck reader early; this shell's own bound is a second longer than that
+# timeout's SIGKILL, so it holds only when the kill cannot land, and it reports 124 (or timeout's own 124/137) so the caller
+# says the read timed out.
+# The reader is not waited on once the deadline ended it: a SIGKILL it cannot take is a `wait` that never returns, so it is
+# reaped only on the branch where it has already exited. A temporary file that cannot be created fails the read at once
+# (125) instead of running the query against an empty name, and the status returned is always a number.
+kernelRead() {
+  local f d i=0 status=124
+  f="$(mktemp 2>/dev/null)" && [ -n "$f" ] || return 125
+  timeout -k 2 5 "$@" </dev/null >"$f" 2>/dev/null 9>&- &
+  d=$!
+  while kill -0 "$d" 2>/dev/null && [ "$i" -lt 80 ]; do sleep 0.1; i=$(( i + 1 )); done
+  if kill -0 "$d" 2>/dev/null; then
+    kill -KILL "$d" 2>/dev/null || true
+  elif wait "$d" 2>/dev/null; then status=0
+  else status=$?; fi
+  cat "$f" 2>/dev/null || true
+  rm -f "$f"
+  return "$status"
+}
+
+# What blocked the kernel when /healthz went unanswered at the deadline, from what the apply can read on the host: the
+# health request's curl exit, the unit's state and the tail of its journal (the journal is what says why the unit is not
+# answering). Both reads are bounded and best effort: a missing, failing or timed-out one marks its part unavailable and
+# the timeout itself stands. The journal query names the unit by its field and this apply's UID, not through `--user`:
+# after a full disk journald writes to /run, where the per-user view misses new entries, and the field alone would also
+# match another account's unit of the same name on a shared host (docs/operations.md, "Logs and debugging a run").
+kernelTimeoutWhy() {
+  local rc="$1" unit="aidenhq-kernel.service" out src=0 why journal jsrc=0 budget
+  # curl reports whether the exchange happened, not what is on the far side: no exit says a process was listening.
+  case "$rc" in
+    0) why="curl exit 0: /healthz answered, but not with ok" ;;
+    7) why="curl exit 7: could not connect to the health URL" ;;
+    22) why="curl exit 22: /healthz answered with an HTTP error" ;;
+    28) why="curl exit 28: the health request timed out after 5s without an answer" ;;
+    *) why="curl exit $rc" ;;
+  esac
+  out="$(kernelRead systemctl --user show "$unit" --property=ActiveState,Result,NRestarts 2>/dev/null)" || src=$?
+  out="${out//$'\n'/ }"; out="${out% }"
+  if [ "$src" -eq 124 ] || [ "$src" -eq 137 ]; then why+="; unit state unavailable, systemctl timed out"
+  elif [ "$src" -eq 125 ]; then why+="; unit state unavailable, could not start the read"
+  elif [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
+  elif [ -n "$out" ]; then why+="; unit $out"
+  else why+="; unit state unavailable, systemctl printed nothing"; fi
+  journal="$(kernelRead journalctl "_SYSTEMD_USER_UNIT=$unit" "_UID=$UID" -n 20 --no-pager -o cat 2>/dev/null)" || jsrc=$?
+  journal="${journal//$'\n'/ | }"
+  while [ "${journal%" | "}" != "$journal" ]; do journal="${journal%" | "}"; done
+  # journalctl prints oldest first: a head cut would drop the error that says why nothing answers, so keep the newest.
+  # The whole diagnostic stays one bounded line: the journal gets what the reason's divider and the rest left of 400.
+  budget=$(( 400 - ${#why} - 16 ))
+  [ "$budget" -lt 100 ] && budget=100
+  [ "${#journal}" -le "$budget" ] || journal="...${journal: -$((budget - 3))}"
+  if [ "$jsrc" -eq 124 ] || [ "$jsrc" -eq 137 ]; then why+="; last journal unavailable, journalctl timed out"
+  elif [ "$jsrc" -eq 125 ]; then why+="; last journal unavailable, could not start the read"
+  elif [ -n "$journal" ]; then why+="; last journal: $journal"
+  else why+="; last journal empty or unavailable"; fi
+  printf '%s' "$why"
+}
+
 # Step 4 of spec §5.7.2, polled to deadlines (the kernel restarts; services take a while to come up). Fails, with HEALTH_WHY,
 # when the kernel does not answer /healthz in time, when a check that passed in the baseline still FAILs at the deadline
 # (skips and checks already failing in the baseline don't count), or when the live agent check fails (it fails only on
 # connections granted since the previous config; its own ERROR lines, naming the connection and its detail, become the
 # reason).
 health() {
-  local base="$1" prev="$2" deadline name regress out rc=0 err why=""
+  local base="$1" prev="$2" deadline name regress out rc=0 err why="" answer krc=0
   local kurl="${AIDENHQ_KERNEL_HEALTH_URL:-http://10.231.0.1:3130/healthz}" every="${AIDENHQ_HEALTH_INTERVAL_S:-10}"
   HEALTH_WHY=""
   deadline=$(( $(date +%s) + ${AIDENHQ_KERNEL_DEADLINE_S:-120} ))
-  until curl -fsS --max-time 5 "$kurl" 2>/dev/null | grep -qx ok; do
-    [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="the kernel did not answer /healthz within ${AIDENHQ_KERNEL_DEADLINE_S:-120}s"; return 1; }
+  until { answer="$(curl -fsS --max-time 5 "$kurl" 2>/dev/null)"; krc=$?; [ "$krc" -eq 0 ] && grep -qx ok <<< "$answer"; }; do
+    [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="the kernel did not answer /healthz within ${AIDENHQ_KERNEL_DEADLINE_S:-120}s ($(kernelTimeoutWhy "$krc"))"; return 1; }
     sleep "$every"
   done
   if [ -n "$base" ] && [ -s "$base" ]; then
