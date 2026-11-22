@@ -855,11 +855,15 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
     assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${verb} cat -n /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, [], verb);
   // `-` names stdin even when its own `<` redirect makes that empty.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat - < /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
-  // Two commands are not one: bash opens each pipeline stage's redirects just before that stage runs, left to right, so
-  // a later stage's truncation follows an earlier stage's write (`a > f | b > f > log` leaves f empty). Only one
-  // command's own redirects are reordered.
-  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} > /etc/apt/sources.list.d/vendor.list && cat /dev/null > /etc/apt/sources.list.d/vendor.list > /tmp/log\nRUN apt-get install -y foo\n`).problems, []);
-  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} > /etc/apt/sources.list.d/vendor.list | cat /dev/null > /etc/apt/sources.list.d/vendor.list > /tmp/log\nRUN apt-get install -y foo\n`).problems, []);
+  // Two commands are not one: only a single command's own redirects are reordered. A second command after `;` does
+  // truncate the file the first wrote (no race — it runs strictly after), so that file ends empty.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} > /etc/apt/sources.list.d/vendor.list; cat /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // Two pipeline stages writing the same file are a race, not a sequence: measured in bash, `a > f | b > f > log` left
+  // the repository in f in about one run in five. The scanner must not claim that file empty, so it keeps the safe
+  // direction and flags the following unpinned install.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} > /etc/apt/sources.list.d/vendor.list | cat /dev/null > /etc/apt/sources.list.d/vendor.list > /tmp/log\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A single pipeline stage's own redirects still order deterministically: its truncation precedes its own write.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} > /etc/apt/sources.list.d/vendor.list > /tmp/log\nRUN apt-get install -y foo\n`).problems.length, 0);
   // `-` reads stdin even beside a `/dev/null` operand, so the line still reaches the file.
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /dev/null - > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
   // A quoted descriptor operand is the same number: `1>&"3"` puts stdout back on the pipe, so the tee keeps the line.

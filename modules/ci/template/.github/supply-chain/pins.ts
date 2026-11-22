@@ -354,12 +354,15 @@ function writtenFiles(segment: string, body?: string): Written[] {
   });
   // Within one command a truncation comes before the write that takes stdout, whatever order its redirects were written:
   // the shell opens all of a command's destinations before it runs it. Two commands are separate — bash opens each
-  // pipeline stage's redirects just before that stage runs, left to right, so `a > f | b > f` ends with f empty (b's
-  // truncation follows a's write) — so entries only reorder within one command span.
+  // pipeline stage's redirects just before that stage runs, left to right — so entries only reorder within one command
+  // span, and everything else keeps its written order.
   const rank = (e: Entry) => (e.takes ? 2 : e.append ? 1 : 0);
-  entries
-    .map((e, i) => ({ e, i }))
-    .sort((a, b) => (a.e.path === b.e.path && a.e.cmd === b.e.cmd ? rank(a.e) - rank(b.e) || a.i - b.i : a.i - b.i))
+  const order = entries.map((e, i) => ({ e, i }));
+  order
+    .sort((a, b) => {
+      if (a.e.path !== b.e.path || a.e.cmd !== b.e.cmd) return a.i - b.i;
+      return rank(a.e) - rank(b.e) || a.i - b.i;
+    })
     .forEach(({ e }) => add(e.path, e.append, e.content));
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
@@ -383,6 +386,15 @@ function writtenFiles(segment: string, body?: string): Written[] {
       : heredoc ? hereText! : flow(parts.findIndex((p) => m.index! >= p.start && m.index! < p.end) - 1);
     for (const a of options.filter((a) => !a.startsWith("-"))) add(a, append, content);
   }
+  // Two pipeline stages writing one file are a race, not a sequence: measured in bash, `a > f | b > f > log` left the
+  // repository in f in about one run in five. Where two commands write a name and either wrote a repository, every
+  // other write to it is unknown instead — a truncation must not be read as clearing a repository a racing stage may
+  // have written. The repository write keeps its text, so the pin is still filed where that write is the last one.
+  const writers = new Map<string, Set<number>>();
+  for (const e of entries) writers.set(e.path, (writers.get(e.path) ?? new Set()).add(e.cmd));
+  const repoWritten = new Set(out.filter((w) => w.content === "deb").map((w) => w.path));
+  const racy = new Set([...writers].filter(([path, cmds]) => cmds.size > 1 && repoWritten.has(path)).map(([path]) => path));
+  for (const w of out) if (racy.has(w.path) && w.content !== "deb" && w.content !== "none") w.content = "unknown";
   return out;
 }
 
@@ -518,7 +530,10 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         if (w.content === "none") continue;
         // A here-document's body is what it writes: its `deb` lines and its Deb822 stanzas.
         const written = w.content === "deb" ? (w.text === undefined ? debs : repoEntries(w.text).repos) : [];
-        state.entries.set(w.file!, w.append ? [...(state.entries.get(w.file!) ?? []), ...written] : written);
+        // Each write has its own mode: `>>` adds to what the file held, a plain `>` replaces it — so a file written
+        // twice on one line takes only the last write's entries when that last write replaces, whichever came first.
+        const prior = w.append ? (state.entries.get(w.file!) ?? []) : [];
+        state.entries.set(w.file!, [...prior, ...written]);
         if (w.content === "empty") state.files.delete(w.file!);
         else state.files.add(w.file!);
       }
