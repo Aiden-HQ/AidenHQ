@@ -346,6 +346,25 @@ async function codegenie({ model, effort, root, base, minutes, scratch, own, tru
 type NativeFinding = { title?: string; body?: string; priority?: number; code_location?: { absolute_file_path?: string; line_range?: { start?: number; end?: number } } };
 export type NativeReview = { findings?: NativeFinding[]; overall_correctness?: string; overall_explanation?: string };
 
+/** A command's output cut by codex before the model saw it. */
+export const TRUNCATED = /^Warning: truncated output \(original token count: \d+\)|^\.\.\. \d+ bytes omitted \.\.\.$/m;
+/** The shell commands of codex's session rollouts (JSONL) with the output the model got back, paired by call id. */
+export function nativeOutputs(rollouts: string[]) {
+  const out: { command: string; output: string }[] = [];
+  for (const text of rollouts) {
+    const calls = new Map<string, string>();
+    for (const l of text.split("\n")) {
+      if (!l.includes("function_call")) continue;
+      try {
+        const p = JSON.parse(l)?.payload;
+        if (p?.type === "function_call" && p.name === "exec_command") calls.set(String(p.call_id), String(JSON.parse(p.arguments ?? "{}").cmd ?? ""));
+        else if (p?.type === "function_call_output" && calls.has(String(p.call_id))) out.push({ command: calls.get(String(p.call_id))!, output: String(p.output ?? "") });
+      } catch {}
+    }
+  }
+  return out;
+}
+
 /** The review in codex's session rollouts (JSONL): the last ExitedReviewMode item's output, or undefined. */
 export function nativeReview(rollouts: string[]): NativeReview | undefined {
   let found: NativeReview | undefined;
@@ -478,7 +497,13 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   // The base as codex names it: the sha, the merge base's sha, or `git merge-base …` computing it.
   const names = [base, (() => { try { return execFileSync("git", ["merge-base", base, "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { return ""; } })()].filter(Boolean).map((x) => x.slice(0, 7));
   const namesBase = (c: unknown) => /git\s+merge-base\b/.test(String(c ?? "")) || names.some((n) => String(c ?? "").includes(n));
-  const shown = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution" && namesBase(e.item.command)).map((e) => String(e.item!.aggregated_output ?? "")).join("\n");
+  let rollouts: string[] = [];
+  try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
+  // What the model was shown: the outputs of the commands that name the base, as the session recorded them (the events carry the
+  // command's whole output, up to 1 MiB, which is more than the model sees). Codex 0.166.0 cuts a long output and says so:
+  // "Warning: truncated output (original token count: N)" with "... N bytes omitted ..." where the middle went. Such an output
+  // shows a part of a patch (a header and a first hunk), so it counts for nothing.
+  const shown = nativeOutputs(rollouts).filter((o) => namesBase(o.command) && !TRUNCATED.test(o.output)).map((o) => o.output).join("\n");
   // A change's file list that can't be made is no coverage proof. Codex's own diff may quote paths (git's core.quotePath) and pair a
   // rename's two names in one header: decode the headers, and a file is covered when a header names it on either side.
   // Codex's own diff output as blocks, one per file header, each with whether a hunk (`@@`) followed it: headers alone are not the patch.
@@ -490,8 +515,6 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   const covers = (p: string, b: { header: string }) => b.header.startsWith(`diff --git a/${p} `) || b.header.endsWith(` b/${p}`);
   // Nothing to require (only lockfiles or generated files changed): nothing to read. A file list that can't be made is no proof.
   const read = wanted !== undefined && wanted.every((f) => blocks.some((b) => covers(f.path, b) && (!f.hunks || b.hunk))) && (wanted.length === 0 || blocks.length > 0);
-  let rollouts: string[] = [];
-  try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
   const v = nativeReview(rollouts);
   // A review is one codex finished whose output parsed (codex leaves overall_correctness empty when the model's answer didn't).
   const done = r.code === 0 && events.some((e) => e.type === "turn.completed") && !!v && ["patch is correct", "patch is incorrect"].includes(String(v.overall_correctness));

@@ -10,7 +10,7 @@ import { changeFiles, codexConfig, runEngine } from "../recipe/engines.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
-async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean; lockOnly?: boolean } = {}) {
+async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean; lockOnly?: boolean; marker?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "native-read-"));
   const repo = join(dir, "repo"), bin = join(dir, "bin");
   mkdirSync(repo); mkdirSync(bin);
@@ -30,11 +30,13 @@ async function readOf(command: (base: string) => string, opts: { files?: boolean
   }
   const cmd = command(base);
   const asked = opts.badBase ? "deadbeefdeadbeef" : base;
-  const out = execFileSync("sh", ["-c", cmd], { cwd: repo, encoding: "utf8" });
+  const out = execFileSync("sh", ["-c", cmd], { cwd: repo, encoding: "utf8" }) + (opts.marker ?? "");
   const events = [{ type: "item.completed", item: { type: "command_execution", command: cmd, aggregated_output: out } }, { type: "turn.completed" }];
   const rollout = JSON.stringify({ payload: { item: { type: "ExitedReviewMode", review_output: { findings: [], overall_correctness: "patch is correct" } } } });
+  // What the model was shown, as the session rollout records it (the events carry the command's whole output).
+  const call = [{ payload: { type: "function_call", call_id: "c1", name: "exec_command", arguments: JSON.stringify({ cmd }) } }, { payload: { type: "function_call_output", call_id: "c1", output: `Chunk ID: x\nOutput:\n${out}` } }].map((e) => JSON.stringify(e)).join("\n");
   // A stand-in codex: prints the events and leaves the review in the session rollouts.
-  writeFileSync(join(bin, "codex"), `#!/bin/sh\nmkdir -p "$CODEX_HOME/sessions"\ncat > "$CODEX_HOME/sessions/s.jsonl" <<'EOF2'\n${rollout}\nEOF2\ncat <<'EOF2'\n${events.map((e) => JSON.stringify(e)).join("\n")}\nEOF2\n`);
+  writeFileSync(join(bin, "codex"), `#!/bin/sh\nmkdir -p "$CODEX_HOME/sessions"\ncat > "$CODEX_HOME/sessions/s.jsonl" <<'EOF2'\n${call}\n${rollout}\nEOF2\ncat <<'EOF2'\n${events.map((e) => JSON.stringify(e)).join("\n")}\nEOF2\n`);
   chmodSync(join(bin, "codex"), 0o755);
   process.env.PATH = `${bin}:${process.env.PATH}`;
   process.env.OPENROUTER_BASE_URL = "http://127.0.0.1:9/api/v1";
@@ -71,3 +73,6 @@ test("the git codex runs sees what the file list sees: a -diff attribute doesn't
   const env = Object.fromEntries([...set.matchAll(/(\w+) = ("(?:[^"\\]|\\.)*")/g)].map((m) => [m[1]!, JSON.parse(m[2]!)]));
   assert.match(execFileSync("git", ["diff", base, "HEAD", "--", "a.ts"], { cwd: dir, encoding: "utf8", env }), /^@@ /m);
 });
+
+test("a diff whose output Codex cut (a header and a first hunk shown) is not the read", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a b`, { marker: "\nWarning: truncated output (original token count: 90000)\n... 123456 bytes omitted ...\n" }), false));
+test("the same diff uncut is", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a b`), true));
