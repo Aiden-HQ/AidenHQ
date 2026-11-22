@@ -16,7 +16,7 @@ export interface AttentionConfig {
 }
 export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | { do: "digest" };
 /** A digest line, with what the ledger records once it goes out: `source` is the agent key ("kernel" for the kernel's), `at` when it was queued. */
-type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number };
+type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
 
 const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
@@ -45,7 +45,7 @@ export function attend(store: Store, cfg: AttentionConfig, who: { id: string; ke
 export function queueDigest(store: Store, item: Item, now = Date.now()): void {
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   // One line per item: agent-supplied whitespace and newlines collapse so an item can't forge another agent's line.
-  q.push({ id: randomUUID(), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now });
+  q.push({ id: randomUUID(), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now, ...(item.told ? { told: true as const } : {}) });
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
 }
 
@@ -71,15 +71,16 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 }
 
 /** Sends the queued digest once per slot (called on a timer); a failed send keeps the queue for the next tick. */
-export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean>, now = Date.now()): Promise<boolean> {
+export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now()): Promise<boolean> {
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  if (q.length && !(await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`).join("\n")}`))) return false;
+  const out = q.length ? await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`).join("\n")}`) : "off";
+  if (out === false) return false;
   // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
   const sent = new Set(q.map((i) => i.id));
   store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
-  for (const i of q) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: i.text }, now);
+  if (out === true) for (const i of q) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: i.text }, now);
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }
