@@ -144,9 +144,14 @@ it("owners: every page of search_owners, active or not, by owner id, checkpointe
   seen.length = 0;
 
   const { store, writes } = fakeStore();
-  await syncReference(store, call, ["contacts"], Date.now() - 1); // budget spent after page one: the offset is kept
+  await syncReference(store, call, ["contacts"], Date.now() - 1); // a spent budget stops the writes too: nothing moves
+  expect(writes).toEqual([]);
+  expect((await store.scope("owners")).cursor).toBeNull();
+  const slowStore = { ...store, upsert: async (...a: Parameters<typeof store.upsert>) => (await new Promise((r) => setTimeout(r, 20)), store.upsert(...a)) } as unknown as SourceStore;
+  await syncReference(slowStore, call, ["contacts"], Date.now() + 30); // the budget runs out after page one: its offset is kept
   expect(writes.map((w) => w.row.user_id)).toEqual(["11", "12"]);
   expect((await store.scope("owners")).cursor).toBe("20");
+  writes.length = 0;
   seen.length = 0;
   await syncReference(store, call, ["contacts"]); // the next pass resumes there and, reaching the end, clears it
   expect(seen).toEqual([20]);
@@ -174,4 +179,11 @@ it("a bulk edit that is recent when its id scan finishes is read again next pass
   scopes.set("contacts", { baselined: true, cursor: T });
   await syncObject(store, searchOver(data, contact), "contacts", opts());
   expect(scopes.get("contacts")?.cursor).toBe(T); // not T + 1 ms: the lookback is clamped to where the pass began
+});
+
+it("an out-of-range headcount is stored as null and the type goes on", async () => {
+  const { store, writes } = fakeStore();
+  const company = (id: string, employees: string) => ({ id, properties: { name: id, numberofemployees: employees, hs_lastmodifieddate: "2026-11-16T00:00:00.000Z" } });
+  await syncObject(store, async () => answer([company("1", "3000000000"), company("2", "250")]), "companies", opts());
+  expect(writes.map((w) => w.row.employees)).toEqual([null, 250]);
 });

@@ -100,6 +100,12 @@ const REFERENCE_BUDGET_MS = 60_000;
 const text = (v: unknown, cap?: number) => capText(v == null || v === "" ? null : String(v), cap);
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
 
+/** A headcount as an integer; null when it isn't one a Postgres integer holds (one bad import value must not stall the type). */
+const headcount = (v: unknown) => {
+  const n = num(v);
+  return n == null || Math.abs(n) > 2_147_483_647 ? null : Math.round(n);
+};
+
 /** Row builders: one record's columns. url is the page HubSpot's answer names (its urlTemplate carries the portal id). */
 export function contactRow(r: CrmRecord): Row {
   const p = r.properties;
@@ -113,7 +119,7 @@ export function companyRow(r: CrmRecord): Row {
   const p = r.properties;
   return {
     company_id: r.id, name: p.name ?? null, domain: p.domain ?? null, industry: p.industry ?? null, lifecycle_stage: p.lifecyclestage ?? null, owner_id: p.hubspot_owner_id ?? null,
-    employees: num(p.numberofemployees) == null ? null : Math.round(num(p.numberofemployees)!), annual_revenue: num(p.annualrevenue),
+    employees: headcount(p.numberofemployees), annual_revenue: num(p.annualrevenue),
     created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: r.url ?? null,
   };
 }
@@ -258,11 +264,15 @@ export async function syncReference(store: SourceStore, call: CallHubSpot, kinds
   let next = from === undefined ? undefined : Number(from);
   do {
     const page = await ownersPage(call, next);
-    for (const o of page.owners) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
     next = page.next;
+    for (const o of page.owners) {
+      // A spent budget stops the writes mid-page: the page is read again next pass (upserts are no-ops for what's written).
+      if (Date.now() >= deadline) return written;
+      if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
+    }
     await store.saveScope("owners", next === undefined ? "" : String(next));
   } while (next !== undefined && Date.now() < deadline);
-  if (kinds.includes("deals"))
+  if (kinds.includes("deals") && Date.now() < deadline)
     for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
 }
