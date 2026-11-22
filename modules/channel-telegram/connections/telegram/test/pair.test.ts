@@ -87,6 +87,15 @@ describe("pairing", () => {
     expect(store.ownerChat()).toBe("42");
   });
 
+  it("forgets a chat whose wrong tries have aged out of the window", () => {
+    const { pairing, tick } = setup();
+    const code = pairing.mint();
+    expect(pairing.redeem("wrong", 66)).toBe("wrong");
+    tick(60_001); // the wrong-try window (5 tries a minute)
+    // One wrong try from long ago neither limits this chat nor keeps it: the right code still pairs it.
+    expect(pairing.redeem(code, 66)).toBe("paired");
+  });
+
   it("an existing env chat id is seeded once", () => {
     const { store } = setup();
     const logged: string[] = [];

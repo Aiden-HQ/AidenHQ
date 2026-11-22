@@ -31,6 +31,8 @@ export function createPairing(store: PairStore, now: () => number = Date.now) {
      */
     redeem(code: string, chatId: number): TakePairCode | "limited" {
       const t = now();
+      // Forget chats with no try left in the window, so a chat that guesses once and never returns isn't kept forever.
+      for (const [id, tries] of wrong) if (tries.every((at) => t - at >= WINDOW_MS)) wrong.delete(id);
       const recent = (wrong.get(chatId) ?? []).filter((at) => t - at < WINDOW_MS);
       if (recent.length >= WRONG_LIMIT) return "limited";
       const took = store.takePairCode(hash(code), String(chatId), t);
