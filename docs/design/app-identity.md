@@ -79,6 +79,14 @@ which drops it. In every other mode (`local`, `public`, `cloudflare`, or tailsca
 app's port are the host's loopback and Docker bridges, so the app requires a signed identity and the deploy's identity
 probe requires it to refuse a token-less request.
 
+**An app that is not expected to serve HTTP** (not exposed, not shared, no `health.url`, no `api`; a database is the shape)
+does not have its ports fail the deploy for silence. A database answers its own protocol and hangs up on an HTTP request, so
+its `closed`/`silent` socket is recorded as a non-hard "not probed" finding naming that app-level reason, and the deploy is
+not rolled back for it. The skip is refused for any app that is exposed, shared, has a `health.url` or has an `api`: those
+apps could serve HTTP, and their silence fails closed exactly as before. A socket on the skipped app that answers HTTP —
+plaintext or over TLS — is still judged first, as on any app, so the skip never covers a port that speaks HTTP. Every
+skipped port is a recorded non-hard finding, never a silent pass.
+
 ## Agents (app_api, app_view)
 
 apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/identity.ts`) with its own Ed25519 key

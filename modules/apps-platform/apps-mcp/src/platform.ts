@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { dropPreviewDatabase, provisionDatabase, WAREHOUSE } from "./database.js";
 import { createEngine, type Engine, type ProbeOutcome } from "./deploy.js";
 import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, type Resolve, type Send } from "./api.js";
-import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mergeScans, processUids, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
+import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mergeScans, noHttpSurface, processUids, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
@@ -463,7 +463,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       for (const k of scan.sockets)
         ports.push({ service, port: k.port, host: k.host, listening: k.listening, ...(k.raw ? { raw: k.raw } : {}), answers: k.statuses.map((status, i) => ({ probe: probes[i]!, status })) });
     }
-    return identityPorts(ports, required, denied);
+    return identityPorts(ports, required, denied, noHttpSurface(app));
   }
 
   /**

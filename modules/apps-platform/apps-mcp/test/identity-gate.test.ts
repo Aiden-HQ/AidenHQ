@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, noHttpSurface, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -62,7 +62,7 @@ function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ip
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
-      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? []));
+      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? [], [], noHttpSurface(app)));
     });
     c.stdin!.end(JSON.stringify(input));
   });
@@ -283,6 +283,55 @@ describe("identity gate", () => {
     expect(unprobedServices(compose, [up[0]!, up[1]!, c("migrate"), c("seed")], hashes)).toEqual(["seed"]); // declares expose: a server
     expect(unprobedServices(compose, up, hashes)).toEqual(["migrate"]); // no container at all
   });
+
+  it.runIf(process.platform === "linux")("lets the warehouse shape past the gate: not exposed, no health.url, one published database port", async () => {
+    // Grading criterion 1. The warehouse: a database on a published port, reached only on the host's loopback (expose: false),
+    // with no health.url and no api. It is not expected to serve HTTP at all, so its silent database socket is a recorded skip.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    expect(noHttpSurface(db)).toBe(true);
+    // A real PostgreSQL answers an HTTP GET by hanging up, and never says a word: `closed`, which used to fail the deploy.
+    const r = await scan(db, [await tcp("(s) => s.on('data', () => s.destroy())")]);
+    expect(r.ok).toBe(true);
+    expect(r.findings.filter((f) => f.hard)).toEqual([]);
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("still judges a closed non-HTTP socket hard on an app that is exposed, shared, has a health.url or has an api", async () => {
+    // Grading criterion 2. The app-level skip is refused for every app that could serve HTTP, so the gate fails exactly as it
+    // did before for them: a socket that hangs up without a word is unconfirmed, never a skip.
+    const base = { name: "db", repo: "example-org/x", owner: "a", description: "d", port: 5433 };
+    const withDoor = [
+      parseApp({ ...base, expose: true }),
+      parseApp({ ...base, share: { host: "db.example.com", aud: "aud-db-0001" } }),
+      parseApp({ ...base, health: { url: "http://db:5433/health" } }),
+      parseApp({ ...base, expose: false, health: { url: "http://db:5433/health" }, api: { callers: ["k"], paths: ["/api"] } }),
+    ];
+    for (const app of withDoor) {
+      expect(noHttpSurface(app)).toBe(false);
+      const r = await scan(app, [await tcp("(s) => s.on('data', () => s.destroy())")]);
+      expect(r.ok).toBe(false);
+      expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/no HTTP answer \(closed\)/) });
+    }
+  }, 120_000);
+
+  it.runIf(process.platform === "linux")("judges a socket that answers HTTP on the warehouse shape too: the skip never covers an HTTP answer", async () => {
+    // Grading criterion 5, and the waiver's own bound. This is the SAME not-exposed, no-health.url, no-api shape as criterion 1,
+    // but the socket answers HTTP. An HTTP answer is judged first, so it is a hard finding (no sign-in) rather than a skip.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    expect(noHttpSurface(db)).toBe(true);
+    const plain = await tcp(`(s) => s.on("data", () => s.end("HTTP/1.0 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok"))`);
+    const r = await scan(db, [plain]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringContaining(NO_SIGN_IN) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("records a skipped identity port as a non-hard finding that names the app-level reason", async () => {
+    // Grading criterion 6. The skip is not silent: the deploy's result still says which port was not probed, and why.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const port = await tcp("(s) => s.on('data', () => s.destroy())");
+    const r = await scan(db, [port]);
+    expect(r.ok).toBe(true);
+    expect(r.findings).toEqual([{ hard: false, what: expect.stringMatching(new RegExp(`app:${port} on .*isn't exposed, isn't shared and has no health.url or api`)) }]);
+  }, 60_000);
 
   it.runIf(process.platform === "linux")("finds a socket nothing declares or exposes, on the address it is bound to", async () => {
     const host = eth0 ?? "127.0.0.1";

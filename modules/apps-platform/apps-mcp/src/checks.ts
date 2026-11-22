@@ -9,7 +9,10 @@
 // kind off). Inferred probes are lenient (a default `/` that 404s or isn't HTML, or a guessed schema path, is a warning);
 // declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy (health, a 5xx page, a declared page that won't open, the identity gate); warnings are reported.
 //   identity every TCP port any of the app's containers listens on or exposes: a security gate, not a light check
-//            (identityProbes below). Always hard, fails closed; only an app nobody can reach is skipped, and says so.
+//            (identityProbes below). Fails closed; skipped only when it clearly isn't HTTP, when nothing listens on an
+//            exposed port, when nobody can reach the app, or for an app that is not expected to serve HTTP at all (not
+//            exposed, not shared, no health.url, no api), each said as a warning. A socket that answers HTTP is judged
+//            either way, so no skip covers one.
 // Everything a page says is app-authored: findings carry generated text, and page text only as a short sanitized sample.
 import { apiTarget, checkPath, plainPath } from "./api.js";
 import type { Scope } from "./identity.js";
@@ -33,6 +36,14 @@ export const AGENT_TIMEOUT_MS = 5_000;
 export const sample = (s: unknown): string => String(s ?? "").replace(/[\p{Cc}<>`]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 160);
 
 export const isWeb = (app: App) => app.expose && !!app.port && !!app.health.url;
+
+/**
+ * The app is not expected to serve HTTP at all: not exposed on the tailnet or through the gate, not shared, no `health.url`
+ * and no agent `api` (the registry needs a health.url for an api). A database is the shape this is for: it speaks its own
+ * protocol, so its ports answer silence to an HTTP request. Such an app's unprobed ports are recorded as non-hard findings
+ * instead of failing the deploy; a port that does answer HTTP is still judged, on this app as on any other (identityPorts).
+ */
+export const noHttpSurface = (app: App) => !app.expose && !app.share?.host && !app.health.url && !app.api;
 
 /** Which render and agent probes to run, and whether each path was declared (strict) or inferred (lenient). */
 export function plan(app: App, declared: Declared = {}): { render: { path: string; declared: boolean }[]; agent: { path: string; declared: boolean }[] } {
@@ -207,11 +218,13 @@ export interface PortAnswers { service: string; port: number; host: string; list
 
 /**
  * The gate over every socket of every container (IDENTITY_SCRIPT's findings). A socket that answered HTTP is judged by
- * judgeIdentity. One that didn't is skipped only when it clearly isn't HTTP (a non-HTTP banner) or nothing listens on an
- * exposed port, and never on a port the registry says is HTTP (required); any other silence fails closed. No socket at all:
- * nobody can reach the app, the one skip, recorded as a warning.
+ * judgeIdentity. One that didn't is skipped when it clearly isn't HTTP (a non-HTTP banner), when nothing listens on an
+ * exposed port, or when the app serves no HTTP at all (`noHttp`: not exposed, not shared, no health.url, no api), so its
+ * ports are recorded as non-hard "not probed" findings; never on a port the registry says is HTTP (required). Any other
+ * silence, `closed` and `silent` included, fails closed. An HTTP answer is judged first, so the app-level skip never covers
+ * a socket that speaks HTTP. No socket at all: nobody can reach the app, the one skip, every skip a non-hard finding.
  */
-export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = []): ProbeResult {
+export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = [], noHttp = false): ProbeResult {
   const name = (p: { service: string; port: number | string }) => `${p.service}:${p.port}`;
   const at = (p: PortAnswers) => `${name(p)} on ${p.host}`;
   const findings: Finding[] = [];
@@ -224,6 +237,7 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
     if (p.answers.some((a) => a.status > 0)) findings.push(...judgeIdentity(p.answers).findings.map((f) => ({ ...f, what: `${at(p)}: ${f.what}` })));
     else if (p.raw === "banner" && !req) findings.push({ hard: false, what: `${at(p)} speaks something other than HTTP: not probed` });
     else if (p.raw === "refused" && !p.listening && !req) findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
+    else if (noHttp && !req) findings.push({ hard: false, what: `${at(p)}: not probed: the app isn't exposed, isn't shared and has no health.url or api, so it isn't expected to serve HTTP (no HTTP answer: ${p.raw ?? "none"})` });
     else findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
