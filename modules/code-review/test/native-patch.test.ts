@@ -250,6 +250,10 @@ test("with a commit to review at, codex works in a copy of its files, not the li
   const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
   const head = sh(repo, "rev-parse", "HEAD");
   writeFileSync(join(repo, "a.txt"), "edited later\n"); // the Engineer keeps editing
+  // A smudge filter the clone selects locally must not run when the copy is made.
+  const marker = join(repo, "..", "filter-ran");
+  sh(repo, "config", "filter.evil.smudge", `touch ${marker}`); sh(repo, "config", "filter.evil.required", "false");
+  writeFileSync(join(repo, ".git", "info", "attributes"), "* filter=evil\n");
   const model = await endpoint();
   try {
     const dir = codexDir();
@@ -263,5 +267,6 @@ test("with a commit to review at, codex works in a copy of its files, not the li
     assert.ok(text.includes(join(realpathSync(scratch), "tree")) || text.includes(join(scratch, "tree")), "codex's cwd is the copy");
     assert.ok(!text.includes(`<cwd>${repo}`), "not the live checkout");
     assert.equal(execFileSync("cat", [join(scratch, "tree", "a.txt")], { encoding: "utf8" }), "a1\n", "the copy holds the reviewed commit's file");
+    assert.equal(existsSync(marker), false, "no filter of the clone ran");
   } finally { model.close(); }
 });

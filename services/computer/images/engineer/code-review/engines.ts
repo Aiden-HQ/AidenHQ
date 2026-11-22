@@ -32,7 +32,7 @@
 //   step. Same sandbox and token rules as the harness's own engine; only that skill (never the repo's) is loaded. It reads the tree
 //   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -492,6 +492,25 @@ export function patchGroups(root: string, base: string, files: string[], budget 
 }
 
 /**
+ * The regular files of commit `head` written into `dir`, as the commit's blobs hold them: read with ls-tree and cat-file, so no
+ * checkout filter, attribute or hook of the clone runs on them. Links and submodules are left out.
+ */
+export function snapshot(root: string, head: string, dir: string) {
+  const entries = gitSafe(root, ["ls-tree", "-r", "-z", "--full-tree", head]).split("\0").filter(Boolean)
+    .flatMap((l) => { const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l); return m ? [{ exec: m[1] === "100755", sha: m[2]!, path: m[3]! }] : []; });
+  const out = spawnSync("git", ["cat-file", "--batch"], { cwd: root, input: `${entries.map((x) => x.sha).join("\n")}\n`, maxBuffer: 1 << 30, env: { ...process.env, ...gitEnv() } });
+  if (out.status !== 0 || !out.stdout) throw new Error("the commit's files could not be read");
+  let at = 0;
+  for (const x of entries) {
+    const nl = out.stdout.indexOf(10, at), size = Number(out.stdout.subarray(at, nl).toString().split(" ")[2]);
+    const body = out.stdout.subarray(nl + 1, nl + 1 + size);
+    at = nl + 1 + size + 1;
+    mkdirSync(dirname(join(dir, x.path)), { recursive: true });
+    writeFileSync(join(dir, x.path), body, { mode: x.exec ? 0o755 : 0o644 });
+  }
+}
+
+/**
  * codex-native: Codex's review mode over a patch this code made (patchGroups), sent on stdin as fenced data; the brief stays the
  * trusted developer instructions. One request for an ordinary change. The review is clean only when every group was delivered, its
  * turn completed and its verdict parsed; a group that failed, or a hunk too big to send, is named in `incomplete`. (Codex 0.166.0's
@@ -506,10 +525,7 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
   let cwd = root;
   if (head) {
     cwd = join(scratch, "tree");
-    mkdirSync(cwd);
-    const index = { GIT_INDEX_FILE: join(scratch, "tree.index") };
-    gitSafe(root, ["read-tree", head], index);
-    gitSafe(root, ["checkout-index", "-a", "-f", `--prefix=${cwd}/`], index);
+    snapshot(root, head, cwd);
   }
   const roots = [cwd.replace(/\/$/, ""), realpathSync(cwd)];
   const findings: ReturnType<typeof nativeFindings> = [];

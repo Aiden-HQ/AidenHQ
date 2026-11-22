@@ -79,7 +79,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", from, head))); } catch {}
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
-    const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
+    const instructions = brief({ guides, checks, focus: "", excluded: [], incremental, addressed: false });
     const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, head, left: [...left] }), [token]);
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
