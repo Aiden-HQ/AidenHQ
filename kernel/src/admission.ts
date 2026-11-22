@@ -78,7 +78,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   grants: () => Record<string, AgentGrant | undefined>;
   /** Write kinds (config/kernel/writes.json and the kernel's): a job may request the reviewed ones (floor 1+) whose tools it
    * holds; an engineer job also the code host's kinds and kernel.apply. */
-  kinds: () => Record<string, { module: string; floor: number; tools: string[] }>;
+  kinds: () => Record<string, { module: string; floor: number; tools: string[]; filer?: string }>;
   /** settings.computers_max (config/computers.json `max`): the launcher's pool, so no job is admitted it can't box. */
   capacity: () => number;
   /** The pool's fair share (pool.ts): agent jobs and check jobs are each guaranteed half of `capacity`; this admits within it. */
@@ -132,7 +132,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
     const engineer = (id: string, k: { module: string }) => profile === "engineer" && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
-    const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
+    // A kind only the owner's own save files (`filer: owner`, a share's publish) is no job's.
+    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && ((k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k))).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,

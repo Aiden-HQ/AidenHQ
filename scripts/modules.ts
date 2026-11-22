@@ -1592,10 +1592,12 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
-    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "binds", "card", "tools", "filed_by"].includes(f));
+    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "binds", "card", "tools", "filed_by", "filer", "stale"].includes(f));
     if (extra.length) fail(`write kind ${id}: unknown field ${extra.join(", ")} (kernel/schemas/writes.json)`);
     if (![0, 1, 2].includes(w.floor)) fail(`write kind ${id}: floor is 0, 1 or 2`);
     if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
+    if (w.filer != null && w.filer !== "owner") fail(`write kind ${id}: filer is owner (only the owner's own save files it) or absent`);
+    if (w.stale != null && w.stale !== "fail") fail(`write kind ${id}: stale is fail (a moved target fails the record) or absent`);
     // The owner of the kind consents to other modules filing it; a module file only a kind it names, never a kernel kind.
     if (w.filed_by != null && (!Array.isArray(w.filed_by) || !w.filed_by.length || w.filed_by.some((m: unknown) => typeof m !== "string" || m === name || m === "kernel" || !modules.includes(m)))) fail(`write kind ${id}: filed_by lists other modules by name (${modules.filter((m) => m !== name).slice(0, 4).join(", ")}…), never kernel or itself`);
     const binds = Array.isArray(w.binds) ? [...new Set(w.binds)] as string[] : undefined;
@@ -1617,7 +1619,7 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), ...(w.filer ? { filer: w.filer } : {}), ...(w.stale ? { stale: w.stale } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
   }
   return out;
 }

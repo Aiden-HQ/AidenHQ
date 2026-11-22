@@ -17,5 +17,5 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
       .slice(0, limit);
   // The paged live read (records.ts `live`): every approved or running card, whatever its tier, in one page here.
   const live: Records["live"] = async () => cards.filter((a) => a.state === "approved" || a.state === "running");
-  return { cards, settings, list, live, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
+  return { cards, settings, list, live, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), sharePreview: async () => { throw Object.assign(new Error("no kernel"), { refused: true }); }, share: async () => { throw Object.assign(new Error("no kernel"), { refused: true }); }, settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

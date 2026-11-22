@@ -356,18 +356,24 @@ export type SettingsDeps = {
 export function createSettingsChanges(d: SettingsDeps) {
   const sources = (): Sources => ({ compiled: YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {}, catalog: JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8")) });
   const count = (changes: unknown) => ((Array.isArray(changes) && changes.length && changes.length <= 10) || refuse("changes: one to ten typed changes"));
-  async function apply(taskId: unknown, changes: unknown, credential?: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+  /**
+   * The owner's own open settings task (the board filed it a moment ago with the owner's key, held by no agent) and the account
+   * behind his sign-in (board session or MCP client), checked here: that account decides the record. A credential that doesn't
+   * check out is refused, never quietly put to the reviewer instead.
+   */
+  async function ownerTask(taskId: unknown, credential?: unknown): Promise<{ issue: Dict; account?: string }> {
     if (typeof taskId !== "string" || !/^[0-9a-f-]{36}$/.test(taskId)) refuse("task is the settings task's id");
-    count(changes);
-    // The owner's sign-in (board session or MCP client), checked here: its account decides the record. A credential that doesn't check out is
-    // refused, never quietly put to the reviewer instead.
     const account = credential === undefined ? undefined : (isCredential(credential) && (await d.credentialAccount(credential))) || refuse("that sign-in has ended: sign in again");
-    // The owner's own task, held by no agent: the board filed it a moment ago with the owner's key.
     const issue = (await d.task(taskId as string)) ?? refuse("no such task");
     const owner = await d.owner();
     if (!owner || issue.createdByUserId !== owner || issue.createdByAgentId || issue.assigneeAgentId) refuse("a settings change is the owner's own task, made by the board and held by no agent");
     if (!(issue.labels ?? []).some((l: Dict) => l?.name === SETTINGS_LABEL)) refuse(`that task isn't a settings change (no ${SETTINGS_LABEL} label)`);
     if (["done", "cancelled"].includes(String(issue.status))) refuse("that task is closed");
+    return { issue, account };
+  }
+  async function apply(taskId: unknown, changes: unknown, credential?: unknown): Promise<{ record: string; tier: number; state: string; sha: string }> {
+    count(changes);
+    const { issue, account } = await ownerTask(taskId, credential);
     if (d.filed(taskId as string)) refuse("a settings change was already written on that task: file a new one");
     return write(taskId as string, issue, changes as unknown[], sources(), undefined, account ? { account, via: "save" } : undefined);
   }
@@ -414,7 +420,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     d.log?.("settings change filed", { task: issue.identifier, kinds: typed.map((c) => c.kind), record: r.id, tier: r.tier, ...(requester ? { agent: requester.key } : {}) });
     return { record: r.id, tier: r.tier, state: r.state, sha };
   }
-  return Object.assign(apply, { asAgent });
+  return Object.assign(apply, { asAgent, ownerTask });
 }
 
 /** The instance repo's main, read from the kernel's instance checkout (fetched first): its commit and the regular files asked for. */

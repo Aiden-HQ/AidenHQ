@@ -4,6 +4,8 @@
 // not module files, and the scan below is only a backstop for prose that copied one of them in. The preview shows the
 // result; the owner's save is bound to its digest (github's share.ts digestOf, the code host computes it the same way).
 import { execFile } from "node:child_process";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import YAML from "yaml";
 import { digestOf } from "../../modules/github/service/src/share.ts";
 
@@ -23,6 +25,8 @@ export type ExportDeps = {
 export class ShareRefused extends Error { status = 422; }
 
 const MAX_FILES = 100, MAX_BYTES = 512 * 1024;
+/** A skill file's path, as a publish may write it (modules/github/schemas/publish_module.json). */
+const SKILL_PATH = /^skills\/[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
 const SECRET_SHAPES = /\b(sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|ahq[a-z]?_[A-Za-z0-9]{16,})|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 const git = (dir: string, args: string[]) => new Promise<Buffer>((ok, no) => execFile("git", ["-C", dir, ...args], { encoding: "buffer", maxBuffer: 64 << 20, env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" } }, (e, out) => (e ? no(e) : ok(out))));
@@ -78,7 +82,7 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
   for (const [rel, oid] of blobs) {
     if (rel === "module.yaml") continue;
     const handbook = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(rel);
-    if (!(handbook && agents.includes(handbook[1]!)) && !rel.startsWith("skills/")) { notShared.push({ path: rel, why: "a local module shares only module.yaml, its agents' AGENTS.md and skills/" }); continue; }
+    if (!(handbook && agents.includes(handbook[1]!)) && !SKILL_PATH.test(rel)) { notShared.push({ path: rel, why: "a local module shares only module.yaml, its agents' AGENTS.md and skills/" }); continue; }
     const buf = await git(d.instanceDir, ["cat-file", "blob", oid]);
     if (buf.includes(0)) { notShared.push({ path: rel, why: "a binary file" }); continue; }
     files[rel] = buf.toString("utf8");
@@ -109,4 +113,93 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
   if (Object.keys(files).length > MAX_FILES || bytes > MAX_BYTES) findings.push({ file: "", rule: "too-big", detail: `${Object.keys(files).length} files, ${bytes} bytes: a shared module is at most ${MAX_FILES} files and ${MAX_BYTES / 1024} KB` });
   const unique = [...new Map(findings.map((f) => [`${f.file}|${f.rule}|${f.detail}`, f])).values()];
   return { module: name, source: d.sha, files, notShared, findings: unique, isolation, scripts, grants, digest: digestOf(d.sha, files) };
+}
+
+/** Every value in the vault (its files, at any depth, up to 64 KB each): what the scan looks for. */
+export function vaultValues(dir: string): string[] {
+  if (!dir) return [];
+  const out: string[] = [];
+  const walk = (at: string) => {
+    let names: string[];
+    try { names = readdirSync(at); } catch { return; }
+    for (const n of names) {
+      const p = join(at, n);
+      try {
+        const st = statSync(p);
+        if (st.isDirectory()) walk(p);
+        else if (st.isFile() && st.size <= 65_536) out.push(readFileSync(p, "utf8"));
+      } catch { /* unreadable: nothing to compare */ }
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+type Owner = { account: string; via: string };
+/**
+ * The two share routes (backplane POST /v1/modules/share/preview and /v1/modules/share). The preview exports the module at
+ * the instance's main and asks the code host where it would land (the branch's tip). The share is the owner's board save of
+ * that preview, on his own settings task: the module unchanged since, the same export at the same source (same digest, no
+ * findings), filed as his own decided github.publish_module bound to the repo, ref and base tip he saw.
+ */
+export function createSharing(d: {
+  instanceDir: string; configDir: string; instanceRepo: () => string | undefined;
+  secrets: () => string[]; memory: () => string[];
+  /** The code host's answer for a destination: its tip, whether it is private, and a folder or entry that isn't this module's. */
+  tip: (b: { repo: string; ref: string; module: string }) => Promise<{ repo: string; base: string; private: boolean; conflict?: string }>;
+  ownerTask: (task: unknown, credential?: unknown) => Promise<{ issue: Dict; account?: string }>;
+  /** Whether a share was filed on this task already. */
+  filed: (task: string) => boolean;
+  file: (args: Dict, task: string, owner: Owner) => Promise<{ id: string; tier: number; state: string }>;
+}) {
+  const refuse = (m: string): never => { throw new ShareRefused(m); };
+  const text = async (args: string[]) => (await git(d.instanceDir, args)).toString("utf8").trim();
+  const main = async () => (await text(["fetch", "-q", "origin", "main"]), text(["rev-parse", "--verify", "origin/main^{commit}"]));
+  const tree = (sha: string, module: string) => text(["rev-parse", "--verify", `${sha}:modules/${module}`]).catch(() => "");
+  async function exportAt(module: string, sha: string) {
+    const compiled: Dict = YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {};
+    const catalog: Dict[] = JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8"));
+    // Only the values this instance set: a module default is public text, not the owner's.
+    const settings = Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value]));
+    const profile = await text(["cat-file", "blob", `${sha}:owner/profile.md`]).catch(() => "");
+    return exportModule(module, { instanceDir: d.instanceDir, sha, catalog, compiled, settings, secrets: d.secrets(), memory: d.memory(), profile, instanceRepo: d.instanceRepo() });
+  }
+  const shape = (b: Dict) => {
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(String(b.module))) refuse("module is a local module's name");
+    if (!/^[\w.-]+\/[\w.-]+$/.test(String(b.repo))) refuse("repo is a GitHub owner/name");
+    if (!/^(?!-)(?!.*\.\.)[\w./-]{1,200}$/.test(String(b.ref))) refuse("ref is a branch name");
+    return { module: String(b.module), repo: String(b.repo), ref: String(b.ref) };
+  };
+  return {
+    /** What a share would send, exactly, and where: the files whole only when nothing blocks it. */
+    async preview(b: Dict) {
+      const { module, repo, ref } = shape(b);
+      const x = await exportAt(module, await main());
+      const to = await d.tip({ repo, ref, module });
+      const clean = !x.findings.length;
+      return {
+        module, repo: to.repo, ref, source: x.source, base: to.base, digest: x.digest, private: to.private, ...(to.conflict ? { conflict: to.conflict } : {}),
+        files: Object.keys(x.files).sort().map((path) => ({ path, bytes: Buffer.byteLength(x.files[path]!), ...(clean ? { text: x.files[path] } : {}) })),
+        notShared: x.notShared, findings: x.findings, isolation: x.isolation, scripts: x.scripts, grants: x.grants,
+      };
+    },
+    /** The owner's board save of a preview: filed and decided as his account, or refused (a new preview is needed). */
+    async share(b: Dict) {
+      const { module, repo, ref } = shape(b);
+      const cred = b.credential as { board?: unknown } | undefined;
+      if (typeof cred?.board !== "string") refuse("a share is the owner's save on the board, signed in");
+      const { account } = await d.ownerTask(b.task, cred);
+      if (!account) refuse("that sign-in has ended: sign in again");
+      if (d.filed(String(b.task))) refuse("a share was already filed on that task: preview and save again");
+      for (const k of ["source", "base"]) if (!/^[0-9a-f]{40}$/.test(String(b[k]))) refuse(`${k} is the preview's commit`);
+      if (!/^[0-9a-f]{64}$/.test(String(b.digest))) refuse("digest is the preview's");
+      if ((await tree(await main(), module)) !== (await tree(String(b.source), module))) refuse(`the ${module} module changed since your preview: preview again`);
+      const x = await exportAt(module, String(b.source));
+      if (x.findings.length) refuse(`not shared: ${x.findings.map((f) => `${f.file || module} (${f.detail})`).join("; ").slice(0, 600)}`);
+      if (x.digest !== b.digest) refuse("what would be shared isn't what you previewed: preview again");
+      const args = { repo, ref, base: String(b.base), source: x.source, module, files: Object.keys(x.files).sort().map((path) => ({ path, text: x.files[path]! })), digest: x.digest };
+      const r = await d.file(args, String(b.task), { account: account!, via: "save" });
+      return { record: r.id, tier: r.tier, state: r.state };
+    },
+  };
 }

@@ -221,6 +221,8 @@ export const ROUTES = [
   { method: "GET", path: "/v1/connections/down", auth: "module" },
   { method: "GET", path: "/v1/connections/needs", auth: "module" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
+  { method: "POST", path: "/v1/modules/share/preview", auth: "board" },
+  { method: "POST", path: "/v1/modules/share", auth: "board" },
   { method: "POST", path: "/v1/validate", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
@@ -297,7 +299,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -359,6 +361,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
   connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "needs" | "has" | "report">;
+  /** A local module's share: its preview, and the owner's save of it (module-share.ts createSharing). */
+  sharing?: { preview(b: Record<string, unknown>): Promise<unknown>; share(b: Record<string, unknown>): Promise<unknown> };
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
@@ -633,6 +637,14 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           // The owner reads why: a refusal of the change itself, or the code host's or the planner's answer. `credential`: the
           // owner's board session or MCP sign-in it was made in (the kernel checks it; its account decides the record).
           try { return send(res, 200, await settingsChange(b.task, b.changes, b.credential)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+        }
+        case "POST /v1/modules/share/preview":
+        case "POST /v1/modules/share": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!sharing) throw fail(503, "unavailable", "sharing is off");
+          const b = await json(req, 100_000);
+          // The owner reads why: the export's refusal, the code host's, or the filing's (a moved tip, a private repo).
+          try { return send(res, 200, await (hit!.path === "/v1/modules/share" ? sharing.share(b) : sharing.preview(b))); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
       }
       if (hit?.path === "/v1/settings/agent") {

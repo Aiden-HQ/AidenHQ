@@ -82,6 +82,7 @@ export function changeLines(ch: SettingChange, was: unknown): { path: string; fr
   if (ch.kind === "pin") return { path: `modules.${ch.name}`, from: yamlValue(was), to: ch.sha ?? "(follows its marketplace)" };
   if (ch.kind === "grants") return { path: `overrides.agents.${ch.agent}.connections.${ch.connection}`, from: yamlValue(was), to: ch.tools === null ? "(the module's)" : yamlValue(ch.tools) };
   if (ch.kind === "marketplace") return { path: `marketplaces.${ch.name}`, from: yamlValue(was), to: ch.op };
+  if (ch.kind === "share") return { path: `${ch.repo} ${ch.ref}`, from: ch.base.slice(0, 12), to: `+ ${ch.module}/` };
   if (ch.kind === "unfork") return { path: `overrides.agents.${ch.agent}.handbook_fork`, from: "(own copy)", to: "(the module's handbook)" };
   return { path: ch.kind === "rules" ? `agents/${ch.agent}.md` : `agents/${ch.agent}/AGENTS.md`, from: yamlValue(was), to: ch.text.slice(0, 80) };
 }
