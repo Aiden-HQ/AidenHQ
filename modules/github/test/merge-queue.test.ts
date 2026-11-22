@@ -70,7 +70,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, graphql, repo = () => 404, pull = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, kernelReply, kernelBefore, putFails = () => false, graphql, repo = () => 404, pull = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const waits = [];
   const taken = new Set();
@@ -84,7 +84,12 @@ async function setup(t, { prs, connected = { on: true }, hold, holdReason, cache
     // A claimed record's live wait (kernel/src/backplane.ts): the task's card reads it while the merge cannot move.
     const w = /^\/v1\/writes\/([^/]+)\/wait$/.exec(req.url);
     if (w) { waits.push({ id: w[1], reason: JSON.parse(body || "{}").reason ?? null }); return res.writeHead(200).end(JSON.stringify({ ok: true, new: true })); }
-    const reply = checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
+    // A read the kernel could not answer: the socket is dropped, as an unavailable kernel does (`kernelBefore`).
+    if (kernelBefore?.(req)) return req.socket.destroy();
+    // A task's work read (the merge queue's link for a PR with no pr-tasks.json row): `checks` and `kernelReply` answer their own
+    // reads of the path first, and a task with no records answers otherwise.
+    const answer = kernelReply?.(req.method, req.url, body ? JSON.parse(body) : undefined) ?? checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
+    const reply = answer ?? (req.method === "GET" && /^\/v1\/work\?task=/.test(req.url) ? { status: "open", records: [] } : undefined);
     // A read that failed rather than answered: `{ __status: 503 }` makes the fake kernel answer that status (a restarting kernel).
     if (reply?.__status) return res.writeHead(reply.__status).end(JSON.stringify({ error: { message: `fake kernel ${reply.__status}` } }));
     if (reply) return res.writeHead(200).end(JSON.stringify(reply));
@@ -688,6 +693,156 @@ test("a cached merge credit is used only with its default-branch facts; a queue 
   assert.equal(main?.ok, true);
   assert.deepEqual(JSON.parse(main.text.split("\n")[0].replace(/^merged-prs: /, "")),
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "verified default-branch credit is evidence");
+});
+
+test("an already-merged PR with no pr-tasks.json row is evidence when the task's own pr record names its repo and exact head", async (t) => {
+  // The push died before the PR write noted it (a token without workflow scope on a .github/ change), so pr-tasks.json has no row
+  // and the owner merged at the bound head. The task's own planned pr record still names the repo and this exact commit: that is
+  // the task's attribution (a record in any state, `failed` here), not the merge card's.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-bound-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  const work = { status: "open", records: [
+    { id: "k-00000000000000e1", kind: "github.pr", state: "failed", args: { only: [{ repo: "acme-agents/widget", branch: "feature", sha: "c".repeat(40) }] } },
+    { id: "k-00000000000000e2", kind: "github.pr", state: "failed", args: { only: [{ repo: "Acme-Agents/Widget", branch: "feature", sha: HEAD }] } },
+  ] };
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === `/v1/work?task=tsk_0000000000000w9` ? work : undefined),
+  });
+  await merge("k-00000000000000d7", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/);
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the task's own record naming this repo (any case) and this head is the link");
+  assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's");
+});
+
+test("a pr-tasks.json row naming another task is a veto, even when a matching record is on the task", async (t) => {
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-veto-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-other", branch: "feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  let reads = 0;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    checks: (m, url) => (m === "GET" && url === "/v1/work?task=tsk_0000000000000w9" ? (reads++, { status: "open", records: [{ kind: "github.pr", state: "failed", args: { only: [{ repo: "acme-agents/widget", sha: HEAD }] } }] }) : undefined),
+  });
+  await merge("k-00000000000000d8", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "a row naming another task is never overridden by a record");
+  assert.equal(reads, 0, "the row answers first: no kernel read at all");
+});
+
+test("a failed task-binding read holds the queue and is retried, never settled as an empty merge list", async (t) => {
+  // The kernel is briefly unavailable while an already-merged PR has no row. The failed read must not become "no binding": the
+  // queue waits a poll and asks again, and only then settles with the evidence the record holds.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-bound-retry-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  let reads = 0;
+  // The first work read fails the way an unavailable kernel does: the request is refused (its socket reset), not answered.
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    kernelBefore: (req) => (req.method === "GET" && /^\/v1\/work\?task=/.test(req.url) && ++reads === 1 ? "reset" : undefined),
+    kernelReply: (m, url) => (m === "GET" && url === "/v1/work?task=tsk_0000000000000w9" ? { status: "open", records: [{ kind: "github.push", state: "done", args: { only: [{ repo: "acme-agents/widget", sha: HEAD }] } }] } : undefined),
+  });
+  await merge("k-00000000000000d9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(outcomes.length, 0, "a failed binding read must not settle the queue");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(reads, 2, "the first read failed, the second answered");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the retried read kept the merge as evidence");
+});
+
+test("a record filed after the first poll is credited when the external merge is seen", async (t) => {
+  // The PR is open at the first poll (no row, no record yet), so nothing is settled. The task files its pr record while CI is
+  // still running, and the owner merges: the poll that sees the merge reads the record and credits it. A negative answer is never
+  // cached, so an earlier miss cannot hide a record filed later for the same head.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-late-bound-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  let filed = false;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    kernelReply: (m, url) => (m === "GET" && url === "/v1/work?task=tsk_0000000000000w9"
+      ? { status: "open", records: filed ? [{ kind: "github.pr", state: "failed", args: { only: [{ repo: "acme-agents/widget", sha: HEAD }] } }] : [] }
+      : undefined),
+  });
+  await merge("k-00000000000000da", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(outcomes.length, 0, "still open: no outcome");
+  filed = true;
+  prs["acme-agents/widget"] = { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha };
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the record filed after the first poll is credited");
+});
+
+test("a permanent refusal on the task work read settles the queue instead of retrying forever", async (t) => {
+  // The kernel answers 404 (it no longer holds the task): that is its answer, no binding, so the queue finishes rather than
+  // retrying a permanent refusal on every poll.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-bound-404-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  let reads = 0;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    kernelReply: (m, url) => (m === "GET" && url === "/v1/work?task=tsk_0000000000000w9" ? (reads++, { __status: 404 }) : undefined),
+  });
+  await merge("k-00000000000000db", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(reads, 1, "the permanent refusal is not retried");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "no binding, so the PR is not evidence");
+});
+
+test("a task-work read failure never holds a PR the queue merged itself", async (t) => {
+  // The queue merges at the bound head, so its own merge needs no external attribution: an unavailable task read must not stop
+  // the outcome from being delivered.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  let reads = 0;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs,
+    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=/.test(url) ? (reads++, { __status: 503 }) : undefined),
+  });
+  await merge("k-00000000000000dc", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(reads, 0, "a merge of its own is not read for a binding");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")).map((p) => [p.head, typeof p.sha]), [[HEAD, "string"]]);
+});
+
+test("a PR the merge commit's message already credits is not also read from the kernel", async (t) => {
+  // The message path and the record path are two proofs of the same link: once the message answers, the kernel is not asked.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-message-no-read-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the widget\n\nWOR-9" } };
+  let reads = 0;
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=/.test(url) ? (reads++, { __status: 503 }) : undefined),
+  });
+  await merge("k-00000000000000dd", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(reads, 0, "the message already names the task");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }]);
 });
 
 test("a queue persisted before the identifier was kept recovers it from the record, so its already-merged PR is still evidence", async (t) => {

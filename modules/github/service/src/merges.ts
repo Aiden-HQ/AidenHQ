@@ -23,8 +23,8 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** The second design-review ask's refusals for this head (nobody holds the role): the deadline is never moved by one, and after a few the review is advisory for the head rather than a wait nobody can end. */ reviewRefused?: { head: string; n: number }; /** The head each design-review marker was confirmed for: a marker is trusted only when its own entry names this head. Kept per marker (`once`/`again`) because a delivered second ask says nothing about a first ask an older version recorded unconfirmed; a marker from an older version (including the single number this type used to hold) has no entry and is reconciled by asking again. */ reviewMarked?: { once?: string; again?: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** The second design-review ask's refusals for this head (nobody holds the role): the deadline is never moved by one, and after a few the review is advisory for the head rather than a wait nobody can end. */ reviewRefused?: { head: string; n: number }; /** The head each design-review marker was confirmed for: a marker is trusted only when its own entry names this head. Kept per marker (`once`/`again`) because a delivered second ask says nothing about a first ask an older version recorded unconfirmed; a marker from an older version (including the single number this type used to hold) has no entry and is reconciled by asking again. */ reviewMarked?: { once?: string; again?: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
@@ -412,11 +412,23 @@ export function createMerges(d: {
   }
 
   /**
+   * Whether the merge commit that landed a PR names the record's task identifier as a whole token: the credit main's message path
+   * gives an already-merged PR, shared with `step` so a PR it already credits is not read from the kernel for the record binding.
+   */
+  function creditsByMessage(p: Pr, q: Queue): boolean {
+    const c = p.mergeCredit;
+    if (!q.taskIdentifier || !c || c.base !== c.defaultBranch) return false;
+    const token = q.taskIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\w-])${token}(?![\\w-])`).test(c.message);
+  }
+  /**
    * ok only when every PR the record named merged (or was merged already). The text's first line is MERGED_LINE and the PRs that
    * merged at their bound head, as JSON ({ repo, number, head, sha }, an empty list when none): this queue's own merges and the
    * ones already merged when it polled them (a merge commit at the bound head, its sha), what readers of the record (the grading
    * module) take as merged, never the record's args. An already-merged PR is evidence only when it links to the task this merge is
-   * for (pr-tasks.json): a matching head and merge commit prove what GitHub merged, not that it delivered this task. `objects`
+   * for: a pr-tasks.json row naming it, the task's own pr/push record naming the repo and this exact head commit (`bound`, from
+   * prBound), or the merge commit's message naming it (namesTask) — a matching head and merge commit alone prove what GitHub
+   * merged, not that it delivered this task. `objects`
    * names only the merge commits this queue made. Then what the queue said, last word last.
    */
   function finish(id: string, q: Queue) {
@@ -425,10 +437,12 @@ export function createMerges(d: {
     const n = q.prs.filter(settled).length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
     // pr-tasks.json names the task's identifier (pr-watch.ts notePrTask: the job's workspace), the record its id: a match on
-    // either is this task, and neither is another task's PR.
+    // either is this task, and neither is another task's PR. A row naming another task is a veto. Only when there is no row is
+    // the task's own record the proof (`bound`, read by `step` from prBound): the commit its own plan named.
     const linked = (p: Pr) => {
       const row = d.taskOf?.(p.repo, p.number);
-      return Boolean(row) && Boolean((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
+      if (row) return Boolean((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
+      return Boolean(d.prBound) && p.bound?.head === p.head;
     };
     // A PR the fleet never opened has no row to link, so the merge commit that landed on the default branch is what can credit
     // it: its message names the task this merge is for. The facts that make that true are checked here, not taken on trust: the
@@ -438,12 +452,7 @@ export function createMerges(d: {
     // when another task's row already claims the PR; a title or a body alone is never read. Whole-token only: a longer identifier
     // sharing the prefix (WOR-99381 for WOR-9938) names another task, and an unknown identifier or an absent message keeps
     // today's answer (not evidence).
-    const namesTask = (p: Pr) => {
-      const c = p.mergeCredit;
-      if (!q.taskIdentifier || !c || c.base !== c.defaultBranch) return false;
-      const token = q.taskIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`(?<![\\w-])${token}(?![\\w-])`).test(c.message);
-    };
+    const namesTask = (p: Pr) => creditsByMessage(p, q);
     // A row that names another task is an answer, not an absence: a message that mentions this task in passing never overrides it.
     const linkedElsewhere = (p: Pr) => {
       const row = d.taskOf?.(p.repo, p.number);
@@ -550,9 +559,29 @@ export function createMerges(d: {
         // but the queue is not finished, so a poll that comes back after the kernel does can still credit the evidence.
         const unrecovered = Boolean(q.task && !q.taskIdentifier && !q.recovered && d.identifierOf);
         for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(id, q, p, merged);
+        // The second link for an already-merged PR the queue did not merge itself: with no pr-tasks.json row (a push refused
+        // before the PR write could note it), the task's own pr/push record must name this repo and bound head. Read after the
+        // poll confirmed the merge, so a record the task files while the PR is open is seen at the settle. Only a positive answer
+        // is kept (a negative one is asked again each poll): a record filed after an earlier miss must still be credited. A read
+        // that failed is not "no binding": the queue is not finished this poll, and the next poll asks again.
+        let unbound = false;
+        for (const p of q.prs) {
+          // Only an externally merged PR with a merge commit, and only with nothing else naming it: the queue's own merges, a
+          // linked PR and one its merge commit already names need no binding, so a failed read never holds them.
+          if (p.status !== "skipped" || typeof p.sha !== "string" || !q.task || !d.prBound || d.taskOf?.(p.repo, p.number)) continue;
+          if (p.bound?.head === p.head) continue;
+          if (creditsByMessage(p, q)) continue;
+          const r = await d.prBound(q.task, { repo: p.repo, number: p.number, head: p.head }).then((v) => ({ v }), (e: Error) => {
+            log("merge queue: task binding not read (retrying)", { pr: p.url, tries: (q.boundTries ?? 0) + 1, err: says(e) });
+            return undefined;
+          });
+          if (!r) { q.boundTries = (q.boundTries ?? 0) + 1; unbound = true; continue; }
+          delete q.boundTries;
+          if (r.v) { p.bound = { head: p.head }; save(); }
+        }
         // The record's reason now: every PR still waiting, or nothing (a finished queue clears it before its outcome lands).
         await publishWait(id, q);
-        if (!q.prs.some((p) => p.status === "pending") && !unrecovered) finish(id, q);
+        if (!q.prs.some((p) => p.status === "pending") && !unrecovered && !unbound) finish(id, q);
       }
     } finally {
       for (const [id, q] of Object.entries(s.queues)) if (q.outcome && !q.reported && !delivering.has(id)) deliver(id, q);
