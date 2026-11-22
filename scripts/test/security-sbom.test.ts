@@ -135,16 +135,22 @@ case "$1" in
       # deadline terminates it instead of holding the apply lock.
       [ -n "$FAKE_SAVE_SLEEP" ] && read -r -t "$FAKE_SAVE_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_SAVE_SLEEP")
       shift
-      file=""; id=""
+      file=""; id=""; plat_save=""
       while [ "$#" -gt 0 ]; do
         case "$1" in
           -o) file="$2"; shift 2 ;;
-          --platform) shift 2 ;;
+          --platform) plat_save="$2"; shift 2 ;;
           -*) shift ;;
           *) id="$1"; shift ;;
         esac
       done
       failed="$(awk -F '\\t' -v ref="$id" '$1 == ref { print $2; found = 1 } END { exit !found }' "$SAVE_ERRORS")" && { echo "$failed" >&2; exit 1; }
+      # A platform save of an index writes only when some local reference holds that platform's manifest; when the
+      # fixture records no per-platform manifests for the ref at all, the plain reference rule below decides.
+      if [ -n "$plat_save" ] && grep -qF -- "$id" "$PLATFORM_MANIFESTS"; then
+        awk -F '\\t' -v ref="$id" -v p="$plat_save" '$1 == ref && $2 == p { found = 1 } END { exit !found }' "$PLATFORM_MANIFESTS" \
+          || { echo "Error response from daemon: No such image: $id" >&2; exit 1; }
+      fi
       if grep -qxF -- "$id" "$HELD" || awk -F '\\t' -v ref="$id" '$1 == ref { found = 1 } END { exit !found }' "$TAGS"; then
         [ -n "$file" ] && : > "$file"; : > "$SAVED"; exit 0
       fi
@@ -618,11 +624,11 @@ test("security-sbom: an image is sized through any local reference that can expo
   assert.match(syft(calls, "image:sha256:gone").line, /docker-archive:\/image\.tar/);
 });
 
-test("security-sbom: only the retained archive is charged, so two images that fit are both scanned", { skip: NOT_LINUX }, async () => {
-  // 45 GB free, a 30 GB floor: 15 GB of room. Two images whose archives are 5 GB each do not fit twice over (10 + 10), but
-  // their scans run one at a time, so only the two 5 GB archives are ever retained together. Charging each image twice
-  // would reject the second for no reason.
-  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "45000000" }, {
+test("security-sbom: two images whose archives and workspaces fit are both scanned", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. Both 5 GB archives stay on disk until their scans (10 GB), and the scan of
+  // either unpacks its own 5 GB beside them: 15 GB, which fits. Charging every image its own workspace up front, or
+  // charging an archive twice, would reject the second for no reason.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "60000000" }, {
     containers: [
       { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" },
       { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:4444" },
@@ -729,4 +735,50 @@ test("security-sbom: a daemon whose template has no descriptor field still publi
   assert.match(out, /1 container\(s\) report no platform manifest descriptor; read on the Docker server platform linux\/amd64/);
   const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+});
+
+test("security-sbom: two containers running one index on different platforms are two targets", { skip: NOT_LINUX }, async () => {
+  // One amd64 service and one emulated arm64 service run the same multi-platform index. Keying only by `.Image` would let
+  // the second variant share the first's archive and publish nothing for it; each variant must be its own target.
+  const amd64 = { digest: "sha256:amd64", platform: { os: "linux", architecture: "amd64" } };
+  const arm64 = { digest: "sha256:arm64", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  const { status, out, targets, calls } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:index", config: "board:local", label: "sha256:amd64", descriptor: amd64 },
+      { id: "c2", image: "sha256:index", config: "board:local", label: "sha256:arm64", descriptor: arm64 },
+    ],
+    tags: { "board:local": "sha256:amd64" },
+    manifests: { "board:local": "sha256:amd64" },
+    platformManifests: {
+      "board:local": { "linux/amd64": "sha256:amd64", "linux/arm64/v8": "sha256:arm64" },
+      "sha256:index": { "linux/amd64": "sha256:amd64", "linux/arm64/v8": "sha256:arm64" },
+    },
+    platformSizes: { "sha256:index": { "linux/amd64": 1024, "linux/arm64/v8": 1024 } },
+    held: ["sha256:index"],
+  });
+  assert.equal(status, 0, out);
+  const images = targets.filter((t) => t[0].startsWith("image:"));
+  assert.equal(images.length, 2, `one target per running variant:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  const saves = calls.filter((c) => c.startsWith("save "));
+  assert.equal(saves.length, 2, `one archive per variant:\n${calls.join("\n")}\ntargets:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(saves.some((c) => /--platform linux\/amd64 /.test(c)), saves.join("\n"));
+  assert.ok(saves.some((c) => /--platform linux\/arm64\/v8 /.test(c)), saves.join("\n"));
+});
+
+test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 9 GB image's archive fits, but unpacking it beside the archive needs its
+  // size again, so the scan would refuse it and the pass would save it every night and never read it. It must be a line
+  // and no save may run.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "40000000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 9 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the image whose scan could not fit was not saved");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `an archive was saved for a scan that cannot fit:\n${calls.join("\n")}`);
 });

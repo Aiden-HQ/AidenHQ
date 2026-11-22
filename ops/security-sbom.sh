@@ -252,9 +252,9 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
 plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
 plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); }
 snapshot() {
-  local listing rows cid row image config desc label want key raw size size_gb avail ref saved candidate archive pin now
-  local plat avail_now man nodesc
-  local -A running=() tags=() manifests=() pinned=() plat_of=() desc_man=()
+  local listing rows cid row image config desc label want key raw size size_gb avail ref saved archive pin now
+  local plat avail_now man nodesc unit need room top
+  local -A variant_count=()
   if ! listing="$(docker_call 10 ps -q 2>&1)"; then
     echo "security-sbom: could not enumerate containers (${listing:-docker ps failed}); keeping the previous batch" >&2
     return 1
@@ -306,54 +306,69 @@ snapshot() {
     return 1
   fi
   nodesc=0
+  # One entry per image *variant*: two containers can run one multi-platform index on different platforms (an amd64
+  # service and an emulated arm64 one), and they are different packages. Keying only by `.Image` would let the second
+  # share the first's archive and publish no row for it. A unit is its image plus the platform manifest it runs (its
+  # platform when the daemon reports no descriptor), and the plan keeps one per unit in a stable order.
+  local -a units=()
+  local -A unit_seen=() u_image=() u_plat=() u_man=() u_tag=() u_label=() u_pinned=()
   while read -r cid image config label desc; do
     [ -n "$cid" ] || continue
     [ "$label" = - ] && label=""
     case "$config" in *anchore/syft*) continue ;; esac
-    running[$image]=1
     # The platform this container runs, and the manifest it was created from. Without a descriptor (an older daemon, or a
     # single-platform store) the server platform is the only answer there is, and the pass says how many it read that way.
     plat="$(descriptor_platform "$desc" || true)"
     if [ -z "$plat" ]; then plat="$platform"; nodesc=$((nodesc + 1)); fi
-    : "${plat_of[$image]:=$plat}"
     man="$(descriptor_manifest "$desc" || true)"
-    [ -n "$man" ] && : "${desc_man[$image]:=$man}"
-    if [ -n "$label" ]; then : "${manifests[$image]:=$label}"; fi
+    unit="$image|$plat|${man:--}"
+    if [ -z "${unit_seen[$unit]:-}" ]; then
+      unit_seen[$unit]=1; units+=("$unit")
+      u_image[$unit]="$image"; u_plat[$unit]="$plat"; u_man[$unit]="$man"
+      u_label[$unit]="$label"
+      u_tag[$unit]=""; u_pinned[$unit]="$man"
+    elif [ -z "${u_label[$unit]:-}" ] && [ -n "$label" ]; then
+      u_label[$unit]="$label"
+    fi
+    # The tag is read once per variant, on that variant's platform: the id the tests below judge, and the identity carried
+    # forward as the pin. Reading it again later would pin whatever it names then, not what the container runs.
     [ "${config#sha256:}" = "$config" ] || continue
-    # What the tag names right now, read once on the container's own platform: the id the two tests below judge, and the
-    # identity carried forward as the pin. Reading the tag again later would pin whatever it names then, not what the
-    # container runs.
+    [ -n "${u_tag[$unit]:-}" ] && [[ "${u_tag[$unit]}" < "$config" ]] && continue
     now="$(docker_call 5 image inspect --platform "$plat" -f '{{.Id}}' "$config" 2>/dev/null)"
-    if { [ -n "$man" ] && [ "$now" = "$man" ]; } || { [ -n "$label" ] && [ "$now" = "$label" ]; }; then
+    if { [ -n "$man" ] && [ "$now" = "$man" ]; } || { [ -n "${u_label[$unit]:-}" ] && [ "$now" = "${u_label[$unit]}" ]; }; then
       :
     elif [ "$(docker_call 5 image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ]; then
       :
     else
       continue
     fi
-    { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; } || continue
-    tags[$image]="$config"; pinned[$image]="${desc_man[$image]:-$now}"
+    u_tag[$unit]="$config"
+    [ -n "${u_pinned[$unit]:-}" ] || u_pinned[$unit]="$now"
   done <<< "$rows"
+  for unit in "${units[@]}"; do image="${u_image[$unit]}"; variant_count[$image]=$(( ${variant_count[$image]:-0} + 1 )); done
   [ "$nodesc" -eq 0 ] || echo "security-sbom: $nodesc container(s) report no platform manifest descriptor; read on the Docker server platform $platform" >&2
   plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
-  # Archives wait here, not in $work, which each scan empties. Space is budgeted across the whole plan: every archive
-  # stays on disk until its scan, so a later image must still fit beside the earlier ones above the floor.
-  avail=$(( $(free_gb) - min_free_gb ))
-  for image in $(printf '%s\n' "${!running[@]}" | sort); do
+  # Every archive stays on disk until its scan, so the room a scan needs is not known until every image is sized: the
+  # batch must fit all its archives *and*, at the scan of the largest, its own archive twice over as workspace. Saving as
+  # the sizes arrive would admit an image whose scan then skips it every pass (a saved archive that is never read). So the
+  # plan is two passes under the lock: resolve and size every unit first, then admit a set that fits and save only that.
+  local -a p_key=() p_want=() p_pin=() p_ref=() p_image=() p_plat=() p_size=()
+  for unit in "${units[@]}"; do
+    image="${u_image[$unit]}"; plat="${u_plat[$unit]}"; man="${u_man[$unit]}"
     # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
     # recorded, else the container's own top-level id. The target stays `image:<container id>` when the tag has moved: the
     # store reconciles findings by target name, so keying the same image by its manifest id would leave the findings
-    # already held under its id unverified beside the new ones.
-    want="${tags[$image]:-${manifests[$image]:-$image}}"
-    key="${tags[$image]:-$image}"
-    plat="${plat_of[$image]:-$platform}"
-    # The platform manifest this target stands for: the container's own descriptor, the identity the tag check proved
-    # (`pinned`), else what compose recorded, else `pin_of` resolving the container's index to the platform manifest
-    # inside it — all read on the container's own platform. Never a fresh read of the tag, which another pull could have
-    # moved since the check.
-    if [ -n "${desc_man[$image]:-}" ]; then pin="${desc_man[$image]}"
-    elif [ -n "${tags[$image]:-}" ]; then pin="${pinned[$image]:-}"
-    else pin="$(pin_of "$want" "$plat")"; fi
+    # already held under its id unverified beside the new ones. Two containers on one index are different variants, so
+    # each is keyed by its own reference and platform instead of sharing the other's target.
+    if [ "${variant_count[$image]:-0}" -le 1 ]; then key="${u_tag[$unit]:-$image}"
+    elif [ -n "${u_tag[$unit]:-}" ]; then key="${u_tag[$unit]}@${plat}"
+    else key="${man:-$image}@${plat}"; fi
+    want="${u_tag[$unit]:-${u_label[$unit]:-$image}}"
+    # The platform manifest this target stands for: the container's own descriptor, the identity the tag check proved,
+    # else what compose recorded, else `pin_of` resolving the container's index on the container's own platform. Never a
+    # fresh read of the tag, which another pull could have moved since the check.
+    pin="${u_pinned[$unit]:-${u_man[$unit]:-}}"
+    [ -n "$pin" ] || pin="$(pin_of "$want" "$plat")"
     [ -n "$pin" ] || pin="$want"
     # The reference the save will read, resolved now, while the lock still holds the store still. Discovering it here, not
     # after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
@@ -361,10 +376,8 @@ snapshot() {
     if ! ref="$(resolve_ref "$pin" "$image" "$plat")"; then
       plan_add "image:$key" "fail:docker save: no local image exports $want" "$pin" "$image"; continue
     fi
-    # Size the very variant the save will write, through the very reference it will read. `docker image inspect` on an
-    # index reports the index's total, while `docker save --platform` writes one platform manifest, so the size is read
-    # with the same `--platform` resolution the save uses. A daemon that cannot resolve a platform (a single-platform
-    # store) answers the plain inspect instead.
+    # Size the very variant the save will write, through the very reference it will read: `docker image inspect` on an
+    # index reports the index's total, while `docker save --platform` writes one platform manifest.
     raw=""; saved=""
     if raw="$(docker_call 5 image inspect --platform "$plat" -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
     if [ -z "$saved" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
@@ -377,27 +390,47 @@ snapshot() {
     if [[ ! "$size" =~ ^[0-9]+$ ]]; then
       plan_add "image:$key" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" "$pin" "$image"; continue
     fi
-    size_gb="$(ceil_gb "$size")"
-    # The archive is what stays on disk beside the others (each scan's workspace is freed before the next, and rechecked
-    # against free space right before that scan), so that is what the batch budget is judged on: an image whose save
-    # would not fit beside the archives already retained is a line and writes no bytes.
-    # Free space is read again here, with the archives already written: the plan's budget counted them, but another
-    # writer on the same filesystem can have taken room since, and a save that starts below the floor fills the disk the
-    # host runs on. A target that no longer fits is a line and writes no bytes.
+    p_key+=("$key"); p_want+=("$want"); p_pin+=("$pin"); p_ref+=("$ref")
+    p_image+=("$image"); p_plat+=("$plat"); p_size+=("$(ceil_gb "$size")")
+  done
+  # Admit smallest first, keeping `archives + largest admitted` inside the room above the floor: at the scan of the
+  # largest admitted image every admitted archive is still on disk, and unpacking it needs its own size again as
+  # workspace. An image that does not fit is a line and no bytes are written for it.
+  room=$(( $(free_gb) - min_free_gb ))
+  [ "$room" -lt 0 ] && room=0
+  local -A admit=()
+  local -a order=()
+  local total=0 biggest=0 idx sz i
+  # NB: the loop body runs in this shell only if the loop itself is not at the end of a pipeline; the sizes come from a
+  # process substitution so `admit`/`order` persist for the second pass.
+  while IFS=$'\t' read -r sz idx; do
+    [ -n "$idx" ] || continue
+    top=$(( sz > biggest ? sz : biggest ))
+    if [ $(( total + sz + top )) -le "$room" ]; then
+      admit[$idx]=1; order+=("$idx"); total=$(( total + sz )); if [ "$sz" -gt "$biggest" ]; then biggest="$sz"; fi
+    else
+      admit[$idx]=0
+    fi
+  done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
+  for idx in "${!p_size[@]}"; do
+    key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
+    if [ "${admit[$idx]:-0}" != 1 ]; then
+      plan_add "image:$key" "fail:skipped: ${sz} GB image does not fit: the batch keeps every archive until it is scanned and unpacks this one beside them, so it needs ${sz} GB of room and only ${room} GB is above the ${min_free_gb} GB floor on $out" "$pin" "$ref"
+    fi
+  done
+  for idx in "${order[@]}"; do
+    key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
+    # Free space is read again with the archives already written: the plan's budget counted them, but another writer on the
+    # same filesystem can have taken room since, and a save that starts below the floor fills the disk the host runs on.
     avail_now=$(( $(free_gb) - min_free_gb ))
-    [ "$avail_now" -lt "$avail" ] && avail="$avail_now"
-    if [ "$avail" -lt "$size_gb" ]; then
-      plan_add "image:$key" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" "$pin" "$ref"; continue
+    if [ "$avail_now" -lt "$sz" ]; then
+      plan_add "image:$key" "fail:skipped: ${sz} GB image does not fit in the ${avail_now} GB of room above the ${min_free_gb} GB floor on $out" "$pin" "$ref"; continue
     fi
     # Exported now, under the lock, from the reference resolved above: the archive holds exactly what runs, and nothing
     # that moves after the lock is released can change it. The scan-time path only re-opens archives.
     archive="$archives/${#plan_target[@]}.tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
       plan_add "image:$key" "archive:$archive" "$pin" "$ref"
-      # Only the archive is retained between images; each scan's workspace is freed before the next, and is rechecked
-      # against free space right before that scan. Charging twice here would reject an image that does fit.
-      saved="$(ceil_gb "$(stat -c %s "$archive")")"
-      avail=$(( avail - saved ))
     else
       plan_add "image:$key" "fail:docker save: ${export_err:-failed}" "$pin" "$ref"
     fi
@@ -423,8 +456,9 @@ for i in "${!plan_target[@]}"; do
       # archive that no longer fits is a line, and its bytes go back before the next target.
       archive="${source#archive:}"
       if [ ! -f "$archive" ]; then fail "$target" "docker save: its archive is gone"; continue; fi
+      # The archive is already on disk and counted in `free`; unpacking it needs its own size again above the floor.
       avail="$(free_gb)"; need="$(ceil_gb "$(stat -c %s "$archive")")"
-      if [ "$avail" -lt "$min_free_gb" ] || [ "$need" -gt $(( (avail - min_free_gb) / 2 )) ]; then
+      if [ "$avail" -lt "$min_free_gb" ] || [ "$need" -gt $(( avail - min_free_gb )) ]; then
         fail "$target" "skipped: ${need} GB image does not fit in the ${avail} GB free on $out above the ${min_free_gb} GB floor"
         rm -f "$archive"; continue
       fi

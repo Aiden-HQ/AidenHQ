@@ -399,7 +399,9 @@ exact email match only).
 `modules/security`: Security Watch (`security-watch`) and the Red Teamer (`red-teamer`), plus `security-scanner`, the
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
-runs pinned syft over the host packages, every running image (each image is read from a `docker save` archive, never
+runs pinned syft over the host packages, every running image variant (two containers on one multi-platform index — an
+amd64 service and an emulated arm64 one — are two targets, keyed by their own tag and platform, with the second suffixed
+`@<platform>` so its findings are not filed under the first; each image is read from a `docker save` archive, never
 through a mutable tag: the archive is exported on the platform the container itself runs — its `ImageManifestDescriptor`,
 which on the containerd store names the platform manifest the container was created from, not the variant the daemon's own
 platform resolves — from an immutable id that holds that manifest, or from the tag itself only while it still names that
@@ -415,11 +417,13 @@ records the checkout's git HEAD for `repo:product` and `repo:instance`, and the 
 archive in `data/modules/security/sbom/.archives` until its scan. Every image is saved under the lock, from a reference
 resolved there on the container's own platform (an immutable id that holds its platform manifest, else the tag itself),
 sized as that same reference and platform (an index reports the whole index while a platform save writes one manifest),
-and the plan budgets the saves across the whole batch before any writes, charging only the archive retained
-between scans (each scan's workspace is freed before the next). An image the batch cannot fit beside the archives already
-retained is a line, not a full disk; free space is checked again before each scan, with every archive still on disk. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
-than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
-demand can't be judged to fit). A container that reports no platform descriptor (an older daemon, or a single-platform
+and the plan sizes every image before writing anything, then admits smallest first only while all admitted archives plus
+the largest one's own size again (the workspace its scan unpacks into while every archive is still on disk) fit above the
+floor. An image the batch cannot fit beside the archives already retained, or whose own scan would not have room after
+all of them, is a line and no bytes are written for it; free space is checked again before each save and again before each
+scan. It empties the work dir after every target, keeps 30 GB free (an image whose size the daemon won't report is
+recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
+older daemon, or a single-platform
 store) is read on the Docker server platform, and the pass says on stderr how many it did that for. A second pass started
 while one holds `.lock` skips rather than running two at once.
 
