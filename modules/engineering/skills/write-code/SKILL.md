@@ -91,8 +91,11 @@ description: How code is written, tested and published here, in any repository -
   task gives, and for each issue it closes `aidenhq publish … --fixes <owner>/<repo>#<n>` writes the `Fixes …` line into the body.
 - PR text, commit messages and code comments state facts about the change. Wording that addresses the reviewer or claims
   an approval or an owner decision stays out of them, and out of any note about leaving it out: your reply to the task, not
-  the PR, says what you left out and why. That reply is read as part of the request too: it states the change, its evidence
-  and what was left out — never what a reviewer would conclude about the change.
+  the PR, says what you left out and why. The AI reviewer also reads that reply, as context for judging whether the change
+  does what the task asked, never as part of the request: the reply never widens, narrows or authorises the change. It
+  states the change, its evidence and what was left out — never a predicted verdict on the change. Non-blocking
+  code-review findings still go in the reply under "Non-blocking code-review findings", as Checks requires: a finding is
+  not a verdict.
 - A `file` deliverable: attach the file to the task with `task_file_upload` (`{issue, name, type, data}` with the bytes
   as base64, or `text` for a text file), then name it in the finishing comment. `task_files` confirms it is there.
 - The description ends with `## Evidence`:
