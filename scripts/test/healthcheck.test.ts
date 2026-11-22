@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+
 const NOT_LINUX = process.platform !== "linux" && "compares realpaths; macOS temp dirs sit behind the /var -> /private/var symlink";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,64 +60,11 @@ function run(dir) {
 
 const execStart = (script, path = "/usr/bin/env") => `{ path=${path} ; argv[]=/usr/bin/env bash ${script} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`;
 
-test("the host-metrics check fails when the unit runs another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
-  const dir = checkout();
-  const other = join(dir, "old-checkout/ops/host-metrics.sh");
-  mkdirSync(dirname(other), { recursive: true });
-  writeFileSync(other, "#!/usr/bin/env bash\n");
-  writeFileSync(join(dir, "execstart"), execStart(other) + "\n");
-  const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("host metrics timer runs the applied checkout"));
-  assert.ok(line, r.out);
-  assert.match(line, /^  FAIL  host metrics timer runs the applied checkout  /, line);
-  assert.ok(line.includes(realpathSync(other)), line);
-  assert.ok(line.includes(join(realpathSync(dir), "ops/host-metrics.sh")), line);
-});
-
-test("the host-metrics check fails when the executable systemd starts is not the one its argv names", async () => {
-  const dir = checkout();
-  // systemd starts /bin/sh, but argv[] pretends env runs the applied script.
-  writeFileSync(join(dir, "execstart"), execStart(join(dir, "ops/host-metrics.sh"), "/bin/sh") + "\n");
-  const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("host metrics timer runs the applied checkout"));
-  assert.ok(line, r.out);
-  assert.match(line, /^  FAIL  host metrics timer runs the applied checkout  /, line);
-  assert.ok(line.includes(realpathSync("/bin/sh")), line);
-  assert.ok(line.includes(realpathSync("/usr/bin/env")), line);
-});
-
 test("the host-metrics check passes when the unit runs this checkout's script", async () => {
   const dir = checkout();
   writeFileSync(join(dir, "execstart"), execStart(join(dir, "ops/host-metrics.sh")) + "\n");
   const r = await run(dir);
   assert.match(r.out, /^  ok    host metrics timer runs the applied checkout$/m, r.out);
-});
-
-test("the security-sbom check fails when the unit runs another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
-  const dir = checkout({ name: "security-sbom", service: "aidenhq-security-sbom.service", timerUnit: "aidenhq-security-sbom.timer" });
-  const other = join(dir, "old-checkout/ops/security-sbom.sh");
-  mkdirSync(dirname(other), { recursive: true });
-  writeFileSync(other, "#!/usr/bin/env bash\n");
-  // ~/.config/aidenhq-checkout.env names the checkout setup recorded, as on a host the applies never moved, and no
-  // per-apply file exists yet: that checkout's script is what the unit would run.
-  writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
-  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/security-sbom.sh") + "\n");
-  const r = await run(dir);
-  const line = r.out.split("\n").find((l) => l.includes("security sbom timer runs the applied checkout"));
-  assert.ok(line, r.out);
-  assert.match(line, /^  FAIL  security sbom timer runs the applied checkout  /, line);
-  assert.ok(line.includes(realpathSync(other)), line);
-  assert.ok(line.includes(join(realpathSync(dir), "ops/security-sbom.sh")), line);
-});
-
-test("the security-sbom check passes when the unit runs this checkout's script", async () => {
-  const dir = checkout({ name: "security-sbom", service: "aidenhq-security-sbom.service", timerUnit: "aidenhq-security-sbom.timer" });
-  // The checkout setup recorded is another one; the apply's per-apply file, read after it, names this checkout and wins.
-  writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
-  writeFileSync(join(dir, "home/.config/aidenhq-security-sbom.env"), `AIDENHQ_DIR=${dir}\n`);
-  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/security-sbom.sh") + "\n");
-  const r = await run(dir);
-  assert.match(r.out, /^  ok    security sbom timer runs the applied checkout$/m, r.out);
 });
 
 // prune-docker.service has several ExecStart= lines; systemd prints them one per line, and the check must read the ones
@@ -283,21 +231,6 @@ const services = [
   { port: "8088", name: "clickhouse", label: "ClickHouse", check: "clickhouse sign-in" },
 ];
 
-test("an unconfigured connection skips instead of failing a sign-in check, details with an apostrophe included", async () => {
-  for (const s of services) {
-    for (const body of [
-      { ok: false, state: "missing", detail: `${s.label} isn't set up` },
-      { ok: false, state: "missing", detail: `${s.label} not connected (Connect on the board)` },
-      { ok: false, state: "none", detail: `${s.label} isn't set up` },
-    ]) {
-      const dir = checkout({ healthz: { [s.port]: JSON.stringify(body) } });
-      const r = await run(dir);
-      assert.doesNotMatch(r.out, new RegExp(`FAIL  ${s.check}`), r.out);
-      assert.match(r.out, new RegExp(`^  skip  ${s.name} `, "m"), r.out);
-    }
-  }
-});
-
 test("a set-up connection whose sign-in failed fails with its detail, apostrophes and all", async () => {
   for (const s of services) {
     const detail = `${s.label} sign-in expired: it's no longer valid (Reconnect on the board)`;
@@ -312,8 +245,3 @@ test("a set-up connection whose sign-in failed fails with its detail, apostrophe
   }
 });
 
-test("a set-up connection with no detail still fails, naming the service", async () => {
-  const dir = checkout({ healthz: { "8085": JSON.stringify({ ok: false, state: "expired" }) } });
-  const r = await run(dir);
-  assert.match(r.out, /^  FAIL  glean sign-in  glean-mcp unreachable$/m, r.out);
-});

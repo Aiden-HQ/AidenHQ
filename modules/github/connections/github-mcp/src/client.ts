@@ -1,10 +1,15 @@
 // GitHub as the owner (spec 2026-11-20-github-owner-identity §1, §9): the one client every GitHub call in this process goes
-// through, with the owner's sign-in. One rate limiter (background work waits while REST or GraphQL is below a 20% reserve,
-// every call waits out a rate-limit refusal; content-creating writes also go one at a time, at least a second apart, and wait
-// out GitHub's secondary limit, as GitHub's guidance asks) and typed needs: a refusal the owner can fix (connect, reconnect, a scope, an
-// org's SSO or app restriction) names the cause and the one link, and a tool answers it as needs_owner (vendor/needs.ts), which
-// the kernel routes to the owner or the digest. The token never leaves this process: token() is for git children here only, and
-// no answer carries it.
+// through, with the owner's sign-in. One rate limiter: a call issued interactively (from a tool) fails at once as a typed
+// `rate_limited` need when a limit blocks it, because a tool call can't sleep past its timeout; a background call (a job) waits
+// while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time, at least a second apart, and wait out
+// GitHub's secondary limit, as its guidance asks, but only inside the write's budget: the writes of one tool invocation share
+// one 240 s budget, fixed when the invocation starts so its own reads spend it too (below the kernel's 300 s allowance), and a
+// write that cannot start in what is left fails at once, `rate_limited` (with its `until`) or `write_busy` for a queue that is
+// too deep. A background write (a job's) is not on that clock and keeps waiting a limit out, as before.
+// Typed needs name the cause and the one fix: a refusal the owner can fix (connect, reconnect, a scope, an org's SSO or app
+// restriction) is needs_owner (vendor/needs.ts), which the kernel routes to the owner or the digest. The token never leaves this
+// process: token() is for git children here only, and no answer carries it.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
 
@@ -17,7 +22,8 @@ export type Need =
   | { cause: "sso"; org: string; url: string }
   | { cause: "restricted"; org: string; url: string }
   | { cause: "unreachable"; repo: string }
-  | { cause: "rate_limited"; until: string };
+  | { cause: "rate_limited"; until: string }
+  | { cause: "write_busy" };
 
 const OWNER_FIXABLE = new Set<Need["cause"]>(["not_connected", "expired", "scope", "sso", "restricted"]);
 
@@ -31,14 +37,16 @@ export function needText(n: Need): string {
     case "restricted": return `The ${n.org} organization restricts OAuth apps: open ${n.url} and press Grant next to ${n.org} (anyone but an owner of ${n.org} presses Request and an owner approves)`;
     case "unreachable": return `${n.repo} isn't reachable with your GitHub account`;
     case "rate_limited": return `GitHub's rate limit is used up until ${n.until}`;
+    case "write_busy": return "This GitHub write can't finish in time right now: run the call again in a minute";
   }
 }
 
 export class GitHubNeed extends Error {
   readonly need: Need;
   readonly ownerFixable: boolean;
-  constructor(need: Need) {
-    super(needText(need));
+  /** `detail` adds what a caller should know about this particular call (the cause and its fields are kept). */
+  constructor(need: Need, detail?: string) {
+    super(detail ?? needText(need));
     this.need = need;
     this.ownerFixable = OWNER_FIXABLE.has(need.cause);
   }
@@ -47,8 +55,9 @@ export class GitHubNeed extends Error {
 /** A tool's answer for a need: an owner-fixable one is needs_owner (the kernel tells whoever should hear it); the rest plain. */
 export function needResult(e: GitHubNeed): { isError: true; content: { type: "text"; text: string }[] } {
   const n = e.need;
-  if (n.cause === "unreachable" || n.cause === "rate_limited") {
-    return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: n.cause === "rate_limited" ? "github_rate_limited" : "github_unreachable", need: n, detail: e.message }) }] };
+  if (n.cause === "unreachable" || n.cause === "rate_limited" || n.cause === "write_busy") {
+    const error = n.cause === "rate_limited" ? "github_rate_limited" : n.cause === "write_busy" ? "github_write_busy" : "github_unreachable";
+    return { isError: true, content: [{ type: "text", text: JSON.stringify({ error, need: n, detail: e.message }) }] };
   }
   return needsOwner({ cause: n.cause, detail: e.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) });
 }
@@ -95,14 +104,40 @@ const ownerOf = (path: string) => /^\/(?:repos|orgs)\/([^/?#]+)/.exec(path)?.[1]
 
 type Rate = { remaining: number; limit: number; reset: number };
 type Sleep = (ms: number) => Promise<void>;
+/** Calls `fire` after `ms`; the returned function cancels it. */
+type Timer = (ms: number, fire: () => void) => () => void;
 
 /** GitHub: content-creating requests go serially, at least this far apart (its secondary-limit guidance). */
 const WRITE_GAP_MS = 1000;
 /** A secondary-limit refusal without retry-after waits this long, doubling per refusal in a row. */
 const SECONDARY_BASE_MS = 60_000;
-/** A write keeps waiting out rate limits this long, then fails as a transient `rate_limited` need. */
-const WRITE_PATIENCE_MS = 15 * 60_000;
+/** One attempt's own fetch limit; a write starts no attempt with less than this left in its budget. */
+const ATTEMPT_TIMEOUT_MS = 30_000;
+/** A content-creating call's whole budget, fixed when the call starts: the kernel gives a tool 300 s by default and then
+ * allows 30 s more (kernel/src/proxy.ts:156,239), and the caller's own tool timeout is 300 s (services/computer/lib.ts:28), so
+ * a write waits and retries only inside this, comfortably before either cuts the call off. The module can't read its own
+ * allowance, so this is the conservative constant, fixed against that 300 s default. */
+const WRITE_BUDGET_MS = 240_000;
 const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
+/** One tool invocation's writes share one budget: the store holds the deadline, fixed at the invocation's entry. */
+const invocation = new AsyncLocalStorage<{ deadline: number }>();
+
+/** Runs `fn` as one tool invocation (main.ts's tool wrapper): every write it makes shares one 240 s budget, fixed when the
+ * invocation starts, so a preflight read and a second write both spend that same budget and no write is sent after it. */
+export function withWriteBudget<T>(fn: () => Promise<T>, at: () => number = Date.now): Promise<T> {
+  return invocation.run({ deadline: at() + WRITE_BUDGET_MS }, fn);
+}
+/** The deadline of the tool invocation this call belongs to, or undefined outside a tool call. */
+export function writeBudgetDeadline(): number | undefined {
+  return invocation.getStore()?.deadline;
+}
+/** Whether what is left of this tool invocation's budget can still start a write's attempt. A caller that waits for another
+ * write past this point must fail fast instead: its own reads and writes would otherwise run after the caller was told it
+ * failed. Outside a tool call there is no budget, so this is false. */
+export function writeBudgetSpent(at: number = Date.now()): boolean {
+  const deadline = writeBudgetDeadline();
+  return deadline !== undefined && at + ATTEMPT_TIMEOUT_MS > deadline;
+}
 /** Whether a request creates content: any non-read method, except a GraphQL query. */
 const createsContent = (method: string, path: string, body: unknown) =>
   !["GET", "HEAD", "OPTIONS"].includes(method) && (path !== "/graphql" || /^\s*mutation\b/.test(String((body as { query?: unknown } | undefined)?.query ?? "")));
@@ -114,6 +149,7 @@ export function createAccess(o: {
   fetchImpl?: typeof fetch;
   now?: () => number;
   sleep?: Sleep;
+  timer?: Timer;
   /** Background calls wait while `remaining` is below this share of `limit`. */
   reserve?: number;
   /** GITHUB_FLEET_ORG and GITHUB_CI, for the status card. */
@@ -122,6 +158,10 @@ export function createAccess(o: {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
   const sleep: Sleep = o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const timer: Timer = o.timer ?? ((ms, fire) => {
+    const t = setTimeout(fire, ms);
+    return () => clearTimeout(t);
+  });
   const reserve = o.reserve ?? 0.2;
   const rates = new Map<string, Rate>();
   /** After a rate-limit refusal: no call goes before this (epoch ms). */
@@ -150,15 +190,17 @@ export function createAccess(o: {
     throw new GitHubNeed(n);
   }
 
-  /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout). */
-  async function admit(resource: string, background: boolean): Promise<void> {
+  /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
+   * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
+   * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. */
+  async function admit(resource: string, background: boolean, deadline?: number): Promise<void> {
     for (;;) {
       const t = now();
       const r = rates.get(resource);
       const low = r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
       const until = Math.max(blockedUntil > t ? blockedUntil : 0, background ? low : 0);
       if (!until) return;
-      if (!background) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
+      if (!background || (deadline !== undefined && !fits(deadline, until))) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
       await sleep(until - t);
     }
   }
@@ -207,43 +249,86 @@ export function createAccess(o: {
     return undefined;
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
-    if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
-    // One queue for every writer in this process: one at a time, a gap apart, and the whole queue waits out a refusal.
-    const run = writeTail.then(() => paced(() => attempt(method, path, body, resource, background, accept)));
-    writeTail = run.catch(() => {});
-    return run;
+  /** Whether an attempt that can only start at `at` still sees its 30 s through inside the write's budget. A background
+   * write has no deadline: it is a job, not a tool call, so it may wait as long as it must (as it always has). */
+  const fits = (deadline: number | undefined, at = now()) => deadline === undefined || at + ATTEMPT_TIMEOUT_MS <= deadline;
+
+  /** Fails a write that cannot start in budget: the real limit when one blocks it, the queue when that is the reason. */
+  function noBudget(): never {
+    if (writeBlockedUntil > now()) fail({ cause: "rate_limited", until: new Date(writeBlockedUntil).toISOString() });
+    fail({ cause: "write_busy" });
   }
 
-  async function paced<T>(go: () => Promise<T>): Promise<T> {
-    const started = now();
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
+    if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
+    // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
+    // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
+    // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
+    // the patience it always had and waits a limit out, inside the queue like every other write.
+    const deadline = background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS;
+    return queued(deadline, () => paced(deadline, () => attempt(method, path, body, resource, background, accept, deadline)));
+  }
+
+  /** Runs a write behind the one queue: one at a time, a gap apart, and the whole queue waits out a refusal. A write that is
+   * still queued at the deadline fails there and is marked dead (the pre-attempt check keeps it from being sent), so no write
+   * lands after its caller was told it failed. Once the entry takes its turn, its own budget checks and its fetch's 30 s
+   * timeout govern it: the timer never reports a failure for a request already in flight, which GitHub may have completed. */
+  function queued<T>(deadline: number | undefined, go: () => Promise<T>): Promise<T> {
+    let expired = false;
+    let cancel = () => {};
+    const run = writeTail.then(() => {
+      cancel(); // its turn: the queue wait is over, so the queue timer cannot fire into the running request
+      if (expired || !fits(deadline)) noBudget();
+      return go();
+    });
+    writeTail = run.catch(() => {});
+    // A background write has no deadline, so nothing to expire it.
+    if (deadline === undefined) return run.finally(() => cancel());
+    const expiry = new Promise<never>((_, reject) => {
+      cancel = timer(Math.max(deadline - now(), 0), () => {
+        expired = true;
+        try { noBudget(); } catch (e) { reject(e); }
+      });
+    });
+    void expiry.catch(() => {});
+    return Promise.race([run, expiry]).finally(() => cancel());
+  }
+
+
+  async function paced<T>(deadline: number | undefined, go: () => Promise<T>): Promise<T> {
     for (;;) {
-      const wait = Math.max(lastWriteEnd + WRITE_GAP_MS, writeBlockedUntil) - now();
+      const until = Math.max(lastWriteEnd + WRITE_GAP_MS, writeBlockedUntil);
+      const wait = until - now();
+      // The queue's wait counts against the call's budget: no sleeping into a moment where no attempt can start.
+      if (wait > 0 && !fits(deadline, until)) noBudget();
       if (wait > 0) await sleep(wait);
+      if (!fits(deadline)) noBudget();
       try {
         const r = await go();
         secondaryStreak = 0;
         return r;
       } catch (e) {
         if (!(e instanceof GitHubNeed) || e.need.cause !== "rate_limited") throw e;
-        // Refused before it created anything: wait out the limit and send the same request again, within the patience.
-        const until = Math.max(Date.parse(e.need.until), blockedUntil, writeBlockedUntil);
-        if (until - started > WRITE_PATIENCE_MS) throw e;
-        await sleep(Math.max(until - now(), 0));
+        // Refused before it created anything: wait out the limit and send the same request again, inside the budget.
+        const retryAt = Math.max(Date.parse(e.need.until), blockedUntil, writeBlockedUntil);
+        if (!fits(deadline, retryAt)) fail({ cause: "rate_limited", until: new Date(retryAt).toISOString() });
+        await sleep(Math.max(retryAt - now(), 0));
       } finally {
         lastWriteEnd = now();
       }
     }
   }
 
-  async function attempt(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
+  async function attempt(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number) {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
-    await admit(resource, background);
+    await admit(resource, background, deadline);
     const t = await token();
+    // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.
+    if (deadline !== undefined && !fits(deadline)) noBudget();
     const res = await fetchImpl(`${API}${path}`, {
       method,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       headers: { authorization: `Bearer ${t}`, accept: accept ?? "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });

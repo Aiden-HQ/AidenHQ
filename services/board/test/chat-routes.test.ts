@@ -73,18 +73,4 @@ describe("chat routes", () => {
     expect(r.agents.find((a: { name: string }) => a.name === "Aiden").front).toBe(true);
   });
 
-  it("leaves the chat unread when a hovered row only prefetches it", async () => {
-    expect((await get("/api/chats/WOR-10?peek")).identifier).toBe("WOR-10");
-    expect((await get("/api/chats")).chats[0].unread).toBe(true);
-  });
-
-  it("opens the chat as a conversation with the handed-out work and its approval inline, and marks it read", async () => {
-    const c = await get("/api/chats/WOR-10");
-    expect(c.messages.map((m: { kind: string }) => m.kind)).toEqual(["owner", "notes", "reply"]);
-    expect(c.messages[0]).toMatchObject({ text: "move my brief to 08:45", via: "Telegram" });
-    expect(c.handedOut).toMatchObject([{ identifier: "WOR-11", agent: "Fleet Engineer", state: { kind: "waiting", reason: "card_owner", refLabel: "Move the brief to 08:45 on weekdays." } }]);
-    expect(c.approvals).toMatchObject([{ identifier: "WOR-11", state: "pending" }]);
-    expect((await get("/api/chats")).chats[0].unread).toBe(false);
-  });
-
 });

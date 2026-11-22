@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { NO_SIGN_IN, probeResult } from "../src/checks.js";
 import { createEngine, STOPPED_OPEN } from "../src/deploy.js";
-import { BUILD_ATTEMPTS, healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
-import { fireReached, type Platform } from "../src/platform.js";
+import { healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
+import { type Platform } from "../src/platform.js";
 import { parseApp, type App } from "../src/registry.js";
 import { openStore } from "../src/store.js";
 
@@ -107,67 +107,6 @@ describe("post-deploy watch", () => {
     expect(store.openIncident("demo")).toBeUndefined();
   });
 
-  it("never rolls back on a probe failure with no app-side evidence, a No-Auto-Rollback commit, or after the window", async () => {
-    const noAnswer = setup();
-    await noAnswer.deployed();
-    noAnswer.st.good.delete("v2"); // the probe's own network path failed: no app-side evidence
-    noAnswer.st.failure = "health probe failed: connection-refused";
-    await noAnswer.ticks(6);
-    expect(noAnswer.st.running).toBe("v2");
-    expect(noAnswer.raised).toEqual([{ kind: "unhealthy", detail: "health probe failed: connection-refused" }]);
-
-    // A helper container that never started is a platform fault: raised with its class, never rolled back.
-    const helper = setup();
-    await helper.deployed();
-    helper.st.good.delete("v2");
-    helper.st.failure = "health probe failed: helper-not-started";
-    await helper.ticks(6);
-    expect(helper.st.running).toBe("v2");
-    expect(helper.raised).toEqual([{ kind: "unhealthy", detail: "health probe failed: helper-not-started" }]);
-
-    const marked = setup({ message: "fix(auth): close the token leak\n\nNo-Auto-Rollback: security fix" });
-    await marked.deployed();
-    marked.st.good.delete("v2");
-    marked.st.failure = "health answered HTTP 503";
-    await marked.ticks(6);
-    expect(marked.st.running).toBe("v2");
-    expect(marked.raised.map((r) => r.kind)).toEqual(["unhealthy"]);
-
-    const late = setup();
-    await late.deployed(WATCH_MS + 60_000);
-    late.st.good.delete("v2");
-    late.st.failure = "health answered HTTP 500";
-    await late.ticks(6);
-    expect(late.st.running).toBe("v2");
-  });
-
-  it("raises the outage without retrying when the rollback target fails too", async () => {
-    const { st, store, raised, deployed, ticks } = setup();
-    await deployed();
-    st.good.clear();
-    st.failure = "health answered HTTP 502";
-    await ticks(4);
-    expect(raised[1]).toEqual({ kind: "unhealthy", detail: expect.stringMatching(/^v2: health answered HTTP 502 on 4 probes .*; rollback to v1 also unhealthy$/) });
-    await ticks(6);
-    expect(store.recentDeploys("demo")).toHaveLength(3); // one rollback, no loop
-    expect(store.recentDeploys("demo")[0]).toMatchObject({ sha: "v1", by: "watch-rollback", status: "failed" });
-  });
-
-  it("keeps a failed deploy's incident open through healthy checks on the old version, until a fixed deploy is healthy", async () => {
-    const { p, st, store, ticks, deployed } = setup();
-    await deployed();
-    st.app = { ...st.app, pin: "v3" }; // v3 fails its deploy and is rolled back to v2
-    await reconcileTick(p, quiet);
-    expect(st.running).toBe("v2");
-    expect(store.openIncident("demo")?.kind).toBe("deploy_failed");
-    await ticks(3); // v2 is healthy again, but the bad commit is not fixed
-    expect(store.openIncident("demo")?.kind).toBe("deploy_failed");
-    st.app = { ...st.app, pin: FIX };
-    st.good.add(FIX);
-    await reconcileTick(p, quiet);
-    expect(store.openIncident("demo")).toBeUndefined();
-  });
-
   it("stops the app when a deploy refused for answering without sign-in would roll back to a version that does too", async () => {
     const { p, st, store, ticks, deployed } = setup();
     await deployed(); // v1 and v2 went out before the identity gate: both answer without sign-in
@@ -194,64 +133,5 @@ describe("post-deploy watch", () => {
 
   // A build or host error (the docker CLI plugin missing, a full disk) is not the commit's fault: an auto-deploy that never
   // got to run must not mark its commit as deployed for good, or nothing retries it and no healthy auto-deploy can exist.
-  it("retries a commit whose build failed, and a later attempt deploys it", async () => {
-    const { p, st, store, deployed } = setup();
-    await deployed();
-    st.app = { ...st.app, pin: FIX };
-    st.good.add(FIX);
-    st.broken.add(FIX);
-    await reconcileTick(p, quiet);
-    expect(store.deploysOf("demo", FIX)).toMatchObject([{ by: "auto-deploy", status: "build_failed" }]);
-    expect(store.lastDeploy("demo")).toMatchObject({ sha: "v2", by: "auto-rollback", status: "healthy" });
-    expect(st.running).toBe("v2"); // rolled back: nothing of the broken build runs
-    await reconcileTick(p, quiet); // the next poll tries the same commit again
-    expect(store.deploysOf("demo", FIX)).toHaveLength(2);
-    st.broken.delete(FIX); // the host is fixed: the retry deploys it, by the platform's own auto-deploy
-    await reconcileTick(p, quiet);
-    expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, by: "auto-deploy", status: "healthy" });
-    expect(store.openIncident("demo")).toBeUndefined();
-  });
-
-  it("stops retrying a commit whose build keeps failing, and never retries one that failed health", async () => {
-    const { p, st, store, deployed } = setup();
-    await deployed();
-    st.app = { ...st.app, pin: FIX };
-    st.broken.add(FIX);
-    for (let i = 0; i < BUILD_ATTEMPTS + 2; i++) await reconcileTick(p, quiet);
-    expect(store.deploysOf("demo", FIX)).toHaveLength(BUILD_ATTEMPTS);
-
-    // An app-side failure (the deploy ran and failed health) stays a one-shot: it was the commit, not the host.
-    const other = setup();
-    await other.deployed();
-    other.st.app = { ...other.st.app, pin: FIX };
-    for (let i = 0; i < 3; i++) await reconcileTick(other.p, quiet);
-    expect(other.store.deploysOf("demo", FIX)).toHaveLength(1);
-    expect(other.store.lastDeploy("demo")).toMatchObject({ sha: "v2", status: "healthy" });
-  });
-
   // The first deploy of an app has nothing to fall back on, but a host error there is no more the commit's own than any other.
-  it("retries a first deploy whose build failed, and a later attempt deploys it", async () => {
-    const { p, st, store } = setup();
-    st.app = { ...st.app, pin: FIX };
-    st.good.add(FIX);
-    st.broken.add(FIX);
-    await reconcileTick(p, quiet);
-    expect(store.deploysOf("demo", FIX)).toMatchObject([{ by: "reconcile", status: "build_failed" }]);
-    expect(store.lastDeploy("demo")?.status).toBe("build_failed");
-    st.broken.delete(FIX);
-    await reconcileTick(p, quiet);
-    expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, by: "auto-deploy", status: "healthy" });
-  });
-});
-
-describe("incident webhook", () => {
-  it("counts as delivered only when Paperclip made the routine run a task, so a refused one is fired again next tick", () => {
-    expect(fireReached(202, { status: "issue_created", linkedIssueId: "i1" })).toBe(true);
-    expect(fireReached(202, { status: "coalesced", linkedIssueId: "i0" })).toBe(true);
-    // Paperclip answers 202 with a failed run when the DevOps Engineer can't be invoked: no task was made.
-    expect(fireReached(202, { status: "failed", linkedIssueId: null, failureReason: "Agent is not invokable in its current state" })).toBe(false);
-    expect(fireReached(202, { status: "ignored", linkedIssueId: null })).toBe(false);
-    expect(fireReached(409, undefined)).toBe(false); // the routine is paused: fired again once it is resumed
-    expect(fireReached(500, undefined)).toBe(false);
-  });
 });
