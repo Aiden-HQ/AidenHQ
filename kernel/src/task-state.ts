@@ -31,7 +31,7 @@ export type Reason =
   | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback" | "owner_task"
   | "blocked" | "agent_wait" | "module_wait" | "scheduled" | "chat_turn" | "backlog"
   | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string; /** When what it names began (the board orders asks by it). */ since: string };
 /** The board's column for a task (its Agent work layout): one per task, from all its obligations (laneOf). */
 export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
 export type TaskState = {
@@ -116,7 +116,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   }
   if (!created) {
     const first = own[0];
-    return laned({ kind: "idle", reason: "history_expired", since: first?.at ?? iso(now), holder, attention: [{ who: "agent", why: "history_expired", ref: self }] });
+    return laned({ kind: "idle", reason: "history_expired", since: first?.at ?? iso(now), holder, attention: [{ who: "agent", why: "history_expired", ref: self, since: first?.at ?? iso(now) }] });
   }
 
   // The current open stretch: everything after the latest reopen (a status leaving done or cancelled).
@@ -244,15 +244,15 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   // Attention, across every obligation.
   const attention: Attention[] = [];
   for (const o of open) {
-    if (o.reason === "card_owner" || o.reason === "card_review") attention.push({ who: o.reason === "card_owner" ? "owner" : "reviewer", why: "card", ref: o.ref! });
+    if (o.reason === "card_owner" || o.reason === "card_review") attention.push({ who: o.reason === "card_owner" ? "owner" : "reviewer", why: "card", ref: o.ref!, since: iso(o.since) });
   }
   for (const o of open) {
-    if (o.reason === "owner_wait") attention.push({ who: "owner", why: "owner_wait", ref: o.ref! });
-    if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref! });
-    if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref! });
+    if (o.reason === "owner_wait") attention.push({ who: "owner", why: "owner_wait", ref: o.ref!, since: iso(o.since) });
+    if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref!, since: iso(o.since) });
+    if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref!, since: iso(o.since) });
   }
-  if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref });
-  for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref! });
+  if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref, since: fail.at });
+  for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref!, since: iso(o.since) });
 
   // The open wait's question, whichever recipient answers it: the ask gate (escalate.ts) reads this, so a questionless wait
   // can't pass for an unanswered ask.
@@ -283,7 +283,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const unpolled = Boolean(holder && holder !== "owner" && polled && !polled(holder));
   const reason: Reason = unpolled ? "unpolled" : unknown ? "unknown" : "orphaned";
   const since = unknown ? agedOut!.at : quiet;
-  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: reason, ref: self });
+  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: reason, ref: self, since: iso(since) });
   return laned({ kind: "idle", reason, since: iso(since), holder, attention });
 }
 

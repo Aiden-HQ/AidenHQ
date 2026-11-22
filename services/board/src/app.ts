@@ -138,6 +138,8 @@ const approvalView = (approval: Approval) => {
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
+/** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
+const PARENTS_MS = 1_500;
 const WORKWEEK: Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
 
 // The page and its assets only. Remote images are blocked too (tracking pixels in email/Slack text).
@@ -524,18 +526,22 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const kids = new Map<string, string[]>();
     for (const i of byId.values()) if (i.parentId && i.assigneeAgentId) kids.set(i.parentId, [...(kids.get(i.parentId) ?? []), i.assigneeAgentId]);
     const shown = [...byId.values()].filter((i) => isWork(i) && !logs.has(i.id) && !logs.has(i.identifier));
-    // A parent outside the inventory (closed before the window) is read by id, a few at a time (issueSummary caches each a minute).
-    const missing = [...new Set(shown.flatMap((i) => (i.parentId && !byId.has(i.parentId) ? [i.parentId] : [])))];
+    // Done: the kernel's row is done and Paperclip's own close time is in the window (a close fact the kernel dated by a later
+    // edit never brings an old task back).
+    const cards = shown.filter((i) => !(i.status === "done" || i.status === "cancelled") || (states.get(i.id)?.lane === "done" && closedAt(i) >= inv.since));
+    // A parent outside the inventory (closed before the window) is read by id, a few at a time (issueSummary caches each a
+    // minute), for at most PARENTS_MS: a link still missing then shows on the next read.
+    const missing = [...new Set(cards.flatMap((i) => (i.parentId && !byId.has(i.parentId) ? [i.parentId] : [])))];
     const parents = new Map<string, string>();
-    for (let n = 0; n < missing.length; n += 4) for (const p of await Promise.all(missing.slice(n, n + 4).map((id) => pc.issueSummary(id).catch(() => null)))) if (p) parents.set(p.id, p.identifier);
+    const lookup = (async () => {
+      for (let n = 0; n < missing.length; n += 4) for (const p of await Promise.all(missing.slice(n, n + 4).map((id) => pc.issueSummary(id).catch(() => null)))) if (p) parents.set(p.id, p.identifier);
+    })();
+    await Promise.race([lookup, new Promise((r) => setTimeout(r, PARENTS_MS).unref())]);
     const out: WorkCard[] = [];
-    for (const i of shown) {
+    for (const i of cards) {
       const closed = i.status === "done" || i.status === "cancelled";
-      let state = states.get(i.id) ?? null;
-      // Done: the kernel's row is done and Paperclip's own close time is in the window (a close fact the kernel dated by a later
-      // edit never brings an old task back). An open issue whose row still says done was reopened after the snapshot: no state yet.
-      if (closed && (state?.lane !== "done" || closedAt(i) < inv.since)) continue;
-      if (!closed && state?.lane === "done") state = null;
+      // An open issue whose row still says done was reopened after the snapshot: no state yet.
+      const state = !closed && states.get(i.id)?.lane === "done" ? null : (states.get(i.id) ?? null);
       const parent = i.parentId ? (byId.get(i.parentId)?.identifier ?? parents.get(i.parentId) ?? null) : null;
       out.push(workCard(i, ctx.assignees, state, parent, [...new Set(kids.get(i.id) ?? [])].filter((a) => a !== i.assigneeAgentId)));
     }

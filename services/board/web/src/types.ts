@@ -531,7 +531,7 @@ export type TaskReason =
   | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog" | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
 /** The board's column (Agent work): the kernel sets it from all of a task's obligations; the board never derives it. */
 export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string; since?: string };
 export interface ShownState {
   task: string;
   identifier: string | null;

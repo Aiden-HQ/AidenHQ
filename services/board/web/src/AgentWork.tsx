@@ -146,16 +146,20 @@ function LaneColumn({ lane, cards, board, loading }: { lane: Lane; cards: WorkCa
 }
 
 /**
- * Cards by lane. Needs you and Blocked: the longest outstanding first (the state's `since`, as the kernel orders attention), so
- * the oldest ask is never behind "Show more"; Done: newest close first; the rest: newest activity first.
+ * Cards by lane. Needs you and Blocked: the longest outstanding first, by when the ask or trouble the card shows began (its
+ * attention entry's `since`), so the oldest ask is never behind "Show more"; Done: newest close first; the rest: newest activity.
  */
 const OLDEST_FIRST = new Set<Lane>(["needs_you", "blocked"]);
+const askedAt = (c: WorkCard, l: Lane) => {
+  const at = (c.state?.attention ?? []).filter((a) => (l === "needs_you" ? a.who === "owner" : a.who === "agent")).map((a) => a.since ?? "").filter(Boolean).sort()[0];
+  return at ?? c.state?.since ?? c.activityAt;
+};
 function byLane(cards: WorkCard[]): Record<Lane, WorkCard[]> {
   const out = Object.fromEntries(LANES.map((l) => [l, [] as WorkCard[]])) as Record<Lane, WorkCard[]>;
   for (const c of cards) out[laneOf(c)].push(c);
   for (const l of LANES)
     out[l].sort((a, b) =>
-      OLDEST_FIRST.has(l) ? (a.state?.since ?? a.activityAt).localeCompare(b.state?.since ?? b.activityAt)
+      OLDEST_FIRST.has(l) ? askedAt(a, l).localeCompare(askedAt(b, l))
       : l === "done" ? (b.closedAt ?? "").localeCompare(a.closedAt ?? "")
       : b.activityAt.localeCompare(a.activityAt));
   return out;
