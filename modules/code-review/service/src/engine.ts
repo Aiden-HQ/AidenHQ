@@ -696,6 +696,17 @@ export function createEngine(d: EngineDeps) {
       const fixed = (review.fixed ?? []).filter((x) => typeof x === "string" && !again.has(x) && (r.mandatory || !gate.has(x)));
       for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
+      // A pending `fixed` claim on a finding this run's recheck was asked about and didn't call still there stands (the owner's
+      // rule: our AI's `fixed` holds unless the reviewer flags it). Only the batch's mandatory recheck run, only what it received.
+      if (r.mandatory && r.recheck) {
+        const cleared = new Set((review.cleared ?? []).filter((x) => typeof x === "string" && !again.has(x)));
+        // Never at a head the finding was reported or reopened at: a claim stands only once a fix was pushed.
+        const trusted = all<{ id: string }>(`SELECT DISTINCT f.id FROM findings f WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL AND f.claim LIKE 'fixed:%'
+          AND NOT EXISTS (SELECT 1 FROM findings g JOIN runs y ON y.id = g.run WHERE g.repo = f.repo AND g.number = f.number AND g.id = f.id AND y.head = ?)
+          AND NOT EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?)`, r.repo, r.number, r.head, r.head).map((x) => x.id).filter((id) => cleared.has(id) && !unsafe.includes(id));
+        for (const id of trusted) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
+        dispose(trusted, r, "fixed", "its fixed claim stood: the recheck did not find it still there", `run:${r.id}`);
+      }
     });
     if (!stale) cover(r);
     // A run that posts says nothing here: afterPost writes its state, its reason and (when it is filed again) its retry deadline
