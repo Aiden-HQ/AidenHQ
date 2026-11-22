@@ -462,4 +462,16 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   five.set([2, 1].map((n) => five.agentPr(n)));
   await five.watch.tick();
   assert.deepEqual(five.woke.map((w) => w.task), ["ACME-2"], "an HTTP 500 about one PR doesn't stop the next PR's verdict");
+  let text = "code review: finding one (a.ts:1)";
+  const changing = await rig(t, { reviewGate: async () => ({ wait: text, findings: text }), merge: () => [200, { skip: "merging" }] });
+  changing.set([changing.agentPr(1)]);
+  await changing.watch.tick();
+  await changing.watch.tick();
+  assert.equal(changing.woke.length, 1, "the same findings at the same head wake once");
+  text = "code review: finding one (a.ts:1); finding two (b.ts:2)";
+  await changing.watch.tick();
+  assert.equal(changing.woke.length, 2, "new findings at the same head wake the task again");
+  text = `code review: ${"y".repeat(5000)}`;
+  await changing.watch.tick();
+  assert.ok(changing.woke[2].text.length <= 2000 && /disputed: <reason, file:line>.*Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
 });
