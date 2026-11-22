@@ -172,8 +172,9 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
           store.setKv("tg_offset", String(u.update_id + 1));
           continue;
         }
-        // Unpaired: a private chat is told how to pair (rate-limited), and nothing goes to the kernel.
-        if (!cfg.telegramChatId) await answerUnpaired(u, (chat_id, text) => tg("sendMessage", { chat_id, text }), log, unpairedSent);
+        // Unpaired: a private chat is told how to pair (rate-limited), and nothing goes to the kernel. Not awaited: a slow send
+        // to a stranger must not hold up the owner's own pairing or chat.
+        if (!cfg.telegramChatId) void answerUnpaired(u, (chat_id, text) => tg("sendMessage", { chat_id, text }), log, unpairedSent);
         const m = fromTelegram(u, cfg.telegramChatId);
         const stopping = m && !m.forward && m.text.trim() === "/stop" && extras?.stop ? await extras.stop(m.replyTo) : null;
         // An exact typed reply decides the one card held for that task (typed here, never a voice note or a forward).

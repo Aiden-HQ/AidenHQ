@@ -323,13 +323,17 @@ export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: (
   // clock, to compare with the service's `paired_at`.
   const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number; ends: number; was: boolean } | null>(null);
   const [expired, setExpired] = useState(false);
+  // Bumped on each mint: a check that answers after a newer code was minted is about the old one, so it changes nothing.
+  const minted = useRef(0);
   const live = pair !== null && !expired;
   useEffect(() => {
     if (!live) return;
     // A pairing the service now reports is this code's if it happened after the mint, or, from unpaired, when it gives no time.
+    const no = minted.current;
     const check = (): Promise<boolean> =>
       api.setupPaired(flow.module).then(
         (r) => {
+          if (minted.current !== no) return false; // a newer code replaced this one while the check was out
           if (!(r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was))) return false;
           setPair(null);
           setExpired(false);
@@ -349,7 +353,7 @@ export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: (
     const t = setInterval(() => void check(), 2000);
     return () => (clearInterval(t), clearTimeout(last));
   }, [live, pair, flow.module, reload]);
-  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), setPair({ ...r, ends: Date.now() + (r.expires_in ?? PAIR_TTL_S) * 1000, was: flow.paired })), fail);
+  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), minted.current++, setPair({ ...r, ends: Date.now() + (r.expires_in ?? PAIR_TTL_S) * 1000, was: flow.paired })), fail);
   if (pair && expired) {
     return (
       <div className="setup-actions">

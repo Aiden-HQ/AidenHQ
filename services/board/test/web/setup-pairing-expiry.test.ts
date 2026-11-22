@@ -116,4 +116,40 @@ describe("a pair code's expiry", () => {
     expect(el.textContent).not.toContain("That code expired");
     expect(reload).toHaveBeenCalled();
   });
+
+  it("keeps a new code when a check from the old one answers after it was minted", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    let mints = 0;
+    let unpair: (body: unknown) => void = () => {};
+    const reload = vi.fn(async () => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_path: string, init?: RequestInit) => {
+        if (init?.method === "POST") return answer({ code: `CODE-${++mints}`, minted_at: Date.now(), expires_in: 60 });
+        // The first check is left hanging; it answers "paired" only once a second code exists.
+        if (mints === 1) return new Promise<Response>((ok) => (unpair = (body) => ok(answer(body) as Response)));
+        return answer({ paired: false });
+      }),
+    );
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    root = createRoot(el);
+    await act(async () => root!.render(createElement(Pairing, { flow, reload, fail: () => {} })));
+    await flush();
+    await act(async () => el.querySelector<HTMLButtonElement>("button.btn.primary")!.click());
+    await flush();
+    expect(el.textContent).toContain("CODE-1");
+    await advance(2000); // the first check goes out and hangs
+    await advance(60_000); // CODE-1 dies; the re-mint button shows
+    const again = [...el.querySelectorAll("button")].find((b) => b.textContent === "Get a new pairing code")!;
+    await act(async () => again.click());
+    await flush();
+    expect(el.textContent).toContain("CODE-2");
+    // The old check answers "paired" now: it is about CODE-1, so CODE-2 stays and nothing reloads.
+    await act(async () => unpair({ paired: true, paired_at: Date.now() }));
+    await flush();
+    expect(el.textContent).toContain("CODE-2");
+    expect(el.textContent).not.toContain("That code expired");
+    expect(reload).not.toHaveBeenCalled();
+  });
 });
