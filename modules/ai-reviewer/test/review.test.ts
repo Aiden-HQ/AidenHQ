@@ -327,3 +327,26 @@ test("a call nested past the walk depth is refused before any model sees a subtr
   const v = await review({ card: { action: "conn.tool" }, diff: "", tool_call: { connection: "github", tool: "t", arguments: deep }, chain: "c", policy: "p", ask: async (m) => (asked.push(m), ok) });
   assert.deepEqual([v.decision, asked.length], ["reject", 0]);
 });
+
+test("a tool_call whose arguments are missing or not an object is not a call: the details text is read, else it goes back", async () => {
+  // The endpoint's cast checks nothing nested: a structured payload naming a valid connection and tool but with no arguments
+  // object must not mask arguments code can read from the details text, and must never reach a model as an empty call.
+  const details = `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(call.arguments)}`;
+  let user = "";
+  const masked = { connection: "github", tool: "github_product_issue", arguments: undefined } as unknown as Record<string, unknown>;
+  const v = await review({ card: { action: "conn.tool" }, diff: details, tool_call: masked, policy: "p", ask: async (_m, p) => ((user = p.user), ok) });
+  assert.equal(v.decision, "approve");
+  assert.match(user, /  title: /);
+  assert.ok(!user.includes("code read no arguments"), "the real arguments are shown, not an empty call");
+  // No details text to fall back on: code's refusal naming `arguments`, never a model judging an empty call.
+  const gone = await review({ card: { action: "conn.tool" }, diff: "", tool_call: { connection: "github", tool: "github_product_issue" } as never, policy: "p", ask: async () => assert.fail("not asked") });
+  assert.deepEqual([gone.decision, gone.code], ["reject", "tool_call_unreadable"]);
+  assert.match(gone.reason, /arguments/);
+  // An array is not an argument object either.
+  const arr = await review({ card: { action: "conn.tool" }, diff: "", tool_call: { connection: "github", tool: "t", arguments: [1] } as never, policy: "p", ask: async () => assert.fail("not asked") });
+  assert.deepEqual([arr.decision, arr.code], ["reject", "tool_call_unreadable"]);
+  // A well-formed structured call is used as sent.
+  const good = await review({ card: { action: "conn.tool" }, diff: details, tool_call: { connection: "github", tool: "other_tool", arguments: { a: 1 } }, policy: "p", ask: async (_m, p) => ((user = p.user), ok) });
+  assert.equal(good.decision, "approve");
+  assert.match(user, /  a: 1/);
+});

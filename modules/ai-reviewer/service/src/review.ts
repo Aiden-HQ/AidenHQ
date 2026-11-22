@@ -512,7 +512,17 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
   // read here so the connection and tool and each argument still reach the reviewer as TOOL_CALL, never under DIFF. Only a
   // conn.tool card can be one: a push or merge that also carried a tool_call is judged as the code change it is, with the
   // count check and the diff tools, never on a block that could stand in for the diff it should have reviewed.
-  const toolCall = card.action === "conn.tool" ? sentToolCall ?? toolCallFromDetails(card.action, diff) : undefined;
+  // The endpoint allowlists the top-level request fields; its cast does not check the nested payload, so this reads what it
+  // needs and never trusts the shape: a `tool_call` whose `arguments` is not an object is not a call. The details text still
+  // in `diff` is read instead, so a malformed structured field cannot hide arguments code can read; with no such text the
+  // call goes back naming `arguments`, never to a model as an empty call.
+  const sent = sentToolCall && typeof sentToolCall === "object" ? (sentToolCall as Partial<ToolCall>) : undefined;
+  const named = sent && typeof sent.connection === "string" && typeof sent.tool === "string" ? sent : undefined;
+  const args = named?.arguments as unknown;
+  const toolCall = card.action !== "conn.tool" ? undefined
+    : named && args && typeof args === "object" && !Array.isArray(args)
+      ? { ...named, arguments: args as Record<string, unknown> } as ToolCall
+      : toolCallFromDetails(card.action, diff) ?? (named ? { connection: named.connection!, tool: named.tool!, arguments: {}, unreadable: ["arguments"] } : undefined);
   // A call whose connection or tool code could not read is not a call; a call whose arguments code could not read at all is
   // not the call either. Neither reaches a model: the agent files it again, told which field is missing. These are code's
   // refusals, coded `tool_call_unreadable` rather than `malicious`: the reviewer blocks only malice, and only a malice code
