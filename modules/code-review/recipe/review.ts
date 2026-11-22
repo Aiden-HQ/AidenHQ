@@ -37,7 +37,7 @@ import { atReviewer } from "./code-review.ts";
 import { brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
 import type { Cleaned, Excluded, Severity } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { changed, scope } from "./scope.ts";
+import { changed, guidePaths, scope } from "./scope.ts";
 import type { Changed } from "./scope.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
@@ -74,7 +74,6 @@ interface Result {
   coverage_note?: string;
 }
 const RANK: Record<Severity, number> = { important: 0, nit: 1, pre_existing: 2 };
-const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"];
 const MAX_PRE = 5;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
@@ -180,12 +179,9 @@ export function touched(git: Git, from: string, path: string) {
 
 /** The guidance that applies: REVIEW.md, AGENTS.md and CLAUDE.md at the root and above each reviewed file, from the base tree. */
 export function guidance(baseTree: string | undefined, paths: string[]) {
-  const dirs = new Set(["."]);
-  for (const p of paths) for (let d = posix.dirname(p); d !== "." && d !== "/"; d = posix.dirname(d)) dirs.add(d);
-  const wanted = [...dirs].sort().flatMap((d) => GUIDES.map((g) => (d === "." ? g : `${d}/${g}`)));
   const found: { path: string; text: string }[] = [];
   let total = 0;
-  for (const rel of [...new Set(wanted)]) {
+  for (const rel of guidePaths(paths)) {
     if (!baseTree || !plain(baseTree, rel)) continue;
     const text = readSmall(join(baseTree, rel));
     if (text === undefined || total > 80_000) continue;

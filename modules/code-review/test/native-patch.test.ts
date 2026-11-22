@@ -13,11 +13,15 @@ import { patchGroups, runEngine } from "../recipe/engines.ts";
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 const PIN = "0.166.0";
 
+/** The directory of the pinned codex to put on PATH ("" when PATH's is it); null when it is not there and can't be fetched (offline). */
 function codexDir() {
   const ver = (bin: string) => { try { return execFileSync(bin, ["--version"], { encoding: "utf8" }).includes(PIN); } catch { return false; } };
-  if (ver("codex")) return undefined;
+  if (ver("codex")) return "";
   const prefix = join(tmpdir(), `codex-${PIN}`), bin = join(prefix, "node_modules", ".bin");
-  if (!existsSync(join(bin, "codex"))) { mkdirSync(prefix, { recursive: true }); execFileSync("npm", ["i", "--silent", "--prefix", prefix, `@openai/codex@${PIN}`], { stdio: "inherit" }); }
+  if (!existsSync(join(bin, "codex"))) {
+    mkdirSync(prefix, { recursive: true });
+    try { execFileSync("npm", ["i", "--silent", "--prefer-offline", "--fetch-retries=0", "--fetch-timeout=30000", "--prefix", prefix, `@openai/codex@${PIN}`], { stdio: "inherit" }); } catch { return null; }
+  }
   return bin;
 }
 
@@ -43,7 +47,7 @@ async function endpoint(fail: number[] = []) {
 function repoWith(files: Record<string, (v: number) => string>) {
   const dir = mkdtempSync(join(tmpdir(), "native-patch-")), repo = join(dir, "repo");
   mkdirSync(repo);
-  sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t");
+  sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t"); sh(repo, "config", "commit.gpgsign", "false"); sh(repo, "config", "tag.gpgsign", "false");
   for (const v of [0, 1]) {
     for (const [p, make] of Object.entries(files)) { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), make(v)); }
     sh(repo, "add", "."); sh(repo, "commit", "-qm", `v${v}`);
@@ -57,17 +61,19 @@ const sent = (r: any) => JSON.stringify(r.input);
 
 async function review(repo: string, base: string, files: string[], model: Awaited<ReturnType<typeof endpoint>>) {
   const dir = codexDir();
+  if (dir === null) return null;
   if (dir) process.env.PATH = `${dir}:${process.env.PATH}`;
   process.env.OPENROUTER_BASE_URL = model.url;
   process.env.OPENROUTER_API_KEY = "test-token";
   return runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files, minutes: 3, scratch: mkdtempSync(join(tmpdir(), "native-scratch-")), own: true });
 }
 
-test("an ordinary change goes out in one request holding the exact patch, its last hunk included", { timeout: 240_000 }, async () => {
+test("an ordinary change goes out in one request holding the exact patch, its last hunk included", { timeout: 240_000 }, async (t) => {
   const { repo, base } = repoWith({ "big.txt": (v) => lines(300, v, 25), "s.txt": (v) => `s${v}\n`, "gone.txt": (v) => (v ? "" : "x\n") });
   const model = await endpoint();
   try {
     const r = await review(repo, base, ["big.txt", "s.txt", "gone.txt"], model);
+    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
     assert.equal(model.requests.length, 1);
     assert.equal(r.incomplete, undefined);
     assert.equal(JSON.parse(r.message).findings.length, 0);
@@ -78,11 +84,12 @@ test("an ordinary change goes out in one request holding the exact patch, its la
   } finally { model.close(); }
 });
 
-test("a group that failed blocks clean and is named", { timeout: 240_000 }, async () => {
+test("a group that failed blocks clean and is named", { timeout: 240_000 }, async (t) => {
   const { repo, base } = repoWith({ "a.txt": (v) => lines(6000, v, 100, 1500), "b.txt": (v) => lines(6000, v, 100, 1500) });
   const model = await endpoint([2]);
   try {
     const r = await review(repo, base, ["a.txt", "b.txt"], model);
+    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
     assert.ok(model.requests.length >= 2, "split into groups");
     assert.match(String(r.incomplete), /part 2 of \d+ \((a|b)\.txt/);
   } finally { model.close(); }

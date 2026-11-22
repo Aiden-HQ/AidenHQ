@@ -41,3 +41,11 @@ export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new 
   return { reviewed, excluded };
 }
 
+
+const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"];
+/** The guidance files that apply to `paths`: REVIEW.md, AGENTS.md and CLAUDE.md at the root and in every folder above one of them. */
+export function guidePaths(paths: string[]) {
+  const dirs = new Set(["."]);
+  for (const p of paths) for (let d = posix.dirname(p); d !== "." && d !== "/"; d = posix.dirname(d)) dirs.add(d);
+  return [...new Set([...dirs].sort().flatMap((d) => GUIDES.map((g) => (d === "." ? g : `${d}/${g}`))))];
+}

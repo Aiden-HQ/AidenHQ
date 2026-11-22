@@ -17,10 +17,9 @@ import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { gitSafe, runEngine } from "./engines.ts";
-import { changed, scope } from "./scope.ts";
+import { changed, guidePaths, scope } from "./scope.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
-const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"]; // the repository's own, from the merge base (never the branch's)
 
 const git = (...a: string[]) => gitSafe(process.cwd(), a).trim(); // the branch's attributes and config run nothing here (gitSafe)
 const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
@@ -60,7 +59,9 @@ async function main(): Promise<{ out: string[]; code: number }> {
   process.env.OPENROUTER_API_KEY = token;
   delete process.env.AIDENHQ_RUN_TOKEN;
   process.env.PATH = String(process.env.PATH).split(":").filter((d) => !d.startsWith("/opt/aidenhq")).join(":"); // the job's wrappers are not the reviewer's
-  const guides = GUIDES.flatMap((p) => { try { return [{ path: p, text: git("show", `${base}:${p}`).slice(0, 20_000) }]; } catch { return []; } });
+  // The guidance that applies to the reviewed files, as the PR check picks it (guidePaths), read from the merge base (never the branch's).
+  let total = 0;
+  const guides = guidePaths(reviewed).flatMap((p) => { try { const text = git("show", `${base}:${p}`).slice(0, 20_000); total += text.length; return total > 80_000 ? [] : [{ path: p, text }]; } catch { return []; } });
   // The base's reliability checklist items the diff triggers, as the gate picks them (code matches, the base's file, never the branch's).
   let checks = "";
   try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", from, "HEAD"))); } catch {}
