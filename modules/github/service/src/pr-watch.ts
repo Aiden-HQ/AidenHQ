@@ -282,6 +282,7 @@ export function startPrWatch(o: PrWatchOptions) {
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
     }
 
+    const superseded = new Set<string>(); // PRs closed as superseded in this pass: not counted as their task's open PRs
     for (const pr of open.filter(dependabotDue)) {
       const url = pr.url.toLowerCase();
       if (state.dependabot[url]) continue;
@@ -373,7 +374,7 @@ export function startPrWatch(o: PrWatchOptions) {
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
         // A task's older PR in this repo, once the task has published a newer one on another branch: closed as superseded (a merge in flight is left to land).
         const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
-        if (newer && status && !merging) { await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`); continue; }
+        if (newer && status && !merging) { superseded.add(url); await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`); continue; }
         if (status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) {
           await abandon(pr, opener.task, `Closing: its task ${opener.task} is done; its change landed elsewhere or isn't needed.`);
           continue;
@@ -381,7 +382,7 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
         // The task's only open PR, green at the head its approved PR record pushed: the kernel files its merge, as its agent.
-        const only = open.filter((p) => !state.abandoned[p.url.toLowerCase()] && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
+        const only = open.filter((p) => !superseded.has(p.url.toLowerCase()) && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
         const asked = only ? await askMerge(pr, opener.task) : "wake";
         if (asked === "failed") continue;
         if (asked !== "wake") {
