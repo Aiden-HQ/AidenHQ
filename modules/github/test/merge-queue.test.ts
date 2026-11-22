@@ -654,6 +654,42 @@ test("an unlinked PR already merged by its merge commit's message is evidence on
   assert.match(outcomes[0].text, /^merged-prs: \[\]/, "the row says WOR-10: the message never overrides it");
 });
 
+test("a cached merge credit is used only with its default-branch facts; a queue written before them credits nothing", async (t) => {
+  // An older queue kept the message alone (or, at the previous head, kept it without recording which branch it merged into): with
+  // no proof the merge reached the default branch, the cached row must not credit the task. The same queue with the branches
+  // recorded credits the merge only when they agree.
+  const mergeSha = "d".repeat(40);
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the widget\n\nWOR-9" } };
+  const queueWith = async (pr) => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "codehost-cached-credit-"));
+    mkdirSync(join(cacheDir, "merges"), { recursive: true });
+    writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000cf": {
+      id: "k-00000000000000cf", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9",
+      prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "skipped", sha: mergeSha, ...pr }],
+    } } }));
+    const r = await setup(t, { prs, cacheDir, checks: (m, u) => (m === "GET" && u === "/v1/work?record=k-00000000000000cf" ? { id: "k-00000000000000cf", task: "tsk_0000000000000w9", identifier: "WOR-9" } : undefined) });
+    await r.handle.stepMerges();
+    await r.settle();
+    return r.outcomes[0];
+  };
+
+  // A message cached without the branch facts: it is not evidence.
+  const legacy = await queueWith({ mergeMessage: "Fix the widget\n\nWOR-9" });
+  assert.equal(legacy?.ok, true);
+  assert.match(legacy.text, /^merged-prs: \[\]/, "a cached message with no branches is not evidence");
+
+  // A cached credit whose merge went to a release branch is not evidence either.
+  const release = await queueWith({ mergeCredit: { message: "Fix the widget\n\nWOR-9", base: "release", defaultBranch: "main" } });
+  assert.equal(release?.ok, true);
+  assert.match(release.text, /^merged-prs: \[\]/, "a release-branch merge cached as credit is not evidence");
+
+  // The same row with the default branch is evidence: the poll that recorded it proved where it landed.
+  const main = await queueWith({ mergeCredit: { message: "Fix the widget\n\nWOR-9", base: "main", defaultBranch: "main" } });
+  assert.equal(main?.ok, true);
+  assert.deepEqual(JSON.parse(main.text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "verified default-branch credit is evidence");
+});
+
 test("a queue persisted before the identifier was kept recovers it from the record, so its already-merged PR is still evidence", async (t) => {
   // A service upgraded mid-queue: merges.json holds the record's task id but not the task's identifier (the version before it
   // kept one), and a running queue is never handed execute again. The first poll reads the identifier from the record.
