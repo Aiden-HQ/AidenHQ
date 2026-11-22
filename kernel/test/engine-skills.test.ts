@@ -127,8 +127,9 @@ test("a root with '..' is normalized once, so the path checked is the path writt
   mkdirSync(other, { recursive: true });
   chmodSync(other, 0o755);
   symlinkSync(other, join(base, "linked"));
-  // Raw OS semantics would read `<base>/linked/../state` as `<other>/state`; `path.join` (the launcher's form) reads `<base>/state`.
-  const { root, logs } = ensureStateDirs(join(base, "linked", "..", "state"));
+  // The raw string, not `path.join`: `join` would normalize it here and the test would pass without the fix.
+  // Raw OS semantics would read `<base>/linked/../state` as `<other>/state`; `normalize` (as at the launcher) reads `<base>/state`.
+  const { root, logs } = ensureStateDirs(`${base}/linked/../state`);
   assert.equal(root, join(base, "state"));
   assert.equal(logs, join(base, "state", "logs"));
   assert.ok(statSync(root).isDirectory());
@@ -136,6 +137,18 @@ test("a root with '..' is normalized once, so the path checked is the path writt
   // The other tree was neither created in nor chmod'ed.
   assert.equal(existsSync(join(dir, "other", "state")), false);
   assert.equal(statSync(other).mode & 0o777, 0o755);
+});
+
+test("an empty state_dir is rejected, never taken as the working directory", () => {
+  const cwdMode = statSync(".").mode & 0o777;
+  for (const value of ["", "   "]) {
+    assert.throws(() => ensureStateDirs(value), /state_dir is empty, which must name a path/);
+  }
+  assert.equal(statSync(".").mode & 0o777, cwdMode, "the working directory is not re-permissioned");
+  // One need per episode, exactly as an unusable root: a misconfigured kernel doesn't alert on every job.
+  const needs: string[] = [];
+  for (let job = 0; job < 3; job++) assert.throws(() => ensureStateDirs("", (e) => needs.push(e.message)));
+  assert.equal(needs.length, 1);
 });
 
 test("a relative state root keeps its form for the launcher's exact path comparison", () => {

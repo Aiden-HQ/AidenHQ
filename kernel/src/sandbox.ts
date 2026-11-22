@@ -2,7 +2,7 @@
 // `docker exec` line; jobs.ts runs it). No repo code runs on the host: a repo's checks are check jobs (checkjobs.ts). The engine
 // registry (config/engines.json), an engine's state folder and the job credentials are here too.
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, cpSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -89,8 +89,7 @@ const because = (e: unknown) => { const err = e as NodeJS.ErrnoException; return
  */
 const stateNeeds = new Map<string, string>();
 let episodes = 0;
-function reportNeed(p: string, err: Error, report?: (e: Error, episode: string) => void) {
-  const key = resolve(p);
+function reportNeed(key: string, err: Error, report?: (e: Error, episode: string) => void) {
   if (!report || stateNeeds.get(key) === err.message) return;
   const episode = `${key}:${++episodes}`;
   // A notice the kernel couldn't queue (the store busy) is not recorded: the next job reports the same outage again, and the
@@ -116,10 +115,14 @@ function ensureStateDir(p: string) {
       if ((st.mode & 0o300) !== 0o300) throw new Error("it is not owner-writable and owner-searchable (mode has no 0300)");
       accessSync(p, constants.W_OK | constants.X_OK);
     } else mkdirSync(p, { recursive: true, mode: 0o700 });
-    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. The path is
-    // re-checked after the chmod: a directory swapped for a symlink in between is refused, never written through.
-    chmodSync(p, 0o700);
-    if (symlinkOnPath(p) || !lstatSync(p).isDirectory()) throw new Error("it became a symlink or a non-directory while being set up");
+    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. The mode is
+    // applied to the directory this very open resolved, not to the name again: `O_NOFOLLOW | O_DIRECTORY` refuses a path that
+    // became a symlink or a non-directory in between, and `fchmod` can't reach a replacement the way a second `chmod(name)` would.
+    const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    try {
+      if (!fstatSync(fd).isDirectory()) throw new Error("it became a non-directory while being set up");
+      fchmodSync(fd, 0o700);
+    } finally { closeSync(fd); }
   } catch (e) {
     throw stateRootFailure(p, because(e), e);
   }
@@ -135,13 +138,21 @@ export function ensureStateDirs(stateDir: string, report?: (e: Error, episode: s
   // One form for validation, filesystem calls and the launcher's path comparison: `normalize` collapses `a/../b` lexically (as
   // `path.join` does at the launcher), so a `..` after a symlink can't make the checked path differ from the one written. It is
   // not made absolute, so a relative `state_dir` still matches the launcher's exact comparison.
+  // An empty `state_dir` is a misconfiguration, not this directory: `normalize("")` is `.`, which would have us take the kernel's
+  // working directory as the state root (and chmod it 0700). Reject it before normalizing, as the old `mkdir("")` did.
+  if (!stateDir.trim()) {
+    const who = typeof process.getuid === "function" ? `uid=${process.getuid()} gid=${process.getgid?.()}` : "an unknown uid";
+    const err = new Error(`runner state directory is not set: state_dir is empty, which must name a path (the kernel runs as ${who})`);
+    reportNeed("state_dir:<empty>", err, report);
+    throw err;
+  }
   const root = normalize(stateDir), logs = join(root, "logs");
   try {
     ensureStateDir(root);
     ensureStateDir(logs);
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
-    reportNeed(root, err, report);
+    reportNeed(resolve(root), err, report);
     throw err;
   }
   stateNeeds.delete(resolve(root));
