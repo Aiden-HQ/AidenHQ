@@ -56,25 +56,29 @@ RUN poetry config virtualenvs.in-project true \
  && ! grep -vE '^(poetry [0-9.]+ requires |No broken requirements found\.$|(pyannote-audio|whisperx) [0-9.]+ requires torchcodec, which is not installed\.$)' /tmp/pip-check.txt | grep -vE '^whisperx [0-9.]+ has requirement (huggingface-hub<1\.0\.0|torch~=2\.8\.0|torchaudio~=2\.8\.0|torchvision~=0\.23\.0), but you have ' | grep -q . \
  && "$POETRY_VENV/bin/python" -c "import app.factory.asr_model_factory, app.asr_models.mbain_whisperx_engine, app.asr_models.faster_whisper_engine"
 
-# whisperx 3.8 renamed DiarizationPipeline(use_auth_token=…) to token=, inserted num_speakers ahead of the speaker limits,
-# and switched its default model from pyannote/speaker-diarization-3.1 to the separately gated
-# pyannote/speaker-diarization-community-1. Two things follow, both handled here:
-#  - the pinned adapter would raise TypeError with an HF_TOKEN set and misapply min/max speakers after that, so it is
-#    patched to the 3.8 signature and both calls are bound against the installed package, so a future whisperx bump
-#    fails the build rather than a request;
-#  - the adapter built the diarization pipeline inside load_model(), which webservice.py calls at import, so an HF_TOKEN
-#    authorised only for the old model would fail the whole service at startup - plain transcription included. The patch
-#    also defers that construction to the first request that asks for speakers, so diarization access is only needed
-#    then. A deployment that uses it must grant the Hugging Face account access to speaker-diarization-community-1.
+# whisperx 3.8 renamed DiarizationPipeline(use_auth_token=…) to token= and inserted num_speakers ahead of the speaker
+# limits, switched its default model from pyannote/speaker-diarization-3.1 to the separately gated
+# pyannote/speaker-diarization-community-1, and the vendored adapter has two problems on this stack:
+#  - the pinned adapter would raise TypeError with an HF_TOKEN set and misapply min/max speakers - fixed by the signature
+#    change below, with both calls bound against the installed package so a future whisperx bump fails the build;
+#  - it built the diarization pipeline inside load_model(), which webservice.py calls at import, so an HF_TOKEN without
+#    the new model's gate failed the whole service at startup - plain transcription included - and the first download ran
+#    on the ASGI event loop. Now the load is a daemon thread off the request path, a failure only disables diarization,
+#    and a request that asks for speakers builds it on demand. A deployment using diarization must still accept the
+#    community-1 gate on its Hugging Face account.
+# load_model() also has to recreate its dict: release_model() sets self.model to None on idle eviction, and
+# whisperx is the one engine whose load_model assigns into it, so a reload after eviction raised TypeError.
 RUN sed -z -i \
       -e 's/use_auth_token=CONFIG\.HF_TOKEN/token=CONFIG.HF_TOKEN/' \
       -e 's/(audio, min_speakers, max_speakers)/(audio, min_speakers=min_speakers, max_speakers=max_speakers)/' \
-      -e 's|        if CONFIG\.HF_TOKEN != "":\n            self\.model\[.diarize_model.\] = DiarizationPipeline(\n                token=CONFIG\.HF_TOKEN,\n                device=CONFIG\.DEVICE\n            )\n\n||' \
-      -e 's|            # add min/max number of speakers if known|            if self.model[\x27diarize_model\x27] is None:\n                with self.model_lock:\n                    if self.model[\x27diarize_model\x27] is None:\n                        self.model[\x27diarize_model\x27] = DiarizationPipeline(token=CONFIG.HF_TOKEN, device=CONFIG.DEVICE)\n            # add min/max number of speakers if known|' \
+      -e 's|    def load_model(self):\n        asr_options|    def load_model(self):\n        if self.model is None:\n            self.model = {\x27whisperx\x27: None, \x27diarize_model\x27: None, \x27align_model\x27: {}}\n        asr_options|' \
+      -e 's|        if CONFIG\.HF_TOKEN != "":\n            self\.model\[.diarize_model.\] = DiarizationPipeline(\n                token=CONFIG\.HF_TOKEN,\n                device=CONFIG\.DEVICE\n            )|        if CONFIG.HF_TOKEN != "":\n            Thread(target=self.prewarm_diarize, daemon=True).start()|' \
+      -e 's|        Thread(target=self\.monitor_idleness, daemon=True)\.start()\n\n    def transcribe(|        Thread(target=self.monitor_idleness, daemon=True).start()\n\n    def prewarm_diarize(self):\n        try:\n            self.diarize_model()\n        except Exception as error:\n            print(f"Diarization unavailable, transcription continues without it: {error}")\n\n    def diarize_model(self):\n        with self.model_lock:\n            if self.model[\x27diarize_model\x27] is None:\n                self.model[\x27diarize_model\x27] = DiarizationPipeline(token=CONFIG.HF_TOKEN, device=CONFIG.DEVICE)\n            return self.model[\x27diarize_model\x27]\n\n    def transcribe(|' \
       app/asr_models/mbain_whisperx_engine.py \
+ && sed -i -e "s/self\.model\['diarize_model'\](audio, min_speakers=min_speakers, max_speakers=max_speakers)/self.diarize_model()(audio, min_speakers=min_speakers, max_speakers=max_speakers)/" app/asr_models/mbain_whisperx_engine.py \
  && ! grep -q 'use_auth_token' app/asr_models/mbain_whisperx_engine.py \
  && "$POETRY_VENV/bin/python" -c "import inspect; from whisperx.diarize import DiarizationPipeline as D; p = inspect.signature(D.__init__).parameters; assert 'token' in p and 'use_auth_token' not in p; inspect.signature(D.__call__).bind(None, None, min_speakers=1, max_speakers=2)" \
- && "$POETRY_VENV/bin/python" -c "import ast; t = ast.parse(open('app/asr_models/mbain_whisperx_engine.py').read()); f = {n.name: n for n in ast.walk(t) if isinstance(n, ast.FunctionDef)}; u = lambda n: any(isinstance(c, ast.Name) and c.id == 'DiarizationPipeline' for c in ast.walk(n)); assert not u(f['load_model']), 'diarization model must not load at startup'; assert u(f['transcribe']), 'diarization model must still load for a diarize request'"
+ && "$POETRY_VENV/bin/python" -c "import ast; t = ast.parse(open('app/asr_models/mbain_whisperx_engine.py').read()); f = {n.name: n for n in ast.walk(t) if isinstance(n, ast.FunctionDef)}; u = lambda name: any(isinstance(x, ast.Name) and x.id == name for x in ast.walk(f['load_model'])); assert not u('DiarizationPipeline'), 'diarization model must not load at startup'; assert 'prewarm_diarize' in f and 'diarize_model' in f, 'deferred diarization helpers missing'; assert any(isinstance(x, ast.Assign) and any(isinstance(y, ast.Attribute) and y.attr == 'model' for y in x.targets) and isinstance(x.value, ast.Dict) for x in ast.walk(f['load_model'])), 'load_model must recreate the model dict after idle eviction'; assert any(isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute) and x.func.attr == 'diarize_model' for x in ast.walk(f['transcribe'])), 'transcribe must go through diarize_model()'"
 
 EXPOSE 9000
 
