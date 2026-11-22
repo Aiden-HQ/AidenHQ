@@ -620,6 +620,7 @@ if [ "$ci_n" -gt 0 ]; then
     say "CI runners: $ci_n"
     as_user cp "$REPO/ops/units/aidenhq-ci-runner@.service" "$H/.config/systemd/user/"
     as_user systemctl --user daemon-reload
+    # The runner's data dir is in ~/.config/aidenhq-ci-runner.env, which the apply above wrote from this host's settings.
     for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
   else say "CI runners: $ci_n once github_fleet_org is set and the ci module is on; then run setup again"; fi
 fi

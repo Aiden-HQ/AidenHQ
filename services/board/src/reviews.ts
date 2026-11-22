@@ -97,6 +97,8 @@ export interface RepoRow {
 }
 export interface ReposView {
   repos: RepoRow[];
+  /** Repo reviews and the option catalog are on (settings.code_review.lenses); the service refuses both while off. */
+  lenses?: boolean;
   day_spent_usd: number;
   errors?: string[];
 }
@@ -111,6 +113,48 @@ export interface Combo {
   /** Its review gates the repo's merges (a gated repo has one at both moments). */
   mandatory?: boolean;
 }
+/** The four lenses a repo review looks through, in the order the form lists them. */
+export const LENSES = ["correctness", "security", "maintainability", "performance"] as const;
+export type Lens = (typeof LENSES)[number];
+/** GET /catalog?repo=&commit=: what a repo review can run at that commit; `recommended` options come pre-ticked. */
+export interface CatalogOption {
+  id: string;
+  lens: Lens;
+  kind: "tool" | "skill" | "engine";
+  recommended: boolean;
+  runs_code: boolean;
+  cost: "free" | "low" | "high";
+  source: { repo: string; version: string; licence: string };
+}
+export interface Catalog {
+  sha: string;
+  options: CatalogOption[];
+}
+/** A whole-repo (tree) review batch as GET /reviews lists it, next to the PR runs. */
+export type Verdict = "blocked" | "concerns" | "incomplete" | "clean";
+export interface TreeBatch {
+  id: string;
+  repo: string;
+  sha: string;
+  sha7: string;
+  verdict: Verdict | null;
+  cost_usd: number;
+  status: RunStatus;
+  why?: string | null;
+  started: string | null;
+  ended: string | null;
+  /** The report the service serves (GET /reviews/:batch/report) and, when published, its Primer document. */
+  report_url?: string;
+  primer_url?: string;
+}
+export const TreeRequestSchema = z
+  .object({
+    target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{7,40}$/i, "a commit is a hex SHA").optional() }).strict(),
+    options: z.array(z.string().regex(/^[\w.-]{1,64}$/)).min(1, "tick at least one option").max(60),
+    combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict(),
+  })
+  .strict();
+export type TreeRequest = z.infer<typeof TreeRequestSchema>;
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
 
@@ -153,6 +197,8 @@ export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z
   .object({
     repos: z.array(RepoSchema).max(100),
+    /** Repo reviews and the option catalog are on (the service refuses both while this is off). */
+    lenses: z.boolean().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -183,7 +229,7 @@ export function upgradeConfig(raw: unknown): CodeReview | null {
     const use = ok.success ? ok : fallback;
     if (use.success && !repos.some((x) => x.repo.toLowerCase() === use.data.repo.toLowerCase())) repos.push(use.data);
   }
-  return { repos };
+  return { repos, ...(typeof v.lenses === "boolean" ? { lenses: v.lenses } : {}) };
 }
 /** A combo's short label: "Codex · deepseek-flash-latest · medium". */
 export const comboLabel = (c: Pick<Combo, "engine" | "model" | "effort">, catalog?: EngineCatalog) =>

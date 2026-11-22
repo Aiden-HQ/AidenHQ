@@ -1,6 +1,6 @@
 // executor@1, the module side (spec §3.3.2): the kernel calls a module's write kinds here, with the module's own service key.
 //   POST <path>/plan     { kind, args, requester, task, evidence?, revalidate? } → { args, targets?, facts?, raise?, card?, satisfied? }
-//   POST <path>/execute  { id, kind, args, digest, idempotency_key }  → { accepted: true } at once; the outcome follows to the
+//   POST <path>/execute  { id, kind, args, digest, idempotency_key, task }  → { accepted: true } at once; the outcome follows to the
 //                        kernel's POST /v1/writes/:id/outcome. Once per id: a repeat is accepted and runs nothing.
 //   POST <path>/status   { id, idempotency_key } → { state: running | done | failed | unknown, text?, objects? }
 // The kernel calls execute only for an approved, claimed and revalidated record; plan never changes anything.
@@ -23,7 +23,13 @@ export type ReviewContext = {
   diff?: string; files?: { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }; sources?: { where: string; records: Record<string, unknown>[] };
   /** The task's other PRs merged into the change's base: `files` its own, `changed` those the base changed again since (undefined: not read). */
   siblings?: { repo: string; number: number; base: string; mergeCommit: string; files?: string[]; changed?: string[] }[] };
-export interface ExecuteRequest { id: string; kind: string; args: any; digest: string; idempotency_key: string }
+export interface ExecuteRequest {
+  id: string; kind: string; args: any; digest: string; idempotency_key: string;
+  /** The record's task (the kernel's own row, never a cache keyed by kind and args): what the write is for. */
+  task?: string;
+  /** The task's identifier as people read it (ACME-12), when the record kept one: what the code host's own PR rows are keyed by. */
+  identifier?: string;
+}
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;
   /** Runs the write; its result is the outcome the kernel records and tells the task. Throwing is a failed outcome. `objects`: the GitHub object refs it made (`github:o/r#12`, `github:o/r@<sha40>`, `…#12/comment/<id>`), which the kernel keeps. */

@@ -580,10 +580,18 @@ afterPrevious(() => void admission.recover().catch((e: Error) => log("WARNING: c
 const stopTending = boxes.start();
 // The GitHub code host's operations, brokered for modules under their own codehost grants (codehost.ts).
 const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, kind: () => Object.values(moduleKinds()).find((k) => k.module === CODEHOST && k.executor), secret, resolver,
+  // A code host op's needs_owner answer is connection state on the same record the MCP proxy feeds (proxy.ts): the module's
+  // own call has no task chain, so it is background and reaches the owner's digest once a day (and, for a full cause, every
+  // agent's connections-down list). The op's own answer goes back unchanged.
+  recordNeed: (module, need) => void connectionState?.hit({ kind: "module", module, roles: [], tools: {}, credential: "" }, CODEHOST, need)
+    .catch((e: Error) => log("connection need not routed", { connection: CODEHOST, module, err: String(e?.message ?? e).slice(0, 300) })),
+  // A 2xx op is the owner's sign-in working, as the MCP proxy's SIGNED_IN answer is: the full causes clear and the tasks waiting on
+  // them wake; a scope/sso/restricted need is partial and stays until the owner grants it.
+  clearNeed: () => { try { connectionState?.ok(CODEHOST, { fullOnly: true }); } catch (e) { log("connection state not cleared", { connection: CODEHOST, err: String((e as Error)?.message ?? e).slice(0, 300) }); } },
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
-const checkJobs = checkJobsFrom({ pool, db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), log });
+const checkJobs = checkJobsFrom({ pool, db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), refused: (runKey) => gw.refusedByKey(runKey), log });
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, facts, log, postAsAgent: lanePoster(outcomes) });
 // The board's reads of module services that declare a board API (providers.board), through the kernel.
 const moduleBoardApi = createBoardApi({ decl: (m) => (modulesFile().modules?.[m] as { board?: { url: string; auth_secret: string } } | undefined)?.board, secret, resolver });

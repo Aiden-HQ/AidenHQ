@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
-import { MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type Severity } from "../../src/reviews";
+import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
+import { Markdown } from "./markdown";
 import "./reviews.css";
 
 // The Reviews page (#/reviews/<tab>, #/reviews/r/<run>; docs/design/code-review.md, "Setting it up and using it"): the
@@ -14,11 +15,14 @@ import "./reviews.css";
 
 const TABS = [["reviews", "Reviews"], ["repos", "Repos"], ["insights", "Insights"]] as const;
 type Tab = (typeof TABS)[number][0];
-type Route = { tab: Tab } | { run: string };
+type Route = { tab: Tab } | { run: string } | { batch: string } | { create: true };
 const routeOf = (): Route => {
   const h = location.hash.replace(/^#\/?/, "");
   const run = /^reviews\/r\/([\w-]{1,80})$/.exec(h)?.[1];
   if (run) return { run };
+  if (h === "reviews/new") return { create: true };
+  const batch = /^reviews\/b\/([\w-]{1,80})$/.exec(h)?.[1];
+  if (batch) return { batch };
   const t = /^reviews\/([a-z]+)/.exec(h)?.[1];
   return { tab: TABS.some(([k]) => k === t) ? (t as Tab) : "reviews" };
 };
@@ -39,7 +43,7 @@ const prUrl = (repo: string, n: number) => `https://github.com/${repo}/pull/${n}
 /** A link the service gave, only when it points at GitHub. */
 const githubLink = (u?: string | null) => (u && /^https:\/\/github\.com\//.test(u) ? u : undefined);
 const STATUS: Record<Run["status"], [StatusTone, string]> = { queued: ["idle", "Queued"], running: ["busy", "Reviewing"], done: ["done", "Reviewed"], skipped: ["idle", "Skipped"], failed: ["failed", "Failed"] };
-const live = (r: Run) => r.status === "queued" || r.status === "running";
+const live = (r: { status: RunStatus }) => r.status === "queued" || r.status === "running";
 const OUTCOMES: Record<Outcome, [string, "ok" | "needs" | "neutral"]> = { fixed: ["Fixed", "ok"], dismissed: ["Dismissed", "neutral"], open_at_merge: ["Open at merge", "needs"], open_at_close: ["Open at close", "neutral"] };
 const tokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
 const took = (r: Run) => (r.duration_ms != null ? (r.duration_ms >= 60_000 ? `${Math.floor(r.duration_ms / 60_000)}m ${Math.round((r.duration_ms % 60_000) / 1000)}s` : `${Math.max(1, Math.round(r.duration_ms / 1000))}s`) : r.started && r.ended ? elapsed(r.started, Date.parse(r.ended)) : null);
@@ -74,7 +78,7 @@ const MODEL_ID = /^~?[\w.-]+\/[\w.:~-]+$/;
 const CUSTOM = "__custom";
 /** One moment's (or one ask's) combos: a row each of engine, model and effort, up to MAX_COMBOS. */
 /** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
-function ComboPicker({ label, value, onChange, engines, none, gates }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean }) {
+function ComboPicker({ label, value, onChange, engines, none, gates, single, noEngine }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean; single?: boolean; noEngine?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
   const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium" });
   return (
@@ -85,7 +89,7 @@ function ComboPicker({ label, value, onChange, engines, none, gates }: { label: 
         const custom = !e.models.includes(c.model);
         return (
           <div key={i} className="rv-combo">
-            <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", ...(c.mandatory ? { mandatory: true } : {}) })} />
+            {!noEngine && <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", ...(c.mandatory ? { mandatory: true } : {}) })} />}
             <span className="rv-combo-model">
               <Select aria-label={`${label} ${i + 1} model`} value={custom ? CUSTOM : c.model} options={[...e.models.map((m) => [m, m.replace(/^~/, "")] as const), [CUSTOM, "Other model…"] as const]} onChange={(m) => set(i, { ...c, model: m === CUSTOM ? "" : m })} />
               {custom && <Input aria-label={`${label} ${i + 1} model id`} aria-invalid={!MODEL_ID.test(c.model)} placeholder="vendor/model, like z-ai/glm-5.3" value={c.model} autoFocus={!c.model} onChange={(ev) => set(i, { ...c, model: ev.target.value.trim() })} />}
@@ -97,11 +101,11 @@ function ComboPicker({ label, value, onChange, engines, none, gates }: { label: 
                 Mandatory
               </span>
             )}
-            <Button size="sm" variant="quiet" aria-label={`Remove ${label} ${i + 1}`} title="Remove" onClick={() => onChange(value.filter((_, j) => j !== i))}>Remove</Button>
+            {!single && <Button size="sm" variant="quiet" aria-label={`Remove ${label} ${i + 1}`} title="Remove" onClick={() => onChange(value.filter((_, j) => j !== i))}>Remove</Button>}
           </div>
         );
       })}
-      {value.length < MAX_COMBOS && <Button size="sm" className="rv-combo-add" onClick={() => onChange([...value, fresh()])}>Add</Button>}
+      {!single && value.length < MAX_COMBOS && <Button size="sm" className="rv-combo-add" onClick={() => onChange([...value, fresh()])}>Add</Button>}
     </div>
   );
 }
@@ -125,6 +129,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const [route, setRoute] = useState<Route>(routeOf);
   const [setup, setSetup] = useState<ReviewsSetup | null>(null);
   const [runs, setRuns] = useState<Run[] | null>(null);
+  const [batches, setBatches] = useState<TreeBatch[]>([]);
   const [repos, setRepos] = useState<ReposView | null>(null);
   const [engines, setEngines] = useState<EngineCatalog | null>(null);
   const [error, setError] = useState("");
@@ -148,7 +153,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
   const fail = useCallback((e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)), [onSignIn]);
   const loadSetup = useCallback(() => api.reviewsSetup().then(setSetup, fail), [fail]);
-  const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => setRuns(r.runs), fail), [fail]);
+  const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => (setRuns(r.runs), setBatches(r.batches ?? [])), fail), [fail]);
   const loadRepos = useCallback(() => api.reviewRepos().then(setRepos, fail), [fail]);
   const loadEngines = useCallback(() => api.reviewEngines().then((r) => setEngines(r.engines), fail), [fail]);
   const loadFiled = useCallback(() => api.settingsChanges().then((r) => setFiled(r.changes.find((c) => c.identifier === savedId.current) ?? r.changes.find((c) => c.items.some((i) => i.kind === "setting" && i.key === "code_review")) ?? null), () => {}), []);
@@ -172,7 +177,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     void loadEngines();
   }, [ready, loadRuns, loadRepos, loadEngines]);
   // A run under way: the list follows it.
-  const anyLive = runs?.some(live) ?? false;
+  const anyLive = (runs?.some(live) ?? false) || batches.some(live);
   useEffect(() => {
     if (!anyLive) return;
     const t = setInterval(() => void loadRuns(), 8_000);
@@ -194,6 +199,8 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const spent = repos?.day_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
+  if ("create" in route) return repos && !repos.lenses ? <RepoReviewsOff /> : repos && engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
+  if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} />;
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
 
   const header = (
@@ -206,6 +213,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
             <span className="rv-spend" title="Today's review spend across repos (UTC)">
               {usd(spent)} <span className="rv-spend-of">today</span>
             </span>
+            <Button onClick={() => (location.hash = "#/reviews/new")}>Review a repo</Button>
             <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>
           </>
         ) : undefined
@@ -233,14 +241,14 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         </EmptyState>
       ) : ready && runs === null ? (
         !error && <div className="rv-loading" aria-busy="true" />
-      ) : !ready || (!config?.repos.length && !runs?.length) ? (
+      ) : !ready || (!config?.repos.length && !runs?.length && !batches.length) ? (
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
           <div>
             <Tabs label="Reviews views" tabs={TABS} value={tab} href={(t) => `#/reviews/${t}`} />
           </div>
-          {tab === "reviews" && <RunsTab runs={runs} engines={engines} onOneOff={() => setDialog({ kind: "oneoff" })} />}
+          {tab === "reviews" && <RunsTab runs={runs} batches={batches} engines={engines} onOneOff={() => setDialog({ kind: "oneoff" })} />}
           {tab === "repos" && config && <ReposTab config={config} repos={repos} engines={engines} onEdit={(repo) => setDialog({ kind: "repo", repo })} onWatch={() => setDialog({ kind: "repo" })} />}
           {tab === "insights" && <InsightsTab onSignIn={onSignIn} />}
         </>
@@ -318,14 +326,25 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
 
 /* ----------------------------------------------------------------------------- Reviews tab */
 type Filter = "all" | "important" | "skipped";
-function RunsTab({ runs, engines, onOneOff }: { runs: Run[] | null; engines: EngineCatalog | null; onOneOff: () => void }) {
+function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; batches: TreeBatch[]; engines: EngineCatalog | null; onOneOff: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [repo, setRepo] = useState("");
-  const repoNames = useMemo(() => [...new Set((runs ?? []).map((r) => r.repo))].sort(), [runs]);
+  const repoNames = useMemo(() => [...new Set([...(runs ?? []).map((r) => r.repo), ...batches.map((b) => b.repo)])].sort(), [runs, batches]);
   if (!runs) return <div className="rv-loading" aria-busy="true" />;
   const shown = runs.filter((r) => (!repo || r.repo === repo) && (filter === "all" || (filter === "important" ? r.important > 0 : r.status === "skipped" || r.status === "failed")));
+  const shownBatches = batches.filter((b) => (!repo || b.repo === repo) && (filter === "all" || (filter === "important" ? b.verdict === "blocked" || b.verdict === "concerns" : b.status === "skipped" || b.status === "failed")));
   const counts = { important: runs.filter((r) => r.important > 0).length, skipped: runs.filter((r) => (r.status === "skipped" || r.status === "failed")).length };
   return (
+    <>
+    {shownBatches.length > 0 && (
+      <Section title="Repo reviews" count={shownBatches.length}>
+        <div className="rv-runs" role="list">
+          {shownBatches.map((b) => (
+            <BatchRow key={b.id} b={b} />
+          ))}
+        </div>
+      </Section>
+    )}
     <Section
       title="Recent reviews"
       count={shown.length}
@@ -337,7 +356,7 @@ function RunsTab({ runs, engines, onOneOff }: { runs: Run[] | null; engines: Eng
       }
     >
       {!shown.length ? (
-        <EmptyState action={<Button onClick={onOneOff}>Review a PR</Button>}>{runs.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
+        <EmptyState action={<Button onClick={onOneOff}>Review a PR</Button>}>{runs.length || batches.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
       ) : (
         <div className="rv-runs" role="list">
           {shown.map((r) => (
@@ -346,6 +365,65 @@ function RunsTab({ runs, engines, onOneOff }: { runs: Run[] | null; engines: Eng
         </div>
       )}
     </Section>
+    </>
+  );
+}
+
+const VERDICTS: Record<Verdict, [string, "failed" | "needs" | "ok" | "neutral"]> = { blocked: ["Blocked", "failed"], concerns: ["Concerns", "needs"], incomplete: ["Incomplete", "neutral"], clean: ["Clean", "ok"] };
+function BatchRow({ b }: { b: TreeBatch }) {
+  const [tone, word] = STATUS[b.status];
+  const at = b.started ?? b.ended ?? new Date().toISOString();
+  return (
+    <a className="rv-run rv-batch" href={`#/reviews/b/${encodeURIComponent(b.id)}`} role="listitem">
+      <StatusDot tone={tone}>{b.status === "done" ? "Reported" : word}</StatusDot>
+      <span className="rv-run-pr">
+        <span className="rv-run-ref">
+          {b.repo} <b className="rv-mono">{b.sha7}</b>
+        </span>
+        <span className="rv-run-title">{b.status === "failed" || b.status === "skipped" ? (b.why ?? word) : "Whole-repo review"}</span>
+      </span>
+      <span className="rv-run-who">{b.verdict ? <Tag tone={VERDICTS[b.verdict][1]}>{VERDICTS[b.verdict][0]}</Tag> : null}</span>
+      <span className="rv-run-sev" />
+      <span className="rv-run-cost">{b.cost_usd ? usd(b.cost_usd) : ""}</span>
+      <time className="rv-run-time" dateTime={at} title={new Date(at).toLocaleString()}>{b.status === "queued" ? "queued" : live(b) ? elapsed(at) : agoLabel(b.ended ?? at)}</time>
+    </a>
+  );
+}
+
+/** One whole-repo review's report, as the service rendered it (untrusted text: the Markdown part sanitises it). The list's polling refreshes `batch`; the report is read again when the batch's state moves. */
+function BatchPage({ id, batch, onSignIn }: { id: string; batch: TreeBatch | undefined; onSignIn: () => void }) {
+  const [md, setMd] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const state = `${batch?.status}|${batch?.ended}`;
+  useEffect(() => {
+    let stale = false;
+    api.reviewReport(id).then(
+      (r) => !stale && (setMd(r.markdown), setError("")),
+      (e) => !stale && (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [id, state, onSignIn]);
+  useEffect(() => setMd(null), [id]);
+  const [tone, word] = batch ? STATUS[batch.status] : (["idle", ""] as const);
+  const link = (u?: string) => (u && /^https:\/\//.test(u) ? u : undefined);
+  return (
+    <Page className="rv-page" label="Repo review">
+      <PageHeader
+        crumb={<a href="#/reviews/reviews">Code review</a>}
+        title={batch ? `${batch.repo} ${batch.sha7}` : "Repo review"}
+        status={batch ? <span className="rv-head-status"><StatusDot tone={tone}>{batch.status === "done" ? "Reported" : word}</StatusDot>{batch.verdict && <Tag tone={VERDICTS[batch.verdict][1]}>{VERDICTS[batch.verdict][0]}</Tag>}</span> : undefined}
+        actions={
+          <>
+            {link(batch?.primer_url) && <LinkButton href={link(batch?.primer_url)!} external>Open in Primer</LinkButton>}
+            {link(batch?.report_url) && <LinkButton href={link(batch?.report_url)!} external>Open the report</LinkButton>}
+          </>
+        }
+      />
+      {batch && (batch.status === "failed" || batch.status === "skipped") && batch.why && <Banner tone="danger">{batch.why}</Banner>}
+      {error ? <Banner tone="danger">Couldn't load this report: {error}</Banner> : md === null ? <div className="rv-loading" aria-busy="true" /> : <Card className="rv-report"><Markdown text={md} prefix="" className="md" /></Card>}
+    </Page>
   );
 }
 
@@ -667,6 +745,177 @@ function OneOffDialog({ config, engines, url: url0 = "", onClose }: { config: Co
   );
 }
 
+/* ----------------------------------------------------------------------------- repo review (a whole repo at a commit) */
+const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
+  correctness: ["Correctness", "Logic errors, broken edge cases, wrong assumptions"],
+  security: ["Security", "Live weaknesses: injection, auth, secrets, unsafe dependencies"],
+  maintainability: ["Maintainability", "Dead code, duplication, complexity, tangled structure"],
+  performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
+};
+const SHA = /^[0-9a-f]{7,40}$/i;
+/** The service refuses repo reviews until settings.code_review.lenses is on; the page says so instead of failing. */
+function RepoReviewsOff() {
+  return (
+    <Page className="rv-page" label="New repo review">
+      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
+      <EmptyState action={<LinkButton href="#/modules/code-review">Open Code review settings</LinkButton>}>Repo reviews are off until enabled in Code review settings.</EmptyState>
+    </Page>
+  );
+}
+function RepoReviewPage({ config, engines }: { config: CodeReview | null; engines: EngineCatalog }) {
+  const [repo, setRepo] = useState("");
+  const [commit, setCommit] = useState("");
+  const [combos, setCombos] = useState<Combo[]>(() => defaultCombos(config, "").slice(0, 1));
+  const [options, setOptions] = useState<CatalogOption[] | null>(null);
+  const [sha, setSha] = useState("");
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const commitOk = !commit.trim() || SHA.test(commit.trim());
+  const edited = useRef(false);
+  // The catalog for this repo and commit: what applies there, with the recommended ones ticked (until the owner ticks their own).
+  useEffect(() => {
+    setOptions(null);
+    setSha("");
+    setErr("");
+    if (!repo || !commitOk) return;
+    let stale = false;
+    const timer = setTimeout(() => {
+      void api.reviewCatalog(repo, commit.trim() || undefined).then(
+        (c) => {
+          if (stale) return;
+          const ids = new Set(c.options.map((o) => o.id));
+          setOptions(c.options);
+          setSha(c.sha);
+          // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
+          setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
+        },
+        (e) => !stale && setErr((e as Error).message),
+      );
+    }, 300);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [repo, commit, commitOk]);
+  const toggle = (id: string) => {
+    edited.current = true;
+    setTicked((t) => {
+      const n = new Set(t);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+  const c = combos[0];
+  const chosen = options ? options.filter((o) => ticked.has(o.id)).map((o) => o.id) : [];
+  const run = async () => {
+    if (!c || !sha || !chosen.length) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen, combo: { model: c.model, effort: c.effort } });
+      location.hash = `#/reviews/b/${encodeURIComponent(r.batch)}`;
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Page className="rv-page" label="New repo review">
+      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" sub="Reviews a whole repo at one commit with the options you tick. The report lands on this page, and in Primer when it is connected. Nothing is posted to GitHub." />
+      {err && <Banner tone="danger">{err}</Banner>}
+      <Card className="rv-form">
+      <div className="rv-split">
+        <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} />
+        <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A commit SHA; the default branch's head when empty."} error={commitOk ? null : "A commit SHA, 7 to 40 hex characters"}>
+          {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => setCommit(e.target.value)} spellCheck={false} />}
+        </Field>
+      </div>
+      <Field label="Options" help="Ready-made checks in four lenses. Recommended ones for this repo are ticked.">
+        {() =>
+          !repo ? (
+            <span className="rv-muted">Pick a repo to see what applies to it.</span>
+          ) : !commitOk ? (
+            <span className="rv-muted">Fix the commit to see what applies.</span>
+          ) : options === null ? (
+            err ? null : <div className="rv-loading rv-loading-sm" aria-busy="true" />
+          ) : (
+            <div className="rv-lenses">
+              {LENSES.map((lens) => {
+                const opts = options.filter((o) => o.lens === lens);
+                return (
+                  <section key={lens} className={`rv-lens rv-lens-${lens}`} aria-label={LENS_WORDS[lens][0]}>
+                    <h4>{LENS_WORDS[lens][0]}</h4>
+                    <p className="rv-muted">{LENS_WORDS[lens][1]}</p>
+                    {!opts.length ? <span className="rv-muted rv-lens-none">Nothing applies here</span> : opts.map((o) => (
+                      <label key={o.id} className="rv-opt">
+                        <input type="checkbox" checked={ticked.has(o.id)} onChange={() => toggle(o.id)} />
+                        <span className="rv-opt-name">{o.id}
+                        <span className="rv-opt-tags">
+                          {o.runs_code && <Tag tone="needs" title="Runs the repo's own code in a sandbox">runs code</Tag>}
+                          {o.cost === "high" && <Tag tone="failed" title="Spends a lot of the install's spend limit">high cost</Tag>}
+                        </span></span>
+                        <span className="rv-muted rv-opt-src" title={`${o.source.repo} ${o.source.version}, ${o.source.licence}`}>{o.source.repo.split("/").pop()} {o.source.version}</span>
+                      </label>
+                    ))}
+                  </section>
+                );
+              })}
+            </div>
+          )
+        }
+      </Field>
+      <Field label="Model options run by" help="The model and effort for options that call a model">{() => <ComboPicker single noEngine label="Reviewer" value={combos} engines={engines} onChange={setCombos} />}</Field>
+      </Card>
+      <div className="rv-form-actions">
+        <Button variant="quiet" onClick={() => (location.hash = "#/reviews/reviews")}>Cancel</Button>
+        <Button variant="primary" disabled={!repo || !commitOk || !sha || !chosen.length || !c || !MODEL_ID.test(c.model) || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
+      </div>
+    </Page>
+  );
+}
+
+/** Pick a repo your GitHub sign-in can read, or type owner/name. `taken` repos (lower case) are listed but not pickable. */
+function RepoPicker({ repo, onPick, taken, takenWord }: { repo: string; onPick: (repo: string) => void; taken?: Set<string>; takenWord?: [string, string] }) {
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState<{ repo: string; private: boolean }[] | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => setFound(r.repos), () => setFound([])), q ? 250 : 0);
+    return () => clearTimeout(timer.current);
+  }, [q]);
+  const typed = /^[\w.-]+\/[\w.-]+$/.test(q.trim()) ? q.trim() : "";
+  const isTaken = (r: string) => Boolean(taken?.has(r.toLowerCase()));
+  return (
+    <div className="rv-picker">
+      <Field label="Repository" help={repo ? <>Selected: <b>{repo}</b></> : "Repos your GitHub sign-in can read. Type owner/name for one that isn't listed."}>
+        {(id, d) => <Input id={id} aria-describedby={d} autoFocus placeholder="Search, or type acme/payments" value={q} onChange={(e) => setQ(e.target.value)} />}
+      </Field>
+      <div className="rv-picker-list" role="listbox" aria-label="Repositories">
+        {typed && !found?.some((x) => x.repo.toLowerCase() === typed.toLowerCase()) && (
+          <button type="button" role="option" aria-selected={repo === typed} className={repo === typed ? "on" : ""} onClick={() => onPick(typed)} disabled={isTaken(typed)}>
+            <span>{typed}</span>
+            <span className="rv-muted">{isTaken(typed) ? takenWord![0] : "use this name"}</span>
+          </button>
+        )}
+        {found === null ? (
+          <span className="rv-muted rv-picker-note">Loading your repos…</span>
+        ) : !found.length && !typed ? (
+          <span className="rv-muted rv-picker-note">{q ? "No listed repo matches: type its full name, like acme/payments." : "Type a repo's full name, like acme/payments."}</span>
+        ) : (
+          found.slice(0, 40).map((x) => (
+            <button key={x.repo} type="button" role="option" aria-selected={repo === x.repo} className={repo === x.repo ? "on" : ""} disabled={isTaken(x.repo)} onClick={() => onPick(x.repo)}>
+              <span>{x.repo}</span>
+              <span className="rv-muted">{isTaken(x.repo) ? takenWord![1] : x.private ? "private" : "public"}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ----------------------------------------------------------------------------- Repos tab */
 function ReposTab({ config, repos, engines, onEdit, onWatch }: { config: CodeReview; repos: ReposView | null; engines: EngineCatalog | null; onEdit: (r: RepoConfig) => void; onWatch: () => void }) {
   const row = (name: string) => repos?.repos.find((r) => r.repo.toLowerCase() === name.toLowerCase());
@@ -717,19 +966,9 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
   const [repo, setRepo] = useState(edit?.repo ?? "");
   const [f, setF] = useState({ ...REPO_DEFAULTS, ...edit, ignore: edit?.ignore ?? [] });
   const [ignoreText, setIgnoreText] = useState((edit?.ignore ?? []).join("\n"));
-  const [q, setQ] = useState("");
-  const [found, setFound] = useState<{ repo: string; private: boolean }[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => {
-    if (edit) return;
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => setFound(r.repos), () => setFound([])), q ? 250 : 0);
-    return () => clearTimeout(timer.current);
-  }, [q, edit]);
   const watched = new Set(config.repos.map((r) => r.repo.toLowerCase()));
-  const typed = /^[\w.-]+\/[\w.-]+$/.test(q.trim()) ? q.trim() : "";
   const validRepo = /^[\w.-]+\/[\w.-]+$/.test(repo) && (edit || !watched.has(repo.toLowerCase()));
   const entry = (): RepoConfig => {
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -763,36 +1002,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
       }
     >
       {err && <Banner tone="danger">{err}</Banner>}
-      {!edit && (
-        <div className="rv-picker">
-          <Field label="Repository" help={repo ? <>Selected: <b>{repo}</b></> : "Repos your GitHub sign-in can read. Type owner/name for one that isn't listed."}>
-            {(id, d) => <Input id={id} aria-describedby={d} autoFocus placeholder="Search, or type acme/payments" value={q} onChange={(e) => setQ(e.target.value)} />}
-          </Field>
-          <div className="rv-picker-list" role="listbox" aria-label="Repositories">
-            {typed && !found?.some((x) => x.repo.toLowerCase() === typed.toLowerCase()) && (
-              <button type="button" role="option" aria-selected={repo === typed} className={repo === typed ? "on" : ""} onClick={() => setRepo(typed)} disabled={watched.has(typed.toLowerCase())}>
-                <span>{typed}</span>
-                <span className="rv-muted">{watched.has(typed.toLowerCase()) ? "already watched" : "use this name"}</span>
-              </button>
-            )}
-            {found === null ? (
-              <span className="rv-muted rv-picker-note">Loading your repos…</span>
-            ) : !found.length && !typed ? (
-              <span className="rv-muted rv-picker-note">{q ? "No listed repo matches: type its full name, like acme/payments." : "Type a repo's full name, like acme/payments."}</span>
-            ) : (
-              found.slice(0, 40).map((x) => {
-                const on = watched.has(x.repo.toLowerCase());
-                return (
-                  <button key={x.repo} type="button" role="option" aria-selected={repo === x.repo} className={repo === x.repo ? "on" : ""} disabled={on} onClick={() => setRepo(x.repo)}>
-                    <span>{x.repo}</span>
-                    <span className="rv-muted">{on ? "watched" : x.private ? "private" : "public"}</span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
+      {!edit && <RepoPicker repo={repo} onPick={setRepo} taken={watched} takenWord={["already watched", "watched"]} />}
       <Field label="When a PR opens" help="Each row is one review, posted on its own">{() => <ComboPicker gates label="When a PR opens" value={f.on_open} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_open: v })} />}</Field>
       <Field label="On each push" help="Only the new changes">{() => <ComboPicker gates label="On each push" value={f.on_push} engines={engines} none="No review" onChange={(v) => setF({ ...f, on_push: v })} />}</Field>
       <div className="rv-grid2">

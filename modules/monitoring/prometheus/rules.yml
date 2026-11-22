@@ -97,6 +97,39 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "no CI runner unit is active"
+      # Restart=always with RestartSec=1 never made UnitFailed (the unit never fails), so a runner whose registration token is
+      # refused was a silent one-second loop; this names the unit that loops. A looping unit changes active state again and
+      # again and spends real time out of it; a runner going job to job changes twice per job and is otherwise active, so its
+      # churn stays quiet (the average gate). It is the second of two: a refusal that backs off (ops/ci-runner-backoff.sh) is
+      # activating for nearly the whole 60s wait, so 30s snapshots can miss every active interval and changes() can be zero --
+      # CiRunnerBackoff below reads the wait itself, which no scrape can miss. Gated like its neighbours: no planned drain, a
+      # fresh units.prom.
+      - alert: CiRunnerRestartLooping
+        expr: |
+          changes(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) > 4
+          and on (unit) avg_over_time(aidenhq_unit_active{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) < 0.8
+          and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "CI runner unit {{ $labels.unit }} keeps restarting and isn't staying up: its registration token is probably refused"
+      # The runner's own record of a refused token: aidenhq_unit_backoff is the wait ops/ci-runner.sh persisted before its last
+      # attempt (seconds, absent once a token mints or the marker is stale), so a unit that is backing off reads as backing off
+      # however the active bit is sampled. The expression is the wait being at the 60s cap right now and the `for` is the ten
+      # minutes it must hold there: a first refusal (1s, 2s, 4s, ... growing to the cap) is short of it, a wait that drops below
+      # the cap or leaves units.prom breaks the condition and clears the alert, and a gap in the series cannot be counted as
+      # time at the cap the way a window function would. One unit among healthy ones, which CiRunnersDown cannot see. Gated
+      # like its neighbours: no planned drain, a fresh units.prom.
+      - alert: CiRunnerBackoff
+        expr: |
+          aidenhq_unit_backoff{scope="user",unit=~"aidenhq-ci-runner@.+"} >= 60
+          and on() aidenhq_fleet_draining == 0
+          and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "CI runner unit {{ $labels.unit }} has been backing off a refused registration token for over 10 minutes: the sign-in may be missing admin:org, or the code host is refusing for another reason (rate limit, outage)"
       # A unit that reported within the last day and is gone from the snapshot now is named by unit: expected units
       # come from the series themselves (a unit that was there), not a fixed list. A dead exporter is HostMetricsExporterStale's.
       # A unit stopped and disabled in one step is retired, and absent is what it should look like, so only a unit systemd still
