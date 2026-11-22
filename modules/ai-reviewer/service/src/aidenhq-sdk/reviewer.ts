@@ -70,44 +70,26 @@ const versionValue = (v: string) => {
  */
 export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined, toolCall?: ToolCall) {
   if (card?.action !== "conn.tool") return [];
-  // A tool call's arguments arrive structured (`tool_call`): check the arguments' own strings and keys, decoded, never their
-  // JSON encoding (a "\n" escape would hide a line start from the lookbehinds below). The card's details text still rides in
-  // `diff` for a reviewer provider that doesn't read `tool_call` yet, so it is scanned too, never trusted to agree with the
-  // arguments. A caller without a tool_call (an eval case, an older kernel) passes only the details text.
+  // A tool call's arguments arrive structured (`tool_call`), and the card's details text rides in `diff` for a provider that
+  // doesn't read `tool_call` yet. Both are read the same way, decoded: the details' JSON tail is parsed back and walked too, so
+  // an argument the schema names (`version`) is recognised in either form — never left to the JSON escaping, which once hid both
+  // a newline and the argument a value sat under. A details tail that isn't JSON (a truncated or older shape) is scanned as the
+  // text it is, so nothing is dropped.
   const parts: string[] = [];
   // The call's own version numbers, by argument name: the only dotted quads the scan may read as versions. A heading in the
   // requester's text is never proof (`Build:` above an address is a copied build server's address, not a build number).
   const versions = new Set<string>();
-  if (toolCall) {
-    if (toolCall.connection !== "github") return [];
-    // Walked with an explicit stack, not recursion: this runs in the kernel before the reviewer's own depth check, and an
-    // argument object is the requester's to shape, so a deep one must not overflow the stack it is scanned on. A value seen
-    // twice (a shared reference, or a cycle only a direct caller could build) is read once.
-    const seen = new Set<unknown>();
-    const stack: unknown[] = [];
-    const open = (v: unknown) => {
-      if (!v || typeof v !== "object" || seen.has(v)) return;
-      seen.add(v);
-      for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
-        parts.push(k);
-        // The schema, not a line of the requester's prose, says which argument is a version: a dotted quad that is the whole
-        // value of `version` (or `versions`) is that report's version, wherever an agent's log quotes it back.
-        if (typeof child !== "string") stack.push(child);
-        else {
-          parts.push(child);
-          const version = VERSION_KEYS.test(k) ? versionValue(child) : undefined;
-          if (version) versions.add(version);
-        }
-      }
-    };
-    open(toolCall.arguments);
-    while (stack.length) {
-      const v = stack.pop();
-      if (typeof v === "string") parts.push(v);
-      else open(v);
-    }
-  } else if (!/^tool: github\./.test(String(diff ?? ""))) return [];
-  parts.push(String(diff ?? ""));
+  if (toolCall && toolCall.connection !== "github") return [];
+  if (toolCall) walkArguments(toolCall.arguments, parts, versions);
+  const details = String(diff ?? "");
+  if (!toolCall && !/^tool: github\./.test(details)) return [];
+  const tail = /^tool: github\.[^\n]*\narguments \(written by the requesting agent\): ([\s\S]*)$/.exec(details)?.[1];
+  let parsed: unknown;
+  try { parsed = tail === undefined ? undefined : JSON.parse(tail.trim()); } catch { parsed = undefined; }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    // The same arguments in both forms are read once; details that differ from the structured call are read too, never trusted.
+    if (!toolCall || JSON.stringify(parsed) !== JSON.stringify(toolCall.arguments)) walkArguments(parsed, parts, versions);
+  } else if (!toolCall) parts.push(details);
   const text = parts.join("\n");
   const found = [
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
@@ -116,6 +98,39 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
       .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !(versions.has(m[0]) && !addressShaped(text, m.index ?? 0, m[0].length))),
   ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
   return [...new Set(found)];
+}
+
+/**
+ * One argument object's keys and string values, decoded, pushed into `parts`, and the value of a version-named argument into
+ * `versions`. Walked with an explicit stack, not recursion: this runs in the kernel before the reviewer's own depth check, and
+ * an argument object is the requester's to shape, so a deep one must not overflow the stack it is scanned on. A value seen
+ * twice (a shared reference, or a cycle only a direct caller could build) is read once. Each argument's value is read once, in
+ * bounded time: nothing here scans the text accumulated so far.
+ */
+function walkArguments(args: unknown, parts: string[], versions: Set<string>) {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [];
+  const open = (v: unknown) => {
+    if (!v || typeof v !== "object" || seen.has(v)) return;
+    seen.add(v);
+    for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
+      parts.push(k);
+      // The schema, not a line of the requester's prose, says which argument is a version: a dotted quad that is the whole
+      // value of `version` (or `versions`) is that report's version, wherever an agent's log quotes it back.
+      if (typeof child !== "string") stack.push(child);
+      else {
+        parts.push(child);
+        const version = VERSION_KEYS.test(k) ? versionValue(child) : undefined;
+        if (version) versions.add(version);
+      }
+    }
+  };
+  open(args);
+  while (stack.length) {
+    const v = stack.pop();
+    if (typeof v === "string") parts.push(v);
+    else open(v);
+  }
 }
 
 /**

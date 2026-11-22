@@ -250,3 +250,27 @@ test("a report's own version argument is not an instance address, while a real o
   assert.deepEqual(scan("ssh://1.2.3.4/x"), ["1.2.3.4"], "a version value used as a URL host");
   assert.deepEqual(scan("the agent at 1.2.3.4:8443"), ["1.2.3.4"], "a version value used as a host and port");
 });
+
+test("the card's details text is read decoded too, so a report's version is not refused without a structured call", async () => {
+  // The reviewer eval harness and an older kernel pass only the details text (no tool_call). Its JSON tail must be parsed back
+  // and walked like structured arguments: the schema names `version`, so the value is a version there too, not an address.
+  const { instanceDetails } = await import("../sdk/src/reviewer.ts");
+  const args = { title: "t", fingerprint: "f", evidence: { module: "m", version: "1.2.3.4", reproduction: "r", log: "Affected versions:\n1.2.3.4" } };
+  const details = `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(args)}`;
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, details), [], "details only: the version argument is a version");
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, details, { connection: "github", tool: "github_product_issue", arguments: args }), [], "both forms, the same arguments");
+  // Details that differ from the structured call are still read, never trusted.
+  const other = { ...args, evidence: { ...args.evidence, log: "seen on 10.0.0.7" } };
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, `tool: github.t\narguments (written by the requesting agent): ${JSON.stringify(other)}`, { connection: "github", tool: "t", arguments: args }), ["10.0.0.7"], "details that differ are read");
+  // An address under a heading in free text is still refused on the details-only path.
+  const leak = { evidence: { log: "Build:\n192.168.1.10" } };
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, `tool: github.t\narguments (written by the requesting agent): ${JSON.stringify(leak)}`), ["192.168.1.10"], "an address under a heading, details only");
+  // A tail that isn't JSON is scanned as text, so nothing is dropped.
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "tool: github.t\narguments (written by the requesting agent): {\"log\":\"10.0.0.7"), ["10.0.0.7"], "a truncated tail is scanned as text");
+  // And the scan is linear in the text: thousands of quads finish quickly (the old per-match split of the whole suffix did not).
+  const many = Array.from({ length: 3000 }, (_, i) => `10.0.${i % 256}.${i % 200}`).join(" ");
+  const big = `tool: github.t\narguments (written by the requesting agent): ${JSON.stringify({ evidence: { version: "9.9.9.9", log: many } })}`;
+  const started = Date.now();
+  assert.equal(instanceDetails({ action: "conn.tool" }, big).length, 3000, "each private-range quad is still refused");
+  assert.ok(Date.now() - started < 1000, `the scan is bounded (${Date.now() - started}ms)`);
+});
