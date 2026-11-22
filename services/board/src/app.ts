@@ -19,7 +19,7 @@ import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type Live
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, openrouterEngine, paperclipUpdate, replyTarget, toCard, type Assignee } from "./board.js";
+import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, isWork, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -55,6 +55,7 @@ import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation
 import { isActive, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type StateRow, type TaskStates } from "./task-state.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
+import { CreateViewSchema, UpdateViewSchema, ViewSpecSchema, type View } from "./views.js";
 import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
@@ -166,6 +167,12 @@ class HttpError extends Error {
     super(message);
   }
 }
+/** A saved board written at a stale revision: the 409 carries the row as it is now (null: deleted elsewhere). */
+class ViewConflict extends HttpError {
+  constructor(readonly current: View | null) {
+    super(409, current ? "this board changed elsewhere" : "this board was deleted elsewhere");
+  }
+}
 
 /**
  * Requests must name an allowed host (DNS rebinding), and writes must be same-origin JSON with the
@@ -190,7 +197,8 @@ export function checkRequest(req: Pick<IncomingMessage, "method" | "headers" | "
   return undefined;
 }
 
-export function createApp(opts: AppOptions): Server {
+/** The board's listener, and its sweep (the writes the live watch runs: see `sweep`). */
+export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> } {
   const { paperclip: boardPc, store, log } = opts;
   const mode = opts.mode ?? "lan";
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
@@ -276,15 +284,18 @@ export function createApp(opts: AppOptions): Server {
   const recentRuns = async () => pastRunsOf(await kernelActivity());
   const taskStates = opts.taskStates ?? noStates;
   /** Rows as views show them: what a row's ref names (a card's sentence, a blocker, how a job ended) is read from what the board already has. */
-  async function shownRows(rows: StateRow[]): Promise<ShownState[]> {
-    const blockers = [...new Set(rows.filter((r) => r.reason === "blocked" && r.ref).map((r) => r.ref!.replace(/^task:/, "")))];
+  /** `known`: identifiers the caller already has (by task id), so only the others are read from the kernel. */
+  async function shownRows(rows: StateRow[], known = new Map<string, string>()): Promise<ShownState[]> {
+    // A task's own ref (a handback, an orphaned task) names itself: nothing to read.
+    const refs = rows.flatMap((r) => [r.ref, r.blocker, ...r.attention.map((a) => a.ref)].filter((x): x is string => Boolean(x) && x !== `task:${r.task}`));
+    const blockers = [...new Set(refs.filter((x) => x.startsWith("task:")).map((x) => x.slice(5)).filter((t) => !known.has(t)))];
     const [named, cards, activity] = await Promise.all([
       blockers.length ? statesOf(taskStates, blockers) : new Map<string, StateRow>(),
-      rows.some((r) => r.reason === "card_owner" || r.reason === "card_review") ? records.list("pending").catch(() => []) : [],
-      rows.some((r) => r.reason === "failed") ? kernelActivity() : undefined,
+      refs.some((x) => x.startsWith("record:")) ? records.list("pending").catch(() => []) : [],
+      refs.some((x) => x.startsWith("job:")) ? kernelActivity() : undefined,
     ]);
     const jobs = new Map((activity?.recent ?? []).map((j) => [j.id, j]));
-    return rows.map((r) => shown(r, { identifier: (t) => named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id) }));
+    return rows.map((r) => shown(r, { identifier: (t) => known.get(t) ?? named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id) }));
   }
   /** The state of each task (by id) the kernel has facts for; a task it has none for isn't in the map and shows none. */
   async function stateRows(ids: string[]): Promise<Map<string, ShownState>> {
@@ -485,6 +496,71 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
+  /**
+   * The one issue inventory both Tasks layouts are built from: the open issues and those closed in the last 48 hours (each list
+   * paged to LIST_BOUND; `incomplete` when a bound cut it), the kernel's snapshot of the open tasks and those it saw close in that
+   * window (one read, one `as_of`), and the project catalog (null when it can't be read). Read-only: the sweep writes.
+   */
+  async function inventory() {
+    const since = new Date(Date.now() - RECENT_MS).toISOString();
+    const [ctx, open, closed, read, projects] = await Promise.all([
+      context(),
+      pc.openListed(),
+      pc.closedListed(since),
+      taskStates.read({ open: true, closed_since: since }),
+      pc.projects().catch((err) => (log.warn({ err: String((err as Error).message ?? err).slice(0, 300) }, "project catalog unavailable"), null)),
+    ]);
+    return { ctx, since, open: open.issues, closed: closed.issues, incomplete: open.incomplete || closed.incomplete, read, projects };
+  }
+
+  /**
+   * Agent work: every issue its own card (no folding), with its kernel lane. Open issues all show (a task with no kernel row is
+   * Idle, "No reported state"); a closed one only while the kernel's row says it closed in the window. The brief, the owner's
+   * settings tasks and setup's log tasks are never work.
+   */
+  function agentWork(inv: Awaited<ReturnType<typeof inventory>>, states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>): WorkCard[] {
+    const logs = logTasks();
+    const byId = new Map([...inv.closed, ...inv.open].map((i) => [i.id, i]));
+    const kids = new Map<string, string[]>();
+    for (const i of byId.values()) if (i.parentId && i.assigneeAgentId) kids.set(i.parentId, [...(kids.get(i.parentId) ?? []), i.assigneeAgentId]);
+    const out: WorkCard[] = [];
+    for (const i of byId.values()) {
+      if (!isWork(i) || logs.has(i.id) || logs.has(i.identifier)) continue;
+      const state = states.get(i.id) ?? null;
+      const closed = i.status === "done" || i.status === "cancelled";
+      if (closed && state?.lane !== "done") continue;
+      const parent = i.parentId ? byId.get(i.parentId) : undefined;
+      out.push(workCard(i, ctx.assignees, state, parent?.identifier ?? null, [...new Set(kids.get(i.id) ?? [])].filter((a) => a !== i.assigneeAgentId)));
+    }
+    return out;
+  }
+
+  /**
+   * The board's writes that used to ride on GET /api/board, run by the live watch (and once at start-up): settled tasks that
+   * changed come back, crew parts of tasks closed elsewhere close, and new tasks get a place on My day.
+   */
+  async function sweep() {
+    const ctx = await context();
+    const since = new Date(Date.now() - RECENT_MS).toISOString();
+    const [all, listed] = await Promise.all([pc.openIssues().then((l) => mine(l, ctx)), pc.closedListed(since).then((l) => mine(l.issues, ctx))]);
+    const settledAt = store.settledAt();
+    const closed = listed.filter((i) => {
+      if (!settledAt.has(i.id)) return true;
+      if (stillSettled(settledAt.get(i.id), i, null)) return false;
+      store.unsettle(i.id);
+      return true;
+    });
+    const open = await closeLeftoverParts(all, closed, ctx);
+    // Agents' sub-tasks are part of their parent's card: they never get a place of their own.
+    const folded = foldedChildren([...open, ...closed], ctx.assignees);
+    store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
+  }
+
+  /** The account the page is signed in as: saved boards are its own. */
+  const viewer = () => perRequest.getStore()?.session?.accountId ?? "operator";
+  const savedViews = (): View[] => store.views(viewer()).map((r) => ({ ...r, spec: ViewSpecSchema.parse(JSON.parse(r.spec)) }));
+  const viewConflict = (id: string) => new ViewConflict(savedViews().find((x) => x.id === id) ?? null);
+
   /** The owner's last comment on a crew part, by the part's last activity (closeLeftoverParts). */
   const ownComments = new Map<string, { stamp: string; at: string | undefined }>();
   /** Close the crew parts of tasks closed elsewhere (`partsToClose`), and return the open tasks left. */
@@ -595,7 +671,8 @@ export function createApp(opts: AppOptions): Server {
       bylines(),
       runLinks(issue.id, ctx.agents),
     ]);
-    const crew = crewOf(issue, kids, { assignees: ctx.assignees, seen: (id) => store.seenAt(id), working: busy.map });
+    const kidStates = await statesOf(taskStates, kids.map((k) => k.id));
+    const crew = crewOf(issue, kids, { assignees: ctx.assignees, working: busy.map, state: (id) => kidStates.get(id) });
     // Each crew member's latest word, when there's one issue to read it from (a fan-out shows its count instead):
     // what it says while working, else its last comment.
     const said = Object.fromEntries(
@@ -1256,32 +1333,27 @@ export function createApp(opts: AppOptions): Server {
       method: "GET",
       path: /^\/api\/board$/,
       handle: async () => {
-        const ctx = await context();
-        const since = new Date(Date.now() - RECENT_MS).toISOString();
+        const inv = await inventory();
+        const { ctx } = inv;
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
         const extras = Promise.all([working(ctx), opts.google?.status(), signInStates(), bylines(), spendSummary(opts.gateway)]);
         extras.catch(() => {}); // awaited below; this only keeps a failure there from going unhandled meanwhile
+        // My day: the tasks the board shows (mine), a settled one kept off until something happens on it (the sweep unsettles it).
         const settledAt = store.settledAt();
-        // A settled task stays off the board until something happens on it.
-        const unsettled = (i: Issue) => {
-          if (!settledAt.has(i.id)) return true;
-          if (stillSettled(settledAt.get(i.id), i, null)) return false;
-          store.unsettle(i.id);
-          return true;
-        };
-        const [all, closed] = await Promise.all([pc.openIssues().then((l) => mine(l, ctx)), pc.closedSince(since).then((l) => mine(l, ctx).filter(unsettled))]);
-        const open = await closeLeftoverParts(all, closed, ctx);
-        // Agents' sub-tasks are part of their parent's card: they never get a place of their own.
-        const folded = foldedChildren([...open, ...closed], ctx.assignees);
-        store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
+        const open = mine(inv.open, ctx);
+        const closed = mine(inv.closed, ctx).filter((i) => !stillSettled(settledAt.get(i.id), i, null));
         const routines = store.allRecurring().size ? new Map((await pc.routines()).map((r) => [r.id, r])) : new Map<string, Routine>();
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => { const v = recurringView(r, routines.get(r.routineId)); return [id, { summary: v.summary, nextRun: v.nextRun, paused: v.paused }]; }));
         const [busy, google, signIns, names, summary] = await extras;
         // The header's spend line: the day and the month against the install's spend limits.
         const spend = summary?.install ?? null;
-        const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map } });
+        const rows = new Map(inv.read.tasks.map((r) => [r.task, r]));
+        const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, state: (id) => rows.get(id) } });
         const cards = [...Object.values(board.buckets).flat(), ...board.recurring];
-        const states = await stateRows(cards.map((c) => c.id));
+        // One kernel snapshot for both layouts: each row's refs named once (identifiers from the inventory).
+        const idents = new Map([...inv.open, ...inv.closed].map((i) => [i.id, i.identifier]));
+        const states = new Map((await shownRows(inv.read.tasks, idents)).map((r) => [r.task, r]));
+        const work = agentWork(inv, states, ctx);
         for (const card of cards) {
           const w = busy.map.get(card.identifier);
           if (w) card.working = w;
@@ -1294,7 +1366,37 @@ export function createApp(opts: AppOptions): Server {
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
+        return { ...board, work, asOf: inv.read.as_of, incomplete: inv.incomplete, projects: inv.projects, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
+      },
+    },
+    // Saved boards (views.ts): the signed-in account's own; a write at a stale rev is a 409 with the row as it is now (null: gone).
+    { method: "GET", path: /^\/api\/views$/, handle: async () => ({ views: savedViews() }) },
+    {
+      method: "POST",
+      path: /^\/api\/views$/,
+      handle: async (_m, body) => {
+        const v = parse(CreateViewSchema, body);
+        const row = store.addView(viewer(), v.name, JSON.stringify(v.spec));
+        return { ...row, spec: v.spec };
+      },
+    },
+    {
+      method: "PUT",
+      path: /^\/api\/views\/([0-9a-f-]{36})$/,
+      handle: async (m, body) => {
+        const v = parse(UpdateViewSchema, body);
+        if (!store.updateView(viewer(), m[1]!, v.rev, { name: v.name, spec: v.spec && JSON.stringify(v.spec) })) throw viewConflict(m[1]!);
+        return savedViews().find((x) => x.id === m[1]);
+      },
+    },
+    {
+      method: "DELETE",
+      path: /^\/api\/views\/([0-9a-f-]{36})$/,
+      handle: async (m, _b, url) => {
+        const rev = Number(url.searchParams.get("rev"));
+        if (!Number.isInteger(rev) || rev < 1) throw new HttpError(400, "rev is the view's revision");
+        if (!store.deleteView(viewer(), m[1]!, rev)) throw viewConflict(m[1]!);
+        return { ok: true };
       },
     },
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(dec(m[1]!)) },
@@ -2368,7 +2470,7 @@ export function createApp(opts: AppOptions): Server {
     await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
   }
 
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     let url: URL;
     try {
       url = new URL(req.url ?? "/", "http://board");
@@ -2435,9 +2537,10 @@ export function createApp(opts: AppOptions): Server {
     } catch (err) {
       const status = statusOf(err);
       if (status >= 500) log.error({ err: String((err as Error).message ?? err).slice(0, 500), path: url.pathname }, "request failed");
-      if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error", ...(err instanceof HttpError && err.errors ? { errors: err.errors } : {}) }), "application/json");
+      if (!res.headersSent) send(res, status, JSON.stringify({ error: (err as Error).message ?? "error", ...(err instanceof HttpError && err.errors ? { errors: err.errors } : {}), ...(err instanceof ViewConflict ? { current: err.current } : {}) }), "application/json");
     }
   });
+  return Object.assign(server, { sweep });
 }
 
 /** ops/setup.sh's welcome chat (the operator's key): written as the owner, and never an approver. */
