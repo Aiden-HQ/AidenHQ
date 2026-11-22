@@ -21,8 +21,8 @@ Work that spans several tasks splits the same way: several Engineer tasks side b
 The CI code review gate refuses a diff much over ~2,000 lines. A change bigger than that is planned as stacked PRs from
 the start: split at file seams, each branch made from the one before and each diff under that size. Every PR opens
 against the default branch, so publish each slice (`aidenhq publish <org/repo> <branch>`) once the one before it has
-merged, after moving only its own commits onto the squash merge: `git rebase --onto origin/<default> <previous slice's
-tip> <branch>`.
+merged, after moving only its own commits onto the squash merge. Note the commit each slice was cut from when you create it,
+and use that: `git rebase --onto origin/<default> <cut-from commit> <branch>`.
 
 ## Large rewrites hold the files they replace
 
