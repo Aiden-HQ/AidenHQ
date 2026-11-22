@@ -1,6 +1,6 @@
 # Alerts (docs/design/monitoring.md). Every one opens or updates the Fleet Ops task (Alertmanager → the board's detector);
-# severity critical also tells the owner in one line, so only these two are critical: DiskNearlyFull and CoreServiceDown
-# (their owner sentences are in services/board/src/monitoring.ts). Names are identifiers (the board shows no other).
+# severity critical also tells the chief of staff in one line (modules/fleet-steward/service/src/alerts.ts). Disk is never
+# critical: the kernel's disk sweep tightens itself over 80% (kernel/src/workspaces.ts) and the Fleet Steward works the rest. Names are identifiers (the board shows no other).
 groups:
   - name: host
     rules:
@@ -16,7 +16,7 @@ groups:
       - alert: DiskNearlyFull
         expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*"} / node_filesystem_size_bytes) > 0.95
         for: 5m
-        labels: { severity: critical }
+        labels: { severity: warning }
         annotations:
           summary: "filesystem {{ $labels.mountpoint }} is over 95% full"
       - alert: MemoryPressure

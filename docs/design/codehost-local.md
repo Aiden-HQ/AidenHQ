@@ -63,6 +63,7 @@ words, diff and decisions are kernel records.
 |---|---|
 | `refs/changes/<n>/head` | the change's current head |
 | `refs/changes/<n>/base` | the default branch's tip when the head last moved |
+| `refs/changes/<n>/opened` | the default branch's tip when it was opened, never moved by a push: the grader's base commit |
 | `refs/changes/<n>/meta` | blob `{ title, body, branch, base, task, opened_at, draft }` |
 | `refs/changes/<n>/merged` | the squash commit, once merged |
 | `refs/changes/<n>/closed` | written when the change is closed |

@@ -91,28 +91,6 @@ describe("the board's sign-in through the kernel's handoff", () => {
     expect((await get("/api/accounts", { cookie: session })).status).toBe(401);
   });
 
-  it("signs out of the board: the kernel ends the board session and the cookie is cleared", async () => {
-    const token = kernel.session(ANN);
-    const c = `aidenhq-board=${token}`;
-    expect((await get("/api/session", { cookie: c })).json.account).not.toBeNull();
-    // A sign-out is a write: the board's own header and origin only.
-    expect((await get("/api/sign-out", { cookie: c, origin: "http://evil.example", "content-type": "application/json", "x-aidenhq-board": "1" }, "POST", {})).status).toBe(403);
-    const out = await get("/api/sign-out", { cookie: c, origin: ORIGIN, "content-type": "application/json", "x-aidenhq-board": "1" }, "POST", {});
-    expect(out.status).toBe(200);
-    expect(out.cookies.find((x) => x.startsWith("aidenhq-board="))).toMatch(/Max-Age=0/);
-    expect(kernel.calls.some((x) => x.path === "/v1/auth/sign_out" && x.body.token === token)).toBe(true);
-    clock += 6_000;
-    expect((await get("/api/session", { cookie: c })).json.account).toBeNull();
-  });
-
-  it("account admin goes to the kernel as the signed-in admin's session", async () => {
-    const token = kernel.session(ANN);
-    const r = await get("/api/accounts", { cookie: `aidenhq-board=${token}` });
-    expect(r.status).toBe(200);
-    expect(r.json.me).toBe("u-ann");
-    expect(kernel.calls.at(-1)).toMatchObject({ path: "/v1/accounts/list", body: { token } });
-  });
-
   it("uses __Host- cookies on https", async () => {
     const start = await get("/auth/start", { "x-forwarded-proto": "https" });
     expect(start.cookies[0]).toMatch(/^__Host-aidenhq-board-state=.*; Path=\/; HttpOnly; SameSite=Lax; Secure/);

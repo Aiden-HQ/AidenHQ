@@ -45,12 +45,32 @@ type TeamGrant = { key?: string; max_parallel?: number; team?: { name: string; m
 /**
  * A wake notice: a labelled comment on the task, posted as the owner, which wakes its agent (asker.tell's open-parent path and
  * the team router's blocked path). A closed task hears nothing (a comment would reopen it).
+ *
+ * `id` is the producer's key for the notice: with one, the comment also carries `<!-- aidenhq-wake-id:<id> -->` and the task's
+ * thread is read first, so a notice filed again (a retry after the send's answer was lost) posts nothing when its comment is
+ * already there. The plain `WAKE_NOTICE` tag stays whole beside it, so every reader of a wake notice is unaffected. Without an
+ * id it posts every time, as the kernel's own notices (escalate, outcomes) always have.
  */
-export async function wakeNotice(owner: Api, task: string, text: string): Promise<"posted" | "closed" | "missing"> {
+export async function wakeNotice(owner: Api, task: string, text: string, id?: string): Promise<"posted" | "closed" | "missing" | "duplicate"> {
   const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
-  if (issue.status !== 200) return "missing";
+  // Only a 404 says the task is gone. Anything else (a 5xx, a timeout) says nothing about it, and `missing` would be read as "no
+  // task" by the producer, whose fallback is the owner: a transient read would alert the owner over a task that is still there.
+  if (issue.status === 404) return "missing";
+  if (issue.status !== 200) throw Object.assign(new Error(`the control plane answered ${issue.status} reading the task`), { status: 502 });
+  const mark = id ? `<!-- aidenhq-wake-id:${id} -->` : "<!-- aidenhq-wake -->";
+  if (id) {
+    // Its own marker, read back from the task's thread: the control plane offers no comment idempotency key, so this is the only
+    // way a second send of the same notice is known to be a second send. Read before the status is judged: a notice that already
+    // landed is a duplicate even if its task has closed since, and a producer told "closed" would alert the owner for nothing.
+    // A read that failed says nothing either way, so it is retried (502) rather than posting blind and waking the agent twice.
+    const h = await owner("GET", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`);
+    if (h.status !== 200) throw Object.assign(new Error(`the control plane answered ${h.status} reading the task's thread`), { status: 502 });
+    const seen = h.json as Comment[] | { comments?: Comment[] };
+    const list = Array.isArray(seen) ? seen : seen?.comments ?? [];
+    if (list.some((c) => !c.deletedAt && String(c.body ?? "").includes(mark))) return "duplicate";
+  }
   if (["done", "cancelled"].includes(issue.json.status)) return "closed";
-  const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->` });
+  const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body: `[wake] ${text}\n\n<!-- aidenhq-wake -->${id ? `\n${mark}` : ""}` });
   if (c.status >= 300) throw Object.assign(new Error(`the control plane answered ${c.status}`), { status: 502 });
   return "posted";
 }

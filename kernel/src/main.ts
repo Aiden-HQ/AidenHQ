@@ -86,10 +86,10 @@ import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes, wakeNotice } from "./wakes.ts";
-import { createWorkspaceSweep, pruneSkillRuntimes } from "./workspaces.ts";
+import { createDiskSweep, pruneSkillRuntimes } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
-import { readEngines } from "./sandbox.ts";
+import { ensureStateDirs, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
@@ -243,6 +243,11 @@ const channels = createChannels({ db: records.db, records, writes, board: boardA
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });
 // alert: something is wrong now (a page); done: a plain notice, never muted.
 const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
+// The runner's state root can't be made (a reclaim removed it, or another user owns it): one alert per episode, naming the
+// path, its owner and mode, and the uid the kernel runs as, so the owner can fix it instead of every job failing unseen. The
+// key names the episode: the owner channel drops an alert key it already sent within the hour, so a second outage an hour or
+// even a minute later must not reuse the first one's.
+const warnStateNeed = (e: Error, episode: string) => notify.queue({ kind: "alert", text: `Jobs on this host can't start: ${e.message}. Recreate it as this user (mode 0700) or fix its owner and mode.`, dedupe_key: `runner-state-dir:${episode}` });
 // A judgement a task can't make for itself (a parked target, an agent's wait on its delegator or the owner) reaches whoever
 // can make it, once (escalate.ts).
 // A task as the control plane has it now (undefined when gone; throws when it can't be read now): escalate and connection state.
@@ -369,6 +374,10 @@ const sandbox = sandboxConfig(env);
 // the `change` check job, whose receipt the kernel signed and verifies.
 const tasksDir = path.join(sandbox.workDir, "tasks"), localScratch = path.join(sandbox.workDir, "codehost-scratch");
 mkdirSync(localScratch, { recursive: true });
+// The runner's state root and its logs (the engine homes and job logs live there): made 0700 at start, beside the other
+// startup directories, so a reclaim that removed them doesn't wait for the first job to find out. A root that still can't be
+// made is one owner alert; the first launch reports the same way (`stateNeed` below).
+try { ensureStateDirs(sandbox.stateDir, warnStateNeed); } catch (e) { log("WARNING: the runner state directory can't be made", { err: (e as Error).message }); }
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
 const localCode = codehostLocal({
   fact: localFacts(facts),
@@ -405,7 +414,7 @@ const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
 // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 const jobs = createJobs({
-  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch,
+  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch, stateNeed: (e, episode) => warnStateNeed(e, episode),
   cp: {
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
   },
@@ -430,7 +439,8 @@ const wakes = createWakes({
   knownRepo: (repo) => (repo.startsWith(`${LOCAL_ORG}/`) ? localHost() && localRepoExists(repo) : covers(repo, KNOWN_REPOS, codehostRepos())),
   // No member can take it: an open parent hears it as a wake notice (as asker.tell does), else the owner.
   tellBlocked: async (task, text) => {
-    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text)) === "posted") return;
+    // A parent that can't be read now is not a reason to lose the message: it goes to the owner, as with no parent at all.
+    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text).catch(() => "retry")) === "posted") return;
     notify.queue({ kind: "alert", text });
   },
 });
@@ -462,10 +472,19 @@ every(() => {
   sweeping = true;
   void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })).finally(() => { sweeping = false; });
 }, 5 * 60_000);
-// A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
-const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
-const sweepDisk = () => { void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })); try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); } };
-every(sweepDisk, 3_600_000);
+// The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
+// go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
+const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, stopping: () => draining,
+  stillClosed: async (task) => { const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`); return r.status === 404 ? true : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined; }, // 404: the task is gone, so is its workspace's reason to stay
+  engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
+let diskSweeping = false;
+const sweepDisk = () => {
+  if (diskSweeping) return;
+  diskSweeping = true;
+  void sweepFolders().catch((e: Error) => log("disk sweep failed", { err: e.message })).finally(() => { diskSweeping = false; });
+  try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); }
+};
+every(sweepDisk, 15 * 60_000);
 once(sweepDisk, 60_000);
 // A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
 // (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.
@@ -543,6 +562,7 @@ const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
+  stateNeed: (e, episode) => warnStateNeed(e, episode),
   attachments: {
     list: async (task) => (await cpJson(`/api/issues/${encodeURIComponent(task)}/attachments`)) as { originalFilename?: string; byteSize?: number }[],
     add: async (task, name, type, data) => {
@@ -692,7 +712,7 @@ const gw = createGateway({
   notifyOwner: (text) => toOwner("alert")(text),
   tellDelegator: async (task, text) => {
     const issue = await issueOf(task);
-    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`)) === "posted") return;
+    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`).catch(() => "retry")) === "posted") return;
     toOwner("alert")(`${issue?.identifier ?? task}: ${text}`);
   },
   jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),

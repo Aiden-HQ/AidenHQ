@@ -1,11 +1,9 @@
-# Built for the shortest wall-clock time from a push to ci-required green. The test jobs run their suites side by side, one
-# per CPU (.github/ci/run-suites.sh), each with its own timeout from its measured time (`secs` in .github/ci/areas.json),
-# in as many shards as those times need (.github/ci/shards.ts), heaviest first so the shards finish together. Nothing is
-# ever re-run: a flaky test is removed (owner, 2026-11-20).
-# Tests and typechecks for every package, on pull requests and pushes to main. Offline: no secrets are used, except the
-# reviewer eval's model key (the `reviewer-eval` job below, in its one step).
-# A pull request runs the fast suites its change touches; the slow end-to-end ones (areas.json `main: true`: the SDK
-# twin) run only on pushes to main, so a flake there never holds a PR (the merge queue counts every check).
+# Tests and typechecks for every package, on pull requests and pushes to main. The test jobs run their suites side by side,
+# one per CPU (.github/ci/run-suites.sh), each with a timeout from its measured time (`secs` in .github/ci/areas.json), in
+# at most 3 shards (.github/ci/select.ts). Nothing is ever re-run: a flaky test is removed (owner, 2026-11-20). Offline: no
+# secrets are used, except the reviewer eval's model key (the `reviewer-eval` job, in its one step). A pull request runs the
+# suites its change touches (the map is read from the tested tree: agents are trusted); the slow end-to-end ones (areas.json
+# `main: true`: the SDK twin) run only on pushes to main.
 # Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
 # once). The heavy jobs (packages, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
 # aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
@@ -52,21 +50,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      # npm's download cache, one entry per job and shard (each installs different packages). Only a push to main writes
-      # it (the save step below), so pull requests and merge trains read main's entries and never crowd them out.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
-      # The suite runner, which decides pass or fail, comes from the base (main for a merge train), like the suite map:
-      # only the code under test comes from the head.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.checks.outputs.ci_ref }}
-          path: .ci-base
-          sparse-checkout: .github/ci
-          persist-credentials: false
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
@@ -97,12 +80,7 @@ jobs:
           grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && npm ci --silent) & pids+=($!); }
           grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && npm ci --silent) & pids+=($!); }
           for p in "${pids[@]}"; do wait "$p" || exit 1; done
-          bash .ci-base/.github/ci/run-suites.sh "$list"
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
+          bash .github/ci/run-suites.sh "$list"
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
   # whose paths a change touches, e.g. the kernel for the modules that import it), in the shards checks' `shards` step plans.
@@ -124,21 +102,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      # npm's download cache, one entry per job and shard (each installs different packages). Only a push to main writes
-      # it (the save step below), so pull requests and merge trains read main's entries and never crowd them out.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
-      # The suite runner, which decides pass or fail, comes from the base (main for a merge train), like the suite map:
-      # only the code under test comes from the head.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.checks.outputs.ci_ref }}
-          path: .ci-base
-          sparse-checkout: .github/ci
-          persist-credentials: false
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
@@ -151,12 +114,7 @@ jobs:
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
           echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
-          bash .ci-base/.github/ci/run-suites.sh "$list"
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
+          bash .github/ci/run-suites.sh "$list"
 
   # One GitHub check per suite a shard's plan ran, on the PR head: the base-map plan says which suites, and the shard's own
   # Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
@@ -271,24 +229,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      # npm's download cache, one entry per job and shard (each installs different packages). Only a push to main writes
-      # it (the save step below), so pull requests and merge trains read main's entries and never crowd them out.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ github.job }}-${{ strategy.job-index }}-${{ hashFiles('**/package-lock.json') }}
 
   # The plan the jobs below wait for, kept to fast steps (~10-15 s): the suites to test, the images to scan and where the
   # heavy jobs run. Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed
@@ -299,13 +245,12 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      actions: read # the earlier green runs of a rebased PR (.github/ci/select.ts) and how busy hosted runners are
+      actions: read # how busy hosted runners are
     outputs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
       modules: ${{ steps.tests.outputs.modules }}
-      ci_ref: ${{ steps.tests.outputs.ci_ref }}
       runner: ${{ steps.runner.outputs.runner }}
       eval: ${{ steps.eval.outputs.eval }}
       eval_key: ${{ steps.eval.outputs.eval_key }}
@@ -354,48 +299,25 @@ jobs:
         env:
           IMAGE: ${{ steps.promtool.outputs.image }}
         run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" test rules rules.test.yml
-      # The suites to test (.github/ci/select.ts, map in .github/ci/areas.json): on a pull request, those its changed
-      # files touch, both files read from the base so a PR can't shrink its own set (a base without them runs every suite);
-      # on a rebased head with an unchanged patch, only those main's new commits also touch. Every suite on a push to main.
+      # The suites to test (.github/ci/select.ts over .github/ci/areas.json, both from the tested tree): on a pull request,
+      # those its changed files touch; every suite on a push to main or a merge train.
       - id: tests
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
-          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
-          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
-          base="${PR_BASE:-$PUSH_BEFORE}"
-          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
-          fi
-          d="$RUNNER_TEMP/ci"; mkdir -p "$d"
-          export BASE="$base" HEAD="$HEAD_SHA" HEAD_MAP=.github/ci/areas.json MAP="$d/areas.json"
-          # the suite map and selector come from the PR's base, or from main for a merge train (its tree holds the PRs' own edits);
-          # only a push to main uses its own tree
-          src="$PR_BASE"
-          case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
+          # a push to main or a merge train tests every suite; a pull request, those its changes touch
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
+          base=$(git rev-parse HEAD^1) # the PR merge commit's first parent: main now
+          export BASE="$base" HEAD="$HEAD_SHA"
           # the slow suites (areas.json `main: true`) run only on a push to main
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then export MAIN=1; fi
-          # A base without them takes main's, never the head's: the selector decides what is tested.
-          if [ -z "$src" ]; then cp .github/ci/select.ts .github/ci/areas.json "$d/"; src="$HEAD_SHA"
-          elif ! { git show "$src:.github/ci/select.ts" > "$d/select.ts" && git show "$src:.github/ci/areas.json" > "$d/areas.json"; } 2>/dev/null; then
-            src=$(git rev-parse origin/main); export ALL="${ALL:-the base has no suite map}"
-            git show "$src:.github/ci/select.ts" > "$d/select.ts" && git show "$src:.github/ci/areas.json" > "$d/areas.json" || exit 1
-          fi
-          out=$(node "$d/select.ts")
+          out=$(node .github/ci/select.ts)
           tests=$(jq -c .tests <<< "$out")
           echo "Suites to test: $(jq -r 'map(.name) | join(" ")' <<< "$tests")"
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
-          # The test jobs' shards, by the suites' measured times (select.ts shard), and the commit whose CI scripts they run.
+          # The test jobs' shards, by the suites' measured times (select.ts shard).
           echo "packages=$(jq -c .shards.packages <<< "$out")" >> "$GITHUB_OUTPUT"
           echo "modules=$(jq -c .shards.modules <<< "$out")" >> "$GITHUB_OUTPUT"
           echo "heavy=$(jq -r .shards.heavy <<< "$out")" >> "$GITHUB_OUTPUT"
-          echo "ci_ref=$src" >> "$GITHUB_OUTPUT"
+
       # Where the heavy jobs (the packages shards and board) run: GitHub-hosted, unless CI_SELF_HOSTED is 'true', the run is
       # a push to main or a same-repo PR, this repo's other runs already hold BUSY+ hosted jobs (queued or running), and our
       # self-hosted runners (CI_SELF_HOSTED_RUNNERS, default 1) have a free one for each heavy job: a job queued behind a
@@ -483,7 +405,7 @@ jobs:
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
   # The 7-day rule (lockfile entries, images, actions, apt packages and global installs this change adds or alters must be
-  # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the base)
+  # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the head)
   # covers them, and every one is pinned: scripts/supply-chain/pins.ts) and the PR title. Beside the plan, never before
   # the tests: only ci-required waits for it.
   policy:

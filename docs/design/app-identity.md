@@ -79,6 +79,22 @@ which drops it. In every other mode (`local`, `public`, `cloudflare`, or tailsca
 app's port are the host's loopback and Docker bridges, so the app requires a signed identity and the deploy's identity
 probe requires it to refuse a token-less request.
 
+**An app that is not expected to serve HTTP** (not exposed, not shared, no `health.url`, no `api`; a database is the shape)
+does not have its ports fail the deploy for silence. A database answers its own protocol and hangs up on an HTTP request, so
+its `closed`/`silent` socket is recorded as a non-hard "not probed" finding naming that app-level reason, and the deploy is
+not rolled back for it. The skip is refused for any app that is exposed, shared, has a `health.url` or has an `api`: those
+apps could serve HTTP, and their silence fails closed exactly as before.
+
+The plaintext look cannot tell a database from a TLS listener that hangs up on a GET, so every socket that answered no HTTP
+gets a TLS ClientHello, on every app shape. A socket that answers with a TLS record is "answers HTTPS" and hard before any
+skip; only a socket that answered **neither HTTP nor TLS** is skipped, and only on an app the skip may cover. A socket that
+answered HTTP bytes at all — plaintext, over TLS, or without a counted status — is judged, never skipped, on every app shape.
+Every skipped port is a recorded non-hard finding, never a silent pass.
+
+**New installs.** Nothing to configure: the skip is decided from the registry alone, so it applies to an app the moment its
+registry entry has no `expose`, no `share.host`, no `health.url` and no `api`. An existing app that gains any of them takes
+the ordinary gate on its next deploy. There is no migration and no field to add.
+
 ## Agents (app_api, app_view)
 
 apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/identity.ts`) with its own Ed25519 key
@@ -86,11 +102,13 @@ apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/ide
 agent and is redacted from any response that echoes it.
 
 - `app_api`: `role: admin` (the default), `methods` the call's one method, `path` the exact path. Only agent keys in the app's
-  `api.callers` and only under `api.paths`, enforced in apps-mcp. `api` is `{ callers, paths }`; there is no static
-  `api.token` (the registry refuses one). With `role: "member"` it reuses `app_view`'s signed-in member identity for that one
-  method and path: the same `api.callers` gate and the app's read-access policy (`access.roles`), and a caller's own
-  `paths` grant still applies; a plain-string caller is granted the app's whole surface, so an agent can POST to a public
-  route as a test user and read the app's real status, headers and body (session headers such as `Set-Cookie` are withheld).
+  `api.callers` and only under `api.paths`, enforced in apps-mcp. `api` is `{ callers, paths, member_paths? }`; there is no
+  static `api.token` (the registry refuses one). With `role: "member"` it reuses `app_view`'s signed-in member identity for
+  that one method and path: the same `api.callers` gate and the app's read-access policy (`access.roles`), and a caller's
+  own `paths` grant still applies. `member_paths` (plain prefixes, empty by default) widens only an object-form caller, and
+  only within that caller's own paths: a member call may reach `api.paths` or a public `member_paths` prefix. Admin calls stay
+  limited to `api.paths`, and a plain-string caller already reaches every route. So an agent can POST to a public route as a
+  test user and read the app's real status, headers and body (session headers such as `Set-Cookie` are withheld).
 - `app_view`: `role: member`, `methods: [GET, HEAD]`.
 
 The key is separate from the gate's because apps-mcp holds the Docker socket and sits on bridge networks the gate's

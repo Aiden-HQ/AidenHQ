@@ -316,6 +316,9 @@ Design: [design/access.md](design/access.md).
   ([access](design/access.md#in-app-feedback)). `api.callers` entries may be `{agent, paths}` to narrow one caller's paths:
   a bare path is a prefix (any method, anything below it), and `METHOD /path` with `{name}` for one segment names one exact
   route (`GET /api/agent/intake`, `POST /api/agent/intake/{reference}/decision`). The app's own `api.paths` stay prefixes.
+  `api.member_paths` (plain prefixes, empty by default) widens only an object-form caller, and only within that caller's own
+  `paths`: a member-role call may reach `api.paths` or a public `member_paths` prefix. Admin calls stay limited to `api.paths`;
+  a plain-string caller already reaches every route.
 - **Data:** `data/kernel/auth/auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name and
   exported to the gate in `data/gate/accounts.json`. An app that leaves `gate.json` takes its rows with it within a
   minute. A block or demotion returns only once the gate's file has it.
@@ -353,7 +356,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
 
 The kernel runs every agent's job (`kernel/src/jobs.ts`; the `dispatch` module turns wakes into jobs) and reads the optional,
 untracked `config/runner.yaml` at start for its tuning: `work_dir` (default `~/aidenhq-work`), `state_dir` (default
-`~/.local/state/aidenhq-runner`, which holds the job logs), `timeout_minutes` (per job, default 60; `ops/setup.sh` writes it
+`~/.local/state/aidenhq-runner`, which holds the job logs and the jobs' engine homes: live state, despite the name), `timeout_minutes` (per job, default 60; `ops/setup.sh` writes it
 from `TIMEOUT_MINUTES`) and `gateway.url`. Which organizations agents may push and open PRs in is the instance's
 `github_orgs` (`instance.yaml`), enforced by the code host (`modules/github`).
 

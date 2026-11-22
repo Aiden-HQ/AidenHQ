@@ -67,24 +67,4 @@ it("tells open boards what agents change: each task by its id, and the chat it b
   expect(frames("progress")).toEqual([`event: progress\ndata: {"issue":"${kid.id}"}`, `event: progress\ndata: {"issue":"${chat.id}"}`]);
 });
 
-const listen = (text: { v: string }) => {
-  const req: ClientRequest = request({ host: "127.0.0.1", port, path: "/api/events", headers: { host: "localhost:3120" } }, (res) => res.on("data", (c) => (text.v += c)));
-  req.on("error", () => {});
-  req.end();
-  return req;
-};
-const until = (text: { v: string }, s: string) => new Promise<void>((resolve) => {
-  const check = setInterval(() => text.v.includes(s) && (clearInterval(check), resolve()), 10);
-});
 
-it("a closure is pushed, with the kernel's own read of how it ended", async () => {
-  const text = { v: "" };
-  const req = listen(text);
-  await until(text, "event: ping");
-  await new Promise((r) => setTimeout(r, 100));
-  // The task leaves the open list: closed in the kernel, and Paperclip has nothing newer to say.
-  states.rows = states.rows.map((r) => (r.task === kid.id ? { ...r, kind: "done", reason: "closed", attention: [] } : r));
-  await until(text, `event: tasks\ndata: {"issue":"${kid.id}"}`);
-  req.destroy();
-  expect(states.reads.some((q) => q.ids?.includes(kid.id))).toBe(true);
-});

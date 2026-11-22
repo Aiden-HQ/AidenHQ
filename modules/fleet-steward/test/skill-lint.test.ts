@@ -1,6 +1,6 @@
 // A stale PR outside the agents org cost two days of dead work: the `fleet-check` bullet told the Steward to have an
 // Engineer close it with `aidenhq close`, but that command reaches only the agents org, the repos on maintainer_repos and the
-// product repo's Dependabot PRs, so the close was refused and the same stale PR filed another close task the next pass. The lint keeps the caveat:
+// product repo's Dependabot PRs (since widened to the whole product repo), so the close was refused and the same stale PR filed another close task the next pass. The lint keeps the caveat:
 // a fleet skill section that names `aidenhq close` must also state its scope and where an outside-scope PR goes (the
 // Maintainer, never the owner), in that same section.
 // The stale-PR nudge had the same shape: "nudge its agent" had no reachable form, a comment does not dispatch an Engineer,
@@ -46,8 +46,8 @@ function closeScopeProblems(text) {
     .flatMap((section) => {
       const first = section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section";
       // "outside the agents org" is the rule; "outside that scope" only reads once the same section names that scope
-      // (`aidenhq close` reaches only the agents org, the repos on maintainer_repos and the product repo's Dependabot PRs).
-      const scope = /outside the agents org/.test(section) || (/outside that scope/.test(section) && /reaches only the agents org/.test(section) && /maintainer_repos/.test(section) && /Dependabot PRs/.test(section));
+      // (`aidenhq close` reaches only the agents org, the repos on maintainer_repos and the product repo).
+      const scope = /outside the agents org/.test(section) || (/outside that scope/.test(section) && /reaches only the agents org/.test(section) && /maintainer_repos/.test(section) && /product repo/.test(section));
       const missing = [];
       if (!scope) missing.push("the close scope (`outside the agents org`)");
       if (!/goes to the Maintainer/.test(section)) missing.push("the outside-scope path (`goes to the Maintainer`)");
@@ -182,7 +182,7 @@ const memoryProposalMessage = (file, section) => `${file}: the memory-proposal s
 
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (task_route), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
-const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo's Dependabot PRs, and that an outside-scope PR goes to the Maintainer (no close task for an Engineer; one \`outside-close-scope\` log line)`;
+const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo, and that an outside-scope PR goes to the Maintainer (no close task for an Engineer; one \`outside-close-scope\` log line)`;
 
 test("a fleet skill section naming `aidenhq close` must state its scope and the outside-scope path", () => {
   const problems = closeScopeProblems(fleetCheck).map((p) => message("fleet-check/SKILL.md", p));
@@ -208,7 +208,7 @@ test("the merged bullet keeps the actions it had and the outside-scope line", ()
   for (const kept of ["one line with what to do (merge, fix the named check, or close)", "Never the same nudge twice", "task_route"]) {
     assert.ok(bullet.includes(kept), `still says "${kept}"`);
   }
-  for (const added of ["reaches only the agents org", "maintainer_repos", "Dependabot PRs", "outside that scope", "goes to the Maintainer", "file no close task", "outside-close-scope"]) {
+  for (const added of ["reaches only the agents org", "maintainer_repos", "outside that scope", "goes to the Maintainer", "file no close task", "outside-close-scope"]) {
     assert.ok(bullet.includes(added), `states "${added}"`);
   }
 });

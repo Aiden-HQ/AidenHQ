@@ -7,8 +7,17 @@ FROM ${BASE}
 # file, binutils (strings, readelf) and sqlite3: the commands Engineer jobs reached for most and didn't find (job logs,
 # 2026-11-16: file 42 times, strings 11, sqlite3 4). bubblewrap and socat: Claude Code's sandbox for a code review's Bash
 # (modules/code-review/recipe/engines.ts).
+# krb5 1.22.3-1 fixes seven high GSS-API/RPC CVEs (CVE-2026-107778, -112314, -112320, -112321, -112322, -112323, -119079).
+# The browser base already carries 1.22.1-3, and naming an installed package is what upgrades it, so all four the image
+# carries are named: libkrb5-3 asks for libk5crypto3 >= 1.20, not 1.22.3, so it does not come up through the others. The
+# build then fails rather than ship a stale mirror's copy.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ripgrep ffmpeg python3 python3-venv procps less file binutils sqlite3 bubblewrap socat \
+      libkrb5-3 libgssapi-krb5-2 libkrb5support0 libk5crypto3 \
+    && for p in libkrb5-3 libgssapi-krb5-2 libkrb5support0 libk5crypto3; do \
+         v="$(dpkg-query -W -f='${Version}' "$p")" && dpkg --compare-versions "${v:-0}" ge 1.22.3-1 \
+           || { echo "krb5: $p is ${v:-not installed}, need >= 1.22.3-1" >&2; exit 1; }; \
+       done \
     && rm -rf /var/lib/apt/lists/*
 RUN npm i -g @openai/codex@0.166.0 && npm cache clean --force
 # Code review's other engines (modules/code-review/recipe/engines.ts): Claude Code 2.1.323 (published 2026-11-12) and codegenie

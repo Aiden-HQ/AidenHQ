@@ -10,6 +10,7 @@ const diff = (file: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+
 const apps: Record<string, App> = {
   web: parseApp({ name: "web", repo: "example-org/web", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] } }),
   narrow: parseApp({ name: "narrow", repo: "example-org/narrow", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: [{ agent: "keeper", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }], paths: ["/api/agent/intake"] } }),
+  "public-intake": parseApp({ name: "public-intake", repo: "example-org/public-intake", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: [{ agent: "red-teamer", paths: ["/intake", "/intake/feedback"] }], paths: ["/api/agent"], member_paths: ["/intake", "/intake/feedback"] } }),
   db: parseApp({ name: "db", repo: "example-org/db", owner: "app-maintainer", description: "d", stateful: true }),
   // Restricted to the finance role: app_view refuses an agent without it, and so must a member app_api call.
   ledger: parseApp({ name: "ledger", repo: "example-org/ledger", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] }, access: { roles: ["finance"] } }),
@@ -86,6 +87,10 @@ describe("apps-platform write kinds", () => {
     expect((await plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).args).toMatchObject({ caller: "keeper", method: "POST" });
     await expect(plan(ex, "api_write", { name: "narrow", method: "DELETE", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);
     await expect(plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);
+    // A member request reaches the app's opted-in public intake only as a member; admin stays under api.paths.
+    expect((await plan(ex, "api_write", { name: "public-intake", method: "POST", path: "/intake/feedback", role: "member" }, who("red-teamer"))).args).toMatchObject({ caller: "red-teamer", role: "member" });
+    await expect(plan(ex, "api_write", { name: "public-intake", method: "POST", path: "/intake/feedback" }, who("red-teamer"))).rejects.toThrow(/isn't under/);
+    await expect(plan(ex, "api_write", { name: "public-intake", method: "POST", path: "/intake/feedback", role: "member" }, who("intruder"))).rejects.toThrow(/may not call/);
     // execute runs exactly the record's args.
     expect(await ex.execute({ id: "k-0000000000000000", kind: "apps-platform.deploy", args: { name: "db", sha: SHA, stateful: true }, digest: "d", idempotency_key: "k-0000000000000000" })).toMatchObject({ ok: true });
     expect(calls[0]).toEqual(["deploy", apps.db, { sha: SHA, by: "approval k-0000000000000000", allowStateful: true }]);

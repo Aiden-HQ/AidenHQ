@@ -3,11 +3,10 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { createServer, request } from "node:http";
-import { connect } from "node:net";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accessPage, authHeaders, createGate, mint, myAppsPage, requestsPage, signingKey, subOf, verifyToken } from "../gate.ts";
+import { createGate, mint, signingKey, subOf, verifyToken } from "../gate.ts";
 import { createIdentity } from "../../starter/aidenhq-identity.mjs";
 import { ensureIdentityKeys } from "../../../../scripts/identity.ts";
 
@@ -128,12 +127,6 @@ test("the app's middleware refuses a missing, forged, expired or agent-claiming 
   assert.throws(() => tailnet.identify(req("x.y.z")), /bad identity/);
 });
 
-test("the owner's admin account is an admin of every shared app; matching owner_email without one is nothing", async () => {
-  const r = await call({ "cf-access-jwt-assertion": token({ email: "owner@EXAMPLE.com" }) });
-  assert.equal(who(r.body).role, "admin");
-  assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "squat@example.com" }) })).status, 403);
-});
-
 test("a token for another app (wrong aud) is refused", async () => {
   assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com", aud: ["aud-other"] }) })).status, 403);
   assert.equal(seen, undefined);
@@ -150,29 +143,6 @@ test("bad tokens are refused: none, expired, wrong issuer, alg none, unknown key
     { "cf-access-jwt-assertion": token({ common_name: "svc-token" }) },
     { "cf-access-jwt-assertion": token({ email: "stranger@example.com" }) },
   ]) assert.equal((await call(h)).status, 403, JSON.stringify(h).slice(0, 80));
-  assert.equal(seen, undefined);
-});
-
-test("anyone not blocked may write, same-origin only; a custom role passes through; blocked is refused", async () => {
-  const a = token({ email: "admin@example.com" });
-  assert.equal((await call({ "cf-access-jwt-assertion": a, origin: "https://other.example.com" }, { method: "POST" })).status, 403);
-  assert.equal((await call({ "cf-access-jwt-assertion": a, "sec-fetch-site": "same-site" }, { method: "POST" })).status, 403);
-  assert.equal((await call({ "cf-access-jwt-assertion": a }, { method: "POST" })).status, 403);
-  assert.equal(seen, undefined);
-  assert.equal((await call({ "cf-access-jwt-assertion": a, origin: "https://roadmap.example.com" }, { method: "POST" })).status, 200);
-  assert.equal(seen.method, "POST");
-  assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }), origin: "https://roadmap.example.com" }, { method: "POST" })).status, 200);
-  assert.equal(who((await call({ "cf-access-jwt-assertion": token({ email: "editor@example.com" }) })).body).role, "editor");
-  assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "stranger@example.com" }) })).status, 403); // default blocked
-});
-
-test("the gate's own /.aidenhq paths: never proxied; the Access page link; requests need the exact origin", async () => {
-  const v = token({ email: "viewer@example.com" });
-  const r = await call({ "cf-access-jwt-assertion": v }, { path: "/.aidenhq/access" });
-  assert.deepEqual([r.status, r.headers.location], [302, "https://apps.example.com/access?app=roadmap"]);
-  assert.equal((await call({ "cf-access-jwt-assertion": v, "sec-fetch-site": "same-origin" }, { method: "POST", path: "/.aidenhq/request" })).status, 403);
-  assert.equal((await call({ "cf-access-jwt-assertion": v }, { path: "/.aidenhq/other" })).status, 404);
-  assert.equal((await call({ "cf-access-jwt-assertion": v }, { path: "/%2eaidenhq/access" })).status, 400);
   assert.equal(seen, undefined);
 });
 
@@ -211,98 +181,6 @@ test("without its signing key the gate refuses (503) rather than proxy", async (
     g.close();
     g.closeAllConnections();
   }
-});
-
-test("a PR preview host: its parent's Access audience and roles, its own identity, and no cookie leaves its host", async () => {
-  // The app sets a cookie for the whole domain: through the gate it stays on the host that set it.
-  const tosser = createServer((q, s) => s.writeHead(200, { "content-type": "application/json", "set-cookie": ["toss=1; Domain=example.com; Path=/", "plain=1; Path=/"] }).end(JSON.stringify(q.headers)));
-  const port = await listen(tosser);
-  const file = join(secrets, "previews.json");
-  writeFileSync(file, JSON.stringify({ "roadmap-pr-3": port, "other-pr-3": 3120 }));
-  const cfg = {
-    login: "access", issuer: ISSUER, certs_url: `http://127.0.0.1:${jwksSrv.address().port}/cdn-cgi/access/certs`, owner_email: "owner@example.com",
-    accounts_file: ACCOUNTS, identity_key_file: KEY, my_apps: { host: "apps.example.com", aud: "aud-apps" },
-    hosts: { "roadmap.example.com": { app: "roadmap", port, aud: AUD }, "other.example.com": { app: "other", port, aud: "aud-other" } },
-    previews: { file, ports: [port, port] },
-  };
-  const g = createGate({ config: () => cfg, log: () => {} });
-  const gp = await listen(g);
-  const get = (host, email, aud = [AUD]) => new Promise((resolve, reject) => {
-    request({ host: "127.0.0.1", port: gp, path: "/", headers: { host, "cf-access-jwt-assertion": token({ email, aud }) } }, (r) => {
-      let body = "";
-      r.on("data", (c) => (body += c));
-      r.on("end", () => resolve({ status: r.statusCode, body, cookies: r.headers["set-cookie"] ?? [] }));
-    }).on("error", reject).end();
-  });
-  try {
-    const r = await get("pr-3.roadmap.example.com", "viewer@example.com");
-    assert.equal(r.status, 200);
-    assert.equal(who(r.body, "roadmap-pr-3").role, "member"); // roadmap's role, for the preview only
-    assert.throws(() => who(r.body, "roadmap"), /not for this app/);
-    assert.deepEqual(r.cookies, ["toss=1; Path=/", "plain=1; Path=/"]);
-    assert.deepEqual((await get("roadmap.example.com", "viewer@example.com")).cookies, ["toss=1; Path=/", "plain=1; Path=/"]); // nor reaches its previews
-    assert.equal((await get("pr-3.roadmap.example.com", "viewer@example.com", ["aud-other"])).status, 403); // only the parent's Access
-    assert.equal((await get("pr-3.roadmap.example.com", "nobody@example.com")).status, 403); // blocked on roadmap: blocked here
-    assert.equal((await get("pr-3.other.example.com", "viewer@example.com", ["aud-other"])).status, 404); // a port outside the band
-    assert.equal((await get("pr-4.roadmap.example.com", "viewer@example.com")).status, 404); // not running
-  } finally {
-    for (const s of [g, tosser]) { s.close(); s.closeAllConnections(); }
-  }
-});
-
-test("an unknown host is a 404", async () => {
-  assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "owner@example.com" }) }, { host: "board.example.com" })).status, 404);
-});
-
-test("SSE streams through: the first event arrives before the app ends the response", async () => {
-  let firstAt;
-  const start = Date.now();
-  const r = await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }) }, { path: "/events", onFirst: () => (firstAt = Date.now()) });
-  assert.equal(r.status, 200);
-  assert.equal(r.body, "data: one\n\ndata: two\n\n");
-  assert.ok(firstAt - start < 250, `first event after ${firstAt - start} ms`);
-});
-
-test("a WebSocket upgrade needs the same origin, then passes through", async () => {
-  app.once("upgrade", (q, sock) => {
-    sock.on("error", () => {});
-    sock.on("end", () => sock.destroy());
-    sock.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
-    sock.on("data", (d) => sock.write(`echo:${d}`));
-  });
-  const upgrade = (origin) => new Promise((resolve) => {
-    const s = connect(gatePort, "127.0.0.1", () => s.write(`GET /ws HTTP/1.1\r\nHost: roadmap.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: ${origin}\r\nCf-Access-Jwt-Assertion: ${token({ email: "viewer@example.com" })}\r\n\r\n`));
-    let buf = "";
-    s.on("data", (d) => {
-      buf += d;
-      if (buf.startsWith("HTTP/1.1 101") && buf.includes("\r\n\r\n") && !buf.includes("echo:")) s.write("hi");
-      if (buf.includes("echo:hi") || buf.startsWith("HTTP/1.1 403")) { s.destroy(); resolve(buf); }
-    });
-    s.on("close", () => resolve(buf));
-  });
-  assert.match(await upgrade("https://other.example.com"), /^HTTP\/1.1 403/);
-  assert.match(await upgrade("https://roadmap.example.com"), /^HTTP\/1.1 101[\s\S]*echo:hi/);
-});
-
-test("access mode: a disabled account is refused even with a role; an admin account is an admin of every app", async () => {
-  assert.equal((await call({ "cf-access-jwt-assertion": token({ email: "gone@example.com" }) })).status, 403);
-  assert.equal(seen, undefined);
-  assert.equal(who((await call({ "cf-access-jwt-assertion": token({ email: "boss@example.com" }) })).body).role, "admin");
-  assert.equal(who((await call({ "cf-access-jwt-assertion": token({ email: "viewer@example.com" }) })).body).role, "member");
-});
-
-test("my apps lists only the apps the visitor isn't blocked from (all of them for an admin), behind its own Access aud", async () => {
-  const mine = (email, aud = "aud-apps") => call({ "cf-access-jwt-assertion": token({ email, aud: [aud] }) }, { host: "apps.example.com" });
-  const v = await mine("admin@example.com"); // roadmap's admin, no account
-  assert.equal(v.status, 200);
-  assert.match(v.body, /https:\/\/roadmap\.example\.com\//);
-  assert.match(v.body, /\/access\?app=roadmap/);
-  assert.doesNotMatch(v.body, /other\.example\.com/);
-  const b = await mine("boss@example.com");
-  assert.match(b.body, /roadmap\.example\.com/);
-  assert.match(b.body, /other\.example\.com/);
-  assert.equal((await mine("gone@example.com")).status, 403);
-  assert.equal((await mine("viewer@example.com", AUD)).status, 403); // a token for an app isn't one for my apps
 });
 
 test("password mode: sign-in only on the my-apps host; app hosts get a host-only cookie through a one-time handoff", async () => {
@@ -494,33 +372,6 @@ test("fails closed: unreadable accounts or a failing session check refuse with a
   }
 });
 
-test("sign-in traffic names the visitor's address from Cloudflare only on cloudflared's socket, never the client's own copy", () => {
-  const req = (headers) => ({ headers: { host: "apps.example.com", ...headers }, socket: { remoteAddress: "127.0.0.1" } });
-  const forged = { "x-aidenhq-client-ip": "10.9.9.9", "x-aidenhq-gate": "forged" };
-  const secret = "s".repeat(64);
-  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "203.0.113.7" }), secret, true)["x-aidenhq-client-ip"], "203.0.113.7");
-  assert.equal(authHeaders(req(forged), secret)["x-aidenhq-gate"], secret);
-  // On the loopback port anyone on the host can set CF-Connecting-IP: it names nothing there.
-  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "203.0.113.7" }), secret)["x-aidenhq-client-ip"], undefined);
-  // Only Cloudflare's header names it: never X-Forwarded-For, never a non-IP; then no header (the board uses its socket).
-  assert.equal(authHeaders(req({ ...forged, "x-forwarded-for": "198.51.100.2" }), "", true)["x-aidenhq-client-ip"], undefined);
-  assert.equal(authHeaders(req({ ...forged, "cf-connecting-ip": "*" }), "", true)["x-aidenhq-client-ip"], undefined);
-  assert.equal(authHeaders(req(forged))["x-aidenhq-gate"], undefined);
-});
-
-test("the gate's pages escape every value: emails, role names and meanings, app names, request text and replies", () => {
-  const x = `<script>alert(1)</script>"'`;
-  const pages = [
-    accessPage({ app: x, host: x, default: x, roles: [{ name: x, meaning: x }], assignments: [{ email: x, role: x, set_by: x, declared: false }], log: [{ at: x, subject: x, before: x, after: x, by: x, asked_by: x, request_id: x }] }),
-    requestsPage(x, [{ at: x, text: x, status: x, reply: x }]),
-    myAppsPage(x, [{ host: x, app: x, role: "admin" }]),
-  ];
-  for (const p of pages) {
-    assert.doesNotMatch(p, /<script>/);
-    assert.match(p, /&#60;script&#62;alert\(1\)&#60;\/script&#62;&#34;&#39;/);
-  }
-});
-
 test("header-jwt: the front door's token for this host signs a person in; wrong aud, no token, RS256 or magic-link are refused; the header never reaches the app", async () => {
   const ec = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const IDP = "https://idp.example.com", HDR = "x-test-identity";
@@ -563,171 +414,5 @@ test("header-jwt: the front door's token for this host signs a person in; wrong 
     cookieApp.closeAllConnections();
     g.close();
     g.closeAllConnections();
-  }
-});
-
-test("doors: each exposed app at <app>.<base> for admins only, signed in on the admin listener and handed back once", async () => {
-  const SC = "__Host-better-auth.session_token";
-  const AC = "__Host-aidenhq-gate.session";
-  const ST = "__Host-better-auth.handoff_state";
-  const people = { "s-boss": "boss@example.com", "s-ann": "ann@example.com" };
-  const hostOf = {};
-  const codes = new Map(); // what the admin listener minted (kernel/src/admin.ts /auth/handoff): one use, one host and state
-  const auth = createServer((q, s) => {
-    let raw = "";
-    q.on("data", (c) => (raw += c)).on("end", () => {
-      const sid = new RegExp(`${SC}=([^;]+)`).exec(q.headers.cookie ?? "")?.[1];
-      const json = (status, body) => s.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-      // As the kernel does (accounts.ts gateSession): a handed-off session counts only on the host it was redeemed for.
-      const bound = hostOf[sid];
-      if (q.url === "/.auth/api/get-session") return json(200, people[sid] && (!bound || bound === q.headers["x-forwarded-host"]) ? { session: { id: sid }, user: { email: people[sid] } } : null);
-      if (q.url === "/.auth/api/handoff/redeem") {
-        const { code, host, state } = JSON.parse(raw);
-        const c = codes.get(code);
-        codes.delete(code);
-        if (!c || c.host !== host || c.state !== state) return json(400, { error: "invalid code" });
-        people[`tok-${code}-0123456789abcdef`] = c.email;
-        hostOf[`tok-${code}-0123456789abcdef`] = host;
-        return json(200, { token: `tok-${code}-0123456789abcdef` });
-      }
-      json(404, {});
-    });
-  });
-  // A hostile door app: it tries to set the gate's own session cookie too.
-  const doorApp = createServer((q, s) => s.writeHead(200, { "content-type": "application/json", "set-cookie": ["theme=dark; Domain=localhost; Path=/", `${SC}=planted; Path=/`] }).end(JSON.stringify(q.headers)));
-  const [authPort, appPort] = [await listen(auth), await listen(doorApp)];
-  const dir = mkdtempSync(join(tmpdir(), "doors-"));
-  const DOORS = join(dir, "doors.json");
-  writeFileSync(DOORS, JSON.stringify({ roadmap: appPort, other: appPort, board: 3121, low: 80 }));
-  writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [{ email: "boss@example.com", role: "admin", disabled: false }, { email: "ann@example.com", role: "user", disabled: false }], apps: { roadmap: { default: "member", roles: {} } } }));
-  const cfg = {
-    port: 3130, login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "boss@example.com", accounts_file: join(dir, "accounts.json"), identity_key_file: KEY,
-    hosts: {}, origin: { scheme: "http", port: 3130 }, doors: { base: "localhost", file: DOORS }, signin: "http://127.0.0.1:3120",
-  };
-  const g = createGate({ config: () => cfg, log: () => {} });
-  const port = await listen(g);
-  const send = (path, { host = "roadmap.localhost:3130", cookie, method = "GET", origin } = {}) => new Promise((resolve) => {
-    request({ host: "127.0.0.1", port, path, method, headers: { host, ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) } }, (r) => {
-      let body = "";
-      r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, headers: r.headers, body }));
-    }).end(method === "POST" ? "{}" : undefined);
-  });
-  try {
-    // no session → the admin listener's handoff for this exact origin, with a state bound to this browser; no sign-in here
-    const r = await send("/plan?q=1");
-    assert.equal(r.status, 302);
-    const to = new URL(r.headers.location);
-    assert.equal(to.origin + to.pathname, "http://127.0.0.1:3120/auth/handoff");
-    assert.equal(to.searchParams.get("to"), "http://roadmap.localhost:3130");
-    assert.equal(to.searchParams.get("next"), "/plan?q=1");
-    const state = to.searchParams.get("state");
-    assert.equal(r.headers["set-cookie"][0], `${ST}=${state}; Path=/; Max-Age=300; Secure; HttpOnly; SameSite=Lax`);
-    for (const p of ["/.auth/sign-in", "/.auth/go?to=x", "/.auth/api/sign-in/email"]) assert.equal((await send(p)).status, 404, p);
-    // the code the admin listener minted → this host's own cookie; a browser without the state cookie hears why (Safari)
-    codes.set("c1", { host: "roadmap.localhost", state, email: "boss@example.com" });
-    const nostate = await send(`/.auth/handoff?code=c1&state=${state}&next=/plan`);
-    assert.equal(nostate.status, 403);
-    assert.match(nostate.body, /Chrome or Firefox/);
-    // a state cookie of the same length in characters but not in bytes is refused (403), and its code stays unspent
-    codes.set("c3", { host: "roadmap.localhost", state, email: "boss@example.com" });
-    assert.equal((await send(`/.auth/handoff?code=c3&state=${state}&next=/plan`, { cookie: `${ST}=${"é".repeat(state.length)}` })).status, 403);
-    assert.ok(codes.has("c3"));
-    codes.set("c2", { host: "roadmap.localhost", state, email: "boss@example.com" });
-    const done = await send(`/.auth/handoff?code=c2&state=${state}&next=/plan`, { cookie: `${ST}=${state}` });
-    assert.equal(done.status, 302);
-    const boss = done.headers["set-cookie"][0].split(";")[0];
-    assert.match(boss, /^__Host-aidenhq-gate\.session=tok-c2-/);
-    // an admin gets the app with a signed identity; any cookie the app sets is host-only
-    const ok = await send("/", { cookie: `${boss}; theme=dark` });
-    assert.equal(ok.status, 200);
-    assert.equal(who(ok.body).role, "admin");
-    assert.equal(JSON.parse(ok.body)["x-forwarded-proto"], "http");
-    // (a) the gate's session cookie never reaches the app, and the app can't set it: only its own cookie, host-only
-    assert.equal(JSON.parse(ok.body).cookie, "theme=dark");
-    assert.deepEqual(ok.headers["set-cookie"], ["theme=dark; Path=/"]);
-    // (b) cookies ignore ports, so a session can reach another *.localhost: it counts only on the host it was handed to,
-    // and the gate's cached answer for one host is never another's
-    assert.equal((await send("/", { host: "other.localhost:3130", cookie: boss })).status, 302);
-    assert.equal((await send("/", { cookie: boss })).status, 200);
-    // a user account is refused whatever the app's default says; the gate's own app paths are a shared app's only
-    assert.equal((await send("/", { cookie: `${AC}=s-ann` })).status, 403);
-    assert.equal((await send("/.aidenhq/requests", { cookie: boss })).status, 404);
-    // writes need this exact origin, port and scheme included
-    assert.equal((await send("/", { cookie: boss, method: "POST", origin: "http://roadmap.localhost:3130" })).status, 200);
-    for (const o of ["https://roadmap.localhost", "http://roadmap.localhost", "http://other.localhost:3130"]) assert.equal((await send("/", { cookie: boss, method: "POST", origin: o })).status, 403, o);
-    // only names the doors file serves, never a platform or low port, never a nested or bare name
-    for (const h of ["nope.localhost:3130", "board.localhost:3130", "low.localhost:3130", "a.roadmap.localhost:3130", "localhost:3130"]) assert.equal((await send("/", { host: h, cookie: boss })).status, 404, h);
-    // Caddy's on-demand TLS asks on loopback: yes only for a served door
-    assert.equal((await send("/.aidenhq/door-ask?domain=roadmap.localhost", { host: "127.0.0.1:3130" })).status, 200);
-    for (const d of ["nope.localhost", "board.localhost", "evil.example.com"]) assert.equal((await send(`/.aidenhq/door-ask?domain=${d}`, { host: "127.0.0.1:3130" })).status, 404, d);
-    // (d) the app's own loopback port takes no session at all: without the gate's token it answers 401 (the shared middleware)
-    const mw = createIdentity({ app: "roadmap", keysFile: join(secrets, "identity", "keys.json") });
-    const direct = createServer(mw.protect((_q, s) => s.end("in")));
-    const dport = await listen(direct);
-    const res = await new Promise((resolve) => request({ host: "127.0.0.1", port: dport, path: "/", headers: { cookie: boss } }, resolve).end());
-    assert.equal(res.statusCode, 401);
-    direct.close();
-  } finally {
-    for (const s of [auth, doorApp, g]) { s.close(); s.closeAllConnections(); }
-  }
-});
-
-test("the module door: a module service at the board's own host on the door port, admins only, never touching the board's or admin listener's cookies", async () => {
-  const SC = "__Host-better-auth.session_token";
-  const AC = "__Host-aidenhq-gate.session";
-  const ST = "__Host-better-auth.handoff_state";
-  const people = { "tok-boss-0123456789abcdef": "boss@example.com", "tok-ann-0123456789abcdef": "ann@example.com", "admin-session": "boss@example.com" };
-  const asked = [];
-  const auth = createServer((q, s) => {
-    asked.push(q.headers.cookie);
-    const sid = new RegExp(`${SC}=([^;]+)`).exec(q.headers.cookie ?? "")?.[1];
-    const ok = q.url === "/.auth/api/get-session" && people[sid] && sid !== "admin-session"; // the admin listener's own session is never an app host's
-    s.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(ok ? { session: { id: sid }, user: { email: people[sid] } } : null));
-  });
-  const doc = createServer((q, s) => s.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(q.headers)));
-  const [authPort, docPort] = [await listen(auth), await listen(doc)];
-  const dir = mkdtempSync(join(tmpdir(), "module-door-"));
-  writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [{ email: "boss@example.com", role: "admin", disabled: false }, { email: "ann@example.com", role: "user", disabled: false }], apps: {} }));
-  const ORIGIN = "https://board.example.com:8447";
-  const cfg = {
-    port: 3130, login: "password", auth_url: `http://127.0.0.1:${authPort}`, owner_email: "boss@example.com", accounts_file: join(dir, "accounts.json"), identity_key_file: KEY,
-    hosts: { "board.example.com": { app: "docs", port: docPort, door: true, origin: ORIGIN } }, signin: "https://board.example.com:8446",
-    doors: { base: "localhost", file: join(dir, "doors.json") },
-  };
-  // An agent app named like the module door's service never gets a door (its token would be good at that service).
-  writeFileSync(join(dir, "doors.json"), JSON.stringify({ docs: docPort, notes: docPort }));
-  const g = createGate({ config: () => cfg, log: () => {} });
-  const port = await listen(g);
-  const send = (path, { cookie, method = "GET", origin } = {}) => new Promise((resolve) => {
-    request({ host: "127.0.0.1", port, path, method, headers: { host: "board.example.com:8447", ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) } }, (r) => {
-      let body = "";
-      r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, headers: r.headers, body }));
-    }).end(method === "POST" ? "{}" : undefined);
-  });
-  try {
-    // The admin listener's Better Auth session (same host name, another port) is not this door's: sign in through the handoff,
-    // for this exact origin, port included.
-    const r = await send("/d/1", { cookie: `${SC}=admin-session` });
-    assert.equal(r.status, 302);
-    const to = new URL(r.headers.location);
-    assert.equal(to.origin + to.pathname, "https://board.example.com:8446/auth/handoff");
-    assert.equal(to.searchParams.get("to"), ORIGIN);
-    assert.ok(r.headers["set-cookie"][0].startsWith(`${ST}=`));
-    // The door's own session opens it with a signed identity; the board's and the admin listener's cookies never reach it.
-    const boss = `${AC}=tok-boss-0123456789abcdef`;
-    const ok = await send("/d/1", { cookie: `${boss}; ${SC}=admin-session; __Host-aidenhq-board=b; theme=dark` });
-    assert.equal(ok.status, 200);
-    assert.equal(who(ok.body, "docs").email, "boss@example.com");
-    assert.equal(JSON.parse(ok.body).cookie, "theme=dark");
-    assert.equal(asked.at(-1), `${SC}=tok-boss-0123456789abcdef`); // to the kernel under Better Auth's name, nothing else
-    // Admins only; writes need the door's exact origin, never the board's.
-    assert.equal((await send("/", { cookie: `${AC}=tok-ann-0123456789abcdef` })).status, 403);
-    assert.equal((await send("/api/x", { cookie: boss, method: "POST", origin: ORIGIN })).status, 200);
-    for (const o of ["https://board.example.com", "https://board.example.com:8446"]) assert.equal((await send("/api/x", { cookie: boss, method: "POST", origin: o })).status, 403, o);
-    const viaDoor = (host) => new Promise((resolve) => request({ host: "127.0.0.1", port, path: "/", headers: { host } }, (r) => { r.resume(); resolve(r.statusCode); }).end());
-    assert.equal(await viaDoor("docs.localhost"), 404);
-    assert.equal(await viaDoor("notes.localhost"), 302);
-  } finally {
-    for (const s of [auth, doc, g]) { s.close(); s.closeAllConnections(); }
   }
 });

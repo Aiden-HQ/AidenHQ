@@ -104,9 +104,9 @@ newest one 7+ days old (or the security fix, below), with the digest or SHA to p
 Dependabot waits 7 days before proposing a version. CI (`scripts/supply-chain/npm-age.ts` and `pins.ts`) fails anything
 unpinned, and any lockfile entry, image, action, apt or global package a change adds or alters that is under 7 days old.
 Images are dated by the registry's own record (Docker Hub's push time, ghcr.io's GitHub Packages publish time), never by
-the image's `created` field, which its author sets; an image no record dates fails. A security
+the image's `created` field, which its author sets; a pin no record dates (a Debian package, an image with no push record) is a printed warning, not a failure. A security
 fix is the one exception: add `{ecosystem, package, version, advisory, reason}` to `.github/supply-chain-exceptions.yaml`
-in a PR of its own (CI reads it from the base); for npm, CI checks the advisory patches that version; the owner's review
+in the PR that needs it (CI reads it from the head); for npm, CI checks the advisory patches that version; the owner's review
 of the file is the approval. An owner-approved entry (`owner: approved, expires: YYYY-MM-DD`, exact version, expiring within 14 days, no
 advisory) is for when waiting would block a release of code already running elsewhere in the product. CI also scans new commits for secrets (gitleaks); fake values in tests go in `.gitleaks.toml` by exact
 value.
