@@ -461,7 +461,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   if (unread.length) gaps.push(`${unread.length} reviewed file${unread.length > 1 ? "s" : ""} whose diff no finder read to the end (${unread.slice(0, 10).join(", ")}${unread.length > 10 ? ", …" : ""})`);
   // A change's file at the head the engine says it never analysed (deepsec's ignore filter, a cut-off run) is a gap; a deleted one
   // has nothing to analyse; a tree lists what was covered.
-  const missed = covered && !tree ? reviewed.filter((p) => !covered.includes(p) && existsSync(join(ws, p))) : [];
+  const deleted = covered && !tree ? new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--diff-filter=D", "--name-only", "-z", h.from, "HEAD"]).split("\0").filter(Boolean)) : new Set<string>();
+  const missed = covered && !tree ? reviewed.filter((p) => !covered.includes(p) && !deleted.has(p)) : [];
   if (missed.length) gaps.push(`${missed.length} reviewed file${missed.length > 1 ? "s" : ""} the engine didn't analyse (${missed.slice(0, 10).join(", ")}${missed.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
   const reviewedSet = new Set(reviewed);
