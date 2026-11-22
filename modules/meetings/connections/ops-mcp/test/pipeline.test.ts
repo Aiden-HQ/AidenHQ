@@ -195,3 +195,11 @@ describe("prompt injection", () => {
     expect(() => env.app.vault.read("/home/user/.ssh/id_rsa")).toThrow(/Path rejected/);
   });
 });
+
+describe("Drive documents on resumed work", () => {
+  it("names the Drive file to re-read, since source_read rejects Drive sources", () => {
+    const env = makeEnv({ routing: "routes: []\n" });
+    const reg = env.app.meetings.registerDriveDocument({ file_id: "drive_file_1", title: "Wallet Weekly - 2026/10/04 14:45 GMT+02:00 - Notes by Gemini", modified_time: "2026-10-04T15:40:00+02:00", content: "notes" });
+    expect(reg).toMatchObject({ drive_file_id: "drive_file_1" });
+  });
+});

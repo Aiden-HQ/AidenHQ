@@ -29,7 +29,9 @@ package is missing (it goes into the `engineer` image by a PR). You have no ware
   Before publishing, run `npm run build`, then:
 
   ```sh
-  PORT=4173 node server.mjs & sleep 2; ui-review http://127.0.0.1:4173 --widths 1280 --modes light --out .aidenhq/out/review; kill $!
+  PORT=4173 node server.mjs & pid=$!; sleep 2
+  ui-review http://127.0.0.1:4173 --widths 1280 --modes light --out .aidenhq/out/review; status=$?
+  kill $pid; [ "$status" -eq 0 ]
   ```
 
   Its "Routes" section must read "renders" for every link, with no dead clicks.
