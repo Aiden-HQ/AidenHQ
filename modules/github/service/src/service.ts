@@ -559,7 +559,7 @@ export function createService(o: Options) {
       return ident || undefined;
     },
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => (access.connected() && o.holdMerges?.() ? o.mergeHoldReason?.() ?? MIGRATION_WAIT : undefined),
+    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => o.holdMerges?.() === true, holdReason: () => o.mergeHoldReason?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,
     reviewGate: o.reviewGate,

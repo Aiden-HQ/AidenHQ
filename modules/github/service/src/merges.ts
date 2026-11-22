@@ -47,10 +47,12 @@ export function createMerges(d: {
   /** Whether GitHub is connected: while it isn't, every pending PR waits (work.waiting reason github) and nothing is called. */
   connected?: () => boolean;
   /**
-   * Why merges are held although GitHub is connected (the App migration, migrate.ts): its own reason on the record, never the
-   * reconnect's, because reconnecting cannot lift it. Null or unset: nothing holds them.
+   * Whether merges are held although GitHub is connected (the App migration, migrate.ts): the hold is a decision, never a
+   * message, so a blank reason can never lift it.
    */
-  hold?: () => string | null | undefined;
+  hold?: () => boolean;
+  /** What the hold says on the record (own reason, never the reconnect's: reconnecting cannot lift a migration hold). Blank: the default. */
+  holdReason?: () => string | null | undefined;
   fleetOrg: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
@@ -382,7 +384,8 @@ export function createMerges(d: {
     try {
       // Held (signed out, or the App migration): every pending PR waits (reason github; its other wait starts over) and GitHub
       // isn't called. The two are told apart: only a sign-out can be lifted by reconnecting, so the migration has its own reason.
-      const held = d.hold?.() ?? ((d.connected && !d.connected()) ? CONNECTED_WAIT : undefined);
+      // The hold decides first and its text second (`hold()` true with a blank reason still holds: the reason only says why).
+      const held = d.hold?.() ? (d.holdReason?.() ?? "").trim() || MIGRATION_WAIT : (d.connected && !d.connected()) ? CONNECTED_WAIT : undefined;
       if (held) {
         for (const [id, q] of Object.entries(s.queues)) {
           if (q.state !== "running" || q.outcome) continue;

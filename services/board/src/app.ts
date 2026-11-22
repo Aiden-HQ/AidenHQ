@@ -266,6 +266,8 @@ export function createApp(opts: AppOptions): Server {
     return id ? { ...a, identifier: id } : a;
   }
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
+  /** The last complete live read: a failed page falls back to it, never to a short list that would drop a blocked card. */
+  let liveCache: Approval[] | undefined;
 
   const sessionOf = liveActivity(opts.sessions);
   const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
@@ -1456,10 +1458,13 @@ export function createApp(opts: AppOptions): Server {
         // read with no tier filter (a Tier 0 merge held on review is claimed too), paged to the last one: a hundred newer writes
         // must never push a blocked merge out of the list the owner watches, and neither may the kernel's own page size. The
         // wider recent list adds the ended Tier 0 audit rows.
+        // A page of the live read that fails (the kernel restarting) is not "no live records": the cached page is kept instead
+        // of publishing a short list that would drop an old blocked merge off the cards. The kernel-down fallback below still
+        // answers what the capped reads have.
         const [cards, all, live] = await Promise.all([
           cardsOf("recent", { limit: 100 }),
           cardsOf("recent", { limit: 100, tier0: true }),
-          records.live().then((rows) => Promise.all(rows.map(named))),
+          records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
         ]);
         const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
         const seen = new Set(cards.map((c) => c.id));

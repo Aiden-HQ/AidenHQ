@@ -159,12 +159,16 @@ export function startWatch(o: {
         // blocked merge). A live record's wait reason changes nothing else about it, so it is in the key too: an open view refetches
         // when the reason does (a merge entering or leaving code review's wait), not a minute later. The record's own reason is
         // compared whole (`records.list`, before the wire's display cap), so a change past the cap still refreshes.
-        const [recent, live] = await Promise.all([o.records.list("recent", { limit: 100 }), o.records.live()]);
-        const seen = new Set(recent.map((a) => a.id));
-        const held = live.filter((a) => isLive(a.state) && !seen.has(a.id) && (seen.add(a.id), true));
-        const now = [...recent, ...held].map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}|${hashOf(a.wait ?? "")}`).join();
-        if (cards !== undefined && now !== cards) o.events.emit("approvals");
-        cards = now;
+        const [recent, live] = await Promise.all([o.records.list("recent", { limit: 100 }), o.records.live().catch(() => undefined)]);
+        // A failed live page throws (never a short list posing as the whole set): the watcher then leaves its key alone, so a
+        // transient kernel restart neither hides a blocked card nor announces a reason it couldn't read.
+        if (live) {
+          const seen = new Set(recent.map((a) => a.id));
+          const held = live.filter((a) => isLive(a.state) && !seen.has(a.id) && (seen.add(a.id), true));
+          const now = [...recent, ...held].map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}|${hashOf(a.wait ?? "")}`).join();
+          if (cards !== undefined && now !== cards) o.events.emit("approvals");
+          cards = now;
+        }
       }
       // The kernel's states: re-read for each task seen to change (so a change already announced isn't announced twice), and
       // for every open task each minute. A task whose state differs from the last seen is announced.

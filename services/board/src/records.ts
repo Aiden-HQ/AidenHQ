@@ -101,7 +101,8 @@ export type Records = {
   /**
    * Every live record (`approved`, and `claimed` ones an executor holds), whatever its tier: the kernel's page size is its own
    * cap, so this walks the pages (`after`) rather than treating the largest one as the whole set. A Tier 0 merge held on review
-   * ages out of no list this way, however many newer writes follow it.
+   * ages out of no list this way, however many newer writes follow it. A page that fails throws rather than returning the pages
+   * read so far: a caller must not mistake a timeout for "no more live records".
    */
   live(): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
@@ -151,7 +152,10 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const seen = new Set<string>();
     let after = "";
     for (let i = 0; i < PAGES_MAX; i++) {
-      const page = await list("approved", { limit: PAGE, tier0: true, ...(after ? { after } : {}) });
+      // A page that failed must not look like the last one: the non-strict read answers [] for a timeout or an HTTP error, and
+      // stopping there would silently return a partial live list (an old claimed merge gone from Approvals). `strict` makes the
+      // failure throw, so the caller can keep its previous list rather than publish a short one.
+      const page = await list("approved", { limit: PAGE, tier0: true, strict: true, ...(after ? { after } : {}) });
       const fresh = page.filter((a) => !seen.has(a.id));
       for (const a of fresh) seen.add(a.id);
       all.push(...fresh);

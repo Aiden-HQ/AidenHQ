@@ -140,3 +140,76 @@ it("pages the live read: the kernel's page limit is not the whole set, so an old
     paging.close();
   }
 });
+
+it("a failed live page is not the end of pagination: it throws, and the Approvals list keeps its last complete read", async () => {
+  // `list()` answers [] for a timeout or an HTTP error. If `live()` took that as a short last page it would return the records
+  // read so far, dropping an old blocked merge off Approvals with no sign anything went wrong. A failing page must throw instead.
+  const PAGE = 1000;
+  const total = PAGE + 5;
+  const many = Array.from({ length: total }, (_, i) => ({ ...live, id: `k-${String(i).padStart(16, "0")}`, card: { ...live.card, sentence: `Merge acme/c${i}` } }));
+  let fail = "";
+  const paging = createServer((req, res) => {
+    const url = new URL(req.url!, "http://kernel");
+    const after = url.searchParams.get("after");
+    if (fail && url.searchParams.get("state") === "approved" && after === fail) {
+      res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "kernel restarting" } }));
+      return;
+    }
+    const from = after ? many.findIndex((r) => r.id === after) + 1 : 0;
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: many.slice(from, from + PAGE) }));
+  });
+  await new Promise<void>((r) => paging.listen(0, "127.0.0.1", r));
+  try {
+    const records = kernelRecords({ url: `http://127.0.0.1:${(paging.address() as AddressInfo).port}`, token: KEY });
+    // The first page is complete and the second fails: a failed page is a failure, never a 1,000-record answer.
+    fail = many[PAGE - 1]!.id;
+    await expect(records.live()).rejects.toThrow(/503/);
+    // Nothing fails: every record comes back, so the throw above is the failure and not the page size.
+    fail = "";
+    expect(await records.live()).toHaveLength(total);
+  } finally {
+    paging.close();
+  }
+});
+
+it("the Approvals list keeps its last complete live read when a later one fails, instead of dropping blocked cards", async () => {
+  // A kernel restart mid-walk must not publish a short live list: an old blocked merge would vanish from Approvals with no sign
+  // anything failed. The route answers the last complete read instead.
+  let broken = false;
+  const flaky = createServer((req, res) => {
+    const url = new URL(req.url!, "http://kernel");
+    if (broken && url.searchParams.get("state") === "approved") {
+      res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "kernel restarting" } }));
+      return;
+    }
+    const liveRead = [live, olderLive, tier0Live, olderTier0Live];
+    const records = url.searchParams.get("state") === "approved" ? liveRead : url.searchParams.get("tier0") === "1" ? [ran, tier0Live, record, live] : [record, live];
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records }));
+  });
+  await new Promise<void>((r) => flaky.listen(0, "127.0.0.1", r));
+  const a = createApp({ paperclip: { issue: async () => ({ id: "issue-3", identifier: "WOR-3" }) } as unknown as Paperclip, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3121"], staticDir: "/nonexistent", timezone: "UTC", mode: "lan", session: () => ({ accountId: "owner", role: "admin" as const }), records: kernelRecords({ url: `http://127.0.0.1:${(flaky.address() as AddressInfo).port}`, token: KEY }) });
+  await new Promise<void>((r) => a.listen(0, "127.0.0.1", r));
+  const read = () => new Promise<any>((resolve, reject) => {
+    request({ host: "127.0.0.1", port: (a.address() as AddressInfo).port, path: "/api/approvals", headers: { host: "localhost:3121" } }, (res) => {
+      let t = "";
+      res.on("data", (c) => (t += c));
+      res.on("end", () => resolve(JSON.parse(t)));
+    }).on("error", reject).end();
+  });
+  try {
+    const good = await read();
+    const goodIds = good.approvals.map((x: { id: string }) => x.id);
+    expect(goodIds).toContain(olderLive.id);
+    broken = true;
+    const failed = await read();
+    expect(failed.error).toBeUndefined();
+    // The same live cards as the good read, not a short list missing the old blocked ones.
+    const failedIds = failed.approvals.map((x: { id: string }) => x.id);
+    expect(failedIds).toContain(olderLive.id);
+    expect(failedIds).toContain(olderTier0Live.id);
+    expect(new Set(goodIds)).toEqual(new Set(failedIds));
+  } finally {
+    a.close();
+    flaky.close();
+  }
+});

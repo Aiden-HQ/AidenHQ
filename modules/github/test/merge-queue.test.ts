@@ -70,7 +70,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, hold, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const waits = [];
   const taken = new Set();
@@ -105,7 +105,7 @@ async function setup(t, { prs, connected = { on: true }, hold, cacheDir = mkdtem
   };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined, ...(hold ? { holdMerges: () => hold.on } : {}),
+    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined, ...(hold ? { holdMerges: () => hold.on } : {}), ...(holdReason ? { mergeHoldReason: holdReason } : {}),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -1053,4 +1053,31 @@ test("the record's wait is the whole queue's: one PR leaving its wait never clea
   assert.equal(typeof last, "string", "the widget's reason is still on the record, never cleared by the other PR");
   assert.match(last, /acme-agents\/widget/);
   assert.doesNotMatch(last, /gadget/);
+});
+
+test("a hold is a decision, not its text: a blank custom reason still holds every merge", async (t) => {
+  // `holdMerges()` true with `mergeHoldReason()` empty is still a hold. If the reason doubled as the flag, an empty string would
+  // read as "not held" and the queue would poll and merge during the App migration.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const hold = { on: true };
+  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, hold, holdReason: () => "" });
+  await merge("k-00000000000000bc", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges(), [], "a blank reason never lifts the hold: nothing merges during the migration");
+  assert.deepEqual(waits.map((w) => w.reason), ["GitHub App migration in progress: merges are held until it finishes"], "the default reason is published");
+  // Its own text, when it has one, replaces the default.
+  hold.on = false;
+  await handle.stepMerges();
+  assert.equal(github.merges().length, 1);
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+test("a custom hold reason is published as given", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const hold = { on: true };
+  const { handle, merge, waits } = await setup(t, { prs, hold, holdReason: () => "migrating the GitHub App: merges are held" });
+  await merge("k-00000000000000bd", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(waits.map((w) => w.reason), ["migrating the GitHub App: merges are held"]);
 });
