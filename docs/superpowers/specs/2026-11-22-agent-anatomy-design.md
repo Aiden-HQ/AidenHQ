@@ -72,10 +72,22 @@ Engineering calls made with these (simplest to maintain):
   is the only record.
 - An agent compacts its own memory file when it is full (`memory_rewrite` on its own file). The Steward's existing
   `librarian-weekly` lint only removes lines from other agents' files.
-- Setup reconciles managed routines by Paperclip id and writes `status` only on create. A later pause survives, and
-  "active on create" and "paused on import" each apply once.
-- Agent-made cron routines run at most hourly: the cron minute field is a single number. There is no cron parser.
-  Events cover anything faster.
+- Routine identity is recoverable. Setup writes a marker with the compiled key into each routine it creates, looks
+  routines up by compiled key, and recovers a lost or archived one from its marker. It reconciles triggers on every
+  pass.
+- A routine's status is set once, on create, from the module that defines it:
+  - local and `library` routines start active;
+  - routines from an imported (`declared`) module start paused;
+  - product-module routines follow quiet start.
+
+  After that, Paperclip owns pause and resume, through the board's live controls. The editable status override is
+  gone.
+- Agent-made cron routines run at most hourly: exactly one schedule, with a literal minute, checked on the final routine
+  after overrides. There is no cron parser. Events cover anything faster.
+- A product merge's Tier 0 rests on one exact-head eligibility check, used both when planning and right before the
+  merge.
+- `self_change` is validated at the instance base it fetched, with the staged compiler's own inputs. The same base goes
+  to the code host's compare-and-swap.
 - The build starts with a probe of the pinned Paperclip's `/run` for the idempotency key and variables. If either is
   missing, the build stops and reports; no other path is written.
 - End-to-end checks that need Docker or the live stack are manual one-off runs. CI runs only the fast tests.
@@ -109,10 +121,11 @@ Engineering calls made with these (simplest to maintain):
 
 ## 2. Memory
 
-- **Storage:** one markdown file per agent on the kernel data volume (`<data>/kernel/memory/agents/<key>.md`) and its
-  tombstones (`<key>.forgotten`). Memory is runtime state: not in git, no apply per fact. Backups cover it.
-  `owner/profile.md` stays in git.
-- **Fact format:** one line, at most 500 characters: `- (YYYY-MM-DD, src: <task id or link>) <fact>`.
+- **Storage:** one document per agent on the kernel data volume (`<data>/kernel/memory/agents/<key>.json`). It holds
+  facts and tombstones together and is replaced atomically on every write. Memory is runtime state: not in git, no apply
+  per fact. Backups cover it. `owner/profile.md` stays in git.
+- **Fact format:** at most 500 characters, with a date and a `src`. Agents and the handbook read it as Markdown lines:
+  `- (YYYY-MM-DD, src: <task id or link>) <fact>`.
 - **One write path:** the kernel's `memory.ts` writes the file. The tools are:
   - `memory_note(fact, source)` writes the agent's own file at once, replacing the inbox task. The fact is in the
     agent's handbook from its next job.
@@ -132,8 +145,10 @@ Engineering calls made with these (simplest to maintain):
   lint removes duplicate, contradicting and stale lines from every file, removals only, so no fact moves between
   agents. A removed fact is tombstoned so it isn't learned again.
 - **Loading:** the budget is unchanged. The kernel fills `{{memory}}` from the file when a job starts, and the chat lane
-  reads the file each turn. Both put it inside the SDK fence, as data. Legacy `memory.md` lines are imported once through
-  the same parser and checks; refused lines are counted and dropped. A `source` is the job's task by default, else a
+  reads the file each turn. Both put it inside the SDK fence, as data. Legacy `memory.md` lines are imported once per agent, before
+  runtime writes start. The import is resumable; its facts and a completion marker land in one write, and each fact
+  carries the source `migration:<instance sha>`. Merged, refused and dropped lines are counted. The old inbox tasks are
+  cleaned up once, by hand, outside the deploy. A `source` is the job's task by default, else a
   task id or an `https:` link. `owner/profile.md` is already in every handbook and the chat lane.
 - **Owner surface:** "remember X" or "forget X" to any agent; in chat these are handed to the agent's job. The agent page shows the file with sources, read-only.
 - Memory never grants anything.
@@ -144,15 +159,15 @@ Engineering calls made with these (simplest to maintain):
   a marketplace. The compiler keeps rejecting same-name skills: no shadowing.
 - **Explicit per-agent enablement:** every agent lists its skills in `skills:`. The PR writes lists that reproduce
   today's implicit selection (module membership, connection grants) and deletes implicit selection. One rule gives the
-  effective list: `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`. A skill from a
-  disabled optional module is dropped; an unknown one fails compile. Local modules have no `skills` manifest field:
+  effective list: `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`. Every agent,
+  local or product, is edited through this one override shape. A skill from an available but disabled module is
+  dropped; an id no available module provides fails compile. The reviewer's enabler lines come from the compiled lists. Local modules have no `skills` manifest field:
   `skills/` is found by directory.
 - **Agents write and improve skills directly:** a typed `skill` change writes `modules/library/skills/<name>/SKILL.md`,
   and a typed `skills` change enables or disables one for the agent itself. Each is filed as a `kernel.apply` (Tier 1 AI
   reviewer). Any agent may change a library skill. Every agent that lists the skill gets the new version on its next job.
 - The reviewer brief for a skill change names the agents that enable it, because a shared skill can steer an agent
   through tools it already holds. A skill folder with scripts counts as code for third-party trust.
-- The Steward's existing prune pass also lists unused and duplicate skills.
 
 ## 4. Routines
 
@@ -169,9 +184,14 @@ Engineering calls made with these (simplest to maintain):
     drops a repeated source event id. Filters (event kind, author, label, text match) run in code before
     any model call. A burst within the wake window is one run carrying all its events.
   - A batch is sealed when the 60 s window ends; there is no leading-edge fire.
-  - Caps: 12 runs per routine per hour, 120 in total, and a bounded queue. Drops beyond them are counted.
-  - Slack and GitHub only in this release. GitHub is polled (an instance has no ingress) and is best-effort, since GitHub
-    can delay its event feed.
+  - One non-overlapping drain. Intake always answers the source: overflow and cap drops are acknowledged and counted,
+    and permanently invalid items are skipped. Transport errors, 429 and 5xx are retried with the same key. A job that
+    starts before its batch binding is stored gets a bounded "pending, retry" answer.
+  - Caps: 12 runs per routine per hour and 120 in total, counted from dispatch times. Pending events are capped
+    separately from retained payloads.
+  - Slack and GitHub only in this release. GitHub is polled on the code host's existing loop (an instance has no
+    ingress), best-effort, since GitHub can delay its event feed. Only `issues.opened`, `issue_comment.created`,
+    `pull_request.opened` and `push` are offered for now.
 - **Agents create and change their own routines directly:** a typed `routine` change writes
   `modules/library/module.yaml`, with `agent` set to the filer, and is filed as a `kernel.apply` (Tier 1). Compile lints
   them:
@@ -186,20 +206,21 @@ Engineering calls made with these (simplest to maintain):
 
 - **Publish a module**, including an owner-built agent's local module or `library`, to an existing public git repo with
   a `marketplace.json`. Others add that marketplace (pinned) and install through the existing grants diff and AI review.
-- **What is shared:**
-  - the module's agents (definition and handbook);
+- **What is shared:** the portable content of a local module:
+  - its agents (definition and handbook);
   - its skills;
-  - its routines, which start paused on install;
-  - its prompts;
-  - its settings, with placeholders;
-  - its connection declarations.
+  - its routines, which start paused on install.
 
-  A routine whose agent is outside the module is not shared.
+  The preview lists, with reasons, what isn't shared: `reports_to`, `image`, routines whose agent is outside the module,
+  and routines with a literal event resource. A local module has no prompts or settings, so there is nothing to
+  parameterise.
 - **Never shared:** memory, the owner profile, secrets and setting values. A preview shows the exact payload, its
   effective grants and any scripts. Findings block it. The owner's board save is bound to that preview's digest, source
   commit, destination repo, ref and base tip, and it decides the publish record.
-- The destination must be public. A moved tip fails the publish, and a new preview is needed (no refile). Agents
-  cannot file a publish.
+- The destination must be public. A moved tip fails the publish and a new preview is needed (`stale: fail`, no
+  refile). Only the owner's verified save can file a publish (`filer: owner`). The owner-decided record's own args and
+  target are the durable preview evidence. The code host's existing commit assembly writes the files and the
+  `marketplace.json` entry.
 - Importers for foreign formats (Grok recipes, Claude plugins) are not in this release.
 
 ## Not doing
