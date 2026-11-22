@@ -171,7 +171,9 @@ test("task_list pages overlap so a row pulled up by a task leaving the list is n
   // Page one (t-0..t-199) is read, then its first row leaves: every later row moves up one, and a plain offset of 200 would
   // now start at t-201, skipping t-200.
   let reads = 0;
-  const rows = Array.from({ length: 300 }, (_, n) => row(`t-${n}`, "todo"));
+  // Distinct activity times so the served order is t-0, t-1, …: the first row is the one deleted, and t-200 is served right
+  // after the first page boundary.
+  const rows = Array.from({ length: 300 }, (_, n) => ({ ...row(`t-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (300 - n) * 60_000).toISOString() }));
   const board = issueBoard({ rows });
   const handler = async (req, res) => {
     if ((req.url ?? "").includes("/issues?")) {
@@ -287,9 +289,13 @@ test("task_list(mine) reads truncated chats a few at a time, not a whole page at
     return board(req, res);
   };
   const { call } = bridge({ handler, states: {} });
-  const out = parse(await call("task_list", { mine: true, limit: 1 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), [], "no row carries the handed-back marker");
+  // The chat marker sits on the rows at the end of the page: reaching it must not have started every detail read serially.
+  rows[199] = { ...rows[199], description: `hi\n\n<!-- aidenhq-chat-agent:me -->`, descriptionTruncated: true };
+  rows[0] = { ...rows[0], description: "no marker here" };
+  const out = parse(await call("task_list", { mine: true, limit: 10 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["note-199"], JSON.stringify(out));
   assert.ok(peak <= 8, `at most a chunk of detail reads at once, saw ${peak}`);
+  assert.ok(peak > 1, "the rows are read in batches, not one request at a time");
 });
 
 test("task_list(mine) does not read a chat's description when a newer match already fills the limit", async () => {

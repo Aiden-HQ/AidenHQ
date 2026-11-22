@@ -1114,7 +1114,7 @@ const TOOLS: Record<string, Tool> = {
        * later page only when its own rows are used up, so a match in either source is returned in order and the limit is
        * applied to the merged, deduped stream (a chat handed back between the scans cannot leave a slot unfilled).
        */
-      const mergeNewest = async function* (a: AsyncIterable<Page>, b: AsyncIterable<Page>, keepA: (row: readonly [Json, Json]) => Promise<boolean> = async () => true) {
+      const mergeNewest = async function* (a: AsyncIterable<Page>, b: AsyncIterable<Page>, keepA: (row: readonly [Json, Json], rest: (readonly [Json, Json])[]) => Promise<boolean> = async () => true) {
         const left = a[Symbol.asyncIterator](), right = b[Symbol.asyncIterator]();
         let [pa, pb] = await Promise.all([left.next(), right.next()]);
         let ia = 0, ib = 0;
@@ -1166,7 +1166,9 @@ const TOOLS: Record<string, Tool> = {
           if (seen.has(row[0].id)) continue;
           // The owner source's rows are only candidates until their detail is read: that read happens when the row is reached,
           // so a page of them costs nothing while a match from the other source is already known to come first.
-          if (fromA && !(await keepA(row))) continue;
+          // The rest of the row's own page, from it on: a check that reads each row in full can start a bounded batch of those
+          // reads together, instead of one request after another through a page of them.
+          if (fromA && !(await keepA(row, pa.done ? [] : pa.value.rows.slice(ia - 1)))) continue;
           seen.add(row[0].id);
           // Yielded before either source is read past it: a caller that stops at `limit` never reads on.
           yield row;
@@ -1196,25 +1198,41 @@ const TOOLS: Record<string, Tool> = {
         const owner = await ownerUserId();
         const chatUntil = Math.min(deadline, Date.now() + SCAN_MS / 2);
         let theirs: URLSearchParams | undefined;
-        let isChat: (row: readonly [Json, Json]) => Promise<boolean> = async () => false;
+        let isChat: (row: readonly [Json, Json], rest: (readonly [Json, Json])[]) => Promise<boolean> = async () => false;
+        // Full reads already asked for, by task id, so a batch started for one row is reused by the next instead of repeated.
+        const detail = new Map<string, Promise<Json | null>>();
+        const readFull = (row: Json, until: number) => {
+          let p = detail.get(row.id);
+          if (!p) {
+            if (Date.now() > until) {
+              complete = false;
+              return Promise.resolve(null);
+            }
+            p = atEdge(() => api("GET", `/api/issues/${encodeURIComponent(row.id)}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, until - Date.now())) }).catch((err) => { if (err?.status === 404) return null; throw err; }), () => null, until);
+            detail.set(row.id, p);
+          }
+          return p;
+        };
         if (owner) {
           theirs = new URLSearchParams(q);
           theirs.delete("assigneeAgentId");
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          isChat = async ([row]) => {
+          isChat = async ([row], rest) => {
             if (row.assigneeAgentId) return false;
             // A detail read must not start past the chat scan's budget: leave it unproven and let the answer say it is partial.
             if (Date.now() > chatUntil) {
               complete = false;
               return false;
             }
+            // The rows that can be reached next are read together, a bounded batch at a time, so a page of truncated chats costs
+            // whole batches rather than one round trip each.
+            for (const [r] of rest.slice(0, PREPARE_AT_ONCE)) if (r.descriptionTruncated && !r.assigneeAgentId) void readFull(r, chatUntil);
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
-            const full = row.descriptionTruncated
-              ? await atEdge(() => api("GET", `/api/issues/${encodeURIComponent(row.id)}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, chatUntil - Date.now())) }).catch((err) => { if (err?.status === 404) return null; throw err; }), () => null, chatUntil)
-              : row;
+            const full = row.descriptionTruncated ? await readFull(row, chatUntil) : row;
+            detail.delete(row.id);
             // The full read also decides ownership again: a chat reassigned away since the list row is not ours.
             if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return false;
             return mark.test(full.description ?? "");
