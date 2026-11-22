@@ -589,7 +589,9 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // file written empty (`< /dev/null`, a producer whose `>` bypassed the pipe) adds none and dates none.
       // A guarded write (`test -f m && : > f || true`) is put back at the line's end like a removal, so a later line still
       // sees what the file held.
-      if (loaded.some((w) => w.content !== "none")) change(i, snapshot(...loaded.map((w) => w.file)));
+      // A write that certainly runs can't be skipped, so it needs no undo (and its file's existence must stand); a
+      // guarded one is put back if a later command skips it.
+      if (loaded.some((w) => w.content !== "none") && !alwaysRuns(i)) change(i, snapshot(...loaded.map((w) => w.file)));
       for (const w of loaded) {
         if (w.content === "none") continue;
         // A here-document's body is what it writes: its `deb` lines and its Deb822 stanzas.
@@ -598,8 +600,12 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
         if (w.append && w.content === "empty") continue;
         state.entries.set(w.file!, w.append ? [...(state.entries.get(w.file!) ?? []), ...written] : written);
-        if (w.content === "empty") { state.files.delete(w.file!); state.empty.add(w.file!); }
-        else { state.files.add(w.file!); state.empty.delete(w.file!); }
+        // A write behind a condition may have been skipped, so it leaves the file as it was: not known to exist (the
+        // undo puts back what it held, and a file it never wrote is not one a `-n` copy is known to skip).
+        if (alwaysRuns(i)) {
+          if (w.content === "empty") { state.files.delete(w.file!); state.empty.add(w.file!); }
+          else { state.files.add(w.file!); state.empty.delete(w.file!); }
+        }
       }
       state.added = hasRepo(state);
     } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
@@ -625,28 +631,33 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // interactive answer — so both repositories are kept: the source keeps its own and the destination gains the
       // source's beside whatever it already held.
       const read = (src: string) => (held.has(src) ? { entries: held.get(src)! } : "unknown");
+      // `copyTargets` names a target by the file APT loads (`vendor.list`, not the path): the state knows files by that name.
       const known = (name: string) => state.files.has(name) || state.empty.has(name);
       // A guarded move (`test -f m && mv x x.disabled`) may be skipped, so it is undone at the end of its chain like a
       // guarded truncation: a later line may still see the repository it would have disabled.
       const move = () => {
         const mode = op!.overwrite ?? "replace";
+        // Each destination is decided on its own: `cp -n a b dir/` may skip a `b` the stage wrote while `a` lands.
+        const replaces = (t: { name: string }) => mode === "replace" || (mode === "keep" && !known(t.name));
         const targets = copyTargets(op!, read);
-        if (mode === "replace" || (mode === "keep" && targets.every((t) => !known(t.name))) || mode === "ask") {
-          // `ask` may go either way, so the destination's repository is kept beside the source's.
-          if (verb === "mv" && mode === "replace") for (const src of op!.srcs) {
-            const name = sourceName(src);
-            if (name && !(op!.srcs.length === 1 && !op!.dest.endsWith("/") && sourceName(op!.dest) === name)) { state.files.delete(name); state.empty.delete(name); state.entries.delete(name); }
-          }
-          if (mode === "replace") applyCopy(state, targets);
-          else {
-            for (const t of targets) {
-              state.files.add(t.name); state.empty.delete(t.name);
-              state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
-            }
-            state.added = hasRepo(state);
-          }
+        if (verb === "mv" && mode === "replace") for (const src of op!.srcs) {
+          const name = sourceName(src);
+          if (name && !(op!.srcs.length === 1 && !op!.dest.endsWith("/") && sourceName(op!.dest) === name)) { state.files.delete(name); state.empty.delete(name); state.entries.delete(name); }
         }
-        // `keep` onto a file that exists leaves both files as they were: nothing to change.
+        for (const t of targets) {
+          // A replacing copy puts the source's content in place of whatever the file held.
+          if (replaces(t) || mode === "replace") {
+            state.files.add(t.name); state.empty.delete(t.name); state.entries.set(t.name, t.unknown ? [] : t.entries);
+            continue;
+          }
+          // `keep` onto a file that exists leaves it exactly as it was (a file the stage wrote empty stays empty); an
+          // interactive answer or a target from the image may go either way, so the file keeps what it held beside the
+          // source's.
+          if (mode === "keep") continue;
+          state.files.add(t.name); state.empty.delete(t.name);
+          state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
+        }
+        state.added = hasRepo(state);
       };
       const touched = [...op.srcs.map(sourceName), ...(/sources\.list\.d\//.test(op.dest) ? [sourceName(op.dest)] : [])].filter(Boolean);
       const before = snapshot(...(touched.length ? touched : [undefined]));

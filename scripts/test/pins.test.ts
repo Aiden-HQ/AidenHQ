@@ -1148,4 +1148,19 @@ test("pins: a known empty target, clustered -t/-S flags and flags after the path
   assert.deepEqual([...sources(`mv ${vendor} ${other} -n`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
   assert.deepEqual([...sources(`cp ${vendor} ${other} --no-clobber`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
   assert.deepEqual(sources(`cp ${vendor} ${other} -f`), ["https://vendor.example/apt"]);
+  // No-clobber is decided for each destination on its own: `vendor.list` was written empty (so `-n` skips it), while
+  // `other.list` is fresh (so the source lands there). Only the fresh one adds a repository.
+  const mixed = `FROM debian:bookworm${d}\nRUN cat /dev/null > ${vendor}\nRUN cp -n /tmp/from-image.list /tmp/other.list ${dir}/\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", mixed).problems.length, 1);
+  // A conditional empty write may have been skipped, so the file is not known to exist: a later `cp -n` onto it may land
+  // its content, and the install still needs a pin.
+  const conditional = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && : > ${vendor} || true\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", conditional).problems.length, 1);
+  // ...whereas an empty write that certainly ran (`true &&`, or on its own line) is a known file, and `-n` skips it.
+  for (const line of [`true && : > ${vendor}`, `: > ${vendor}`]) {
+    const known2 = `FROM debian:bookworm${d}\nRUN ${line}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+    assert.deepEqual(scanFile("Dockerfile", known2).problems, [], line);
+  }
+  // A target from the image is not one the stage knows: only the source's repository is certainly there (over-reporting).
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`).problems.length, 1);
 });
