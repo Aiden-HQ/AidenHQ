@@ -148,7 +148,11 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
-    if (path.endsWith("/update-branch")) { const m = updateByMethod?.[body?.update_method]; return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) }; }
+    if (path.endsWith("/update-branch")) {
+      const m = updateByMethod?.[body?.update_method];
+      if (m?.throw) throw new Error(`The operation was aborted due to timeout`);
+      return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) };
+    }
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
@@ -243,13 +247,13 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await denied.watch.tick(); await denied.watch.tick();
   assert.equal(denied.gh.filter((g) => g === "PUT /repos/acme/app/pulls/14/update-branch rebase").length, 1, "no permission is final");
   assert.equal(denied.woke.length, 1);
-  // A non-conflict 422 on the rebase is "not now", not a refusal: the merge fallback's conflict does not end the attempt,
-  // because GitHub may allow the rebase again and that is the method the branch needs.
+  // The last method's answer decides: a "temporarily unavailable" 422 on the rebase followed by a real conflict on the merge
+  // fallback is final, because the fallback's conflict is GitHub's word on the branch as it now stands.
   const mixed = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 422, body: { message: "Update branch is temporarily unavailable" } }, merge: { status: 422, body: { message: "merge conflict between base and head" } } } });
   mixed.set([mixed.agentPr(15, redPr(15))]);
   await mixed.watch.tick(); await mixed.watch.tick();
-  assert.deepEqual(mixed.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/15/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "asked once, then backed off: not re-asked on the next tick");
-  assert.equal(mixed.woke.length, 0, "a temporarily unavailable rebase is retried, not made final");
+  assert.deepEqual(mixed.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/15/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "both methods asked once, then final: no re-ask");
+  assert.equal(mixed.woke.length, 1, "the fallback's conflict ends the attempt and wakes the task");
   // A conflict on the rebase but a retryable answer on the merge fallback is not final: the last method decides.
   const mixedRetry = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 422, body: { message: "merge conflict between base and head" } }, merge: { status: 502, body: {} } } });
   mixedRetry.set([mixedRetry.agentPr(16, redPr(16))]);
@@ -263,14 +267,26 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await mixedReverse.watch.tick(); await mixedReverse.watch.tick();
   assert.equal(mixedReverse.gh.filter((g) => g === "PUT /repos/acme/app/pulls/17/update-branch rebase").length, 1, "asked once, then backed off");
   assert.equal(mixedReverse.woke.length, 0, "a 5xx on the rebase is retryable: no wake and no final cache");
-  // A permanent refusal on the rebase and a non-permanent one on the merge fallback is still final: the rebase's own answer
-  // (403, no right to update) will not change by asking again, so neither method is re-asked for this head+base. The task is
-  // woken once with what the branch needs.
+  // The last method's answer decides here too: an earlier permission refusal on the rebase followed by a "not now" on the merge
+  // fallback is retried, never made final by the earlier method's refusal.
   const refused = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 403, body: { message: "Resource not accessible by integration" } }, merge: { status: 422, body: { message: "Update branch is temporarily unavailable" } } } });
   refused.set([refused.agentPr(18, redPr(18))]);
   await refused.watch.tick(); await refused.watch.tick();
-  assert.deepEqual(refused.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/18/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "both methods tried once, then final: no re-ask");
-  assert.equal(refused.woke.length, 1, "the refused update wakes the task once");
+  assert.deepEqual(refused.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/18/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "asked once, then backed off: not re-asked on the next tick");
+  assert.equal(refused.woke.length, 0, "the fallback's transient answer keeps the attempt retryable");
+  // A request that never answered (a timeout) is no answer: the attempt backs off and is asked again, never cached as final.
+  const timeout = await rig(t, { behind: 2, updateByMethod: { rebase: { throw: true } } });
+  timeout.set([timeout.agentPr(19, redPr(19))]);
+  await timeout.watch.tick(); await timeout.watch.tick();
+  assert.equal(timeout.gh.filter((g) => g === "PUT /repos/acme/app/pulls/19/update-branch rebase").length, 1, "a timeout backs off, it is not re-asked on the next tick");
+  assert.equal(timeout.woke.length, 0, "and nobody is woken while it retries");
+  // A refusal that never clears (a 403 with no right to update on the rebase, a "not now" on the merge fallback) must not be
+  // retried unseen forever: after a few polls at this head it wakes the task to rebase the branch, once.
+  const stuck = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 403, body: { message: "Resource not accessible by integration" } }, merge: { status: 422, body: { message: "Update branch is temporarily unavailable" } } } });
+  stuck.set([stuck.agentPr(20, redPr(20))]);
+  for (let i = 0; i < 4; i++) await stuck.watch.tick();
+  assert.equal(stuck.woke.length, 1, "a transient refusal that never clears wakes the task rather than waiting unseen");
+  assert.match(stuck.woke[0].text ?? "", /Rebase the PR's branch/, "and the wake is the rebase ask");
   // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
   const conflict = await rig(t, { behind: 2, update: 422 });
   conflict.set([conflict.agentPr(13, redPr(13))]);

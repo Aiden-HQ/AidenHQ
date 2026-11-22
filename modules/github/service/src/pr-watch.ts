@@ -55,6 +55,8 @@ const TITLE_STEP = "Conventional Commit title";
 /** Wakes per PR per head, whatever their cause (the runner's RED_WAKES). */
 const MAX_WAKES = 3;
 const HALF_HOUR = 30 * 60_000;
+/** Transient update-branch refusals at one head and head of main before the task is woken to rebase it (and GitHub is asked again). */
+const UPDATE_STUCK_AFTER = 3;
 /** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
 const BREAKER_ROUNDS = 3;
 /** Review-findings wakes per pass (oldest PR first): the replies post as the owner's login, and a burst trips GitHub's secondary rate limit. */
@@ -136,6 +138,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
     state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" (GitHub updated it), "final" (a conflict or no right) or "retry:<time>" (a transient failure)
+    state.updateTries ??= {}; // `<pr url>:<head>:<main oid>` -> how many transient refusals the update has had, so one that never goes through wakes the task instead of retrying unseen
     state.wakes ??= {};      // PR url -> { head, n, escalated? }: wakes sent at this head, and whether the asker was told it is capped
     state.found ??= {};      // PR url -> `<head>:<digest of the findings text>` that woke its task: new findings at the same head wake it again, under the wake cap
     state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, told? }: red rounds since its last green head
@@ -252,7 +255,9 @@ export function startPrWatch(o: PrWatchOptions) {
       const prior: string | undefined = state.updated[key];
       if (prior === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
       if (prior === "final") return false;
-      if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return "retry";
+      // Still inside the backoff: no call this tick, but the polls spent backing off count too, so a refusal that never clears
+      // ends as "stuck" here and wakes the task instead of waiting unseen forever.
+      if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return countTry(key);
       // Permanent: a merge conflict, or no permission (or the PR/repo is gone: a 404 can't be fixed by asking again). A 403
       // worded as a rate limit is a slow-down, not a refusal, and a 422 worded as a conflict is the only 422 that is final.
       const permanent = (r: { status: number; body?: any }) => {
@@ -260,48 +265,57 @@ export function startPrWatch(o: PrWatchOptions) {
         if (r.status === 403) return !/rate limit|abuse/i.test(message);
         return r.status === 404 || (r.status === 422 && /conflict/i.test(message));
       };
-      // No permission, or the PR/repo gone: an answer about this token and endpoint, not about which method was asked. The
-      // other method's own answer doesn't lift it, so it is terminal by itself.
-      const denied = (r: { status: number; body?: any }) => r.status === 404 || (r.status === 403 && permanent(r));
       // An answer is GitHub's word about this branch: a 422, or a 403/404 (a 403 worded as a rate limit is a "try later", not an
       // answer). A 5xx, a timeout or a rate limit is no answer at all, and it leaves the branch's state unknown however the other
       // method answered: a 5xx on the rebase is never made final by a conflict on the merge fallback, and the next tick asks again.
       const answered = (r: { status: number; body?: any }) =>
         r.status === 422 || r.status === 404 || (r.status === 403 && !/rate limit|abuse/i.test(String(r.body?.message ?? "")));
       let unanswered = false;
-      let refused = false;   // no permission, or the PR/repo gone: an answer no retry can change
-      let transient = false; // an answer that says "not now" (a 422 that isn't a conflict): it is asked again
       let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
-        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
+        // A request that never answered (a timeout, a reset) is no answer at all: the branch's state is unknown, so the attempt
+        // backs off and asks again rather than spending the fallback on a race with the call that may still land.
+        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method })
+          .catch((e: Error) => { log("branch update unanswered", { pr: pr.url, update_method, err: String(e?.message ?? e).slice(0, 200) }); return undefined; });
+        if (!r || !answered(r)) { unanswered = true; last = r; continue; }
         if (r.status < 300) {
+          delete state.updateTries[key];
           state.updated[key] = "ok";
           await wake(pr, "");
           log("branch updated in code", { pr: pr.url, head: pr.headRefOid, base, update_method });
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
-        if (!answered(r)) unanswered = true;
-        // No permission (a 403 that is not a rate limit) or a gone repo/PR is terminal whichever method reported it: the other
-        // method's answer does not give the token a right it lacks. A conflict is terminal only when every method that
-        // answered said so: a "temporarily unavailable" 422 on the rebase is asked again even when the fallback reports a
-        // conflict, since GitHub may allow the rebase again and the fallback is not the only way through.
-        if (answered(r) && denied(r)) refused = true;
-        else if (answered(r) && !permanent(r)) transient = true;
         last = r;
       }
-      // No answer on some method: retry after the backoff, never final for that head. Otherwise a permission/gone refusal, or a
-      // conflict from every method that answered, is terminal; any transient answer keeps the attempt retryable.
-      if (unanswered || !last || !(refused || !transient)) return retryLater(key);
+      // No answer on some method: retry after the backoff, never final for that head (a 5xx says nothing about whether asking
+      // again works, so it is never made final by the other method's answer). With every method answered, the LAST one's own
+      // answer decides: GitHub tries rebase then the merge fallback, so a conflict there is the branch's real state and ends the
+      // attempt, a "temporarily unavailable" or a rate limit there keeps it retryable, and a 403 with no right to update or a
+      // 404 is the fallback's own refusal of this token and ends it. An earlier method's refusal never decides on its own: the
+      // fallback is the method whose answer is about the branch as it now stands, and it is asked last for exactly that.
+      if (unanswered || !last || !permanent(last)) return retryLater(key);
+      delete state.updateTries[key];
       state.updated[key] = "final";
       save();
       return false;
     }
-    /** A transient refusal: asked again in five minutes, and no task is woken meanwhile (the update owns this rebase until it is final). */
-    function retryLater(key: string) {
+    /**
+     * A transient refusal: asked again in five minutes, and no task is woken meanwhile (the update owns this rebase until it is
+     * final). `"stuck"` once a few retries at this head and head of main have all gone the same way: a refusal that never clears
+     * is not a reason to wait unseen forever, so the watcher falls through to waking the task that opened the PR to rebase it,
+     * and still asks GitHub again on the next backoff.
+     */
+    function retryLater(key: string): "retry" | "stuck" {
       state.updated[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+      return countTry(key);
+    }
+    /** One more poll spent on the same unresolved refusal at this head and head of main: "retry", or "stuck" past the bound. */
+    function countTry(key: string): "retry" | "stuck" {
+      const n = (state.updateTries[key] ?? 0) + 1;
+      state.updateTries[key] = n;
       save();
-      return "retry" as const;
+      return n >= UPDATE_STUCK_AFTER ? "stuck" : "retry";
     }
     /** The breaker tripped: whoever asked for the task hears it once, the checks and the last failure's summary fenced as data. */
     async function tellAsker(pr: Json, task: string, red: string[], why: string): Promise<"sent" | "failed"> {
@@ -474,7 +488,12 @@ export function startPrWatch(o: PrWatchOptions) {
         const behind = why === "conflict" || Number((await gh("GET", `/repos/${repo}/compare/${main.oid}...${pr.headRefOid}`)).body?.behind_by) > 0;
         if (behind) {
           // Behind with no conflict: GitHub updates the branch (the runner's rebaseInCode), once per head and head of main, and no task is woken.
-          if (why === "red" && await updateBranch(pr, main.oid)) continue;
+          // `"retry"` is truthy: the update owns this rebase while it backs off, but a refusal that will not clear ("stuck")
+          // falls through to the wake below, so a branch GitHub won't update is still rebased by its task.
+          if (why === "red") {
+            const update = await updateBranch(pr, main.oid);
+            if (update === true || update === "retry") continue;
+          }
           // The CI breaker tripped: red checks no longer wake the task, behind main or not.
           if (why === "red" && state.breaker[url]?.told) continue;
           // One ask per PR per half hour and per head of main: main moves every few minutes, and each ask is a run.

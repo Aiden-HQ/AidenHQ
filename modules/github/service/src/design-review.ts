@@ -72,9 +72,11 @@ export function createDesignReviews(o: DesignReviewOptions) {
    * (a Tier 0 merge) rather than having been approved by the owner already, whose tap is his own review but whose PR still
    * gets one.
    */
-  async function fileDesignReview(ask: ReviewAsk, { waits = true } = {}): Promise<{ filed: boolean; why?: string; task?: string }> {
+  async function fileDesignReview(ask: ReviewAsk, { waits = true } = {}): Promise<{ filed: boolean; already?: boolean; why?: string; task?: string }> {
     const marker = markerOf(ask);
-    if (read().asked[marker]) return { filed: false, why: "this head was asked about already" };
+    // A head already asked about is on file even though this call files nothing: `already`, so the asker's marker is set (it is a
+    // retry of a request that landed before its answer was lost, never a fresh ask).
+    if (read().asked[marker]) return { filed: false, already: true };
     const current = await readPr(ask.repo, ask.number);
     if (current && !prTouchesUi(current)) return { filed: false, why: "it changes no UI files" };
     const url = `https://github.com/${ask.repo}/pull/${ask.number}`;

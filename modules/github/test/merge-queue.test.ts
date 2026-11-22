@@ -382,6 +382,150 @@ test("a UI head waiting on its design review gets the UI Reviewer's task beside 
   await settle();
 });
 
+test("a design review that was not filed is asked again next poll, and only a delivered request starts the advisory clock", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  const asked = [];
+  // The first filing answer is the module's own "not filed" (no agent holds the design-review role): nobody was asked.
+  const answers = [{ filed: false, why: "no agent holds the design-review role" }, { filed: true }, { filed: true }];
+  const checks = (method, url, b) => {
+    if (method === "POST" && url === "/v1/tasks") {
+      asked.push(b.source);
+      const r = answers[Math.min(asked.length - 1, answers.length - 1)];
+      return r.filed ? { id: `t${asked.length}`, identifier: `T-${asked.length}` } : { __status: 409 };
+    }
+    return undefined;
+  };
+  const { handle, github, merge, settle, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000e1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  // The module answered 409 (its own "not filed"): the marker was not recorded, so the next poll asks again.
+  await handle.stepMerges();
+  assert.equal(asked.length, 2, "a request nobody received is asked again on the next poll");
+  // Now it was filed. Past the wait, the second ask goes out; the advisory clock starts only from that delivered request.
+  clock.t += 181 * 60_000;
+  await handle.stepMerges();
+  assert.equal(asked[2], `design-review:acme-agents/widget/1@${HEAD}#again`, "the second ask is sent once the first was delivered");
+  assert.deepEqual(github.merges(), [], "never merged while the reviewer still has time to answer");
+  await settle();
+});
+
+test("a second review request that was already filed counts as delivered, so the advisory clock starts", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  // The first ask is filed; the second is the module's "already on file" (the head's review is with a reviewer); a third would
+  // be refused outright.
+  const answers = [{ id: "t1", identifier: "T-1" }, { filed: false, already: true }, { __status: 409 }];
+  let n = 0;
+  const checks = (method, url) => {
+    if (method !== "POST" || url !== "/v1/tasks") return undefined;
+    const a = answers[Math.min(n, answers.length - 1)];
+    n++;
+    return a;
+  };
+  const { handle, github, merge, settle, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000e2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.equal(n, 1, "the first ask filed its task");
+  // Past the wait: the second ask answers `already`, which is a delivered request, so the deadline moves and no third ask goes out.
+  clock.t += 121 * 60_000;
+  await handle.stepMerges();
+  assert.equal(n, 2, "the second ask is sent once the wait is up");
+  clock.t += 121 * 60_000;
+  await handle.stepMerges();
+  assert.equal(github.merges().length, 1, "the already-filed second request starts the advisory clock, so the head merges after it");
+  await settle();
+});
+
+test("a refused second review request leaves the deadline where it was, so the advisory waiver never starts from it", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  // The first ask is filed; the second is refused (no agent holds the role any more).
+  const answers = [{ id: "t1", identifier: "T-1" }, { __status: 409 }, { __status: 409 }];
+  let n = 0;
+  const checks = (method, url) => {
+    if (method !== "POST" || url !== "/v1/tasks") return undefined;
+    const a = answers[Math.min(n, answers.length - 1)];
+    n++;
+    return a;
+  };
+  const { handle, github, merge, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000e4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  clock.t += 121 * 60_000;
+  await handle.stepMerges();
+  assert.equal(n, 2, "the second ask was attempted");
+  // Well past another whole wait: the refused request never reset the deadline, so no waiver, and the ask is retried each poll.
+  clock.t += 121 * 60_000;
+  await handle.stepMerges();
+  assert.equal(github.merges().length, 0, "a request nobody received never starts the advisory clock");
+  assert.equal(n, 3, "and it is asked again");
+});
+
+test("a second review request that is refused every time does not hold the merge forever", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  // The first ask is filed; every second ask is refused (no live agent holds the role any more), so no request is ever delivered
+  // twice and the advisory clock can never start from one. The wait still has to end.
+  let n = 0;
+  const checks = (method, url) => {
+    if (method !== "POST" || url !== "/v1/tasks") return undefined;
+    n++;
+    return n === 1 ? { id: "t1", identifier: "T-1" } : { __status: 409, why: "no agent holds the design-review role" };
+  };
+  const { handle, github, merge, settle, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000e5", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.equal(n, 1, "the first ask filed its task");
+  // Past the wait, each poll asks again and is refused: after the bounded tries the review is advisory for this head, as it
+  // would be had a delivered second ask gone unanswered, so the head merges instead of waiting on a role nobody holds.
+  clock.t += 121 * 60_000;
+  for (let i = 0; i < 4; i++) await handle.stepMerges();
+  assert.ok(n >= 3, "the refused ask was retried a few times, not swallowed after one");
+  assert.equal(github.merges().length, 1, "a review nobody can be asked for never holds the merge forever");
+  await settle();
+});
+
+test("a delivered second ask never confirms a first marker an older version recorded unconfirmed", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-review-both-"));
+  // The queue as the older version left it after a *second* ask was delivered: one `reviewMarked: 2` flag covered both markers,
+  // though only the second was confirmed. The first is still unconfirmed and must be asked again, not trusted because of it.
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000e6": {
+    id: "k-00000000000000e6", state: "running", said: [], startedAt: new Date().toISOString(),
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending", reviewAsked: HEAD, reviewAskedAgain: HEAD, reviewMarked: 2 }],
+  } } }));
+  const asked = [];
+  const checks = (method, url, b) => {
+    if (method !== "POST" || url !== "/v1/tasks") return undefined;
+    asked.push(b.source);
+    return { __status: 409, already: true };
+  };
+  const { handle, merge, settle } = await setup(t, { prs, cacheDir, checks });
+  await merge("k-00000000000000e6", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(asked, [`design-review:acme-agents/widget/1@${HEAD}`], "the first marker is confirmed against the module, not trusted because the second ask was");
+  await settle();
+});
+
+test("a review marker written before delivery was confirmed is reconciled by asking once more", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-legacy-review-"));
+  // The queue as the older version left it: the first ask's marker set before the filing, and no proof it was delivered.
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000e3": {
+    id: "k-00000000000000e3", state: "running", said: [], startedAt: new Date().toISOString(),
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending", reviewAsked: HEAD }],
+  } } }));
+  const asked = [];
+  const checks = (method, url, b) => {
+    if (method === "POST" && url === "/v1/tasks") { asked.push(b.source); return { __status: 409, already: true }; }
+    return undefined;
+  };
+  const { handle, merge, settle } = await setup(t, { prs, cacheDir, checks });
+  await merge("k-00000000000000e3", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(asked, [`design-review:acme-agents/widget/1@${HEAD}`], "the old marker is confirmed against the module, not trusted");
+  await settle();
+});
+
 test("a merge-queue wait and its end become waiting and resumed facts with the reason", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
   const facts = [];

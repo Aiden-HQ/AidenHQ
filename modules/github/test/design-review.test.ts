@@ -71,7 +71,8 @@ test("a UI head gets one task for the design-review role, waits on it, and a sec
   assert.doesNotMatch(call.body.description, /Start now|<!--/, "no wake comment and no marker: the kernel adds its own");
   assert.deepEqual(statuses.map((s) => [s.path, s.body]), [[`/repos/Acme/App/statuses/${A}`, { state: "pending", context: "design-review", description: "Waiting for the UI Reviewer" }]]);
 
-  assert.equal((await reviews.fileDesignReview(ask)).filed, false, "once per head");
+  const again = await reviews.fileDesignReview(ask);
+  assert.deepEqual([again.filed, again.already], [false, true], "already on file: nothing new is filed, but the asker learns it is delivered");
   assert.equal(tasks().length, 1);
   assert.equal(statuses.length, 1);
 
