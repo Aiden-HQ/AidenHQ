@@ -55,7 +55,8 @@ test("the write-code skill holds the stop steps, including the wait for the dele
   assert.match(steps, /an answer that asks something back, declines, or names no requirement is met\s+with the same question again/, "a non-answer gets the question, not a new head");
   assert.match(steps, /Only the AI reviewer's own rejection of the change counts toward the stop/, "only AI reviewer rejections count");
   assert.match(steps, /A `Not reviewed` notice is code's refusal, never the reviewer's silence/, "a Not reviewed notice is code's refusal");
-  assert.match(steps, /a reviewer\s+that fails is retried by the kernel and then approved fail-open, so it posts no notice and leaves nothing to refile/, "a reviewer failure is the kernel's, not a refile");
+  assert.match(steps, /the kernel\s+retries a failed reviewer and then decides the write itself \(approved fail-open at full autonomy, or sent to the owner\s+under a cap\), so it posts no notice and leaves nothing to refile/, "a reviewer failure is the kernel's, not a refile");
+  assert.match(steps, /Either way that is not the write being done: report it\s+as decided when its outcome lands, not before/, "fail-open is a decision, not an execution");
   assert.match(steps, /Fix what the notice's reason names \(instance details to take out, a diff that no longer matches the head\) and file the\s+changed write/, "the refusal's reason is fixed before filing");
   assert.match(steps, /even though the rejection's own notice still ends "Fix that and file it\s+again": that tail states the\s+general case/, "the live notice is reconciled with the stop");
   assert.doesNotMatch(steps, /accept it as it stands/, "the delegator is asked to clarify, not to accept the change as it is");
