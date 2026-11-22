@@ -104,14 +104,14 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
 export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "digestHours">, send: (text: string) => Promise<boolean | "off">, now = Date.now(), needs?: () => Promise<string[]>): Promise<boolean> {
   if (cfg.digestHours.length || !needs) return false;
   const day = new Date(now).toISOString().slice(0, 10);
-  if (store.getKv("needs:day") === day) return false;
   const lines = await needs().then((l) => l, () => undefined);
   if (!lines) return false;
   const sig = lines.join("\n");
   if (!sig) {
-    store.setKv("needs:sig", "");
+    store.setKv("needs:sig", ""); // a recovery is always observed, so the same failure returning tomorrow is new
     return false;
   }
+  if (store.getKv("needs:day") === day) return false;
   if (store.getKv("needs:sig") === sig) return false;
   if ((await send(`Connections that need you:\n\n${lines.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
   store.setKv("needs:sig", sig);

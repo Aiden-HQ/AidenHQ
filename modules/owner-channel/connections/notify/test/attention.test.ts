@@ -117,6 +117,10 @@ it("with no digest hours the broken connections go once a day, an unchanged set 
   expect(await flushNeeds(store, cfg, send, day2, async () => ["GitHub isn't connected"])).toBe(false);
   expect(await flushNeeds(store, cfg, send, day3, async () => ["GitHub isn't connected", "Google isn't connected"])).toBe(true);
   expect(sent).toHaveLength(2);
+  // A recovery the same day is observed, so the failure returning later is sent again.
+  const day4 = Date.UTC(2026, 10, 20, 9);
+  expect(await flushNeeds(store, cfg, send, day4, async () => [])).toBe(false);
+  expect(await flushNeeds(store, cfg, send, day4 + 86400_000, async () => ["GitHub isn't connected", "Google isn't connected"])).toBe(true);
   expect(await flushNeeds(store, { digestHours: [9] }, send, day3 + 86400_000, async () => ["x"])).toBe(false);
 });
 
