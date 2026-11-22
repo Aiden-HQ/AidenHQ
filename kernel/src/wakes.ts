@@ -102,8 +102,10 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   // (a row made only to diff the task's facts, for a task nobody polls, is not a first sight's cursor).
   const have = new Set((db.prepare("PRAGMA table_info(wake_tasks)").all() as { name: string }[]).map((c) => c.name));
   if (!have.has("blocked")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked TEXT");
-  // The names its blockers had when last seen: a deleted blocker's id is all that is left, and the notice names it.
+  // The names its blockers had when last seen, and the ids an issue read confirmed deleted: a deleted blocker's id is
+  // all that is left, the notice names it, and a confirmed one is never read again.
   if (!have.has("blocked_names")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked_names TEXT");
+  if (!have.has("blocked_deleted")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked_deleted TEXT");
   if (!have.has("polled")) db.exec("ALTER TABLE wake_tasks ADD COLUMN polled INTEGER NOT NULL DEFAULT 1");
   // When a row was last claimed (`claimed_at`): the dispatcher reads the task's thread after it claims, so the job a wake starts
   // covers what happened before its claim, not before its spawn (a box start or a clone can take minutes).
@@ -140,11 +142,23 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   /** A comment a job consumed (its prompt, or its live input, carried it): bound to that job, as admission binds a starter. */
   const covered = (w: { key: string; task: string }, job: string) => fact({ type: "wake.bound", subject: `wake:${w.key}`, version: `bound:${job}`, at: iso(now()), actor: "kernel", task: w.task, data: { job } });
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
-  const blockedNames = (i: Issue) => (i.blockedBy?.length ? JSON.stringify(Object.fromEntries(i.blockedBy.map((b) => [b.id, b.identifier ?? b.id]))) : null);
-  // What the row remembers of a task's blockers: kept while the task is blocked (a live list that drops an id says nothing
-  // about which id it held, and an empty one never replaces a remembered one), cleared once it leaves blocked, so a task a
-  // team route parks later with no blockers of its own is never mistaken for one whose blocker was deleted.
-  const keptBlocked = (col: string) => `CASE WHEN excluded.status = 'blocked' THEN COALESCE(NULLIF(excluded.${col}, ''), ${col}) ELSE NULL END`;
+  /**
+   * What a scan writes of a task's blockers, scoped to its current blocked period. A live list that dropped an id says
+   * nothing about which id it held (the blocker may be deleted, or the relation removed on purpose, which only a read can
+   * tell), so a blocked row keeps a remembered id until `unblock()` settles it: the live list is added, never replaces it.
+   * A row that leaves `blocked`, or enters it from outside, starts with this period's list only, so a completed blocker on a
+   * todo task or an earlier period is never mistaken for a deletion.
+   */
+  const memory = (seen: { status: string | null; blocked: string | null; blocked_names: string | null; blocked_deleted: string | null } | undefined, status: string, issue: Issue) => {
+    const carried = status === "blocked" && seen?.status === "blocked";
+    if (status !== "blocked") return { blocked: null, names: null, deleted: null };
+    const ids = new Set((carried ? (seen?.blocked ?? "").split(",") : []).filter(Boolean));
+    for (const b of issue.blockedBy ?? []) ids.add(b.id);
+    let names: Record<string, string> = {};
+    if (carried && seen?.blocked_names) { try { names = JSON.parse(seen.blocked_names) as Record<string, string>; } catch { names = {}; } }
+    for (const b of issue.blockedBy ?? []) names[b.id] = b.identifier ?? names[b.id] ?? b.id;
+    return { blocked: [...ids].join(",") || null, names: Object.keys(names).length ? JSON.stringify(names) : null, deleted: carried ? seen?.blocked_deleted ?? null : null };
+  };
 
   /**
    * What changed on a task since its facts last said, as facts (spec: flow §1). Their versions come from Paperclip, so the event
@@ -217,7 +231,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
   async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown", rehome = true }: { reopened?: boolean; source?: "live" | "poll"; actor?: string; rehome?: boolean } = {}) {
-    const seen = q("SELECT agent, status, comment, blocked, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; polled: number } | undefined;
+    const seen = q("SELECT agent, status, comment, blocked, blocked_names, blocked_deleted, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; blocked_names: string | null; blocked_deleted: string | null; polled: number } | undefined;
     // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too.
     issue = await whole(issue);
     taskFacts(issue, source, actor);
@@ -225,7 +239,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
-      q(`INSERT INTO wake_tasks (task, agent, status, blocked, blocked_names, polled) VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = ${keptBlocked("blocked")}, blocked_names = ${keptBlocked("blocked_names")}, polled = 0`).run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue), blockedNames(issue));
+      const st = String(issue.status ?? ""), mem = memory(seen, st, issue);
+      q("INSERT INTO wake_tasks (task, agent, status, blocked, blocked_names, blocked_deleted, polled) VALUES (?, ?, ?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = excluded.blocked, blocked_names = excluded.blocked_names, blocked_deleted = excluded.blocked_deleted, polled = 0").run(issue.id, agent ?? null, st, mem.blocked, mem.names, mem.deleted);
       if (agent && joined !== undefined) return serial(() => place(issue, agent));
       return;
     }
@@ -283,8 +298,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       rearmRoutine(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", actor);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
-    q(`INSERT INTO wake_tasks (task, agent, status, comment, blocked, blocked_names, polled) VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = ${keptBlocked("blocked")}, blocked_names = ${keptBlocked("blocked_names")}, polled = 1`)
-      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, deferred ? (prev?.status ?? seen?.status ?? null) : status, newest, blockedKey(issue), blockedNames(issue));
+    const rowStatus = deferred ? String(prev?.status ?? seen?.status ?? "") : status, mem = memory(seen, rowStatus, issue);
+    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, blocked_names, blocked_deleted, polled) VALUES (?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = excluded.blocked, blocked_names = excluded.blocked_names, blocked_deleted = excluded.blocked_deleted, polled = 1")
+      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, rowStatus, newest, mem.blocked, mem.names, mem.deleted);
   }
 
   /**
@@ -294,10 +310,12 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    * once. Paperclip counts a cancelled blocker as unresolved for a status write, so those relations are cleared first; a 409 is
    * retried once with them all cleared.
    * A blocker that was deleted is gone for good, and a task it held must not stay blocked on it. Paperclip reports that either
-   * by dropping the relation (the live list is empty) or by keeping it with a status that never resolves (its GET answers 404).
-   * The task is released, naming the deleted blockers, once every blocker it had is resolved or gone. The wake_tasks record of
-   * the ids it had is what tells a task blocked from outside from a task a team route parked with no blockers at all: only the
-   * former is released when its live list is empty. A listed blocker that does not resolve is read once.
+   * by dropping the relation or by keeping it with a stale status. Nothing else says which: an id it had that the live list no
+   * longer holds is read once, and only a 404 counts as deleted (a 200 means the relation was removed on purpose, and the id
+   * is forgotten, never read again). A confirmed deletion is remembered, so it is named alongside the blockers that closed and
+   * never looked up twice. The ids it had come from the single-issue read when the list row left them out, and are the record
+   * that tells a task blocked from outside from a task a team route parked with no blockers of its own: only the former is
+   * released when its live list is empty.
    */
   async function unblock(issue: Issue, agent: string) {
     const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
@@ -308,31 +326,41 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const half = q("SELECT closure, line FROM unblocking WHERE task = ?").get(task.id) as { closure: string; line: string } | undefined;
     if (task.status !== "blocked") { if (half) q("DELETE FROM unblocking WHERE task = ?").run(task.id); return; }
     const resolved = (b: { status: string }) => b.status === "done" || b.status === "cancelled";
-    // The blockers it had: the live relation can drop an id, so the remembered record is what says it existed.
-    const row = q("SELECT blocked, blocked_names FROM wake_tasks WHERE task = ?").get(task.id) as { blocked: string | null; blocked_names: string | null } | undefined;
-    const had = [...new Set([...blockers.map((b) => b.id), ...(row?.blocked ?? "").split(",").filter(Boolean)])];
-    let names: Record<string, string> = {};
-    try { names = JSON.parse(row?.blocked_names ?? "{}") as Record<string, string>; } catch { /* a record from before names: the id names it */ }
-    const gone = new Set<string>();
-    if (!half && had.length) {
-      for (const b of blockers) {
-        if (resolved(b) || gone.has(b.id)) continue;
-        const g = await owner("GET", `/api/issues/${encodeURIComponent(b.id)}`);
-        if (g.status === 404) { gone.add(b.id); continue; }
-        if (g.status !== 200) throw new Error(`control plane GET blocker ${b.id} → ${g.status}`);
-      }
-      for (const id of had) if (!blockers.some((b) => b.id === id)) gone.add(id);
+    const row = q("SELECT blocked, blocked_names, blocked_deleted FROM wake_tasks WHERE task = ?").get(task.id) as { blocked: string | null; blocked_names: string | null; blocked_deleted: string | null } | undefined;
+    const parse = <T>(v: string | null | undefined, fallback: T): T => { try { return v ? (JSON.parse(v) as T) : fallback; } catch { return fallback; } };
+    const remembered = (row?.blocked ?? "").split(",").filter(Boolean);
+    let names = parse<Record<string, string>>(row?.blocked_names, {});
+    const gone = new Set<string>(parse<string[]>(row?.blocked_deleted, []));
+    const live = blockers.map((b) => b.id);
+    const had = [...new Set([...live, ...remembered, ...gone])];
+    // What this read says it has: one path whether the list row left its blockers out or not.
+    const kept = new Set([...live, ...remembered]);
+    for (const b of blockers) { kept.add(b.id); names[b.id] = b.identifier ?? names[b.id] ?? b.id; }
+    // A listed blocker that does not resolve is read once: only a 404 makes it deleted.
+    if (!half && had.length) for (const b of blockers) {
+      if (resolved(b) || gone.has(b.id)) continue;
+      const g = await owner("GET", `/api/issues/${encodeURIComponent(b.id)}`);
+      if (g.status === 404) gone.add(b.id);
+      else if (g.status !== 200) throw new Error(`control plane GET blocker ${b.id} → ${g.status}`);
     }
-    const complete = blockers.length > 0 && blockers.every(resolved);
-    if (!half && !complete && (blockers.some((b) => !resolved(b) && !gone.has(b.id)) || !gone.size)) return;
-    const nameOf = (id: string) => names[id] ?? blockers.find((b) => b.id === id)?.identifier ?? id;
-    const closure = half?.closure ?? (complete
-      ? blockers.map((b) => `${b.id}:${b.status}`).sort().join(",")
-      : [...blockers.filter((b) => !gone.has(b.id)).map((b) => ({ key: `${b.id}:${b.status}`, text: `${b.identifier ?? b.id} closed (${b.status})` })), ...[...gone].sort().map((id) => ({ key: `${id}:deleted`, text: `${nameOf(id)} (deleted)` }))]
-        .sort((a, b) => a.key.localeCompare(b.key)).map((p) => p.key).join(","));
-    const line = half?.line ?? (complete
-      ? `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`
-      : [...blockers.filter((b) => !gone.has(b.id)).map((b) => `${b.identifier ?? b.id} closed (${b.status})`), ...[...gone].sort().map((id) => `${nameOf(id)} (deleted)`)].join(", ") + ".");
+    // An id the live relation no longer holds: a read tells a deletion from an owner who removed the dependency.
+    if (!half && had.length) for (const id of had) {
+      if (live.includes(id) || gone.has(id)) continue;
+      const g = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
+      if (g.status === 404) gone.add(id);
+      else if (g.status === 200) { kept.delete(id); delete names[id]; }
+      else throw new Error(`control plane GET blocker ${id} → ${g.status}`);
+    }
+    // Kept for the next poll: a live list that dropped an id, the name it had, and the deletions already confirmed.
+    const save = () => q("UPDATE wake_tasks SET blocked = ?, blocked_names = ?, blocked_deleted = ? WHERE task = ?")
+      .run([...kept].join(",") || null, Object.keys(names).length ? JSON.stringify(names) : null, gone.size ? JSON.stringify([...gone]) : null, task.id);
+    const settled = blockers.every((b) => resolved(b) || gone.has(b.id));
+    if (!half && (!settled || (!blockers.length && !gone.size))) { save(); return; }
+    const nameOf = (id: string) => names[id] ?? id;
+    const closed = blockers.filter((b) => resolved(b));
+    const deletedIds = [...gone].sort();
+    const closure = half?.closure ?? [...closed.map((b) => `${b.id}:${b.status}`), ...deletedIds.map((id) => `${id}:deleted`)].sort().join(",");
+    const line = half?.line ?? [...closed.map((b) => `${b.identifier ?? b.id} closed (${b.status})`), ...deletedIds.map((id) => `${nameOf(id)} (deleted)`)].join(", ") + ".";
     if (!half) q("INSERT OR REPLACE INTO unblocking (task, closure, line) VALUES (?, ?, ?)").run(task.id, closure, line);
     const patch = (b: object) => owner("PATCH", `/api/issues/${encodeURIComponent(task.id)}`, b);
     const ok = (res: { status: number }) => { if (res.status >= 300) throw new Error(`control plane PATCH issue → ${res.status}`); return res; };
@@ -345,7 +373,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     ok(res);
     insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now(), null, "kernel");
     q("DELETE FROM unblocking WHERE task = ?").run(task.id);
-    q("UPDATE wake_tasks SET blocked = NULL, blocked_names = NULL WHERE task = ?").run(task.id);
+    q("UPDATE wake_tasks SET blocked = NULL, blocked_names = NULL, blocked_deleted = NULL WHERE task = ?").run(task.id);
   }
 
   // ---- Team routing (team-routing.ts picks; this gathers, records and places) ----
