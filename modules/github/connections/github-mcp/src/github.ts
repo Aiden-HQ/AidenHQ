@@ -470,18 +470,25 @@ export class GitHub {
   }
 
   /**
-   * The first comment of the pull request's review thread that `comment` is in, or a refusal naming why it has none.
-   * GitHub takes a reply only on a thread root: a direct read of the comment says whether it is on this pull request and,
-   * for a reply, which comment it answers, so the top of that chain is the root — no dependence on where a thread is listed.
+   * The first comment of the pull request's review thread that `comment` is in, and the pull request's canonical
+   * repository (GitHub follows a rename), or a refusal naming why there is none. GitHub takes a reply only on a thread
+   * root: a direct read of the comment says whether it is on this pull request and, for a reply, which comment it
+   * answers, so the top of that chain is the root — no dependence on where a thread is listed.
    */
-  private async threadRoot(ref: Ref, comment: number): Promise<number> {
+  private async threadRoot(ref: Ref, comment: number): Promise<{ root: number; owner: string; repo: string }> {
     type Comment = { id: number; pull_request_url: string; in_reply_to_id?: number | null };
+    // The PR's own answer names its canonical repository: a saved URL from before a rename still resolves, and the reply
+    // is posted under the name GitHub knows it by now.
+    const pr = await this.request<{ url: string }>("GET", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`);
+    const canonical = pr.url.match(new RegExp(`^${API}/repos/(${NAME})/(${NAME})/pulls/${NUM}$`, "i"));
+    if (!canonical) throw new GitHubRefused(`GitHub answered ${ref.owner}/${ref.repo}#${ref.number} with an unexpected URL (${pr.url.slice(0, 200)}): there is no thread to reply on`);
+    const [, owner, repo] = canonical as unknown as [string, string, string];
     const read = async (id: number): Promise<Comment> => {
       try {
-        return await this.request<Comment>("GET", `/repos/${ref.owner}/${ref.repo}/pulls/comments/${id}`);
+        return await this.request<Comment>("GET", `/repos/${owner}/${repo}/pulls/comments/${id}`);
       } catch (e) {
         // A 404 is the answer "no such comment here"; a rate limit, a 5xx or a lost connection is not, and is passed on as it is.
-        if (e instanceof GitHubHttpError && e.status === 404) throw new GitHubRefused(`comment ${id} isn't a review comment of ${ref.owner}/${ref.repo} (${e.message.slice(0, 240)}): there is no thread to reply on`);
+        if (e instanceof GitHubHttpError && e.status === 404) throw new GitHubRefused(`comment ${id} isn't a review comment of ${owner}/${repo} (${e.message.slice(0, 240)}): there is no thread to reply on`);
         throw e;
       }
     };
@@ -491,21 +498,20 @@ export class GitHub {
     // refused rather than looped on.
     for (let depth = 0; current.in_reply_to_id; depth++) {
       const parent = current.in_reply_to_id;
-      if (depth >= 20 || seen.has(parent)) throw new GitHubRefused(`comment ${comment} on ${ref.owner}/${ref.repo}#${ref.number} has a broken reply chain (in_reply_to_id ${parent}): there is no thread root to reply on`);
+      if (depth >= 20 || seen.has(parent)) throw new GitHubRefused(`comment ${comment} on ${owner}/${repo}#${ref.number} has a broken reply chain (in_reply_to_id ${parent}): there is no thread root to reply on`);
       seen.add(parent);
       current = await read(parent);
     }
-    // The comment's own URL is the pull request it is on: a 404 already covers another pull request or repository.
-    const want = `${API}/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-    if (current.pull_request_url.toLowerCase() !== want.toLowerCase()) throw new GitHubRefused(`comment ${comment} is on ${current.pull_request_url}, not ${ref.owner}/${ref.repo}#${ref.number}: there is no thread here to reply on`);
-    return current.id;
+    // The comment's own URL is the pull request it is on, compared with the PR's canonical one (a rename changes both together).
+    if (current.pull_request_url.toLowerCase() !== pr.url.toLowerCase()) throw new GitHubRefused(`comment ${comment} is on ${current.pull_request_url}, not ${owner}/${repo}#${ref.number}: there is no thread here to reply on`);
+    return { root: current.id, owner, repo };
   }
 
   /** A reply on a pull request's review thread (its first comment's id, or any comment in it), signed by the agent. */
   async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
     if (!body.trim()) throw new GitHubRefused("a reply needs text");
-    const root = await this.threadRoot(ref, comment);
-    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
+    const { root, owner, repo } = await this.threadRoot(ref, comment);
+    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${owner}/${repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
     return { url: r.html_url, id: r.id };
   }
 
