@@ -281,7 +281,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
             fact({ type: "pr.checks_started", subject: `${subject(b.repo, n)}@${b.sha}`, version: `${b.sha}:1`, at, task: a.workspace, data: { head: b.sha } });
             // Its checks start now, so the merge rarely waits.
             const main = await rev(b.repo, `refs/heads/${await defaultBranch(b.repo)}`);
-            if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha]), true).catch(() => {});
+            // A default branch that shares no history with the head (it got its first commit elsewhere after the change
+            // opened) has no merge base: read it as readChange does, "" rather than failing the publish that already moved the refs.
+            if (main) void checks(b.repo, b.sha, await g(b.repo, ["merge-base", main, b.sha]).catch(() => ""), true).catch(() => {});
           } else done.push(`${b.repo} ${b.branch} at ${b.sha.slice(0, 12)}`);
         }
         return { ok: true, text: `${action === "pr" ? "Change requests" : "Pushed"}: ${done.join(", ")}` };

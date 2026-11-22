@@ -183,7 +183,7 @@ test("a republish of a local change works before the default branch has its firs
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const tasks = join(dir, "tasks");
   for (const d of [join(tasks, "TASK-1"), join(dir, "scratch")]) mkdirSync(d, { recursive: true });
-  const host = localHost({ root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch") });
+  const host = localHost({ root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), checks: async () => [] });
   // An empty bare repo with `main` as its HEAD, as the host's own create leaves one before its README commit exists.
   const bareRepo = join(dir, "codehost", "local", "empty.git");
   mkdirSync(join(dir, "codehost", "local"), { recursive: true });
@@ -203,6 +203,16 @@ test("a republish of a local change works before the default branch has its firs
   assert.equal(again.ok, true, again.text);
   assert.equal(git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/head"), second);
   assert.throws(() => git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/base"), "no base ref exists yet, and nothing tried to move one");
+  // `main` then gets its first commit elsewhere, sharing no history with the change: a further republish still lands its head
+  // instead of failing on a merge base that doesn't exist.
+  const root = git(dir, "--git-dir", bareRepo, "commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "main's own first commit");
+  git(dir, "--git-dir", bareRepo, "update-ref", "refs/heads/main", root);
+  writeFileSync(join(ws, "a.txt"), "three\n"); git(ws, "commit", "--quiet", "-am", "c");
+  const third = git(ws, "rev-parse", "HEAD");
+  bundle(third);
+  const onceMore = await pr(third);
+  assert.equal(onceMore.ok, true, onceMore.text);
+  assert.equal(git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/head"), third);
 });
 
 test("a local merge's refusals, through the real host: a moved head, a check missing or not green on that head, and a base that conflicts", async (t) => {
