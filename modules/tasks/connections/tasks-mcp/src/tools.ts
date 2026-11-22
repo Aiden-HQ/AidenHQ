@@ -1382,8 +1382,9 @@ const TOOLS: Record<string, Tool> = {
           try {
             await retried(() => kernelWait({ for: "owner", asked: true, handoff: true, reason: "the user's reply to my handoff", question: comment }));
           } catch (err) {
-            // The handoff itself landed: say the wait didn't, so the agent calls task_wait rather than idle-wake while waiting.
-            return { ...(await brief(i)), wait_error: `handed off, but the wait wasn't recorded (${String((err as Error).message ?? err).slice(0, 200)}): call task_wait (on: the user's reply) so you aren't woken as idle.` };
+            // The handoff itself landed: say the wait didn't, so the agent records the owner wait itself. An `on` wait is an
+            // event, not the owner's: it wakes the task in 24 hours as idle work instead of ending on their reply.
+            return { ...(await brief(i)), wait_error: `handed off, but the wait wasn't recorded (${String((err as Error).message ?? err).slice(0, 200)}): record the owner wait with task_wait (for: owner, question: the handoff's words), not an event wait, so their reply wakes you.` };
           }
         }
         return brief(i);

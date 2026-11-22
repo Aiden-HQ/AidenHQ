@@ -117,7 +117,8 @@ test("a handoff whose wait the kernel refuses says so, so the agent can record t
   };
   const r = await bridge({ handler, agents: { me: { key: "roadmap-keeper", roles: [] } }, task: "cur" }).call("task_handoff", { issue: "cur", comment: "Waiting." });
   assert.equal(r.result?.isError, undefined);
-  assert.match(r.result.content[0].text, /wait_error.*call task_wait/);
+  // The fallback must be an owner wait, not an event: an `on` wait wakes the task in 24 hours as idle work.
+  assert.match(r.result.content[0].text, /wait_error.*task_wait \(for: owner, question: the handoff's words\), not an event wait/);
   assert.equal(patches.length, 1);
 });
 
