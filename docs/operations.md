@@ -437,7 +437,9 @@ host's own `.env`, so the runner and the exporter never read a settings file the
 checkout's and a leading `~` is the home directory, with a trailing slash dropped but a lone `/` kept, so the marker is
 the same file `ops/host-metrics.sh` exports its backoff series from. The marker is written beside itself and renamed
 into place, so the exporter never reads a half-written file, and the exporter only reports a marker for a runner unit
-systemd still declares, so a runner retired at the cap does not keep the alert pending. The missing permission also
+systemd still has enabled or still has running: a runner retired at the cap (disabled and stopped) does not keep the alert
+pending, while one disabled with `systemctl --user disable` but left running still retries under its restart policy and
+keeps its series. The missing permission also
 reaches the owner: a codehost op's `needs_owner` answer is recorded
 as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
 scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
