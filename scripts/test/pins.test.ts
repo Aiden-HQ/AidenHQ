@@ -275,4 +275,21 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   const bothResult = scanFile("Dockerfile", both);
   assert.equal(bothResult.problems.length, 1);
   assert.match(bothResult.problems[0], /install foo/);
+  // An input redirection is read, not written: `tee /tmp/log < …/debian.sources` only copies the stock file.
+  const input = `FROM debian:bookworm${d}\nRUN tee /tmp/apt-sources.log < /etc/apt/sources.list.d/debian.sources\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", input).problems, []);
+  const inputPiped = `FROM debian:bookworm${d}\nRUN printf 'deb https://repo.example/apt bookworm main\\n' | tee /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo\n`;
+  const inputPipedResult = scanFile("Dockerfile", inputPiped);
+  assert.equal(inputPipedResult.problems.length, 1);
+  assert.match(inputPipedResult.problems[0], /install foo/);
+});
+
+test("pins: a disabled source file leaves no entry behind in apt dating", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  // A `deb` line written to a name APT ignores is not a repository, so it neither dates a pin nor keeps a removed
+  // file's requirement alive.
+  const ignored = `FROM debian:bookworm${d}\nRUN echo 'deb https://disabled.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list.disabled\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", ignored).pins.filter((p) => p.kind === "apt")[0].sources, []);
+  const mixed = `FROM debian:bookworm${d}\nRUN echo 'deb https://active.example/apt bookworm main' > /etc/apt/sources.list.d/active.list\nRUN echo 'deb https://disabled.example/apt bookworm main' >> /etc/apt/sources.list.d/vendor.list.disabled\nRUN rm /etc/apt/sources.list.d/active.list\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", mixed).problems, []);
 });
