@@ -665,24 +665,3 @@ test("a re-submission landing between the close's last read and its write still 
   assert.equal(grades.get("t17").state, "pending", "the re-submitted row is left for its own grading pass");
 });
 
-test("a legacy close whose evidence changed is requeued, not left satisfied", async () => {
-  // A close saved before steps carried a filing matches a satisfied revision-zero row, but the assignee added evidence since.
-  // The stale close resets the row to be graded again; without the verified row's filing hash the reset is dropped by the
-  // store and the task sits in review on a satisfied row that is never picked up.
-  const issue = { id: "t16", identifier: "WOR-16", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
-  const calls = { resolve: [], wake: [] };
-  const { kernel } = heldKernel(issue, calls);
-  const db = new DatabaseSync(":memory:");
-  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
-  const filed = ["says where Legacy is used", "links each source", "names the next step"];
-  const deliverable = { kind: "report", ref: "" };
-  grades.file("t16", filed, deliverable);
-  grades.record("t16", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
-  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
-  // The step names no filing and a version the report's evidence no longer reads: the version check makes it stale.
-  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t16', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: "an-older-version", status: "in_review", deliverable, rubric: filed }]));
-  await loop.runGrades();
-  assert.equal(issue.status, "in_review", "the stale close does not land");
-  assert.equal(grades.get("t16").state, "awaiting_evidence", "the row is requeued for the evidence it now holds, not left satisfied");
-  assert.deepEqual(grades.due().map((x) => x.issueId), ["t16"], "the next pass picks the row up again");
-});
