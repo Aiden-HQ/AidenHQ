@@ -25,27 +25,29 @@ and `wait_since` are shown as the kernel sent them. A card the kernel has no sta
 
 ## Lanes
 
-`lane(state)` is one function in `web/src/lanes.ts`, three steps in this order, so every state lands in exactly one lane
-and a reason the kernel adds later still lands by its `kind` (no table to forget):
+`lane(state)` is one function in `web/src/lanes.ts`, four steps in this order, so every state lands in exactly one lane:
 
 1. Owner attention (`needsOwner`, `web/src/ui/TaskState.tsx`: `attention.who === "owner"`) is **Needs you**. It is checked
    first because a running task can carry an owner question, and it matches the kernel's `counts.needs_you`.
-2. A reason in the stuck set `blocked`, `failed`, `unpolled`, `orphaned`, `unknown`, `history_expired` is **Blocked**
-   (an agent must unstick it; the card says which).
-3. Otherwise by `kind`: `working` is **Working**, `waiting` is **Waiting** (`job_queued`, `job_held`, `card_review`,
-   `delegator_wait`, `agent_wait`, `module_wait`), `idle` is **Idle** (`scheduled`, `backlog`, `owner_task`, `chat_turn`),
-   `done` is **Done** (`closed`, `cancelled`).
+2. **Blocked**: reason `blocked` or `failed`, or an agent-attention `why` of `stalled_wait`, `unpolled`, `orphaned`, `unknown`
+   or `history_expired` (the kernel raises these only after a 15-minute grace, so a fresh quiet task is not Blocked).
+3. **Idle**: `kind` is `idle`, or the reason is `scheduled`, `backlog`, `owner_task` or `chat_turn` (the kernel gives these
+   four `kind: "waiting"`, so they are listed explicitly).
+4. Otherwise by `kind`: `working` is **Working**, `waiting` is **Waiting** (`job_queued`, `job_held`, `card_review`,
+   `delegator_wait`, `agent_wait`, `module_wait`), `done` is **Done** (`closed`, `cancelled`). A reason the kernel adds later
+   lands by its kind.
+
+The State filter, its counts and the lane use this one function, so a card shown in a lane always matches that lane's filter.
 
 Every one of the 22 `Reason`s: `card_owner`, `owner_wait`, `handback` (owner attention) go to Needs you; `blocked`, `failed`,
-`unpolled`, `orphaned`, `unknown`, `history_expired` to Blocked; `job_running` to Working; `job_queued`, `job_held`,
+`unpolled`, `orphaned`, `unknown`, `history_expired` to Blocked once flagged (Idle during the grace); `job_running` to Working; `job_queued`, `job_held`,
 `card_review`, `delegator_wait`, `agent_wait`, `module_wait` to Waiting; `scheduled`, `backlog`, `owner_task`, `chat_turn`
-to Idle; `closed`, `cancelled` to Done. A stalled `module_wait` (attention `stalled_wait`, who agent) stays in Waiting; its card
-shows the warning mark. The web's `Reason` union is a copy of the kernel's (`web/src/types.ts`, "change them together"), so the
+to Idle; `closed`, `cancelled` to Done. A stalled `module_wait` goes to Blocked. The web's `Reason` union is a copy of the kernel's (`web/src/types.ts`, "change them together"), so the
 kind fallback, not a type check, is what keeps new reasons safe.
 Done is the board's existing 48-hour window (`RECENT_MS`, `src/app.ts`) and disappears by itself; a task the owner settled
 stays off, as everywhere. Lane counts are the length of the rendered, filtered lane, labelled as cards (not the kernel's
 fleet counts, which include sub-tasks); the Attention strip above Tasks (`web/src/Attention.tsx`, fed by `/api/needs-you`)
-stays the fleet-wide source for "what needs me".
+stays the fleet-wide source for "what needs me" and is labelled "Fleet attention" (the lane count reads "matching cards").
 
 Known limit: agents' sub-tasks fold into their parent's card (`foldedChildren`, `src/board.ts`) and the kernel never makes a
 parent wait for its children, so a parent can sit in Working or Idle while a child waits on the owner. The card's crew line
@@ -147,9 +149,10 @@ learn projects first):
 
 ## Card additions (both layouts)
 
-- **Needs you line.** For any state with owner attention the card shows a callout under the title: the first line of
-  `state.question` for an `owner_wait`, "Your approval: <card sentence>" for a `card_owner`, "Handed to you" for a
-  `handback`. No new data: the kernel's `question`, `ref` and `refLabel` (`shown()`, `src/task-state.ts`).
+- **Needs you line.** For any state with owner attention the card shows a callout under the title, resolved from each
+  `attention` entry (`why`, `ref`), not from the primary reason (a running job can hold an approval): the first line of
+  `state.question` for `owner_wait`, "Your approval: <card sentence>" for a `card` entry (`shown()` today attaches the sentence only
+  when the card is the primary reason; resolve it from the entry's `ref` the same way), "Handed to you" for `handback`.
 - **Run trace link.** `#/r/<id>` (Route kind `run`) for the task's newest job, from the kernel activity the board already
   reads (`cachedActivity`, `src/runs.ts`: running and recent jobs carry `task`) as `lastRun`. A task with no job in that
   window has no link; older runs stay in the drawer (`runLinks`). No per-card kernel call.
@@ -170,7 +173,8 @@ Tasks   [My day|Agent work]  All agents  Needs review  Launch  + Save board     
  ┌ Needs you 2 ┐ ┌ Working 3 ┐ ┌ Waiting 3 ┐ ┌ Blocked 2 ┐ ┌ Idle 3 ┐ ┌ Done, last 48h 3 ┐
 ```
 
-**Layout switch.** A `Segmented` (`My day | Agent work`) at the left of the page-tools row, not a tab: it changes how the
+**Layout switch.** The layout and the saved filters have separate jobs: the `Segmented` picks how tasks are drawn; the tabs next to it are saved
+filters only (no built-in tab, "Update board" appears only on a saved one; the unsaved default is "All"). A `Segmented` (`My day | Agent work`) at the left of the page-tools row, not a tab: it changes how the
 same tasks are drawn, while the board tabs next to it are saved filters. The choice is remembered per board (stored in the
 board's spec; built-ins keep it in `localStorage`). My day is untouched, including drag.
 
@@ -201,7 +205,9 @@ callout colour is the only saturated area on a card, so a column scans by colour
 Priority, Project, Updated) with a type-to-find field; picking one opens its value list (multi-select with counts, agent
 rows with monograms). A chosen filter is one chip: `name | values | ✕`; ✕ removes it, "Clear all" appears with two or more.
 A value that no longer exists (a deleted label) stays as a struck-through chip and matches nothing. Text search is the
-field at the right (`/` focuses it). Filters apply to both layouts. Group by is a `Segmented` (`None | Agent`), shown only in
+field at the right (`/` focuses it). Filters apply to both layouts. On My day a filter hides the carried-over bulk action (it moves every carried task, not the
+visible ones), and the page's keyboard handlers (`App.tsx`: `r` toggles Recurring) are scoped by layout, so the new keys exist only
+in Agent work. Group by is a `Segmented` (`None | Agent`), shown only in
 Agent work.
 
 **Group by agent.** Each agent is a row on a `--col` surface: collapse chevron, monogram, name, and per-lane counts as
@@ -215,10 +221,10 @@ board.
 `Menu` on the selected tab (also right-click); Delete confirms in a `Dialog` ("Delete 'Launch'? The tasks stay.").
 Over six boards the rest sit behind a "More" `Menu`.
 
-**Empty, loading, errors.** Loading: lane headers draw at once, cards are skeletons (`Skeleton.tsx`), never a spinner. Filters
+**Empty, loading, errors.** On phone the first lane shown is the first populated one, and a "Filters (3)" button replaces the chip row
+(chips open in a sheet, with Clear and Update board). Loading: lane headers draw at once, cards are skeletons (`Skeleton.tsx`), never a spinner. Filters
 match nothing: "No tasks match these filters" with a "Clear all" button. Nothing running (fresh install): "Nothing is
-running yet. Ask Aiden to take a task and it shows up here, lane by lane." A lane with nothing: a dashed box, "Nothing
-here". A failed read keeps the last good board and shows the existing offline `Banner`.
+running yet. Ask Aiden to take a task and it shows up here, lane by lane." A lane with nothing: a dashed box, "No tasks in <lane>". A failed read keeps the last good board and shows the existing offline `Banner`.
 
 **Long and busy.** Titles clamp to two lines and wrap long unbroken strings. A lane scrolls inside itself (max-height from the
 viewport) and renders 25 cards, then "Show 38 more"; header counts always show the true number.
