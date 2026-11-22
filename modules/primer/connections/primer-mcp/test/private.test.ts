@@ -9,7 +9,7 @@ const codeReview = { agent: "", key: "", name: "", roles: [], kind: "module", mo
 const args = (over: object = {}) => ({ title: "Repo review: acme/widgets", content: "# Verdict\n", format: "markdown", versionNote: "abc1234", private: true, repo_key: "acme/widgets", ...over });
 
 /** A Primer: documents with a visibility and collaborators, its tools, and what the executor asked of it. */
-function primer(o: { shared?: Set<string>; collaborators?: Record<string, string[]>; flaky?: boolean; noVersion?: boolean } = {}) {
+function primer(o: { shared?: Set<string>; collaborators?: Record<string, string[]>; flaky?: boolean; noVersion?: boolean; raw?: Record<string, string>; afterVersion?: () => void } = {}) {
   const calls: [string, Record<string, unknown>][] = [];
   const privates: string[] = [];
   let n = 0;
@@ -17,6 +17,8 @@ function primer(o: { shared?: Set<string>; collaborators?: Record<string, string
   const call = async (name: string, a: Record<string, unknown>) => {
     calls.push([name, a]);
     await new Promise((r) => setTimeout(r, 3)); // overlapping filings interleave
+    if (o.raw?.[name] !== undefined) return { text: o.raw[name]! };
+    if (name === "primer_add_version") o.afterVersion?.();
     if (name === "primer_create_document") { const id = `doc-${++n}-aaaa`; docs.add(id); return { text: JSON.stringify({ documentId: id, url: `https://primer.example/d/${id}` }) }; }
     if (name === "primer_get_document") return o.flaky ? { text: "upstream timeout", isError: true } : { text: JSON.stringify({ document: { id: a.documentId, visibility: o.shared?.has(String(a.documentId)) ? "org" : "private" } }) };
     if (name === "primer_list_collaborators") return { text: JSON.stringify({ collaborators: o.collaborators?.[String(a.documentId)] ?? [] }) };
@@ -47,7 +49,7 @@ describe("a module's private report (primer.publish with private)", () => {
     expect(v.raise).toBeUndefined();
     const out = await p.file(v.args as object, "k-0000000000000002");
     expect(out.text).toMatch(/^New version v\d on Primer \(document doc-1-aaaa/);
-    expect(p.calls.at(-1)).toEqual(["primer_add_version", expect.objectContaining({ documentId: "doc-1-aaaa", versionNote: "abc1234" })]);
+    expect(p.calls.filter((c) => c[0] === "primer_add_version").at(-1)).toEqual(["primer_add_version", expect.objectContaining({ documentId: "doc-1-aaaa", versionNote: "abc1234" })]);
     expect(p.privates).toEqual(["doc-1-aaaa:Repo review: acme/widgets"]);
   });
 
@@ -104,5 +106,19 @@ describe("a module's private report (primer.publish with private)", () => {
     const out = await p.file(args(), "k-0000000000000099");
     expect(out.ok).toBe(false);
     expect(out.text).toMatch(/No new version on Primer[\s\S]*wasn't published/);
+  });
+
+  it("a null collaborator answer is a failure, not a missing document; a share that lands during the write is reported", async () => {
+    const shared = new Set<string>();
+    const p = primer({ shared, afterVersion: () => void shared.add("doc-1-aaaa") });
+    await p.file(args(), "k-0000000000000010");
+    shared.clear();
+    const out = await p.file(args(), "k-0000000000000011");
+    expect(out.ok).toBe(false);
+    expect(out.text).toMatch(/was shared or removed while this version was written/);
+    const q = primer({ raw: { primer_list_collaborators: "null" } });
+    await q.file(args(), "k-0000000000000012");
+    await expect(q.file(args(), "k-0000000000000013")).rejects.toThrow(/answered no data/);
+    expect(q.calls.filter((c) => c[0] === "primer_create_document")).toHaveLength(1);
   });
 });

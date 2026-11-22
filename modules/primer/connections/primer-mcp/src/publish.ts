@@ -75,19 +75,22 @@ export const NEUTRAL_TITLE = "Repo review";
  * and is asked again), so a transient error never passes for "shared" and never starts a second document.
  */
 export async function ownerOnly(call: Call, documentId: string): Promise<boolean> {
+  const GONE = Symbol("gone");
   const json = async (tool: string) => {
     const r = await call(tool, { documentId });
-    if (r.isError && /not.?found|\b404\b|no such document/i.test(r.text)) return null; // gone: a new document takes its place
+    if (r.isError && /not.?found|\b404\b|no such document/i.test(r.text)) return GONE; // gone: a new document takes its place
     if (r.isError) throw new Error(`${tool} failed: ${r.text.slice(0, 200)}`);
-    return JSON.parse(r.text);
+    const v = JSON.parse(r.text);
+    if (v === null || typeof v !== "object") throw new Error(`${tool} answered no data for ${documentId}`);
+    return v;
   };
   const doc = await json("primer_get_document");
-  if (doc === null) return false;
+  if (doc === GONE) return false;
   const visibility = doc?.document?.visibility ?? doc?.visibility;
   if (typeof visibility !== "string") throw new Error(`primer_get_document didn't say the visibility of ${documentId}`);
   if (visibility !== "private") return false;
   const who = await json("primer_list_collaborators");
-  if (who === null) return false; // deleted between the two reads: gone, a new document takes its place
+  if (who === GONE) return false; // deleted between the two reads: gone, a new document takes its place
   const list = Array.isArray(who) ? who : Array.isArray(who?.collaborators) ? who.collaborators : undefined;
   if (!list) throw new Error(`primer_list_collaborators didn't list the collaborators of ${documentId}`);
   return list.length === 0;
@@ -144,7 +147,12 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       // private to the owner alone, else a new private document in its place; first publications on a repo_key are serialised.
       return serial(a.repo_key!.toLowerCase(), async () => {
         const known = priv.reports.get(a.repo_key!);
-        if (known !== undefined && (await ownerOnly(call, known))) return applied(await write({ ...a, documentId: known }, undefined));
+        if (known !== undefined && (await ownerOnly(call, known))) {
+          const out = applied(await write({ ...a, documentId: known }, undefined));
+          // Primer takes no precondition on a version, so the document is read again once it is written: a share that landed in
+          // between is reported as the failure it is, never as a quiet success.
+          return out.ok && !(await ownerOnly(call, known).catch(() => false)) ? { ok: false, text: `${out.text} But document ${known} was shared or removed while this version was written, so the report may be visible to others: check it on Primer.` } : out;
+        }
         // A new document: created with a placeholder, made private, and only then given the report, so the report is never
         // readable by the organization, not even for a moment.
         const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", description: undefined, title: NEUTRAL_TITLE }, undefined);
