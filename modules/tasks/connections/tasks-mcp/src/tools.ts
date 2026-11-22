@@ -946,9 +946,12 @@ const TOOLS: Record<string, Tool> = {
       const list: (readonly [Json, Json])[] = [];
       const seen = new Set<string>();
       const deadline = Date.now() + SCAN_MS;
-      let repeats = 0;
+      let repeats = 0, stopped = false;
       for (let offset = 0; list.length < max; ) {
-        if (Date.now() > deadline) break;
+        if (Date.now() > deadline) {
+          stopped = true;
+          break;
+        }
         const p = new URLSearchParams(q);
         p.set("limit", String(PAGE));
         p.set("offset", String(offset));
@@ -959,13 +962,22 @@ const TOOLS: Record<string, Tool> = {
         for (const i of fresh) seen.add(i.id);
         // A ranking that ignores `offset` repeats its page: stop rather than search it forever.
         repeats = fresh.length ? 0 : repeats + 1;
-        if (repeats > 1) break;
-        if (Date.now() > deadline) break;
+        if (repeats > 1) {
+          stopped = true;
+          break;
+        }
+        if (Date.now() > deadline) {
+          stopped = true;
+          break;
+        }
         list.push(...(await matchingStates(fresh, kinds, one)));
         // Advance by what came back, not by what was asked: a server capping its page size would skip the rows between.
         offset += page.length;
       }
-      return { tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
+      return {
+        tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))),
+        ...(stopped ? { incomplete: "not every search hit was read (the scan hit its budget or stopped advancing)" } : {}),
+      };
     },
   },
   task_list: {
@@ -1011,20 +1023,20 @@ const TOOLS: Record<string, Tool> = {
           return onEdge();
         }
       };
-      const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i) => {
+      const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i, until = deadline) => {
         const kept: (readonly [Json, Json])[] = [];
         const pages = issuePages(query, progress)[Symbol.asyncIterator]();
         for (;;) {
-          if (Date.now() > deadline) {
+          if (Date.now() > until) {
             complete = false;
             return kept;
           }
           const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }));
           if (step.done) return kept;
           const ready = (await atEdge(() => Promise.all(step.value.map(prepare)), () => [])).filter(Boolean) as Json[];
-          const matches = await atEdge(() => matchingStates(ready, kinds, one, deadline - Date.now()), () => [] as (readonly [Json, Json])[]);
+          const matches = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[]);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
-          if (Date.now() > deadline) {
+          if (Date.now() > until) {
             complete = false;
             kept.push(...matches);
             return kept.slice(0, max);
@@ -1066,7 +1078,8 @@ const TOOLS: Record<string, Tool> = {
             if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return null;
             return mark.test(full.description ?? "") ? full : null;
           };
-          chats.push(...(await capped(theirs, aChat)));
+          // Half the scan's budget is held for the assigned history, so neither source can starve the other.
+          chats.push(...(await capped(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2))));
         }
         const assigned = await capped(q, mineOnly);
         // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
