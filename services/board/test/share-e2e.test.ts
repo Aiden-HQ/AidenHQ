@@ -254,11 +254,20 @@ describe("sharing a local module (V4)", () => {
     commitInstance({ "modules/review-chaser/agents/chaser/AGENTS.md": "You chase reviews, politely.\n" }, "handbook");
     expect(await save(p.body)).toMatchObject({ status: 422, body: { error: expect.stringMatching(/changed since your preview/) } });
     // A secret pasted into a skill: the preview names it and holds the text back; the Save is refused.
-    commitInstance({ "modules/review-chaser/skills/chase/SKILL.md": `---\nname: chase\ndescription: how\n---\nUse ${SECRET} to log in.\n` }, "oops");
+    // So is a memory fact, a profile line or a setting value copied into a handbook.
+    commitInstance({
+      "modules/review-chaser/skills/chase/SKILL.md": `---\nname: chase\ndescription: how\n---\nUse ${Buffer.from(SECRET).toString("base64")} to log in.\n`,
+      "modules/review-chaser/agents/chaser/AGENTS.md": `Remember: ${FACT}. ${PROFILE}. Post in ${SETTING}.\n`,
+    }, "oops");
     const flagged = await preview();
-    expect(flagged.body.findings).toEqual([{ file: "skills/chase/SKILL.md", rule: "secret-value", detail: "a vault secret's value" }]);
+    expect(flagged.body.findings).toEqual([
+      { file: "agents/chaser/AGENTS.md", rule: "setting-value", detail: "the value of the setting github_fleet_org" },
+      { file: "agents/chaser/AGENTS.md", rule: "memory-fact", detail: "a fact from an agent's memory" },
+      { file: "agents/chaser/AGENTS.md", rule: "profile-fact", detail: "a line of the owner's profile" },
+      { file: "skills/chase/SKILL.md", rule: "secret-value", detail: "a vault secret's value" },
+    ]);
     expect(flagged.body.files.every((f: any) => f.text === undefined)).toBe(true);
-    expect(JSON.stringify(flagged.body)).not.toContain(SECRET);
+    for (const never of [SECRET, FACT, PROFILE, SETTING]) expect(JSON.stringify(flagged.body)).not.toContain(never);
     expect(await save(flagged.body)).toMatchObject({ status: 422, body: { error: expect.stringMatching(/not shared/) } });
     // No job, module or kernel filing without the owner's save files a publish.
     const args = { repo: market, ref: "main", base: tip(market), source: p.body.source, module: "review-chaser", files: [{ path: "module.yaml", text: "name: review-chaser\n" }], digest: p.body.digest };
