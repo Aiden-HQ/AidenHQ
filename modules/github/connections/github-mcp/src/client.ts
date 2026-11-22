@@ -235,11 +235,15 @@ export function createAccess(o: {
     }
   }
 
-  function observe(p: Pace, res: Response): void {
+  /**
+   * `sentFor`: the sign-in's scopes when the request went out. A call that started under the old grant and answered after a
+   * reconnect still carries the old grant's header, so it is labelled with the sign-in it was sent under, never the current one.
+   */
+  function observe(p: Pace, res: Response, sentFor: string): void {
     const s = res.headers.get("x-oauth-scopes");
     if (s !== null && p === owner) {
       granted = split(s);
-      grantedFor = signInScopes();
+      grantedFor = sentFor;
     }
     const remaining = Number(res.headers.get("x-ratelimit-remaining"));
     const limit = Number(res.headers.get("x-ratelimit-limit"));
@@ -364,6 +368,8 @@ export function createAccess(o: {
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     await admit(p, resource, background, deadline);
     const t = as ? await as.token(retried) : await token();
+    // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
+    const sentFor = signInScopes();
     // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.
     if (deadline !== undefined && !fits(deadline)) noBudget(p);
     const res = await fetchImpl(`${API}${path}`, {
@@ -378,7 +384,7 @@ export function createAccess(o: {
       p.hour.writes++;
       o.log?.("github write", { identity: as ? "app" : "owner", key: as?.key ?? "owner", method, path: path.replace(/[0-9a-f]{40}/g, ":sha").replace(/\/[0-9]+/g, "/:n").split("?")[0], status: res.status, writes_this_hour: p.hour.writes });
     }
-    observe(p, res);
+    observe(p, res, sentFor);
     const text = await res.text();
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : {}; } catch { /* a non-JSON answer (a diff, a log) stays text */ }
