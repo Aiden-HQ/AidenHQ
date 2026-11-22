@@ -22,7 +22,12 @@ RUN python3 -m venv "$POETRY_VENV" \
  && "$POETRY_VENV/bin/pip" install pip==26.3 setuptools==84.0.0 \
  && "$POETRY_VENV/bin/pip" install poetry==2.1.3
 ENV PATH="${PATH}:${POETRY_VENV}/bin"
+# pyannote-audio 4 sends usage metrics to an external endpoint by default; this service keeps audio and its metadata on the host.
+ENV PYANNOTE_METRICS_ENABLED=false
 
+# Deliberately no torchcodec: its wheels link the shared FFmpeg 4-7 libraries (libavcodec.so.61 and friends) and this image
+# ships the static FFmpeg 9 CLI only, so it cannot load on any architecture; it also has no Linux aarch64 wheel. whisperx
+# hands pyannote-audio 4 an in-memory waveform, which is the path this service takes, so decoding still works without it.
 WORKDIR /app
 ADD --checksum=sha256:fe37ff1a8b2dd6fe308b0c8cd17a9b61a04bc6375a0377046d0f4849c07b8128 https://github.com/ahmetoner/whisper-asr-webservice/archive/da8044cdd11a20068abedf56de9d8f5ba9da26f5.tar.gz /tmp/src.tar.gz
 RUN tar -xzf /tmp/src.tar.gz --strip-components=1 -C /app && rm /tmp/src.tar.gz
@@ -32,11 +37,34 @@ COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui.css swagger-ui-assets/swagger-ui.css
 COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui-bundle.js swagger-ui-assets/swagger-ui-bundle.js
 
+# The whisperx/pyannote set goes in with --no-deps, so prove no transitive dependency is missing: every line pip check
+# reports must be one of the two tolerated kinds. (1) whisperx and pyannote declare torchcodec, which this image omits on
+# purpose - its wheels load the shared FFmpeg 4-7 libraries the image does not ship, and whisperx passes pyannote an
+# in-memory waveform instead. (2) whisperx 3.8.6's own metadata bounds (torch~=2.8.0, torchaudio~=2.8.0,
+# torchvision~=0.23.0, huggingface-hub<1.0.0) name the vulnerable torch line this change removes; no whisperx release
+# declares 2.10. Poetry's own dev-only extras are excluded too: poetry installs them outside the app environment.
+# Anything else - a genuinely missing package from a future bump - fails the build here rather than the first request, and a
+# pip check that cannot run at all (exit 2+) fails it too instead of passing silently on empty output.
 RUN poetry config virtualenvs.in-project true \
  && poetry install --extras cpu \
  && "$POETRY_VENV/bin/pip" install pillow==13.0.0 certifi==2026.10.23 nltk==3.10.4 \
  && "$POETRY_VENV/bin/pip" install --no-deps av==19.0.2 \
- && "$POETRY_VENV/bin/pip" install --no-deps -U "aiohttp==3.14.5" "black==26.10.1" "urllib3==2.8.0" "lightning==2.6.6" "pytorch-lightning==2.6.6" "yarl==1.25.1" "dulwich==1.2.21" "poetry==2.5.1" "poetry-core==2.5.0" "virtualenv==21.15.5" "pymdown-extensions==12.3" "filelock==4.2.9" "python-discovery==1.9.4" "pbs-installer==2026.10.25" "distlib==0.4.4"
+ && "$POETRY_VENV/bin/pip" install --no-deps -U --index-url=https://download.pytorch.org/whl/cpu "torch==2.10.0" "torchaudio==2.10.0" "torchvision==0.25.0" \
+ && "$POETRY_VENV/bin/pip" install --no-deps -U "whisperx==3.8.6" "pyannote-audio==4.0.7" "pyannote-core==6.1.0" "pyannote-database==6.1.1" "pyannote-metrics==4.2.0" "pyannote-pipeline==4.1.0" "pyannoteai-sdk==0.4.0" "optuna==5.0.0" "grpcio==1.85.1" "googleapis-common-protos==1.76.0" "opentelemetry-api==1.45.2" "opentelemetry-sdk==1.45.2" "opentelemetry-semantic-conventions==0.66b2" "opentelemetry-proto==1.45.2" "opentelemetry-exporter-otlp==1.45.2" "opentelemetry-exporter-otlp-common==0.66b2" "opentelemetry-exporter-otlp-proto-common==1.45.2" "opentelemetry-exporter-otlp-proto-http==1.45.2" "opentelemetry-exporter-otlp-proto-grpc==1.45.2" "opentelemetry-exporter-http-transport==0.66b2" \
+ && "$POETRY_VENV/bin/pip" install --no-deps -U "aiohttp==3.14.5" "black==26.10.1" "urllib3==2.8.0" "lightning==2.6.6" "pytorch-lightning==2.6.6" "yarl==1.25.1" "dulwich==1.2.21" "poetry==2.5.1" "poetry-core==2.5.0" "virtualenv==21.15.5" "pymdown-extensions==12.3" "filelock==4.2.9" "python-discovery==1.9.4" "pbs-installer==2026.10.25" "distlib==0.4.4" \
+ && { "$POETRY_VENV/bin/pip" check > /tmp/pip-check.txt 2>&1 || [ $? -le 1 ]; } \
+ && ! grep -vE '^(poetry [0-9.]+ requires |No broken requirements found\.$|(pyannote-audio|whisperx) [0-9.]+ requires torchcodec, which is not installed\.$)' /tmp/pip-check.txt | grep -vE '^whisperx [0-9.]+ has requirement (huggingface-hub<1\.0\.0|torch~=2\.8\.0|torchaudio~=2\.8\.0|torchvision~=0\.23\.0), but you have ' | grep -q . \
+ && "$POETRY_VENV/bin/python" -c "import app.factory.asr_model_factory, app.asr_models.mbain_whisperx_engine, app.asr_models.faster_whisper_engine"
+
+# whisperx 3.8 renamed DiarizationPipeline(use_auth_token=…) to token= and inserted num_speakers ahead of the speaker
+# limits, so the pinned upstream adapter would raise TypeError with an HF_TOKEN set and misapply min/max speakers after
+# that. Patch the vendored app, then bind the exact calls it makes so a future whisperx bump fails the build not the request.
+RUN sed -i \
+      -e 's/use_auth_token=CONFIG\.HF_TOKEN/token=CONFIG.HF_TOKEN/' \
+      -e 's/(audio, min_speakers, max_speakers)/(audio, min_speakers=min_speakers, max_speakers=max_speakers)/' \
+      app/asr_models/mbain_whisperx_engine.py \
+ && ! grep -q 'use_auth_token' app/asr_models/mbain_whisperx_engine.py \
+ && "$POETRY_VENV/bin/python" -c "import inspect; from whisperx.diarize import DiarizationPipeline as D; p = inspect.signature(D.__init__).parameters; assert 'token' in p and 'use_auth_token' not in p; inspect.signature(D.__call__).bind(None, None, min_speakers=1, max_speakers=2)"
 
 EXPOSE 9000
 
