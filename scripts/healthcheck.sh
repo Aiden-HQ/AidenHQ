@@ -269,15 +269,23 @@ unit_runs_applied() { # service, name [env]
     # ends option parsing, while a `--` after it is the command (`timeout 5m -- cmd` runs a program named `--`, which never
     # runs the prune). The duration must be one GNU timeout accepts.
     duration=""
+    options_done=""
     while [ "$i" -lt "${#argv[@]}" ]; do
       arg="${argv[i]}"
+      if [ -n "$options_done" ]; then
+        # After `--` nothing is an option any more: the very next token is the duration, so `timeout -- --verbose 5m cmd`
+        # is rejected here exactly as GNU timeout rejects it (`--verbose` as a duration) instead of skipping it.
+        printf '%s' "$arg" | grep -Eq '^([0-9]+([.][0-9]*)?|[.][0-9]+)[smhd]?$' \
+          || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
+        duration="$arg"; i=$((i + 1)); break
+      fi
       case "$arg" in
-        --) i=$((i + 1)); continue ;; # end of options; the duration still comes next
+        --) options_done=1; i=$((i + 1)) ;; # end of options; the duration still comes next
         -s|--signal|-k|--kill-after) i=$((i + 2)) ;;
         --signal=*|--kill-after=*|-s?*|-k?*) i=$((i + 1)) ;;
         --foreground|--preserve-status|-v|--verbose) i=$((i + 1)) ;;
         -*) echo "cannot resolve the command from timeout option $arg: $line"; return 1 ;;
-        *) printf '%s' "$arg" | grep -Eq '^[0-9]+([.][0-9]+)?[smhd]?$' \
+        *) printf '%s' "$arg" | grep -Eq '^([0-9]+([.][0-9]*)?|[.][0-9]+)[smhd]?$' \
              || { echo "the unit's timeout duration is not one timeout accepts ($arg): $line"; return 1; }
            duration="$arg"; i=$((i + 1)); break ;;
       esac

@@ -784,10 +784,12 @@ switchOver() {
   # shell's form of the unit's `-` prefix): a failing builder prune must not skip the image prune on every apply.
   # Each step is also bounded: `|| true` only helps once the command exits, and a Docker daemon that stops answering
   # would otherwise hold the apply here, after services restarted and before the new product is recorded as applied.
-  timeout 15m docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
-  timeout 15m docker builder prune -f --keep-storage 20GB >/dev/null 2>&1 || true
-  timeout 10m docker image prune -af --filter until=48h >/dev/null 2>&1 || true
-  timeout 5m bash ops/prune-docker-containers.sh || true
+  # `-k 30s` is the hard deadline: timeout's own SIGTERM can be ignored by a stuck buildx child, and the SIGKILL 30 s
+  # later guarantees each step ends, so the steps after it and the applied-product marker are still reached.
+  timeout -k 30s 15m docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
+  timeout -k 30s 15m docker builder prune -f --keep-storage 20GB >/dev/null 2>&1 || true
+  timeout -k 30s 10m docker image prune -af --filter until=48h >/dev/null 2>&1 || true
+  timeout -k 30s 5m bash ops/prune-docker-containers.sh || true
   lap prune
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"

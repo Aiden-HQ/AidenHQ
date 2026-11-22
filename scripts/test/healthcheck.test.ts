@@ -196,6 +196,19 @@ test("timeout's `--` and an invalid duration are read the way GNU timeout reads 
   // `timeout 5m -- cmd`: here `--` is the command timeout would run, which never runs the prune, so the check fails.
   r = await runWith("/usr/bin/timeout 5m -- /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
   assert.match(r.out, /^  FAIL  docker prune timer runs the applied checkout's container step/m, r.out);
+  // After `--` option parsing is over: `--verbose` is the duration GNU timeout would read, so this fails instead of being
+  // skipped as an option.
+  r = await runWith("/usr/bin/timeout -- --verbose 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  FAIL  docker prune timer runs the applied checkout's container step/m, r.out);
+  assert.match(r.out, /not one timeout accepts \(--verbose\)/);
+  // A fractional duration with no digits before the point is one GNU timeout accepts (`.5m` is 30 s).
+  r = await runWith("/usr/bin/timeout .5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  // The same after `--`, and with `-k` before the duration.
+  r = await runWith("/usr/bin/timeout -- .5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  r = await runWith("/usr/bin/timeout -k 30s -- .5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
   // A duration GNU timeout rejects (`5min`) means the script never runs: the check must not pass it.
   r = await runWith("/usr/bin/timeout 5min /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh");
   assert.match(r.out, /^  FAIL  docker prune timer runs the applied checkout's container step/m, r.out);

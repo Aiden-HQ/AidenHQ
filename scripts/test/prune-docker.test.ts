@@ -99,12 +99,15 @@ test("the container step removes only one-offs stopped over a day, and the verif
 });
 
 test("the apply-time prunes are independent too, and keep the same retention", () => {
-  const lines = apply.split("\n").filter((l) => /^\s*(timeout \d+m )?(docker (builder|image|container) prune|bash ops\/prune-docker-containers\.sh)/.test(l));
+  const lines = apply.split("\n").filter((l) => /^\s*(timeout (-k \S+ )?\d+m )?(docker (builder|image|container) prune|bash ops\/prune-docker-containers\.sh)/.test(l));
   assert.ok(lines.length >= 4, lines.join("\n"));
   for (const l of lines) assert.match(l, /\|\| true$/, `a failing one must not skip the rest: ${l}`);
   // `|| true` only helps when the command exits: bound each one so a daemon that stops answering cannot hold the apply,
   // after services restarted and before the new product is recorded.
-  for (const l of lines) assert.match(l, /^\s*timeout \d+m /, `unbounded apply-time prune: ${l}`);
+  for (const l of lines) assert.match(l, /^\s*timeout (-k \S+ )?\d+m /, `unbounded apply-time prune: ${l}`);
+  // timeout's SIGTERM can be ignored by a stuck buildx child: `-k` is the hard deadline that guarantees the step ends and
+  // the steps after it (and the applied marker) are still reached.
+  for (const l of lines) assert.match(l, /^\s*timeout -k \S+ \d+m /, `soft-only deadline on apply-time prune: ${l}`);
   assert.ok(lines.some((l) => /docker builder prune -f --max-used-space 20GB\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /docker builder prune -f --keep-storage 20GB\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /docker image prune -af --filter until=48h\b/.test(l)), lines.join("\n"));
@@ -246,7 +249,7 @@ test("a one-off that is restarted between the check and the removal is kept", ()
 });
 
 test("the apply-time container step and the unit's are the same script, so the retention has one home", () => {
-  assert.match(apply, /^\s*timeout 5m bash ops\/prune-docker-containers\.sh \|\| true$/m);
+  assert.match(apply, /^\s*timeout -k \S+ 5m bash ops\/prune-docker-containers\.sh \|\| true$/m);
   assert.doesNotMatch(apply, /docker container prune/);
 });
 
@@ -273,6 +276,12 @@ test("the verification fails the unit when the daemon is down, the cache is over
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /nothing is reclaimable/);
+  // Over the cap with a little reclaimable cache left: that is cache a prune could have freed, not cache in use, so it
+  // fails. Only an exact zero is the in-use exception; a silent tolerance would hide a partly failed prune.
+  d = fakeDocker({ cache: "22GB", reclaimable: "800MB" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /still reclaimable after the prune/);
   // Over the cap with an unreadable reclaimable size: the cap cannot be confirmed either way.
   d = fakeDocker({ cache: "104.2GB", reclaimable: "" });
   r = d.run("ops/prune-docker-verify.sh");

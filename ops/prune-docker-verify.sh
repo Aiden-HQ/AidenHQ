@@ -84,9 +84,9 @@ case "$cache" in
     [ -n "$bytes" ] || bad+=("the build cache size ($cache) is unreadable, so the 20 GB cap cannot be confirmed")
     if [ -n "$bytes" ] && [ "$bytes" -gt "$CAP_BYTES" ]; then
       # A concurrent build can hold more than the cap in cache that is in use: the prune then did all it could, and
-      # `docker system df` still reports the full Size. Reclaimable is the part a prune could still remove; with none
-      # left, the cap is holding as far as it can and this is not a failed prune. Some builds running is the only thing
-      # that can keep Size over the cap with nothing reclaimable.
+      # `docker system df` still reports the full Size. Reclaimable is the part a prune could still remove; only when it
+      # is exactly zero is the cap holding as far as it can. Any nonzero reclaimable means the prune left bytes it could
+      # have freed, which fails: no tolerance, since a tolerance would hide a partly failed prune.
       reclaim="${rows#*"	"}"
       reclaim_bytes="$(awk -v s="$reclaim" 'BEGIN {
         sub(/[[:space:]].*$/, "", s)
@@ -97,7 +97,9 @@ case "$cache" in
         printf "%.0f", n }')"
       if [ -z "$reclaim_bytes" ]; then
         bad+=("the build cache is $cache, over the 20 GB cap, and its reclaimable size ($reclaim) is unreadable: whether the cap held cannot be confirmed")
-      elif [ "${reclaim_bytes:-0}" -gt $((1024 * 1024 * 1024)) ]; then
+      elif [ "$reclaim_bytes" -gt 0 ]; then
+        # Any reclaimable cache at all is cache a prune could have freed: if one was, the cap did not hold. Only zero (a
+        # build holding the whole cache in use) makes an over-cap Size legitimate, so there is no silent tolerance here.
         bad+=("the build cache is $cache with $reclaim still reclaimable after the prune: neither builder flag form capped it")
       else
         echo "prune-docker: build cache is $cache but nothing is reclaimable: a build holds that cache in use, so the cap holds"
