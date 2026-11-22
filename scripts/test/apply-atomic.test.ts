@@ -115,7 +115,7 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   // an install link in a target's .wants dir (the tests write it) and only `is-enabled` names it. ctrl/runners lists the
   // instance names is-enabled reports enabled; ctrl/masked the ones it reports masked. `show` is what health() reads on a
   // /healthz timeout; journalctl tails the journal.
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*) exit 1 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*aidenhq-apply-recover*) exit 0 ;;\n  *is-enabled*) exit 1 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
   // The user unit dir systemd loads, where enablement links live: HOME is the world's temporary home.\n  "systemd-analyze": `#!/usr/bin/env bash\nprintf 'systemd-analyze %s\\n' "$*" >> "$CALLS"\ncase "$*" in *--user*unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
@@ -316,11 +316,15 @@ test("the CI runner unit template follows the applied checkout, only while runne
   // from the host's settings; the template reads it last, so it wins.
   assert.match(template(), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
   assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
-  // Nothing changed: no rewrite, no reload.
+  // Nothing changed: no rewrite, no reload. The second apply's template copy and reload are already recorded (the first
+  // apply wrote the stamp), so this one skips both.
+  assert.match(readFileSync(w.d("state/ci-runner-template.reloaded"), "utf8").trim(), /^[0-9a-f]{40}$/, "the loaded template's sha is recorded");
   const before = w.calls();
   const unchanged = await w.run("--force");
   assert.equal(unchanged.status, 0, unchanged.out);
-  assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
+  const seg = w.calls().slice(before.length);
+  assert.doesNotMatch(seg, /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
+  assert.doesNotMatch(seg, /daemon-reload/, "and systemd is not reloaded for it");
 
   // A rerun is forced: a plain rerun of an applied pair returns "already applied" before the switch, so nothing below
   // would exercise the gate at all.
@@ -366,6 +370,18 @@ test("the CI runner unit template follows the applied checkout, only while runne
 // shell, so the helper must already be loaded: sourcing it after the checkout would abort on a missing file (a failed
 // source under errexit) and the rollback would never land. That ordering is what this pins; it cannot be observed end to
 // end without building a pre-change product, which would itself need the old script.
+// A pin rollback ("revert the pin and apply") also reaches the hand-over: an older product that predates the helper but
+// supports AIDENHQ_APPLY_BEFORE would be re-exec'd, and its list-unit-files gate never fires, so the newer template would
+// stay installed and the next runner start would name an ExecStartPre script that product removed. The helper is
+// therefore not in the hand-over list; the change to this script is what triggers it.
+test("the runner helper is not in the apply hand-over list", () => {
+  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const line = text.split("\n").find((l) => l.includes("git diff --quiet \"$before\" \"$product\" -- ops/apply-config.sh"));
+  assert.ok(line, "the hand-over list is found");
+  assert.ok(!line.includes("ops/lib/ci-runner-enabled.sh"), `the helper does not re-exec an older worker: ${line}`);
+  assert.ok(line.includes("ops/apply-config-work.sh"), "this script is still in it, so its own change hands over");
+});
+
 test("the runner helper is loaded before any checkout, so a rollback to a product without it still applies", () => {
   const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
   const main = text.slice(text.indexOf("\nmain() {"), text.indexOf("\n# Step 3:", text.indexOf("\nmain() {")));
@@ -377,7 +393,9 @@ test("the runner helper is loaded before any checkout, so a rollback to a produc
 });
 
 // A copied runner template systemd never reloaded is not what runs: a failed daemon-reload fails the switch, so the
-// generation is not marked good (the `cp && systemctl && echo` form would swallow it under errexit).
+// generation is not marked good (the `cp && systemctl && echo` form would swallow it under errexit). And the copy must not
+// look installed to the next apply: the file already matches, so without the reload stamp `cmp` alone would skip the
+// reload forever and systemd would keep the old template.
 test("a failed runner daemon-reload fails the switch instead of marking the generation good", async () => {
   const w = world();
   const units = w.d("home/.config/systemd/user");
@@ -391,7 +409,14 @@ test("a failed runner daemon-reload fails the switch instead of marking the gene
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /ci runner unit template: daemon-reload failed/);
   assert.match(r.out, /generation 2 failed: the switch failed \(exit 1\)/, "the switch reported the reload failure");
-  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template was copied, and the reload retried on the next apply");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template was copied");
+  assert.ok(!existsSync(w.d("state/ci-runner-template.reloaded")), "a failed reload leaves no stamp");
+  // The file now matches, but systemd never loaded it: the next apply forces the reload again.
+  rmSync(w.d("ctrl/runner-reload-fails"));
+  const retry = await w.run("--force");
+  assert.equal(retry.status, 0, retry.out);
+  assert.match(retry.out, /ci runner unit template installed\/updated/, "the retry reloads the copied template");
+  assert.match(readFileSync(w.d("state/ci-runner-template.reloaded"), "utf8").trim(), /^[0-9a-f]{40}$/, "and then records it");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {

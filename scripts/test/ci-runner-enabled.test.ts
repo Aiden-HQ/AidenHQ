@@ -12,16 +12,19 @@ import { test } from "node:test";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** A checkout whose unit-paths is one user unit dir, with the template, its .wants/.requires dirs and a fake systemctl. */
+/** A checkout with two user unit dirs (high, then low priority, as `unit-paths` lists them), each with the template, its
+ * .wants/.requires dirs, and a fake systemctl. */
 function host() {
   const root = mkdtempSync(join(tmpdir(), "runner-enabled-"));
   const bin = join(root, "bin");
-  const unitDir = join(root, "systemd/user");
-  const wants = join(unitDir, "default.target.wants");
-  const requires = join(unitDir, "default.target.requires");
-  for (const d of [bin, wants, requires]) mkdirSync(d, { recursive: true });
+  const high = join(root, "systemd/user");
+  const low = join(root, "systemd/user.control");
+  const unitDir = high;
+  const wants = join(high, "default.target.wants");
+  const requires = join(high, "default.target.requires");
+  for (const d of [bin, wants, requires, join(low, "default.target.wants"), join(low, "default.target.requires")]) mkdirSync(d, { recursive: true });
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
-  fake("systemd-analyze", `case "$*" in *--user*unit-paths*) echo "${unitDir}" ;; esac`);
+  fake("systemd-analyze", `case "$*" in *--user*unit-paths*) printf '%s\\n' "${high}" "${low}" ;; esac`);
   // list-unit-files lists only the template, as `indirect enabled`, so --state=enabled prints nothing; a masked instance
   // keeps its link but is-enabled says masked. ctrl/masked names the instances the fake reports masked.
   fake("systemctl", `case "$*" in
@@ -31,7 +34,7 @@ esac
 exit 0`);
   writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "[Unit]\n");
   const link = (name, dir = wants) => symlinkSync(join(unitDir, "aidenhq-ci-runner@.service"), join(dir, `${name}.service`));
-  return { root, bin, unitDir, wants, requires, link };
+  return { root, bin, unitDir, low, wants, requires, link };
 }
 
 /** The names ci_runner_enabled_units prints, through the real library. */
@@ -93,6 +96,24 @@ test("a dependency link pointing at /dev/null is not an enabled instance", async
   const h = host();
   symlinkSync("/dev/null", join(h.wants, "aidenhq-ci-runner@2.service"));
   assert.deepEqual(await enabled(h), [], "a link masked from its own file starts nothing");
+});
+
+// systemd lets a higher-priority dir cancel a lower-priority dependency: a same-named /dev/null link (or a plain file) in
+// ~/.config/systemd/user/default.target.wants/ hides an install link in /etc/systemd/user/... while is-enabled still says
+// `enabled` (systemd 262 with --root). The winning entry decides.
+test("a higher-priority mask cancels a lower-priority install link", async () => {
+  const h = host();
+  h.link("aidenhq-ci-runner@3", join(h.low, "default.target.wants"));
+  assert.deepEqual(await enabled(h), ["aidenhq-ci-runner@3.service"], "the lower link declares it while nothing shadows it");
+  symlinkSync("/dev/null", join(h.wants, "aidenhq-ci-runner@3.service"));
+  assert.deepEqual(await enabled(h), [], "a /dev/null mask at a higher-priority dir wins");
+});
+
+test("a higher-priority plain file cancels a lower-priority install link", async () => {
+  const h = host();
+  h.link("aidenhq-ci-runner@3", join(h.low, "default.target.wants"));
+  writeFileSync(join(h.wants, "aidenhq-ci-runner@3.service"), "[Unit]\n");
+  assert.deepEqual(await enabled(h), [], "systemd reads the higher dir's plain file, not the lower link");
 });
 
 test("the bare template's own link is not an instance", async () => {
