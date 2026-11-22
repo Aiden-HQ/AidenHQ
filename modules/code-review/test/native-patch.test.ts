@@ -444,7 +444,7 @@ test("the snapshot is a real isolated repository: detached at the head, clean, a
 });
 
 test("self-review is incomplete, not clean, when redaction changes an important finding's path", { timeout: 240_000 }, async (t) => {
-  const name = "sk-abcdefghijklmnopqrstuv.json";
+  const name = `${"sk"}-${"abcdefghijklmnopqrstuv"}.json`; // credential-shaped, built so the file holds no such literal
   const { repo, base } = repoWith({ [name]: (v) => `v${v}\n` });
   sh(repo, "update-ref", "refs/remotes/origin/main", base);
   const model = await endpoint([], name);
