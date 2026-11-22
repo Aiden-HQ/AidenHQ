@@ -115,8 +115,7 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
-  // it (the read's inner `timeout -k` would kill it a second later); ctrl/stuck-timeout makes that inner timeout itself hang
-  // on a child that cannot be killed, as it does when the reader is stuck in uninterruptible I/O.
+  // it (the read's inner `timeout -k` would kill it a second later).
   journalctl: `#!/usr/bin/env bash
 printf 'journalctl %s\\n' "$*" >> "$CALLS"
 [ -e /proc/self/fd/9 ] && echo "journalctl inherited fd 9" >> "$CALLS" || echo "journalctl holds no fd 9" >> "$CALLS"
@@ -139,8 +138,13 @@ exec /usr/bin/mktemp "$@"
   curl: `#!/usr/bin/env bash\n[ -f "$CTRL/kernel-down" ] && [ -f "$CTRL/read-tmp-fails" ] && : > "$CTRL/no-mktemp"\n[ -f "$CTRL/kernel-down" ] && exit 7\n[ -f "$CTRL/kernel-hang" ] && exit 28\necho ok\n`,
   // A timeout whose kill cannot land: it waits on a reader stuck past any signal, as one in uninterruptible I/O does, so only
   // the apply's own bound can end the read.
+  // ctrl/unkillable-timeout makes the supervisor that bounds a journalctl read unkillable (a timeout loading from a failing
+  // disk keeps even SIGKILL pending): the apply must not wait on it after its own deadline, or it blocks exactly as on the
+  // read it bounded. Every other call is the real timeout.
   timeout: `#!/usr/bin/env bash
-[ -f "$CTRL/stuck-timeout" ] && [ "$1" = journalctl ] && { shift; "$@" & wait $!; exit 124; }
+j=0
+for a in "$@"; do [ "$a" = journalctl ] && j=1; done
+[ "$j" = 1 ] && [ -f "$CTRL/unkillable-timeout" ] && { trap '' TERM HUP INT; while :; do sleep 1; done; }
 exec /usr/bin/timeout "$@"
 `,
   // npm ci --prefix <dir> installs the one package the fake kernel/src/apply.ts imports.
@@ -431,22 +435,6 @@ test("a /healthz timeout bounds a stalled journal read and still records the rea
   assert.match(w.calls(), /journalctl holds no fd 9/);
 });
 
-// A reader the timeout cannot kill (uninterruptible I/O keeps even SIGKILL pending, so timeout waits on it) must not hold
-// the apply: the apply bounds the read itself, records the reason and finishes with the reader still running.
-test("a /healthz timeout records its reason even when the read's timeout cannot end its reader", async () => {
-  const w = world();
-  writeFileSync(w.d("ctrl/kernel-down"), "");
-  writeFileSync(w.d("ctrl/stuck-timeout"), "");
-  writeFileSync(w.d("ctrl/stuck-journal"), "");
-  const started = Date.now();
-  const g = await timedOut(w);
-  assert.ok(Date.now() - started < 40000, "the apply did not wait on the reader");
-  assert.match(g.reason, /^the kernel did not answer \/healthz within 2s \(curl exit 7/);
-  assert.match(g.reason, /unit ActiveState=activating Result=exit-code NRestarts=2/);
-  assert.match(g.reason, /last journal unavailable, journalctl timed out/);
-  assert.match(w.calls(), /journalctl holds no fd 9/);
-});
-
 // A read that cannot create its scratch file (a full or inode-exhausted /tmp) must fail as that read, not fall through and
 // run against an empty name, and the timeout still records the line with that part marked unavailable.
 test("a /healthz timeout still records the reason when the diagnostic scratch file cannot be created", async () => {
@@ -470,6 +458,21 @@ test("a /healthz timeout reads the diagnostic command's own exit code", async ()
   assert.match(g.reason, /unit state unavailable, systemctl printed nothing/);
   assert.doesNotMatch(g.reason, /systemctl exit/);
   assert.doesNotMatch(g.reason, /systemctl timed out/);
+});
+
+// A supervisor that outlives the deadline must not hold the apply: the read is bounded by the apply's own deadline, the
+// reason is recorded, and the apply moves on. (A real SIGKILL that stays pending, as in uninterruptible I/O, cannot be
+// staged in a test; the code's guarantee is that the deadline branch neither waits on nor reaps the reader.)
+test("a /healthz timeout does not wait for a diagnostic supervisor past the deadline", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/kernel-down"), "");
+  writeFileSync(w.d("ctrl/unkillable-timeout"), "");
+  const started = Date.now();
+  const g = await timedOut(w);
+  assert.ok(Date.now() - started < 40000, "the apply did not wait on the supervisor");
+  assert.match(g.reason, /^the kernel did not answer \/healthz within 2s \(curl exit 7/);
+  assert.match(g.reason, /unit ActiveState=activating Result=exit-code NRestarts=2/);
+  assert.match(g.reason, /last journal unavailable, journalctl timed out/);
 });
 
 const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
