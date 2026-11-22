@@ -48,7 +48,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   // Only lockfiles or generated files changed: nothing to review (the engine's own rule for what a review must see).
   if (changeFiles(root, from)?.length === 0) {
     writeFileSync(memo, JSON.stringify({ branch, base, head, open: 0 }));
-    return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles or generated files changed; no model ran)`], code: 0 };
+    return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles changed; no model ran)`], code: 0 };
   }
   // The gateway and token under the names the engines read; nothing else of the job's env goes on.
   process.env.OPENROUTER_BASE_URL = `${gateway.replace(/\/$/, "")}/api/v1`;

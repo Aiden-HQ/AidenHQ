@@ -352,13 +352,22 @@ export const TRUNCATED = /^Warning: truncated output \(original token count: \d+
 export function nativeOutputs(rollouts: string[]) {
   const out: { command: string; output: string }[] = [];
   for (const text of rollouts) {
-    const calls = new Map<string, string>();
+    const calls = new Map<string, string>(), sessions = new Map<string, string>(); // call id and exec session id -> the command
+    const polled = new Map<string, string>(); // call id of a write_stdin poll -> the command whose session it reads
     for (const l of text.split("\n")) {
       if (!l.includes("function_call")) continue;
       try {
         const p = JSON.parse(l)?.payload;
         if (p?.type === "function_call" && p.name === "exec_command") calls.set(String(p.call_id), String(JSON.parse(p.arguments ?? "{}").cmd ?? ""));
-        else if (p?.type === "function_call_output" && calls.has(String(p.call_id))) out.push({ command: calls.get(String(p.call_id))!, output: String(p.output ?? "") });
+        else if (p?.type === "function_call" && p.name === "write_stdin") { const c = sessions.get(String(JSON.parse(p.arguments ?? "{}").session_id)); if (c !== undefined) polled.set(String(p.call_id), c); }
+        else if (p?.type === "function_call_output") {
+          const command = calls.get(String(p.call_id)) ?? polled.get(String(p.call_id)), output = String(p.output ?? "");
+          if (command === undefined) continue;
+          out.push({ command, output });
+          // A command still running when it answered (its session id) is read on by later polls: their output is its output.
+          const sid = /session ID (\d+)/.exec(output)?.[1];
+          if (sid) sessions.set(sid, command);
+        }
       } catch {}
     }
   }
@@ -462,12 +471,12 @@ export function gitSafe(cwd: string, args: string[]) {
 }
 
 /** The files of the change from `base` that a review must see, renames as delete and add: the path and whether it has a hunk (a binary
- * file, a mode change or an empty file has none). Lockfiles and generated files are no requirement. undefined when git can't list them. */
+ * file, a mode change or an empty file has none). Lockfiles (the gate's LOCKS) are no requirement; generated files are read like the rest (the gate counts a changed one a coverage gap). undefined when git can't list them. */
 export function changeFiles(root: string, base: string): { path: string; hunks: boolean }[] | undefined {
   try {
     const out = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", base, "HEAD"]);
     return out.split("\0").filter(Boolean).map((l) => { const [a, r, ...p] = l.split("\t"); return { path: p.join("\t"), hunks: a !== "-" && Number(a) + Number(r) > 0 }; })
-      .filter((f) => !/(^|\/)(go\.sum|bun\.lockb)$|[-.]lock(\.json|\.yaml)?$|\.snap$|\.map$|\.min\.(js|css)$/.test(f.path));
+      .filter((f) => !/(^|\/)(package-lock\.json|npm-shrinkwrap\.json|go\.sum|bun\.lockb)$|\.lock$|-lock\.(json|yaml)$/.test(f.path));
   } catch { return undefined; }
 }
 

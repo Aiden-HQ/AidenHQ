@@ -10,7 +10,7 @@ import { changeFiles, codexConfig, runEngine } from "../recipe/engines.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
-async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean; lockOnly?: boolean; marker?: string } = {}) {
+async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean; lockOnly?: boolean; marker?: string; poll?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "native-read-"));
   const repo = join(dir, "repo"), bin = join(dir, "bin");
   mkdirSync(repo); mkdirSync(bin);
@@ -34,7 +34,12 @@ async function readOf(command: (base: string) => string, opts: { files?: boolean
   const events = [{ type: "item.completed", item: { type: "command_execution", command: cmd, aggregated_output: out } }, { type: "turn.completed" }];
   const rollout = JSON.stringify({ payload: { item: { type: "ExitedReviewMode", review_output: { findings: [], overall_correctness: "patch is correct" } } } });
   // What the model was shown, as the session rollout records it (the events carry the command's whole output).
-  const call = [{ payload: { type: "function_call", call_id: "c1", name: "exec_command", arguments: JSON.stringify({ cmd }) } }, { payload: { type: "function_call_output", call_id: "c1", output: `Chunk ID: x\nOutput:\n${out}` } }].map((e) => JSON.stringify(e)).join("\n");
+  const line = (p: object) => JSON.stringify({ payload: p });
+  const cut = out.indexOf("diff --git a/b ");
+  const call = (opts.poll && cut > 0
+    ? [line({ type: "function_call", call_id: "c1", name: "exec_command", arguments: JSON.stringify({ cmd }) }), line({ type: "function_call_output", call_id: "c1", output: `Process running with session ID 7\nOutput:\n${out.slice(0, cut)}` }),
+      line({ type: "function_call", call_id: "c2", name: "write_stdin", arguments: JSON.stringify({ session_id: 7 }) }), line({ type: "function_call_output", call_id: "c2", output: `Output:\n${out.slice(cut)}` })]
+    : [line({ type: "function_call", call_id: "c1", name: "exec_command", arguments: JSON.stringify({ cmd }) }), line({ type: "function_call_output", call_id: "c1", output: `Chunk ID: x\nOutput:\n${out}` })]).join("\n");
   // A stand-in codex: prints the events and leaves the review in the session rollouts.
   writeFileSync(join(bin, "codex"), `#!/bin/sh\nmkdir -p "$CODEX_HOME/sessions"\ncat > "$CODEX_HOME/sessions/s.jsonl" <<'EOF2'\n${call}\n${rollout}\nEOF2\ncat <<'EOF2'\n${events.map((e) => JSON.stringify(e)).join("\n")}\nEOF2\n`);
   chmodSync(join(bin, "codex"), 0o755);
@@ -76,3 +81,4 @@ test("the git codex runs sees what the file list sees: a -diff attribute doesn't
 
 test("a diff whose output Codex cut (a header and a first hunk shown) is not the read", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a b`, { marker: "\nWarning: truncated output (original token count: 90000)\n... 123456 bytes omitted ...\n" }), false));
 test("the same diff uncut is", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a b`), true));
+test("the rest of a diff read through a session poll counts", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a b`, { poll: true }), true));
