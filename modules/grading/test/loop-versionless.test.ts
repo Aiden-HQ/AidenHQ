@@ -9,17 +9,21 @@ import { presentNow } from "../service/src/grader/evidence.ts";
 function setup(row, over = {}) {
   const kv = new Map(), calls = [], posts = [], notes = [], tells = [], failing = { done: 1, tell: 0 };
   const state = { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v), list: (p) => [...kv].filter(([k, v]) => k.startsWith(p) && v), lastJob: () => undefined };
-  const g = { issueId: over.id ?? "t", state: "pending", updatedAt: over.updatedAt ?? "2020-01-01T00:00:00Z", rubric: [], deliverable: over.deliverable ?? { kind: "report" }, attempts: 0 };
+  const g = { issueId: over.id ?? "t", state: "pending", round: 1, updatedAt: over.updatedAt ?? "2020-01-01T00:00:00Z", rubric: [], deliverable: over.deliverable ?? { kind: "report" }, attempts: 0 };
   const rows = [g];
   const err = () => Object.assign(new Error("502"), { status: 502 });
+  // The task's own status, as the kernel holds it: a close that lands moves it to done, and the loop reads it back before it
+  // tells the parent. A close whose answer is lost leaves it as it was (the PATCH reached the server but the caller saw 502).
+  let status = over.status ?? "in_review";
   const loop = createGradeLoop({
     // The store's own hash: an amended rubric's hash is not the one a queued verdict names, which is how a stale revision move is
     // told from a live one. Here the rubric never changes, so the hash is a stable stand-in.
-    api: { get: async (p: string) => (p === "/internal/grades" ? { grades: rows.filter((r) => r.state === "pending"), resubmitted: [] } : { state: "pending" }), post: async (path, body) => { posts.push([path, body]); g.state = row; return { state: row, attempts: 1, failures: 0 }; } },
+    api: { get: async (p: string) => (p === "/internal/grades" ? { grades: rows.filter((r) => r.state === "pending"), resubmitted: [] } : { state: g.state, round: g.round }), post: async (path, body) => { posts.push([path, body]); g.state = row; return { state: row, round: g.round, attempts: 1, failures: 0 }; } },
     pc: {
-      issue: async () => ({ id: g.issueId, identifier: over.identifier ?? "T-1", title: over.title ?? "x", status: over.status ?? "in_review", parentId: "p" }),
+      // A test can move the task behind the loop's back (over.status): the close's answer was lost, but its PATCH landed.
+      issue: async () => ({ id: g.issueId, identifier: over.identifier ?? "T-1", title: over.title ?? "x", status: over.status ?? status, parentId: "p" }),
       agent: async () => undefined,
-      setStatus: async (id, s, note) => { if (s === "done" && failing.done-- > 0) throw err(); calls.push(["setStatus", s]); notes.push(note); },
+      setStatus: async (id, s, note) => { if (s === "done" && failing.done-- > 0) throw err(); status = s; calls.push(["setStatus", s]); notes.push(note); },
       comment: async () => calls.push(["comment"]), block: async () => {}, children: async () => over.children ?? [],
     },
     log: () => {}, state,

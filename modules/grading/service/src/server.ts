@@ -175,7 +175,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       // The state, and the filing the row holds now: a queued move saved before filings were named reads it to tell whether it
       // still describes the row (a rubric amended since is a different filing, and its close must not land).
       const g = grades.get(decodeURIComponent(one[1]!));
-      return g ? { state: g.state, filing: rubricHash(g.rubric, g.deliverable, g.revision), revision: g.revision, rubric: g.rubric, deliverable: g.deliverable } : { state: null };
+      return g ? { state: g.state, filing: rubricHash(g.rubric, g.deliverable, g.revision), revision: g.revision, round: g.round, rubric: g.rubric, deliverable: g.deliverable } : { state: null };
     }
     const m = /^\/internal\/grades\/([^/]+)\/verdict$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");

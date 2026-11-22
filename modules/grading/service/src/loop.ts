@@ -56,22 +56,27 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
    * land on the amended row. "unknown" is a read that failed: the step stays queued and the next pass asks again, so a blip
    * neither drops a move that is still owed nor applies one that may be stale.
    */
-  async function stillFiled(task: string, filing?: string, step?: Json): Promise<"ok" | "stale" | "unknown"> {
+  type Filing = { verdict: "ok" | "stale" | "unknown"; filing?: string };
+  async function stillFiled(task: string, filing?: string, step?: Json): Promise<Filing> {
     let row: Json;
     try {
       row = await api.get(`/internal/grades/${encodeURIComponent(task)}`);
     } catch (err: Json) {
       log("a queued move waits: the grade state could not be read", { issue: task, err: String(err?.message ?? err).slice(0, 200) });
-      return "unknown";
+      return { verdict: "unknown" };
     }
-    if (!row) return "unknown";
-    if (filing) return !row.filing || row.filing === filing ? "ok" : "stale";
+    if (!row) return { verdict: "unknown" };
+    // A close is bound to the grading round it was decided on, not only the filing: a re-filed submission leaves the filing's
+    // words and hash unchanged but starts a new round, so the pass before it must not close the pass after it.
+    const round = typeof step?.round === "number" && (row.round ?? 0) !== step.round;
+    if (filing) return round || (row.filing && row.filing !== filing) ? { verdict: "stale" } : { verdict: "ok", filing: row.filing };
     // A step saved before steps carried a filing names none. The row it settled is the only proof it is still current, and the
     // rubric's words are not enough: a row amended A→B→A holds A again, so the pass that closed the first A would read as
     // current. The revision is what tells them apart, and a step from before filings can only be the row's first filing: a
     // satisfied row at revision 0 whose rubric and deliverable still match is that row; anything restarted or amended is not.
-    if (row.state !== "satisfied" || (row.revision ?? 0) !== 0) return "stale";
-    return JSON.stringify(row.rubric) === JSON.stringify(step?.rubric) && JSON.stringify(row.deliverable) === JSON.stringify(step?.deliverable) ? "ok" : "stale";
+    if (round || row.state !== "satisfied" || (row.revision ?? 0) !== 0) return { verdict: "stale" };
+    const same = JSON.stringify(row.rubric) === JSON.stringify(step?.rubric) && JSON.stringify(row.deliverable) === JSON.stringify(step?.deliverable);
+    return same ? { verdict: "ok", filing: row.filing } : { verdict: "stale" };
   }
   /**
    * A parent notice from the fields it was queued with, never by parsing its rendered text: a task's title is free text and can
@@ -82,6 +87,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   async function settle(task: string, steps: Json[]) {
     while (steps.length) {
       const s = steps[0]!;
+      // The row's filing as this step was checked against, for a reset below: a legacy step names none, so the verified one
+      // from the check is what the store needs (a reset naming no filing is dropped).
+      let verified: string | undefined;
       try {
         if (s.do === "reopen") {
           // A revision move queued by a verdict on a rubric since amended is stale: the amendment restarted the row (open or
@@ -105,9 +113,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // A close queued before filings were named carries none: it is checked against the row as it stands now instead of
           // replaying blindly onto a rubric amended since.
           const filed = await stillFiled(task, s.filing, s);
+          verified = filed.filing;
           // A failed read is not a stale close: the step stays queued and the next pass asks again.
-          if (filed === "unknown") return;
-          if (filed === "stale") {
+          if (filed.verdict === "unknown") return;
+          if (filed.verdict === "stale") {
             // The row was restarted or amended since this close was queued: neither it nor the notice worded for it is owed any
             // more (the notice says "graded against its rubric" of a filing that is gone). Both are dropped together, so the
             // task is not closed and its parent is not told of a result the amendment replaced; the restarted row is graded on
@@ -151,7 +160,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           }
           if (now.status !== "done" && (now.status !== s.status || active || present || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
-            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(s.filing ? { rubric: s.filing } : {}) });
+            // The reset names the row's filing as it was just read: a legacy step carries none, and a reset without one is
+            // dropped by the store, which would leave the row satisfied and never picked up again.
+            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(filed.filing ? { rubric: filed.filing } : {}) });
             steps.length = 1;
           } else if (now.status !== "done") {
             // The note keeps the grader's marker that gradeNote puts on every note: evidence collection filters grader comments by
@@ -166,22 +177,50 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
               for (const x of steps) if (x.do === "tell") x.ungraded = unreadable;
               state.set(`owed:${task}`, JSON.stringify(steps));
             }
-            // The checks above take time (evidence, presence, children, cards): an amendment can land between the first look and
-            // the close. The filing is read once more, immediately before the close, so the task is not closed on a rubric that
-            // was replaced while this pass was deciding.
+            // The checks above take time (evidence, presence, children, cards): an amendment or a re-submission can land
+            // between the first look and the close. The filing and the round are read once more, immediately before the close,
+            // so the task is not closed on a filing that was replaced, or on a round the row has moved past, while this pass
+            // was deciding.
             const still = await stillFiled(task, s.filing, s);
-            if (still === "unknown") return;
-            if (still === "stale") {
+            if (still.verdict === "unknown") return;
+            if (still.verdict === "stale") {
               log("a satisfied verdict is stale: the filing was replaced before the close", { issue: task });
               steps.length = 0;
               state.set(`owed:${task}`, "");
               return;
             }
-            await pc.setStatus(task, "done", why);
+            // That read and the write are still not one step: a re-submission landing after it is caught by the row it leaves
+            // `pending` (the next pass grades that submission instead of closing the one before it), and by the task's own
+            // status precondition below. The task's status is expected to be the one the verdict was decided on: a cancel or a
+            // hand-back that lands between this read and the kernel's write is refused there, not overwritten. The kernel
+            // re-reads the status as late as it can, immediately before its own PATCH.
+            await pc.setStatus(task, "done", why, { expectStatus: s.status });
+            // The kernel's ok resolved this check's hold in the same step, so the close is never replayed: a task another
+            // check still holds is waited out by the notice below, which reads the task before it speaks. Asking the kernel to
+            // close it again would be refused (this hold is gone) and the step could never land.
+            const after = await pc.issue(task).then((i: Json) => i.status, () => "");
+            if (after !== "done") {
+              // The close is resolved; only the notice is still owed, and it waits for the task to be done.
+              steps.shift();
+              state.set(`owed:${task}`, steps.length ? JSON.stringify(steps) : "");
+              return;
+            }
           }
         }
         else if (s.do === "block") await pc.block(task, s.note);
-        else if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
+        else if (s.do === "tell") {
+          // The parent hears "done" only when the task is: another check can still hold it after the grading hold was
+          // resolved. The notice waits, queued, and never replays the close. A task the owner stopped after the close is
+          // resolved is not told as done at all.
+          const now = await pc.issue(task).then((i: Json) => i.status, () => "");
+          if (now === "cancelled") {
+            steps.length = 0;
+            state.set(`owed:${task}`, "");
+            return;
+          }
+          if (now !== "done") return;
+          if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
+        }
       } catch (err: Json) {
         const status = Number(err?.status);
         if (!(status >= 400 && status < 500 && status !== 429)) {
@@ -189,12 +228,26 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           return;
         }
         log("a verdict's move was refused: dropped", { issue: task, step: s.do, err: String(err.message ?? err).slice(0, 300) });
+        const now = s.do === "done" ? await pc.issue(task).then((i: Json) => i.status, () => "") : "";
+        // An owner cancelled the task while the close was waiting: it is not owed, and the sweep settles the row. Neither it
+        // nor the notice worded for it is sent, so the parent is never told work passed that the owner stopped.
+        if (s.do === "done" && now === "cancelled") {
+          steps.length = 0;
+          state.set(`owed:${task}`, "");
+          return;
+        }
         // A refused close (the task is already done, or moved on): "is done" is told only when it is done.
-        if (s.do === "done" && (await pc.issue(task).then((i: Json) => i.status, () => "")) !== "done") {
-          // An ungraded close the kernel refuses (its change request is still open): the row goes back to waiting, so the next pass tries again.
-          if (s.ungraded && status === 409) {
-            try { await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(s.filing ? { rubric: s.filing } : {}) }); }
-            catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
+        if (s.do === "done" && now !== "done") {
+          // A refusal that left the task open (its change request is still open, or the owner handed it back) must be graded
+          // again: the row goes back to waiting, or — for a graded close — its own round is requeued, so the next pass picks
+          // it up. A refused close that is simply waiting on the gate keeps its queue entry either way.
+          if (status === 409) {
+            try {
+              // The reset names the round this close was decided on: a re-submission that landed since is a different round,
+              // and its own `pending` row must stand for its own grading pass rather than be parked as this close's wait.
+              // A legacy close names no round and is applied as it was (its filing was verified against this row just now).
+              await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(verified ? { rubric: verified } : {}), ...(typeof s.round === "number" ? { round: s.round } : {}) });
+            } catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
           }
           steps.length = 1;
         }
@@ -294,7 +347,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         // The wake moves the task back to todo: only for the filing this pass read. A row amended meanwhile is a different
         // filing, and waking its assignee for a reason the amendment may have removed is the same staleness a verdict is.
         const filed = await stillFiled(g.issueId, filing);
-        if (filed !== "ok") return;
+        if (filed.verdict !== "ok") return;
         await wake(issue, ev.awaiting);
         if (g.state !== "awaiting_evidence") await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing });
         return;
@@ -328,7 +381,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     // The row's filing this pass graded, by hash: the store drops the verdict if its rubric was amended or its deliverable
     // re-bound while the pass ran. The row's own list (g.rubric) and deliverable, not the template the pass falls back to, are
     // what the store compares against.
-    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, round: g.round, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
@@ -341,7 +394,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // The notice keeps its parts, not only the rendered sentence: a later close that changes the reason rewrites the reason and
       // renders the notice again from these, so it never has to guess where the free-text title ends.
       const notice = { who: `${issue.identifier} (${agent?.name ?? "its agent"})`, title: String(issue.title ?? ""), identifier: String(issue.identifier ?? issue.id), ...(ungraded ? { ungraded } : {}) };
-      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });

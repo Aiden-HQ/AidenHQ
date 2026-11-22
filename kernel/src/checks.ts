@@ -110,8 +110,19 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (!l) log(`label "${name}" missing in the control plane (run the setup)`);
     return l;
   }
-  async function patch(i: Issue, body: Record<string, unknown>) {
+  /**
+   * The owner's PATCH. `expectStatus` is the task state the caller decided on: it is read again here, immediately before the
+   * write, and a task that moved on since is refused rather than overwritten. (The control plane takes no conditional write,
+   * so this read-then-write is as late as the authority allows; every await a caller does before calling this is outside the
+   * window it protects.)
+   */
+  async function patch(i: Issue, body: Record<string, unknown>, expectStatus?: string) {
     if (!Object.keys(body).length) return;
+    if (expectStatus !== undefined) {
+      const now = await issue(i.id);
+      if (now.status !== expectStatus)
+        throw fail(409, "conflict", `${now.identifier ?? now.id} is ${now.status}, not ${expectStatus}: the move it was decided on no longer applies`);
+    }
     const r = await owner("PATCH", `/api/issues/${encodeURIComponent(i.id)}`, body);
     if (r.status >= 300) throw fail(502, "upstream", `the control plane answered ${r.status}`);
   }
@@ -276,7 +287,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
    */
   // One resolution at a time per task, so two checks' oks never each see the other's hold and both leave the task in review.
   const resolving = new Map<string, Promise<unknown>>();
-  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown };
+  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown; expectStatus?: unknown };
   /** The module's one finish check and the verdict's target status, or the refusal: asked before any task is looked up. */
   function pick(module: string, b: Resolve) {
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
@@ -297,6 +308,10 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const { id, c, to } = pick(module, b);
     const i = await issue(ref);
     if (!recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
+    // A resolve may name the task state its decision was made on (a grader's close is decided on the review it read). The
+    // check is made in patch(), immediately before the PATCH: a check here would be stale by the time the awaits below
+    // (open changes, labels, a fresh label read) finish, and the cancel it was meant to catch would land in between.
+    const expectStatus = b.expectStatus === undefined ? undefined : String(b.expectStatus);
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
@@ -333,8 +348,8 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const left = ids.filter((x) => !drop.has(x));
     // An ok clears only this check's hold: while another check still holds the task it stays in review.
     const others = b.verdict === "ok" && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id <> ?").get(i.id, id) !== undefined;
-    if (!others) await patch(i, { status: to, ...(left.length !== ids.length ? { labelIds: left } : {}), ...comment });
-    else if (left.length !== ids.length || Object.keys(comment).length) await patch(i, { ...(left.length !== ids.length ? { labelIds: left } : {}), ...comment });
+    if (!others) await patch(i, { status: to, ...(left.length !== ids.length ? { labelIds: left } : {}), ...comment }, expectStatus);
+    else if (left.length !== ids.length || Object.keys(comment).length) await patch(i, { ...(left.length !== ids.length ? { labelIds: left } : {}), ...comment }, expectStatus);
     inTx(db, "finish_resolved", () => {
       // Exactly the rows the label PATCH above ends, one by one: each gets its own verdict fact (with that check's id), so task
       // state pairs held and verdict facts per check and a sibling whose row is gone but whose held fact stands never reads as
