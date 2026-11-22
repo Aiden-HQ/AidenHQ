@@ -217,3 +217,32 @@ test("task_list(mine) caps both sources on Paperclip's own createdAt order, the 
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["assigned-2"], "the cap keeps Paperclip's newest row");
   assert.deepEqual(all.out.tasks.map((t) => t.id), ["assigned-2", "chat-3"], "and the full list is in that same order");
 });
+
+test("task_list(mine) fills limit with distinct tasks even when a chat is in both sources", async () => {
+  // chat-1 is handed back to the agent between the scans, so both sources hold it; the limit counts distinct tasks.
+  const chat = { ...row("chat-1", "todo"), assigneeUserId: "owner", createdAt: "2026-05-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const dup = { ...chat, assigneeUserId: null, assigneeAgentId: "me" };
+  const older = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" };
+  const states = { "chat-1": noAttention("waiting"), "assigned-2": noAttention("working") };
+  // The fake board serves whichever assignee filter the query asks for.
+  const board = issueBoard({ rows: [chat, dup, older] });
+  const handler = (req, res) => board(req, res);
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { mine: true, limit: 2 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["chat-1", "assigned-2"], "two distinct tasks, nothing listed twice");
+});
+
+test("task_list(mine) stops reading pages once it has limit distinct matches", async () => {
+  let reads = 0;
+  const rows = Array.from({ length: 900 }, (_, n) => ({ ...row(`assigned-${n}`, "todo"), assigneeAgentId: "me", createdAt: `2026-01-01T00:00:${String(59 - (n % 60)).padStart(2, "0")}Z` }));
+  const board = issueBoard({ rows });
+  const handler = async (req, res) => {
+    if ((req.url ?? "").includes("/issues?")) reads++;
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { mine: true, limit: 2 }));
+  assert.equal(out.out.tasks.length, 2);
+  assert.ok(reads <= 4, `read ${reads} pages for two matches; it should stop early`);
+});

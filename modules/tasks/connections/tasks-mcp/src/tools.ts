@@ -1043,62 +1043,73 @@ const TOOLS: Record<string, Tool> = {
           return onEdge();
         }
       };
-      // `top` keeps the newest `max` by the merge's own recency key rather than the first `max` in Paperclip's order: both mine
-      // sources are then selected on the key they are merged on, so one source's cap cannot drop a row newer than one kept.
-      const capped = async (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline, top = false) => {
-        const kept: (readonly [Json, Json])[] = [];
+      // One source's matches, in Paperclip's order (newest first), read page by page: it yields as it goes, so a caller that
+      // stops at `limit` never reads the pages behind it.
+      const scan = async function* (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) {
         const pages = issuePages(query, progress, () => until - Date.now())[Symbol.asyncIterator]();
         for (;;) {
           if (Date.now() > until) {
             complete = false;
-            return kept;
+            return;
           }
           const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
-          if (step.done) return kept;
+          if (step.done) return;
           const ready = (await atEdge(() => Promise.all(step.value.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[];
           const matches = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
-          if (Date.now() > until) {
-            complete = false;
-            kept.push(...matches);
-            return top ? newestKept(kept) : kept.slice(0, max);
-          }
-          if (top) {
-            kept.push(...matches);
-            if (kept.length > max) kept.splice(0, kept.length, ...newestKept(kept));
-            continue;
-          }
-          for (const [i, s] of matches) {
-            kept.push([i, s]);
-            if (kept.length >= max) return kept;
-          }
+          if (Date.now() > until) complete = false;
+          for (const [i, s] of matches) yield [i, s] as const;
+          if (Date.now() > until) return;
         }
       };
-      // The one recency key for the mine merge is Paperclip's own: createdAt, the order the issues list is served in. Each
-      // source is capped on that same key and the merge sorts on it, so the order is the same before and after the cap, and a
-      // newer chat is not crowded out by older assigned work (or the other way round).
-      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.createdAt ?? i.updatedAt ?? "")) || 0;
-      const newestKept = (rows: (readonly [Json, Json])[]) => [...rows].sort((a, b) => at(b) - at(a)).slice(0, max);
-      /** One row per task; where a task is in both sources the later (newer) snapshot wins. */
-      const deduped = (rows: (readonly [Json, Json])[]) => [...new Map(rows.map((r) => [r[0].id, r])).values()];
+      // The one recency key is Paperclip's own: createdAt, the order the issues list is served in.
+      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.createdAt ?? "")) || 0;
+      /**
+       * Two newest-first sources as one newest-first stream, each task once. Neither source is capped on its own: the limit is
+       * applied to the merged, deduped stream, so a duplicate (a chat handed back to the agent between the scans) cannot leave
+       * a slot unfilled, and an older row from one source is never dropped while a newer duplicate fills the other's cap.
+       */
+      const mergeNewest = async function* (a: AsyncIterable<readonly [Json, Json]>, b: AsyncIterable<readonly [Json, Json]>) {
+        const left = a[Symbol.asyncIterator](), right = b[Symbol.asyncIterator]();
+        let x = await left.next(), y = await right.next();
+        const seen = new Set<string>();
+        while (!x.done || !y.done) {
+          // A tie keeps the assigned (b) snapshot: the one read last.
+          const fromB = x.done || (!y.done && at(y.value) >= at(x.value));
+          const row = (fromB ? y.value : x.value) as readonly [Json, Json];
+          if (fromB) y = await right.next();
+          else x = await left.next();
+          if (seen.has(row[0].id)) continue;
+          seen.add(row[0].id);
+          yield row;
+        }
+      };
+      const take = async (rows: AsyncIterable<readonly [Json, Json]>) => {
+        const out: (readonly [Json, Json])[] = [];
+        for await (const row of rows) {
+          out.push(row);
+          if (out.length >= max) break;
+        }
+        return out;
+      };
       let out: (readonly [Json, Json])[];
-      if (!me) out = await capped(q);
+      if (!me) out = await take(scan(q));
       else {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
         const mineOnly = async (i: Json) => (i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i) ? i : null);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         // Paperclip cuts a long description in a list, which can cut the marker off the end: read the full task then.
-        // They are read before the assigned history, whose pages can be long: a big open backlog never hides a recent chat.
         const owner = await ownerUserId();
-        const chats: (readonly [Json, Json])[] = [];
+        let theirs: URLSearchParams | undefined;
+        let aChat = async () => null as Json | null;
         if (owner) {
-          const theirs = new URLSearchParams(q);
+          theirs = new URLSearchParams(q);
           theirs.delete("assigneeAgentId");
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
-          const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          const aChat = async (row: Json, until: number) => {
+          const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\s*$`);
+          aChat = async (row: Json, until: number) => {
             if (row.assigneeAgentId) return null;
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
@@ -1109,13 +1120,10 @@ const TOOLS: Record<string, Tool> = {
             if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return null;
             return mark.test(full.description ?? "") ? full : null;
           };
-          // Half the scan's budget is held for the assigned history, so neither source can starve the other.
-          chats.push(...(await capped(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2), true)));
         }
-        const assigned = await capped(q, mineOnly, deadline, true);
-        // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
-        // A chat handed back to this agent between the two scans is in both: the assigned snapshot is the newer one.
-        out = deduped([...chats, ...assigned]).sort((a, b) => at(b) - at(a)).slice(0, max);
+        // Half the scan's budget is held for the assigned history, so neither source can starve the other.
+        const chats = theirs ? scan(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2)) : (async function* () {})();
+        out = await take(mergeNewest(chats, scan(q, mineOnly)));
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
