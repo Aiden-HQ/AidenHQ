@@ -1,4 +1,0 @@
-name: needy
-description: grants glean without requiring it
-agents:
-  n: { connections: { glean: read } }

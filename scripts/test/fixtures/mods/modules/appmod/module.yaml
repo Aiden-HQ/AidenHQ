@@ -1,4 +1,0 @@
-name: appmod
-description: apps
-apps:
-  - { name: web, repo: o/r, path: apps/web, owner: boss, isolation: untrusted }

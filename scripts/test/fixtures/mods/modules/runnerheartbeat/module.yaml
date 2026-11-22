@@ -1,4 +1,0 @@
-name: runnerheartbeat
-description: runnerheartbeat
-agents:
-  eng: { profile: engineer, heartbeat: true }

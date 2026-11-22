@@ -1,4 +1,0 @@
-name: engrunner
-description: a runner agent on an engine kind
-agents:
-  coder: { profile: engineer, engine: codex-openrouter }

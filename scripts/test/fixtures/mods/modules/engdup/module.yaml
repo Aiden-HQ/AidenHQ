@@ -1,4 +1,0 @@
-name: engdup
-description: a second module with an engine kind eng already provides
-providers:
-  engine: { kind: codex-openrouter, bin: bin/engine }

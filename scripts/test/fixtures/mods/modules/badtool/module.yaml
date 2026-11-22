@@ -1,5 +1,0 @@
-name: badtool
-description: lists a tool glean does not have
-requires: [glean]
-agents:
-  n: { connections: { glean: [search, delete_everything] } }
