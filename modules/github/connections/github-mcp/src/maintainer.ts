@@ -576,12 +576,17 @@ export class Maintainer {
     }
   }
 
-  /** The issue's current state. A read that fails throws: its state is what decides whether a note is reused, so guessing it
-   * could post a second note (or skip one). */
-  private async issueState(r: MaintainedRepo, number: number): Promise<string> {
+  /** The issue as GitHub returns it. A read that fails throws: its state decides whether a note is reused and whether the state
+   * change is skipped, so guessing it could post a second note (or skip one). */
+  private async issue(r: MaintainedRepo, number: number): Promise<{ state?: string; state_reason?: string | null }> {
     const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number}'s state (GitHub said ${res.status})`);
-    return String(res.body?.state ?? "");
+    return res.body ?? {};
+  }
+
+  /** The issue's current state. */
+  private async issueState(r: MaintainedRepo, number: number): Promise<string> {
+    return String((await this.issue(r, number)).state ?? "");
   }
 
   /** Every page of the issue's timeline, refusing one longer than the page cap: a part read could hide a reopen after the
@@ -637,6 +642,9 @@ export class Maintainer {
    * not confirmed sends only the state change, unless GitHub recorded a reopen after the note (a new close, its own note). A
    * confirmed close is reused while the issue is still closed with no reopen since. Both decisions read the issue's state and
    * the timeline, and a failed read throws rather than guessing: guessing would post the note twice or skip a new one.
+   *
+   * The state change itself reads the issue first and is skipped when it is already in the requested state (a PR the code host
+   * closed, an issue it reopened): the note is then the whole write, and the answer reports its id and URL. A failed read throws.
    */
   async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string, agent = "AidenHQ") {
     const r = this.target(repo);
@@ -772,6 +780,31 @@ export class Maintainer {
     /** A lost answer: GitHub may have applied the close. Telling the caller to send the PATCH again could close an issue a
      * maintainer reopened in between, so say the outcome is unknown and let it decide from the issue's state. */
     const unknown = `whether the state change to ${state} landed is unknown (the answer was lost)${url ? `; the note was posted (${url})` : ""} — read the issue's state before retrying`;
+    let cur: Awaited<ReturnType<Maintainer["issue"]>>;
+    try {
+      cur = await this.issue(r, number);
+    } catch (e) {
+      // Without the read there is no way to know whether the PATCH is needed: fail closed, with the note's outcome added to the
+      // message, rather than guess at the state.
+      if (e instanceof GitHubNeed) {
+        const when = e.need.cause === "rate_limited" ? ` after ${e.need.until}` : "";
+        if (e.need.cause === "rate_limited" && e.need.until) this.extendRetention(noteObj, Date.parse(e.need.until));
+        throw new GitHubNeed(e.need, `${e.message}. ${url ? reset : `the state change to ${state} did not complete`}${when}`);
+      }
+      if (url) throw new Error(`${(e as Error).message}. ${reset}`.trim());
+      throw e;
+    }
+    // Already where the caller asked it to be: a PR the code host closed, or an issue it reopened. The note is this call's whole
+    // write; a PATCH would only be refused (GitHub rejects a state_reason on a closed PR with a 403) or undo an intervening
+    // change. Report the state as GitHub has it, unchanged.
+    if (String(cur.state ?? "") === state)
+      return {
+        repo: r.repo,
+        number,
+        state: cur.state,
+        state_reason: cur.state_reason ?? null,
+        ...(noteObj ? { note: { id: noteObj.id, url: noteObj.url }, objects: noteObj.objects } : {}),
+      };
     let res: Awaited<ReturnType<GitHubAccess["rest"]>>;
     try {
       res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);

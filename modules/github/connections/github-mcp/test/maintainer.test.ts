@@ -21,6 +21,8 @@ function fake(opts: {
   failTimeline?: number[];
   /** Issues whose single-issue read fails (a 500), so a state read can't be trusted. */
   failIssue?: number[];
+  /** Each issue's state as GitHub has it before this fake's writes; unset is open. */
+  states?: Record<number, string>;
   /** The ordinal of the first single-issue GET that fails (1 is assertTrusted's, 2 an issue-state re-read). */
   failIssueFrom?: number;
   longTimeline?: number;
@@ -99,7 +101,7 @@ function fake(opts: {
       if (opts.failIssue?.includes(n) || (opts.failIssueFrom !== undefined && ++singleReads >= opts.failIssueFrom)) return json(500, { message: "boom" });
       const i = (opts.issues ?? []).find((x) => x.number === n);
       // The issue's state is what the real API keeps: a landed PATCH changes it, and edits (reopen/close) land in the timeline.
-      return i ? json(200, { number: n, state: stateOf[n] ?? "open", labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
+      return i ? json(200, { number: n, state: stateOf[n] ?? opts.states?.[n] ?? "open", labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
     }
     if (one && method === "PATCH") {
       if (opts.holdPatch) await opts.holdPatch();
@@ -351,6 +353,41 @@ it("a close with a note posts the note as one comment first, then closes with th
   expect(f.posted[1]!.body).toEqual({ state: "closed", state_reason: "not_planned" });
 });
 
+it("a close with a note on an already-closed PR posts the note once and sends no state PATCH", async () => {
+  // GitHub closes a PR itself (a merge, or a superseding PR); a close of it with a note must not PATCH it. GitHub refuses that
+  // PATCH with a 403 on state_reason, which the caller reads as a failure after the note is on the issue.
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [], pr: true }],
+    states: { 1: "closed" },
+  });
+  const note = "Superseded by acme/product#7.";
+  const m = maintainer(f);
+  const out = await m.state(PRODUCT, 1, "closed", "not_planned", note);
+  // The note is the whole write: it went once, and the call reports it with the state unchanged.
+  expect(out).toMatchObject({ state: "closed", note: { id: 1 } });
+  expect(f.posted.map((p) => p.path)).toEqual([`/repos/${PRODUCT}/issues/1/comments`]);
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+  // A second identical call reuses the note and sends neither a comment nor a PATCH.
+  const again = await m.state(PRODUCT, 1, "closed", "not_planned", note);
+  expect(again).toMatchObject({ state: "closed", note: { id: 1 } });
+  expect(f.posted.map((p) => p.path)).toEqual([`/repos/${PRODUCT}/issues/1/comments`]);
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
+it("a reopen of an issue that is already open sends no state PATCH", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  expect(await maintainer(f).state(PRODUCT, 1, "open")).toMatchObject({ number: 1, state: "open" });
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
+it("a state read before the PATCH that fails throws and sends no PATCH", async () => {
+  // The label read is the first single-issue GET; the state read is the second. It cannot say whether a PATCH is needed, so the
+  // call fails rather than guess (which could PATCH a closed PR into the 403 this change avoids).
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [] }], failIssueFrom: 2 });
+  await expect(maintainer(f).state(PRODUCT, 1, "closed", "completed")).rejects.toThrow(/couldn't read acme\/product#1's state/);
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
 it("a close whose note posted but whose state change is rate limited says the note is done, so a retry only closes", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   // The PATCH meets a rate limit after the note is posted.
@@ -559,7 +596,8 @@ it("an overlapping close waits for the first one's state change, so it neither d
   expect(a.objects).toEqual([`github:${PRODUCT}#1/comment/1`]);
   expect(b.objects).toEqual([`github:${PRODUCT}#1/comment/1`]);
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
-  expect(f.posted.filter((p) => p.path.endsWith("/issues/1"))).toHaveLength(2);
+  // The first close's PATCH landed before the second read the issue, so the second finds it closed and skips its PATCH.
+  expect(f.posted.filter((p) => p.path.endsWith("/issues/1"))).toHaveLength(1);
 });
 
 it("an overlapping close whose budget runs out while it waits for the lock fails fast and sends nothing", async () => {
@@ -588,8 +626,9 @@ it("an overlapping close whose budget runs out while it waits for the lock fails
   await first;
   // Only the first call posted the note; the second never reached even its reads.
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
-  // The trusted-label gate now runs inside the lock too, so the second call makes no read at all: one GET, from the first call.
-  expect(f.calls.filter((c) => c.method === "GET" && c.url.endsWith("/issues/1"))).toHaveLength(1);
+  // The trusted-label gate now runs inside the lock too, so the second call makes no read at all: the first call's label read
+  // and the state read before its PATCH.
+  expect(f.calls.filter((c) => c.method === "GET" && c.url.endsWith("/issues/1"))).toHaveLength(2);
 });
 
 it("a pending note is kept through the refusal's advertised reset and the eviction cap, unlike a confirmed one", async () => {
