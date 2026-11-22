@@ -152,7 +152,16 @@ const http = createServer(async (req, res) => {
       const r = await d.pool.query(
         "SELECT source, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
       );
-      return send(res, 200, { sources: r.rows });
+      // A scope still running (a pass within 26 hours) whose passes have all failed for 24 hours: a source with one healthy scope
+      // hides it in the rows above. Its latest error, cut short, goes to the detector, which fences it.
+      const f = await d.pool.query(
+        `SELECT source, scope, left(err, 500) AS error, last_ok AS since FROM (
+           SELECT source, scope, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, min(started_at) AS first_at, max(finished_at) AS last_at,
+                  (array_agg(error ORDER BY finished_at DESC))[1] AS err
+           FROM src_meta.ingest_run WHERE finished_at IS NOT NULL GROUP BY source, scope) s
+         WHERE err IS NOT NULL AND last_at > now() - interval '26 hours' AND COALESCE(last_ok, first_at) < now() - interval '24 hours'`,
+      );
+      return send(res, 200, { sources: r.rows, failing_scopes: f.rows });
     }
     // Each app's quality checks from its last health probe (quality.ts): name, ok and count only, never samples (app data,
     // read through app_status by a caller who may read the app). The board's detector raises the failing ones for Fleet Ops.

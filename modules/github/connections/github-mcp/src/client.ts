@@ -20,8 +20,8 @@ export type Need =
   | { cause: "not_connected" }
   | { cause: "expired" }
   | { cause: "scope"; scope: string }
-  | { cause: "sso"; org: string; url: string }
-  | { cause: "restricted"; org: string; url: string }
+  | { cause: "sso"; org: string; url: string; /** GitHub's own words, in full, when it gave them (a GraphQL refusal). */ message?: string }
+  | { cause: "restricted"; org: string; url: string; message?: string }
   | { cause: "unreachable"; repo: string }
   | { cause: "rate_limited"; until: string }
   | { cause: "write_busy" };
@@ -74,7 +74,7 @@ export type StatusLine = { label: string; value: string; time?: string; state: "
 export type GitHubStatus = {
   login?: string;
   scopes: string[];
-  problems: { org: string; cause: "sso" | "restricted"; url: string }[];
+  problems: { org: string; cause: "sso" | "restricted"; url: string; message?: string }[];
   rate?: { remaining: number; limit: number; reset: string };
   /** The card's rows; empty while not connected. */
   lines: StatusLine[];
@@ -202,7 +202,7 @@ export function createAccess(o: {
   let granted: string[] | undefined;
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
-  const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string }>();
+  const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
@@ -216,8 +216,8 @@ export function createAccess(o: {
   }
 
   function fail(n: Need): never {
-    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url });
-    throw new GitHubNeed(n);
+    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}) });
+    throw new GitHubNeed(n, (n.cause === "sso" || n.cause === "restricted") && n.message ? `${needText(n)}. GitHub said: ${n.message}` : undefined);
   }
 
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
@@ -421,7 +421,15 @@ export function createAccess(o: {
     token: () => token(),
     scopes,
     rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as),
-    graphql: async (query, variables, opts = {}) => (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as)).body,
+    graphql: async (query, variables, opts = {}) => {
+      const body = (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as)).body;
+      if (opts.as) return body;
+      const org = typeof variables.org === "string" ? variables.org : "";
+      const need = org ? graphqlNeed(body?.errors, org, o.clientId) : undefined;
+      if (need) fail(need); // GraphQL answers 200 with the refusal inside `errors`: it is the same need REST's 403 is
+      if (org && !body?.errors?.length) problems.delete(org.toLowerCase());
+      return body;
+    },
     async identity() {
       const t = await token();
       if (me?.for === t) return { login: me.login, name: me.name, email: me.email };
@@ -446,6 +454,22 @@ export function createAccess(o: {
       };
     },
   };
+}
+
+/**
+ * The need a GraphQL `FORBIDDEN` error means: single sign-on (GitHub flags it), or an org that restricts OAuth apps (its message
+ * opens "Although you appear to have the correct authorization credentials"; an IP allow list sets its own flag and is no
+ * sign-in problem). Any other error is just an error. The full message is kept.
+ */
+function graphqlNeed(errors: unknown, org: string, clientId?: string): Need | undefined {
+  for (const e of Array.isArray(errors) ? errors : []) {
+    if (e?.type !== "FORBIDDEN") continue;
+    const message = String(e.message ?? "").slice(0, 1000);
+    if (e.extensions?.saml_failure === true) return { cause: "sso", org, url: `https://github.com/orgs/${org}/sso`, message };
+    if (e.extensions?.ip_allow_list_failure === true) continue;
+    if (/OAuth App|authorization credentials/i.test(message)) return { cause: "restricted", org, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message };
+  }
+  return undefined;
 }
 
 const RECONNECT = { label: "Reconnect", reconnect: true } as const;

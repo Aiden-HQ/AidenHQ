@@ -522,3 +522,24 @@ it("a call that works marks the sign-in ok (its state starts unknown after a res
   await createAccess({ auth: a, fetchImpl: async () => answer(200, {}) }).rest("GET", "/repos/acme/api");
   expect(marked).toEqual(["ok"]);
 });
+
+const forbidden = (extensions: Record<string, unknown>, message: string) => answer(200, { data: { organization: { projectsV2: { nodes: [null] } } }, errors: [{ type: "FORBIDDEN", path: ["organization", "projectsV2", "nodes", 0], extensions, message }] });
+
+it("maps a GraphQL FORBIDDEN from an OAuth-restricted org to a restricted need that keeps GitHub's full words", async () => {
+  const message = `Although you appear to have the correct authorization credentials, the \`acme\` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited. ${"x".repeat(300)}`;
+  const access = createAccess({ auth: auth(), clientId: "cid", fetchImpl: async () => forbidden({ saml_failure: false, ip_allow_list_failure: false }, message) });
+  const err = await access.graphql("query", { org: "acme" }, { background: true }).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid", message });
+  expect(err.message).toContain(message);
+  expect(access.status().problems).toEqual([{ org: "acme", cause: "restricted", url: "https://github.com/settings/connections/applications/cid", message }]);
+});
+
+it("maps a GraphQL FORBIDDEN flagged saml_failure to an sso need, and leaves an IP allow list failure an ordinary error", async () => {
+  const sso = createAccess({ auth: auth(), fetchImpl: async () => forbidden({ saml_failure: true }, "Resource protected by organization SAML enforcement.") });
+  expect((await sso.graphql("q", { org: "acme" }).catch((e) => e)).need).toMatchObject({ cause: "sso", org: "acme", url: "https://github.com/orgs/acme/sso" });
+  const ip = createAccess({ auth: auth(), fetchImpl: async () => forbidden({ ip_allow_list_failure: true }, "Although you appear to have the correct authorization credentials, the org has an IP allow list") });
+  const body = await ip.graphql("q", { org: "acme" });
+  expect(body.errors).toHaveLength(1);
+  expect(ip.status().problems).toEqual([]);
+});
