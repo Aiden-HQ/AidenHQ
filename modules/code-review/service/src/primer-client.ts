@@ -8,15 +8,19 @@ export const PUBLISH_KIND = "primer.publish";
 
 type Rec = { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
 
-/** A publish record's state: done with the document it made (id, url, version), refused, or pending. */
-function settled(r: Rec): ReportOut {
+/**
+ * A publish record's state: done with the document it made, refused, or pending. Primer's executor answers in words, not JSON:
+ * "Published on Primer: <url> (document <id>)" for a new document, "New version v<n> on Primer (document <id>, version <id>): <url>"
+ * for a version; `known` is the document the report was filed against, which a version's answer may leave out.
+ */
+function settled(r: Rec, known?: string): ReportOut {
   if (r.state === "done" && r.outcome?.ok) {
-    let o: Record<string, unknown> = {};
-    try { o = JSON.parse(r.outcome.text); } catch {}
-    const doc = o.documentId ?? o.document_id ?? o.id;
-    const url = typeof o.url === "string" && /^https?:\/\//.test(o.url) ? o.url : undefined;
-    if (typeof doc !== "string" || !doc) return { state: "refused", write: r.id, why: `Primer's answer named no document: ${r.outcome.text.slice(0, 200)}` };
-    return { state: "done", write: r.id, documentId: doc, ...(url ? { url } : {}), ...(Number.isInteger(o.version) ? { version: o.version as number } : {}) };
+    const text = r.outcome.text;
+    const doc = /\(document ([A-Za-z0-9-]{8,64})[,)]/.exec(text)?.[1] ?? known;
+    const url = /https?:\/\/[^\s"')]+/.exec(text)?.[0];
+    const version = /^New version v(\d+)/.exec(text)?.[1];
+    if (!doc) return { state: "refused", write: r.id, why: `Primer's answer named no document: ${text.slice(0, 200)}` };
+    return { state: "done", write: r.id, documentId: doc, ...(url ? { url } : {}), ...(version ? { version: Number(version) } : {}) };
   }
   if (r.state === "done" || ["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", write: r.id, why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}` };
   return { state: "pending", write: r.id };
@@ -26,10 +30,10 @@ export function primerPublisher(kernel: KernelClient): Publisher {
   return {
     async file(r) {
       const args = { title: r.title, content: r.content, format: "markdown", ...(r.documentId ? { documentId: r.documentId } : {}), versionNote: r.versionNote, private: true, repo_key: r.repo };
-      return settled((await kernel.call("POST", "/v1/writes", { kind: PUBLISH_KIND, args })) as Rec);
+      return settled((await kernel.call("POST", "/v1/writes", { kind: PUBLISH_KIND, args })) as Rec, r.documentId);
     },
-    async outcome(write) {
-      return settled((await kernel.call("GET", `/v1/writes/${write}`)) as Rec);
+    async outcome(write, documentId) {
+      return settled((await kernel.call("GET", `/v1/writes/${write}`)) as Rec, documentId);
     },
   };
 }

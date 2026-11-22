@@ -175,5 +175,6 @@ export type ReportIn = { repo: string; title: string; content: string; documentI
 export type ReportOut = { state: "pending" | "done" | "refused"; write: string; documentId?: string; url?: string; version?: number; why?: string };
 export interface Publisher {
   file(r: ReportIn): Promise<ReportOut>;
-  outcome(write: string): Promise<ReportOut>;
+  /** `documentId`: the document the report was filed against (a version's answer may leave it out). */
+  outcome(write: string, documentId?: string): Promise<ReportOut>;
 }

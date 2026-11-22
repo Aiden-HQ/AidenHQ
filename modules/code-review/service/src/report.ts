@@ -52,24 +52,25 @@ export function findingsOf(b: Pick<ReportBatch, "runs" | "lensOf">): Shown[] {
   }));
 }
 
-/** For display only: findings in the same lens and file whose lines overlap are one entry, keeping every option that found it. */
+/** For display only: findings in the same lens and file, of one severity, whose lines overlap are one entry, keeping every option that found it. */
 export function display(findings: Shown[]) {
   type Group = { lens: string; path: string; line: number; end: number; severity: Finding["severity"]; items: Shown[]; options: string[] };
   const groups: Group[] = [];
   for (const f of [...findings].sort((a, b) => a.lens.localeCompare(b.lens) || a.path.localeCompare(b.path) || a.line - b.line)) {
     const end = Math.max(f.line, f.end_line ?? f.line);
-    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && f.line <= x.end && end >= x.line);
+    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && f.line <= x.end && end >= x.line);
     if (!g) { groups.push({ lens: f.lens, path: f.path, line: f.line, end, severity: f.severity, items: [f], options: [f.option] }); continue; }
     g.items.push(f);
     g.end = Math.max(g.end, end);
-    if (RANK[f.severity]! < RANK[g.severity]!) g.severity = f.severity;
     if (!g.options.includes(f.option)) g.options.push(f.option);
   }
   return groups.sort((a, b) => RANK[a.severity]! - RANK[b.severity]!);
 }
 
-/** Repo-derived text as one plain line: no control characters, no markup that renders. */
-const flat = (s: unknown, max: number) => String(s ?? "").replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/[<>]/g, (c) => (c === "<" ? "‹" : "›")).replace(/\s+/g, " ").trim().slice(0, max);
+/** Repo-derived text as one plain line: no control characters, no angle brackets. */
+const plain = (s: unknown, max: number) => String(s ?? "").replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/[<>]/g, (c) => (c === "<" ? "‹" : "›")).replace(/\s+/g, " ").trim().slice(0, max);
+/** The same for prose the Markdown renders: its punctuation escaped, a link's `://` broken, a line-start marker escaped. */
+const flat = (s: unknown, max: number) => plain(s, max).replace(/[\\`*_{}[\]()#+!|~&]/g, "\\$&").replace(/^([-=>]|\d+[.)])/, "\\$1").replace(/:\/\//g, ":&#8203;//").replace(/\bwww\./gi, "www&#8203;.");
 /** Text in a code fence longer than any backtick run inside it, so it can't close the fence. */
 const fence = (text: string, info = "") => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}${info}\n${text}\n${f}`; };
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -91,10 +92,12 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
   const entry = (g: (typeof groups)[number]) => {
     const f = g.items[0]!;
     const lines = g.end > g.line ? `${g.line}-${g.end}` : `${g.line}`;
-    return [`#### ${flat(f.title, 200)}`, `${g.severity} · \`${flat(g.path, 300).replace(/`/g, "'")}:${lines}\` · found by ${g.options.map((o) => flat(o, 80)).join(", ")}`, "",
+    return [`#### ${flat(f.title, 200)}`, `${g.severity} · \`${plain(g.path, 300).replace(/`/g, "'")}:${lines}\` · found by ${g.options.map((o) => flat(o, 80)).join(", ")}`, "",
       ...(f.why ? [flat(f.why, 1500), ""] : []), ...(f.evidence ? [fence(String(f.evidence).slice(0, 1500)), ""] : []), ...(f.fix_brief ? [`Fix: ${flat(f.fix_brief, 1000)}`, ""] : [])].join("\n");
   };
   const texts = groups.map(entry);
+  // An important finding's line in the fix prompt (plain: the prompt is in a fence, pasted into an agent); its size counts too when entries are cut.
+  const fixLines = groups.map((g) => g.severity === "important" ? `- ${plain(g.path, 300)}:${g.line}: ${plain(g.items[0]!.title, 200)}. ${plain(g.items[0]!.fix_brief, 600)}` : "");
   const shown = groups.map(() => true);
   const dropped = { important: 0, nit: 0, pre_existing: 0 } as Record<string, number>;
   const HEADLINE: Record<Verdict, string> = {
@@ -122,9 +125,9 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
     out.push("", "## Cost", "");
     for (const r of b.runs) out.push(`- ${flat(r.option, 80)}: ${usd(r.cost_usd)}`);
     out.push(`- Total: ${usd(cost)}`, "");
-    const fix = groups.filter((g, i) => shown[i] && g.severity === "important").map((g) => `- ${flat(g.path, 300)}:${g.line}: ${flat(g.items[0]!.title, 200)}. ${flat(g.items[0]!.fix_brief, 600)}`);
+    const fix = fixLines.filter((l, i) => l && shown[i]);
     out.push("## Fix prompt", "", "Paste into Claude Code or Codex, in a checkout of this commit:", "",
-      fence([`Fix these findings from a code review of ${b.repo} at ${b.sha}. For each, confirm it in the code first; fix it with a test if it holds, or say why it doesn't.`, "", ...(fix.length ? fix : ["(no important findings)"])].join("\n")), "");
+      fence([`Fix these findings from a code review of ${b.repo} at ${b.sha}. For each, confirm it in the code first; fix it with a test if it holds, or say why it doesn't.`, "", ...(fix.length ? fix : [dropped.important ? "(the important findings didn't fit: they are on the board's Reviews page)" : "(no important findings)"])].join("\n")), "");
     return out.join("\n");
   };
   // Each entry's length is known, so the cut is counted, then built once (room kept for the "not shown" line).
@@ -134,7 +137,7 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
       if (groups[i]!.severity !== sev || !shown[i]) continue;
       shown[i] = false;
       dropped[sev]!++;
-      size -= texts[i]!.length + 1;
+      size -= texts[i]!.length + 1 + (fixLines[i] ? fixLines[i]!.length + 1 : 0);
     }
   let md = build();
   if (md.length > REPORT_MAX) md = `${md.slice(0, REPORT_MAX - 40)}\n\n_The report was cut at its size limit._`;

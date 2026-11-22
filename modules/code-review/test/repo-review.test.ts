@@ -4,6 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import { readConfig } from "../service/src/config.ts";
 import { createEngine } from "../service/src/engine.ts";
 import { display, render, verdict, REPORT_MAX } from "../service/src/report.ts";
+import { loadCatalog, toolSpec } from "../service/src/catalog.ts";
+import { primerPublisher } from "../service/src/primer-client.ts";
+import { readFileSync } from "node:fs";
 
 const sha = (c) => c.repeat(40);
 const REPO = "acme/app";
@@ -70,11 +73,26 @@ test("a tools run's option it doesn't report as run never counts as run; a findi
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });
   await w.tick();
-  w.finish(0, { coverage: { reviewed: [], excluded: [], incomplete: null, options: ["maint.knip"] }, findings: [w.finding("z1", { option: "sec.cloudflare", lens: "security", severity: "nit" })] });
+  w.finish(0, { coverage: { reviewed: [], excluded: [], incomplete: null, options: ["maint.knip"] }, findings: [w.finding("z1", { option: "maint.knip", lens: "security", severity: "nit" })] });
   await w.tick();
-  assert.deepEqual(w.db.prepare("SELECT option, lens FROM findings WHERE id = 'z1'").all().map((r) => [r.option, r.lens]), [["maint.knip,sec.gitleaks", null]]);
+  assert.deepEqual(w.db.prepare("SELECT option, lens FROM findings WHERE id = 'z1'").all().map((r) => [r.option, r.lens]), [["maint.knip", "maintainability"]]);
   assert.equal(w.engine.batches({})[0].verdict, "incomplete");
   assert.match(w.engine.report(b.batch), /sec\.gitleaks/);
+});
+
+test("a tools result naming an option the run wasn't asked for, or a coverage that isn't a list, fails the run", async () => {
+  const w = world();
+  await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });
+  await w.tick();
+  w.finish(0, { findings: [w.finding("z1", { option: "sec.cloudflare", severity: "nit" })] });
+  await w.tick();
+  assert.match(w.db.prepare("SELECT why FROM runs WHERE status = 'failed'").get().why, /wasn't asked for/);
+  const v = world();
+  await v.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });
+  await v.tick();
+  v.finish(0, { coverage: { reviewed: [], excluded: [], incomplete: null, options: {} } });
+  await v.tick();
+  assert.match(v.db.prepare("SELECT why FROM runs WHERE status = 'failed'").get().why, /coverage isn't in the shared shape/);
 });
 
 test("display groups the same lens, file and overlapping lines, but storage keeps each option's observation", async () => {
@@ -118,7 +136,10 @@ test("a second repo review of the repo adds a version to the same Primer documen
     await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks"] });
     await w.tick(); w.finish(i); await w.tick(); await w.tick();
   }
-  assert.deepEqual(w.published.map((p) => [p.title, p.documentId, p.versionNote]), [["Repo review: acme/app", undefined, `${sha("1").slice(0, 7)} 2026-11-22`], ["Repo review: acme/app", "doc-1", `${sha("1").slice(0, 7)} 2026-11-22`]]);
+  // Each report's note names its own batch, so a write read back by its note can only be that report's.
+  assert.deepEqual(w.published.map((p) => [p.title, p.documentId]), [["Repo review: acme/app", undefined], ["Repo review: acme/app", "doc-1"]]);
+  assert.equal(new Set(w.published.map((p) => p.versionNote)).size, 2);
+  assert.ok(w.published.every((p) => new RegExp(`^${sha("1").slice(0, 7)} b-[0-9a-f]{12}$`).test(p.versionNote)));
   assert.deepEqual([w.engine.batches({})[0].primer_url, w.engine.batches({})[0].report_url.endsWith("/report")], ["https://primer.example.com/d/doc-1", true]);
   // Primer refusing the record: the report stays on the board, saying why.
   const v = world({ primer: false });
@@ -180,4 +201,29 @@ test("a tree result with a finding out of shape fails that option with the reaso
   assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status).sort(), ["done", "failed"]);
   assert.equal(w.engine.batches({})[0].verdict, "incomplete");
   assert.match(w.engine.report(b.batch), /sec\.gitleaks: \*\*failed\*\*: the review's result isn't for this run: a finding isn't in the shared shape/);
+});
+
+test("a finished report not yet sent (a restart between) is sent by the sweep; effort is checked per engine; the report escapes repo text and keeps an important finding apart from a nit", async () => {
+  const w = world();
+  await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks"] });
+  await w.tick(); w.finish(0); await w.tick();
+  w.db.prepare("UPDATE batches SET report_write = NULL, report_url = NULL, report_version = NULL").run();
+  await w.tick();
+  assert.equal(w.published.length, 2);
+  await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["sec.cloudflare"], combo: { effort: "minimal" } }), /sec\.cloudflare takes an effort of/);
+  await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"], combo: { effort: "max" } }), /sec\.deepsec takes an effort of/);
+  const f = (id, o) => ({ ...o, id, path: "a.ts", line: 20, why: "", evidence: "", fix_brief: "", title: "t", option: "o", lens: "security" });
+  const out = render({ repo: REPO, sha: sha("1"), created: "2026-11-22T00:00:00Z", lensOf: () => "security", runs: [{ option: "o", lens: "security", status: "done", why: null, cost_usd: 0,
+    review: { findings: [f("n", { severity: "nit", end_line: 25 }), f("i", { severity: "important", line: 21, title: "[click](http://evil.example)" })], coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 } } }] });
+  assert.deepEqual([out.counts.important, out.counts.nit], [1, 1]);
+  assert.doesNotMatch(out.markdown, /\]\(http/);
+});
+
+test("a tool's allowed exit codes reach the recipe; Primer's worded answer names the document", async () => {
+  const spec = toolSpec(loadCatalog(readFileSync(new URL("../catalog.json", import.meta.url), "utf8")).filter((o) => o.id === "maint.vulture"));
+  assert.deepEqual(spec["maint.vulture"].exits, [0, 3]);
+  const kernel = (outcome) => ({ call: async () => ({ id: "w1", state: "done", outcome: { ok: true, text: outcome } }) });
+  const r = { repo: REPO, title: "t", content: "c", versionNote: "n" };
+  assert.deepEqual(await primerPublisher(kernel("Published on Primer: https://p.example.com/d/abc12345 (document abc12345)")).file(r), { state: "done", write: "w1", documentId: "abc12345", url: "https://p.example.com/d/abc12345" });
+  assert.deepEqual(await primerPublisher(kernel("New version v3 on Primer (document abc12345, version v9): https://p.example.com/d/abc12345")).file({ ...r, documentId: "abc12345" }), { state: "done", write: "w1", documentId: "abc12345", url: "https://p.example.com/d/abc12345", version: 3 });
 });

@@ -118,7 +118,11 @@ export type BatchRow = {
 const BOX_SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** A deepsec setup PR asked for and not on the code host yet (refused, or still with the AI reviewer) is asked for again after this. */
 const SETUP_RETRY = 24 * 3600_000;
+/** The most a check's json spec field holds (kernel/src/checkjobs.ts: 16,384 characters), with room. */
+const SETUP_FILES_MAX = 16_000;
 const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
+/** deepsec's efforts (recipe/engines.ts). */
+const DEEPSEC_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
@@ -530,14 +534,20 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE runs SET attempts = attempts + 1, merge_base = ? WHERE id = ?", r.head, r.id);
     const b = batchRow(r.batch)!;
     const tools = r.profile === "code-review-tools";
-    const opts = new Map(catalogSafe().map((o) => [o.id, o]));
-    const o = tools ? undefined : opts.get(r.option!);
     try {
+      const opts = new Map(catalog().map((o) => [o.id, o]));
+      const o = tools ? undefined : opts.get(r.option!);
+      const picked = tools ? r.option!.split(",").map((id) => opts.get(id)) : [];
+      if (tools ? picked.some((x) => !x) : !o) throw new RequestError(`${tools ? picked.some((x) => !x) && r.option : r.option} isn't in the option catalog`);
+      // Only deepsec's small files go to the box (a json spec field holds 16 KB): its package.json and lockfile stay in the setup PR.
+      // Files that together don't fit are none: deepsec then sets the repo up itself, as it would with no setup branch.
+      const boxed = r.engine === "deepsec" && b.setup_files ? Object.fromEntries(Object.entries(JSON.parse(b.setup_files) as Record<string, string>).filter(([p]) => BOX_SETUP.test(p))) : {};
+      const fits = JSON.stringify(boxed).length <= SETUP_FILES_MAX;
+      if (!fits) log("deepsec's setup files are too big for a check's spec: it sets up itself", { run: r.id });
       const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", profile: tools ? "code-review-tools" : "code-review",
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skill: o.run.skill } : {}) },
-        ...(tools ? { tools: toolSpec(r.option!.split(",").map((id) => opts.get(id)).filter((x): x is Option => !!x)) } : { option: r.option!, lens: o?.lens ?? "" }),
-        // Only deepsec's small files go to the box (a json spec field holds 16 KB): its package.json and lockfile stay in the setup PR.
-        ...(r.engine === "deepsec" && b.setup_files ? { setup_files: Object.fromEntries(Object.entries(JSON.parse(b.setup_files) as Record<string, string>).filter(([p]) => BOX_SETUP.test(p))) } : {}),
+        ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
+        ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}),
         focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -570,6 +580,14 @@ export function createEngine(d: EngineDeps) {
   /** A run posts on a task of its own (closed once its post settles) unless its PR is open on a watched repo (the PR's task, closed with the PR). */
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
 
+  /** A tree run's coverage as the report reads it: `options` (the tools that ran) a list of ids, `failed` a list of { id, why }, when present. */
+  const treeCoverageOk = (c: unknown, r: RunRow) => {
+    const v = (c ?? {}) as { options?: unknown; failed?: unknown };
+    const ids = (x: unknown) => typeof x === "string" && x.length > 0;
+    return (v.options === undefined || (Array.isArray(v.options) && v.options.every(ids)))
+      && (v.failed === undefined || (Array.isArray(v.failed) && v.failed.every((f) => ids((f as { id?: unknown })?.id) && typeof (f as { why?: unknown }).why === "string")))
+      && (r.profile !== "code-review-tools" || Array.isArray(v.options));
+  };
   async function finish(r: RunRow, res: { state: "failed"; why: string; billed_usd?: number } | { state: "done"; review: Review; billed_usd?: number }) {
     live.delete(r.id);
     mirrorDue = true;
@@ -581,6 +599,11 @@ export function createEngine(d: EngineDeps) {
       // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
       else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string"))
         res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title)", billed_usd: res.billed_usd };
+      else if (r.target === "tree" && !treeCoverageOk(v.coverage, r))
+        res = { state: "failed", why: "the review's result isn't for this run: its coverage isn't in the shared shape (options and failed tools, each by id)", billed_usd: res.billed_usd };
+      // A tools run's findings each name one of the options it was asked for (a box's word for another's is no word at all).
+      else if (r.target === "tree" && r.profile === "code-review-tools" && !v.findings!.every((f) => typeof f.option === "string" && r.option!.split(",").includes(f.option)))
+        res = { state: "failed", why: "the review's result isn't for this run: a finding names an option the run wasn't asked for", billed_usd: res.billed_usd };
     }
     if (res.state === "failed") {
       // A spend limit the gateway refused waits for it (the owner raises it, or the day or month turns), its attempt not counted;
@@ -684,13 +707,12 @@ export function createEngine(d: EngineDeps) {
     const review: Review = { ...rest, repo: r.repo, pr: 0, head: r.head, base: r.head, target: "tree", ...comboOf(r), cost_usd: cost };
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
-    const lens = new Map(catalogSafe().map((o) => [o.id, o.lens]));
+    const lens = new Map(catalog().map((o) => [o.id, o.lens]));
     // The box's output is data: a finding's option is one this run was asked for (else the run's own), its lens the catalog's for that option.
     const asked = new Set(r.option!.split(","));
     review.findings = review.findings.map((f) => {
       const option = typeof f.option === "string" && asked.has(f.option) ? f.option : r.option!.slice(0, 80);
-      const own = option === f.option;
-      return { ...f, option, lens: lens.get(option) ?? (own ? f.lens : undefined) };
+      return { ...f, option, lens: lens.get(option) };
     });
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
@@ -701,23 +723,24 @@ export function createEngine(d: EngineDeps) {
           r.id, f.id, r.repo, f.severity, f.path, f.line, f.title, String(f.why ?? "").slice(0, 1500), String(f.evidence ?? "").slice(0, 1500), f.option, typeof f.lens === "string" ? f.lens : null);
       }
     });
-    if (setup && r.engine === "deepsec") await fileSetup(r, setup);
+    // The setup PR waits for its approval (minutes): off the tick, so the report and other reviews go on.
+    if (setup && r.engine === "deepsec") void fileSetup(r, setup).catch((e) => log("deepsec setup PR not filed", { repo: r.repo, err: String((e as Error).message).slice(0, 200) }));
     await batchEnded(r.batch);
   }
 
   // ---- repo reviews: the batch, its report, deepsec's setup PR ----------------------------------------------------------------
 
   const batchRow = (id: string) => one<BatchRow>("SELECT * FROM batches WHERE id = ?", id);
-  /** The catalog, or none when it can't be read (a report then shows each option's id as its lens's stand-in). */
-  const catalogSafe = () => { try { return d.catalog(); } catch (e) { log("the option catalog can't be read", { err: String((e as Error).message).slice(0, 200) }); return []; } };
+  /** The option catalog: the one way it is read, a bad one a request error (a run that needs it fails, or waits, loudly). */
+  const catalog = () => { try { return d.catalog(); } catch (e) { throw new RequestError(`the option catalog can't be read: ${String((e as Error).message).slice(0, 200)}`); } };
 
   /** Once a repo review's last run has ended: its verdict and report, stored, then sent to Primer (a version of the repo's document). */
   async function batchEnded(id: string) {
     const b = batchRow(id);
     if (!b || b.status !== "running" || one("SELECT 1 FROM runs WHERE batch = ? AND status IN ('queued', 'running')", id)) return;
-    const lens = new Map(catalogSafe().map((o) => [o.id, o.lens]));
     let out: ReturnType<typeof render>;
     try {
+      const lens = new Map(catalog().map((o) => [o.id, o.lens]));
       const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => {
         const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
         const tools = r.profile === "code-review-tools";
@@ -729,9 +752,18 @@ export function createEngine(d: EngineDeps) {
       return void log("repo review report not rendered", { batch: id, err: String((e as Error).message).slice(0, 200) });
     }
     run("UPDATE batches SET status = 'done', verdict = ?, report = ?, ended = ? WHERE id = ?", out.verdict, out.markdown, iso(), id);
+    await publishReport(id);
+  }
+  /**
+   * Sends a finished batch's report to Primer. A batch with no record, no link and no refusal has not been sent (the service
+   * stopped between its end and its record): the sweep sends it, each tick, until one of the three is there.
+   */
+  async function publishReport(id: string) {
+    const b = batchRow(id)!;
     const doc = one<{ document: string }>("SELECT document FROM documents WHERE repo = ?", b.repo)?.document;
     try {
-      const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: out.markdown, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 7)} ${iso().slice(0, 10)}` });
+      // The note names the batch: a write that threw is read back by it, and no other review's note can stand for this one.
+      const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: b.report!, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 7)} ${b.id}` });
       run("UPDATE batches SET report_write = ? WHERE id = ?", o.write, id);
       published(id, o);
     } catch (e) { published(id, { state: "refused", write: "", why: String((e as Error).message).slice(0, 300) }); }
@@ -745,7 +777,8 @@ export function createEngine(d: EngineDeps) {
       return void run("UPDATE batches SET report_write = NULL, report_why = ? WHERE id = ?", `not in Primer: ${String(o.why ?? "refused").slice(0, 300)}`, id);
     }
     run("INSERT INTO documents (repo, document) VALUES (?, ?) ON CONFLICT (repo) DO UPDATE SET document = excluded.document", b.repo, o.documentId!);
-    run("UPDATE batches SET report_write = NULL, report_url = ?, report_version = ? WHERE id = ?", o.url ?? null, o.version ?? null, id);
+    // report_url is "" for a report Primer took without a link: published, so never sent again.
+    run("UPDATE batches SET report_write = NULL, report_url = ?, report_version = ? WHERE id = ?", o.url ?? "", o.version ?? null, id);
   }
 
   /**
@@ -1337,8 +1370,9 @@ export function createEngine(d: EngineDeps) {
         else live.delete(r.id);
       }
     }
-    for (const b of all<{ id: string; report_write: string }>("SELECT id, report_write FROM batches WHERE report_write IS NOT NULL"))
-      published(b.id, await d.publisher.outcome(b.report_write).catch(() => ({ state: "pending" as const, write: b.report_write })));
+    for (const b of all<{ id: string; report_write: string; document: string | null }>("SELECT id, report_write, (SELECT document FROM documents d WHERE d.repo = batches.repo) document FROM batches WHERE report_write IS NOT NULL"))
+      published(b.id, await d.publisher.outcome(b.report_write, b.document ?? undefined).catch(() => ({ state: "pending" as const, write: b.report_write })));
+    for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'done' AND report IS NOT NULL AND report_write IS NULL AND report_url IS NULL AND report_why IS NULL")) await publishReport(b.id);
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
@@ -1695,7 +1729,7 @@ export function createEngine(d: EngineDeps) {
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
       lensesOn();
       const { repo, tree } = await readTree(q.repo, q.commit);
-      const { available, recommended } = detect(tree.paths, d.catalog(), "one_off");
+      const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
     },
     /**
@@ -1710,12 +1744,17 @@ export function createEngine(d: EngineDeps) {
       if (typeof combo.model !== "string" || !/^~?[\w.-]+\/[\w.:~-]+$/.test(combo.model) || !EFFORTS.includes(combo.effort as string)) throw new RequestError(`combo is { model: an OpenRouter id, effort: ${EFFORTS.join("|")} }`);
       if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length <= 50 && b.options.every((o) => typeof o === "string"))) throw new RequestError("options lists catalog option ids");
       const { repo, tree } = await readTree(t.repo, t.commit);
-      const { available, recommended } = detect(tree.paths, d.catalog(), "one_off");
+      const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       const ids = [...new Set((b.options as string[] | undefined) ?? recommended)];
       const unknown = ids.filter((id) => !available.some((o) => o.id === id));
       if (unknown.length) throw new RequestError(`not offered for ${repo}: ${unknown.join(", ").slice(0, 300)} (GET /catalog lists what its tree fits)`);
       if (!ids.length) throw new RequestError(`pick at least one option for ${repo}`);
       const picked = available.filter((o) => ids.includes(o.id));
+      // The effort each model option's engine takes (recipe/engines.ts: deepsec up to xhigh; a skill runs on its harness), checked now, not when its run is refused.
+      for (const o of picked.filter((o) => o.kind !== "tool")) {
+        const efforts: readonly string[] = o.kind === "engine" ? DEEPSEC_EFFORTS : (ENGINES[o.run.harness as keyof typeof ENGINES]?.efforts ?? []);
+        if (!efforts.includes(combo.effort as string)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${String(combo.effort)}`);
+      }
       const id = `b-${randomBytes(6).toString("hex")}`;
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
       // deepsec scans when the commit has any of its files; else a pending setup branch's files (its PR not merged yet) are scanned with.
