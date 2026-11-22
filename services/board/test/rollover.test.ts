@@ -1,5 +1,9 @@
 // The rollover's one job: Tomorrow joins Today on a new workday. A card a schedule owns (a snooze parks it where it is until its
 // date) is that schedule's to move, never the rollover's: pulling it in early lands it a day before it was asked for.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { Store } from "../src/store.js";
 
@@ -59,5 +63,28 @@ describe("rollover", () => {
     // Its own move still lands on its date (it is simply already there).
     expect(s.applySchedules("2026-12-20")).toEqual(["b1"]);
     expect(s.schedules().size).toBe(0);
+  });
+});
+
+describe("rollover on a database from before the parked flag", () => {
+  it("keeps a pending legacy move parked, as the old rollover did, until it runs or is replaced", () => {
+    // Before the flag existed the rollover skipped every card with a pending move, whether or not the move parked it. A
+    // database created then has no `parked` column: rows read as parked, so an upgrade does not pull a snoozed card into Today
+    // a day early.
+    const dir = mkdtempSync(join(tmpdir(), "board-legacy-"));
+    const file = join(dir, "board.db");
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE placements (issue_id TEXT PRIMARY KEY, bucket TEXT NOT NULL, rank REAL NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE scheduled_moves (issue_id TEXT PRIMARY KEY, date TEXT NOT NULL, bucket TEXT NOT NULL, position TEXT NOT NULL, created_at TEXT NOT NULL);`);
+    old.prepare("INSERT INTO placements (issue_id, bucket, rank, updated_at) VALUES (?, 'tomorrow', 0, ?)").run("old1", "2026-10-07T00:00:00Z");
+    old.prepare("INSERT INTO scheduled_moves (issue_id, date, bucket, position, created_at) VALUES (?, ?, 'today', 'top', ?)").run("old1", "2026-10-20", "2026-10-07T00:00:00Z");
+    old.close();
+    const s = new Store(file);
+    expect(s.rollover("2026-10-07")).toBe(0);
+    expect(s.rollover("2026-10-08")).toBe(0);
+    expect(s.placements().get("old1")?.bucket).toBe("tomorrow");
+    // It is the schedule's to place, and it lands on its own date.
+    expect(s.applySchedules("2026-10-20")).toEqual(["old1"]);
+    expect(s.placements().get("old1")?.bucket).toBe("today");
   });
 });

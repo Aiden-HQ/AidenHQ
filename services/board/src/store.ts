@@ -180,9 +180,11 @@ export class Store {
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
     const usageColumns = (this.db.prepare("PRAGMA table_info(usage)").all() as { name: string }[]).map((c) => c.name);
-    // A move that parks the card where it waits until its date (a snooze): the rollover leaves it to applySchedules().
+    // A move that parks the card where it waits until its date (a snooze): the rollover leaves it to applySchedules(). A database
+    // from before this column recorded nothing, and the rollover then held every pending move out of its way; so rows that
+    // predate the column are marked parked, which keeps that behaviour until they are replaced or run. New rows say it themselves.
     const moveColumns = (this.db.prepare("PRAGMA table_info(scheduled_moves)").all() as { name: string }[]).map((c) => c.name);
-    if (!moveColumns.includes("parked")) this.db.exec("ALTER TABLE scheduled_moves ADD COLUMN parked INTEGER NOT NULL DEFAULT 0");
+    if (!moveColumns.includes("parked")) this.db.exec("ALTER TABLE scheduled_moves ADD COLUMN parked INTEGER NOT NULL DEFAULT 1");
     if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
     // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
