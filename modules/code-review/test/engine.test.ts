@@ -843,7 +843,7 @@ test("an important finding gates until a mandatory recheck confirms it fixed; a 
   await w.tick();
   const v = w.engine.verdict(REPO, 2, sha("2"));
   assert.deepEqual(codes(v), ["findings"]);
-  assert.match(v.reasons[0].text, /1 important finding open: t \(a\.ts:3\)/);
+  assert.match(v.reasons[0].text, /1 important finding open: t \(a\.ts:3, id f1\)/);
   // A force-push: the review is full, and still gets f1 to recheck (with its evidence).
   w.rewritten.add(sha("2"));
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
@@ -958,6 +958,23 @@ test("a mandatory run is never skipped; the owner dismisses an open finding and 
   assert.throws(() => w.engine.dismiss({ repo: REPO, number: 2, id: "f1" }), /say why/);
   assert.deepEqual(w.engine.dismiss({ repo: REPO, number: 2, id: "f1", reason: "intended: the lock is held by the caller", by: "owner" }), { dismissed: "f1" });
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+});
+
+test("an agent records `fixed: …` with no GitHub write and the merge gate's open findings drop; the claim is rechecked next head", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"]);
+  assert.match(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /id f1/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "" }), /word is fixed/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is fixed/);
+  assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" }), { resolved: "f1" });
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "again, for no reason" }), /isn't open/);
+  const f = w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get();
+  assert.deepEqual({ ...f }, { outcome: "fixed", claim: "fixed: moved the lock into pay.ts (abc1234)" });
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]), [["f1", "fixed: moved the lock into pay.ts (abc1234)"]]);
 });
 
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {

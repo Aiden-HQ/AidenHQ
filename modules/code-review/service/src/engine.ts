@@ -1042,6 +1042,31 @@ export function createEngine(d: EngineDeps) {
     const reason = m?.[2]?.trim() ?? "";
     return m && /\p{L}{2,}/u.test(reason) ? { word: m[1]!, reason } : undefined;
   };
+  /** The one way an answer closes an open finding (fixed, else dismissed), whatever carried it (a thread reply, an agent's call): kept as the finding's claim. */
+  function answer(at: { repo: string; number: number; head: string }, id: string, word: string, reason: string, by: string, evidence: string | null, label: string) {
+    const w = word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
+    const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "fixed" : "dismissed";
+    const changed = tx(() => {
+      const c = run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", outcome, iso(), claim, at.repo, at.number, id).changes;
+      if (c) dispose([id], at, outcome, `${label}: ${claim}`, by, evidence);
+      return c;
+    });
+    if (changed) mirrorDue = true;
+    return changed;
+  }
+
+  /** An agent's answer to an open finding, recorded in the store with no GitHub write: the same words and reason a thread reply carries. */
+  function resolve(b: { repo?: unknown; number?: unknown; id?: unknown; word?: unknown; reason?: unknown; by?: unknown }) {
+    const repo = String(b.repo ?? "").toLowerCase(), n = Number(b.number), id = String(b.id ?? "");
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(n) || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new RequestError("give repo, number and the finding's id");
+    const m = answerOf(`${String(b.word ?? "")} ${String(b.reason ?? "")}`.slice(0, 1600));
+    if (!m) throw new RequestError("word is fixed, disputed, by design or won't fix, and reason says what changed or why (letters, at most 1500 characters)");
+    const p = prRow(repo, n);
+    if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
+    if (!answer(p, id, m.word, m.reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
+    return { resolved: id };
+  }
+
   /**
    * A gated repo's open PRs with open gating findings: a reply on Aiden's own thread for one (the service recorded the thread's
    * first comment from its post, or from the marker of a thread posted before it recorded them) from the PR's author (not a fork's: an outsider) or someone with write access now, starting
@@ -1069,13 +1094,7 @@ export function createEngine(d: EngineDeps) {
           const may = !!m && ((r.author.toLowerCase() === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author)));
           if (m && !may) log("an answer from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
           if (m && may) {
-            const word = m.word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-            const claim = `${word}: ${m.reason}`.slice(0, 1500);
-            tx(() => {
-              if (run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", word === "fixed" ? "fixed" : "dismissed", iso(), claim, cfg.repo, p.number, t.finding).changes)
-                dispose([t.finding!], { repo: cfg.repo, number: p.number, head: p.head }, word === "fixed" ? "fixed" : "dismissed", `answered by ${r.author.slice(0, 40)}: ${claim}`, `reply:${r.author.slice(0, 40)}`, r.body);
-            });
-            mirrorDue = true;
+            answer({ repo: cfg.repo, number: p.number, head: p.head }, t.finding, m.word, m.reason, `reply:${r.author.slice(0, 40)}`, r.body, `answered by ${r.author.slice(0, 40)}`);
             open.delete(t.finding);
           }
           run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
@@ -1116,8 +1135,8 @@ export function createEngine(d: EngineDeps) {
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n);
-    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
-      unblock: `fix and push (the next review rechecks each), or reply on the finding's thread starting with fixed, disputed, by design or won't fix and the reason; the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
+      unblock: `fix and push (the next review rechecks each), or answer each with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; a reply on the finding's thread starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
@@ -1158,6 +1177,7 @@ export function createEngine(d: EngineDeps) {
     tick,
     verdict,
     dismiss,
+    resolve,
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) {
       const r = runRow(id);
