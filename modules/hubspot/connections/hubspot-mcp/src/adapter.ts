@@ -107,19 +107,14 @@ export function isoOf(v: unknown): string | null {
 }
 
 /**
- * Owners, active or not (records keep pointing at people who left), a page of 100 at a time from `from` until `deadline`;
- * `next` is where to resume when the deadline stopped the scan short. HubSpot gives no email.
+ * One page (100) of owners from `offset`, active or not (records keep pointing at people who left); `next` is where the next
+ * page starts, absent on the last. HubSpot gives no email.
  */
-export async function listOwners(call: CallHubSpot, deadline = Infinity, from?: number): Promise<{ owners: { id: string; name: string | null }[]; next?: number }> {
-  const owners: { id: string; name: string | null }[] = [];
-  for (let offset = from; ; ) {
-    const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
-    if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
-    for (const x of o.owners) if (x?.ownerId != null) owners.push({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null });
-    if (!o.hasMore || o.offset == null || o.offset === offset) return { owners };
-    offset = Number(o.offset);
-    if (Date.now() >= deadline) return { owners, next: offset };
-  }
+export async function ownersPage(call: CallHubSpot, offset?: number): Promise<{ owners: { id: string; name: string | null }[]; next?: number }> {
+  const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
+  if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
+  const owners = o.owners.filter((x: any) => x?.ownerId != null).map((x: any) => ({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null }));
+  return { owners, ...(o.hasMore && o.offset != null && Number(o.offset) !== offset ? { next: Number(o.offset) } : {}) };
 }
 
 /** Deal stage ids to labels, from the dealstage property's options. */

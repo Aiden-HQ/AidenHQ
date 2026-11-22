@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { listOwners } from "../src/adapter.js";
+import { ownersPage } from "../src/adapter.js";
 import { selected, syncObject, syncReference } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
@@ -132,21 +132,16 @@ it("activities: one table keyed by type and id, body capped, the setting selects
   expect(() => selected(["deals", "tickets"])).toThrow(/unknown tickets/);
 });
 
-it("owners: every page of search_owners, active or not, by owner id (HubSpot sends no email)", async () => {
+it("owners: every page of search_owners, active or not, by owner id, checkpointed a page at a time (HubSpot sends no email)", async () => {
   const pages: Record<string, unknown> = {
     "": { owners: [{ ownerId: 11, name: "Ada Lovelace", isActive: false }, { ownerId: 12, name: " ", isActive: true }], hasMore: true, offset: 20 },
     "20": { owners: [{ ownerId: 20, name: "Grace Hopper", isActive: true }], hasMore: false, offset: 21 },
   };
   const seen: unknown[] = [];
   const call = async (tool: string, args: Record<string, any>) => (expect(tool).toBe("search_owners"), seen.push(args.offset), json(pages[String(args.offset ?? "")]));
-  expect(await listOwners(call)).toEqual({ owners: [{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }, { id: "20", name: "Grace Hopper" }] });
-  expect(seen).toEqual([undefined, 20]);
-
+  expect(await ownersPage(call)).toEqual({ owners: [{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }], next: 20 });
+  expect(await ownersPage(call, 20)).toEqual({ owners: [{ id: "20", name: "Grace Hopper" }] });
   seen.length = 0;
-  const part = await listOwners(call, Date.now() - 1); // a spent budget stops after the page in hand and says where to resume
-  expect(part.owners.length).toBe(2);
-  expect(part.next).toBe(20);
-  expect((await listOwners(call, Infinity, 20)).owners.map((o) => o.id)).toEqual(["20"]);
 
   const { store, writes } = fakeStore();
   await syncReference(store, call, ["contacts"], Date.now() - 1); // budget spent after page one: the offset is kept

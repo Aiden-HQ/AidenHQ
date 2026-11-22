@@ -7,7 +7,7 @@
 // record never fails the others (a record that can't be shaped is skipped and counted; a database error is rethrown).
 // HubSpot sends no delete signal, so a record deleted there stays here. No LLM.
 import type { Logger } from "pino";
-import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
+import { ACTIVITY_TYPES, dealStages, isoOf, ownersPage, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 
 const CONTACT: Table = {
@@ -253,11 +253,16 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
 export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[], deadline = Infinity): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
-  // The owner scan resumes where the last pass's budget ran out (its cursor is the next offset; empty once it reached the end).
+  // The owner scan writes and checkpoints a page at a time, and resumes where the last pass's budget ran out (its cursor is the
+  // next offset; empty once it reached the end).
   const from = (await store.scope("owners")).cursor || undefined;
-  const { owners, next } = await listOwners(call, deadline, from === undefined ? undefined : Number(from));
-  for (const o of owners) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
-  await store.saveScope("owners", next === undefined ? "" : String(next));
+  let next = from === undefined ? undefined : Number(from);
+  do {
+    const page = await ownersPage(call, next);
+    for (const o of page.owners) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
+    next = page.next;
+    await store.saveScope("owners", next === undefined ? "" : String(next));
+  } while (next !== undefined && Date.now() < deadline);
   if (kinds.includes("deals"))
     for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
