@@ -421,6 +421,12 @@ test("an incident a setting now suppresses leaves the open set without a recover
   assert.equal(detectorState(kv).open["pr:acme/probe#2"], undefined);
   assert.deepEqual(detectorState(kv).recovered, []);
   assert.equal(filed.length, 1); // nothing new to file: no incident, and no recovery line for the suppressed PR
+  // An incident still in the quiet window and not yet filed: the setting drops it even when the check can't answer.
+  const kv2 = kvFrom(JSON.stringify({ open: { "pr:acme/probe#2": { reason: "r", at: new Date(NOW).toISOString(), fired: false } }, recovered: [] }));
+  const filed2 = [];
+  await tick(kv2, { pr: async () => { throw new Error("apps-mcp is not reachable"); } }, async (b) => (filed2.push(b), true), async () => {}, new Date(NOW), QUIET_MS, true, undefined, undefined, quietProbe);
+  assert.equal(detectorState(kv2).open["pr:acme/probe#2"], undefined);
+  assert.deepEqual(filed2, []);
   // The other PR merges: its recovery is filed as before.
   await run([], NOW + 62 * 60_000, quietProbe);
   assert.deepEqual(detectorState(kv).recovered.map((r) => r.key), ["pr:acme/app#7"]);

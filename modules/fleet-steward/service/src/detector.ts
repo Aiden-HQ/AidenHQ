@@ -152,11 +152,13 @@ export const QUIET_MS = 30 * MIN;
  */
 export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>, suppressed?: Suppressed): Promise<void> {
   const s = detectorState(kv);
-  const quiet = new Set(suppressed?.() ?? []);
   const at = now.toISOString();
   // A retired check group (one this detector no longer runs, e.g. the old Tier 2 `card` reminders) leaves nothing open behind it.
   const groups = Object.keys(checks);
   for (const key of Object.keys(s.open)) if (!groups.some((g) => key.startsWith(`${g}:`))) delete s.open[key];
+  // A setting suppresses its incidents before any check runs (an ignored repo): the decision is the setting's, so it holds
+  // when the check can't answer. Nothing came back, so no recovery note.
+  for (const key of new Set(suppressed?.() ?? [])) delete s.open[key];
   for (const [group, check] of Object.entries(checks)) {
     const found = await check().catch(() => undefined);
     if (!found) continue;
@@ -169,9 +171,8 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     for (const [key, o] of Object.entries(s.open)) {
       if (!key.startsWith(`${group}:`) || tripped.has(key)) continue;
       delete s.open[key];
-      // Suppressed by a setting (an ignored repo): not fixed, so no recovery note.
       // Never told anyone it was down: nothing to say about it coming back.
-      if (o.fired && !quiet.has(key)) s.recovered.push({ key, reason: o.reason, at, fired: false });
+      if (o.fired) s.recovered.push({ key, reason: o.reason, at, fired: false });
     }
   }
   // The owner hears only that the Steward itself can't be reached: a flag no task has carried for a day (one fixed line, never
