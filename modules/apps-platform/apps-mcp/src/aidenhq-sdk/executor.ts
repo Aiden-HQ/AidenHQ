@@ -27,6 +27,8 @@ export interface ExecuteRequest {
   id: string; kind: string; args: any; digest: string; idempotency_key: string;
   /** The record's task (the kernel's own row, never a cache keyed by kind and args): what the write is for. */
   task?: string;
+  /** The task's identifier as people read it (ACME-12), when the record kept one: what the code host's own PR rows are keyed by. */
+  identifier?: string;
 }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;

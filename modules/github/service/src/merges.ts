@@ -24,7 +24,7 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
+type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
@@ -291,7 +291,12 @@ export function createMerges(d: {
     const ok = q.prs.every(settled);
     const n = q.prs.filter(settled).length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
-    const linked = (p: Pr) => Boolean(q.task) && d.taskOf?.(p.repo, p.number) === q.task;
+    // pr-tasks.json names the task's identifier (pr-watch.ts notePrTask: the job's workspace), the record its id: a match on
+    // either is this task, and neither is another task's PR.
+    const linked = (p: Pr) => {
+      const row = d.taskOf?.(p.repo, p.number);
+      return Boolean(row) && Boolean((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
+    };
     const evidence = (p: Pr) => settled(p) && typeof p.sha === "string" && (p.status === "merged" || linked(p));
     // The queue's own merges first, then the ones already merged at their bound head, each in the record's order.
     const merged = q.prs.filter(evidence).sort((a, b) => Number(b.status === "merged") - Number(a.status === "merged"))
@@ -354,17 +359,21 @@ export function createMerges(d: {
 
   return {
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
-    enqueue(id: string, args: { prs: { repo: string; number: number; head: string }[] }, task?: string): Promise<Outcome> {
+    enqueue(id: string, args: { prs: { repo: string; number: number; head: string }[] }, task?: string, identifier?: string): Promise<Outcome> {
       const had = s.queues[id];
       if (had?.outcome) return Promise.resolve(had.outcome);
       if (!had) {
         const prs = args.prs.map((p) => ({ repo: p.repo, number: p.number, head: p.head, url: `https://github.com/${p.repo}/pull/${p.number}`, status: "pending" }));
-        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], ...(task ? { task } : {}) };
+        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], ...(task ? { task } : {}), ...(identifier ? { taskIdentifier: identifier } : {}) };
         save();
         log("merges queued", { record: id, prs: prs.length });
       }
       // The record's task (a kernel restart carries it again): the linkage an already-merged PR must show to be evidence.
-      else if (task && had.task !== task) { had.task = task; save(); }
+      else if ((task && had.task !== task) || (identifier && had.taskIdentifier !== identifier)) {
+        if (task) had.task = task;
+        if (identifier) had.taskIdentifier = identifier;
+        save();
+      }
       // A repeat enqueue on a running queue shares the first caller's promise.
       let w = waiters.get(id);
       if (!w) {

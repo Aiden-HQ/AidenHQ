@@ -306,10 +306,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
     }
     const own = inProcess(k);
     if (own) {
-      const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}) }).catch((e: Error) => ({ ok: false, text: e.message }));
+      const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => ({ ok: false, text: e.message }));
       return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
     }
-    await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}) }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
+    await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
   }
 
   /**

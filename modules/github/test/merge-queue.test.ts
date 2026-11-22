@@ -109,7 +109,9 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   };
   // The kernel's execute call: the record's own task goes with it (executor@1), so the queue's evidence is bound to it, never to
   // a cache keyed by kind and args (two tasks naming one PR must not take each other's linkage).
-  const merge = (id, prsArgs, task = "WOR-9") => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id, ...(task ? { task } : {}) });
+  // `task` is the kernel record's task id and `identifier` its human identifier: pr-tasks.json is keyed by the latter, so both
+  // must reach the queue (the production shape, where an id and an identifier are never the same string).
+  const merge = (id, prsArgs, task = "tsk_0000000000000w9", identifier = "WOR-9") => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id, ...(task ? { task } : {}), ...(identifier ? { identifier } : {}) });
   const settle = async () => { for (let i = 0; i < 100 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
   return { handle, github, outcomes, call, merge, settle, cacheDir, clock };
 }
@@ -316,6 +318,15 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.equal(outcomes[0]?.ok, true, "still a no-op success: the PR did merge at its head");
   assert.match(outcomes[0].text, /was already merged/);
   assert.match(outcomes[0].text, /^merged-prs: \[\]/, JSON.stringify(outcomes[0].text));
+
+  // The queue's own record task id is not the PR row's identifier: a row naming a different identifier is not this task, so the
+  // id half of the comparison alone must never pull another task's landed PR in.
+  outcomes.length = 0;
+  await merge("k-00000000000000c8", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000xx", "WOR-other");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "an identifier that isn't the row's is another task's evidence");
 
   // Merged by someone else at another head: never evidence for this record's bound head.
   outcomes.length = 0;
