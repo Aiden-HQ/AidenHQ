@@ -155,6 +155,19 @@ test("downFor names the account an expired need is about (dfeba64b)", async () =
   assert.equal(w.s.downFor("a1")[0]!.account, undefined, "a need on the whole connection is listed first");
 });
 
+test("an expired reported need retracts its queued line; every confirmed account is listed", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "a@x.com", detail: "" });
+  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "b@x.com", detail: "" });
+  w.tick(LASTED);
+  w.s.tick();
+  assert.deepEqual(w.s.downFor("a1").map((d) => d.account), ["a@x.com", "b@x.com"]);
+  w.tick(25 * 60_000);
+  w.s.tick();
+  assert.deepEqual(w.queued.filter((n) => n.retract).map((n) => n.retract).sort(), ["connect:google:expired:account:a@x.com", "connect:google:expired:account:b@x.com"]);
+  assert.deepEqual(w.s.downFor("a1"), []);
+});
+
 test("an owner-asked need is not reminded once its waits are gone (34e4dd09)", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });

@@ -100,6 +100,9 @@ export function createConnectionState(o: {
     }
   }
   const q = (sql: string) => db.prepare(sql);
+  const retract = (key: string) => {
+    try { o.queue({ kind: "digest", batch: true, retract: `connect:${key}`, text: "retract" }); } catch (e) { log("connection digest: the retraction wasn't queued", { key, err: (e as Error).message }); }
+  };
   /** The module a connection belongs to (its display name and board link are the module's). */
   const moduleOf = (connection: string) => o.connections()[connection]?.module ?? connection;
 
@@ -212,9 +215,7 @@ export function createConnectionState(o: {
         return waiters.length;
       });
       // A digest line already queued for a need that has now cleared would tell the owner something false: the owner channel drops it.
-      for (const r of reported) {
-        try { o.queue({ kind: "digest", batch: true, retract: `connect:${r.key}`, text: "retract" }); } catch (e) { log("connection digest: the retraction wasn't queued", { key: r.key, err: (e as Error).message }); }
-      }
+      for (const r of reported) retract(r.key);
       return woken;
     },
 
@@ -241,8 +242,9 @@ export function createConnectionState(o: {
       for (const connection of granted) {
         const module = conns[connection]?.module;
         if (!module) continue;
-        const r = q("SELECT cause, account, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') AND reported_day IS NOT NULL ORDER BY account != '', since LIMIT 1").get(connection) as { cause: Cause; account: string; since: number } | undefined;
-        if (r) out.push({ connection, module, cause: r.cause, ...(r.account ? { account: r.account } : {}), since: iso(r.since) });
+        const rows = q("SELECT cause, account, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') AND reported_day IS NOT NULL ORDER BY account != '', since").all(connection) as { cause: Cause; account: string; since: number }[];
+        // A need on the whole connection stands for every account; otherwise each confirmed account is listed.
+        for (const r of rows[0]?.account === "" ? rows.slice(0, 1) : rows) out.push({ connection, module, cause: r.cause, ...(r.account ? { account: r.account } : {}), since: iso(r.since) });
       }
       return out;
     },
@@ -258,7 +260,10 @@ export function createConnectionState(o: {
       q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
       // A need nobody hit lately has stopped failing (a success would have cleared it only with a sign-in's word): expire it. An owner's
       // wait keeps its row until Connect or the wait's end.
+      const stale = q("SELECT key, reported_day FROM connection_state WHERE told = 0 AND COALESCE(last_hit, since) < ?").all(t - STALE) as { key: string; reported_day: string | null }[];
       q("DELETE FROM connection_state WHERE told = 0 AND COALESCE(last_hit, since) < ?").run(t - STALE);
+      // A line already queued for it would outlive the evidence: the owner channel drops it.
+      for (const r of stale) if (r.reported_day) retract(r.key);
       // The owner-asked path is reminded only while a task still waits; a background need needs no waiter.
       const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND since <= ? AND (told = 0 OR EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account)))`).all(today, t - LASTING) as Row[];
       for (const r of rows) {
