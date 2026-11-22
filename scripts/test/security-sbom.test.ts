@@ -905,6 +905,27 @@ test("security-sbom: a pre-1.48 daemon does not plain-save a tag whose archive h
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
 });
 
+test("security-sbom: a pre-1.48 daemon does not treat an immutable index id as a single image", { skip: NOT_LINUX }, async () => {
+  // On the containerd store a container's `.Image` is the top-level index, and it is an inspectable immutable id, so
+  // `resolve_ref` legitimately returns it. Immutability is not one variant: a plain save of that id writes every platform
+  // the index holds, which a line must record rather than a scan under the running variant's target.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_MANIFESTS: "2" }, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local" }],
+    // The tag has moved to another build, so the container is keyed and pinned by its own index id, which is held and
+    // immutable: the resolver legitimately returns it as the export reference.
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:index"],
+    sizes: { "sha256:index": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(line, `no target for the container:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "a multi-platform index archive was scanned");
+  assert.match(line[2], /holds several platforms/, line[2]);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:index") && !c.includes("--platform")), calls.join("\n"));
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
+});
+
 test("security-sbom: a pre-1.48 daemon scans a plain save whose archive holds one image", { skip: NOT_LINUX }, async () => {
   // The same fallback, with an archive that proves one manifest: the running image is scanned instead of the pass
   // publishing a line for every image on an older daemon.
