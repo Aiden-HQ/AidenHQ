@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { flushDigest, queueBatch } from "./attention.js";
+import { dropQueuedNeeds, flushDigest } from "./attention.js";
 import { kernelClient } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { KINDS, notify, retry, sendDigest, type Deps, type Kind } from "./notify.js";
@@ -119,12 +119,12 @@ const take = async () => {
   const done: number[] = [];
   try {
     for (const m of await kernel.take()) {
-      // A kernel batch line waits for the digest slot (or goes as an fyi when there are no digest hours).
-      if (m.batch === true && queueBatch(store, d.attention!, { text: String(m.text ?? ""), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}) })) {
+      // A connection line the old kernel queued for the digest (`batch`): acknowledged, never routed; the digest pulls what is broken now.
+      if (m.batch === true) {
         if (Number.isInteger(m.id)) done.push(m.id);
         continue;
       }
-      const r = await notify(d, { kind: (m.batch === true ? "fyi" : KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}), ...(m.head ? { head: { agentName: String(m.head.agent), issueId: String(m.head.issue) } } : {}), ...(m.asker ? { asker: { id: String(m.asker.id), key: String(m.asker.key), roles: Array.isArray(m.asker.roles) ? m.asker.roles.map(String) : [] } } : {}) });
+      const r = await notify(d, { kind: (KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}), ...(m.head ? { head: { agentName: String(m.head.agent), issueId: String(m.head.issue) } } : {}), ...(m.asker ? { asker: { id: String(m.asker.id), key: String(m.asker.key), roles: Array.isArray(m.asker.roles) ? m.asker.roles.map(String) : [] } } : {}) });
       if (!r.sent) log.warn({ kind: m.kind, reason: r.reason }, "an owner message reached nobody");
       // notify() threw inside (its bare "error"): not routed, so the kernel hands it over again.
       if (Number.isInteger(m.id) && !(r.reason === "error" && !r.note)) done.push(m.id);
@@ -139,5 +139,13 @@ setInterval(() => void take(), 10_000).unref();
 void take();
 setInterval(() => void retry(d).catch((err) => log.warn({ err: String(err) }, "retry failed")), 30_000).unref();
 // The digest of routine crew messages: one message per slot.
-setInterval(() => void flushDigest(store, d.attention!, (text) => sendDigest(d, text)).catch(() => undefined), 5 * 60_000).unref();
+dropQueuedNeeds(store);
+let flushing = false; // one pass at a time: a slow multi-part send must not overlap the next tick and resend
+setInterval(() => {
+  if (flushing) return;
+  flushing = true;
+  void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds())
+    .catch(() => undefined)
+    .finally(() => { flushing = false; });
+}, 5 * 60_000).unref();
 startWatch({ work: kernel.activity, api: (p) => kernel.read(p), store, notify: async (text, kind) => (await notify(d, { kind, text })).sent }, log);

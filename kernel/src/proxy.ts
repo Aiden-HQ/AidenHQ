@@ -99,6 +99,12 @@ export function pendingText(r: Rec): string {
   return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
 }
 
+/** The account a served answer named (SIGNED_IN), if it named one. */
+const servedAccount = (r: unknown) => {
+  const v = (r as { _meta?: Record<string, unknown> } | null)?._meta?.[SIGNED_IN];
+  return typeof v === "string" && v ? v : undefined;
+};
+
 export function createProxy({ whoami, connections, asserter, resolver, secret, writes, needs = () => undefined, log = () => {} }: {
   whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; writes?: Writes;
   /** The connection state (late-bound: main.ts builds it after the proxy): needs_owner answers, and a success that clears one. */
@@ -128,8 +134,18 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
         out.end(body);
       });
       if (status >= 300) return { ok: false, text: `${connection} answered ${status}: ${text.slice(0, 2000)}` };
-      let ok = true, objects: unknown;
-      const answer = mapMessages(text, sse, (m) => { if (m.error || m.result?.isError) ok = false; objects ??= m.result?.structuredContent?._aidenhq?.objects; });
+      let ok = true, objects: unknown, need: Need | undefined, success = false, account: string | undefined;
+      const answer = mapMessages(text, sse, (m) => {
+        if (m.error || m.result?.isError) ok = false;
+        objects ??= m.result?.structuredContent?._aidenhq?.objects;
+        if (m.id === 1 && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; }
+      });
+      // The health probe's and a replayed record's call reach the connection state like a live call: a need is recorded, a signed-in success clears it.
+      const state = needs();
+      try {
+        if (state && need) await state.hit({ kind: "module", module: conn.module, roles: [], tools: {}, credential: "" }, connection, need);
+        else if (state && success && state.down(connection, account)) state.ok(connection, { account, fullOnly: true });
+      } catch (e) { log("connection state not updated", { connection, err: (e as Error).message }); }
       return { ok, text: answer, ...(objects !== undefined ? { objects } : {}) };
     } finally {
       asserter.end(signed.jti);
@@ -268,11 +284,6 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
             // A trusted connection's answer (no record) is only read here: it goes back as it came unless it is a need.
             const asIs = call && !fenced && !rec;
             let need: Need | undefined, success = false, account: string | undefined;
-            /** The account a served answer named (SIGNED_IN), if it named one. */
-            const servedAccount = (r: unknown) => {
-              const v = (r as { _meta?: Record<string, unknown> } | null)?._meta?.[SIGNED_IN];
-              return typeof v === "string" && v ? v : undefined;
-            };
             let answer: string | undefined;
             try {
               answer = mapMessages(text, sse, (m) => {

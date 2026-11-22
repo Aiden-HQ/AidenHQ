@@ -49,20 +49,6 @@ export function queueDigest(store: Store, item: Item, now = Date.now()): void {
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
 }
 
-/**
- * A kernel batch item (a line for the next digest): queued once per `dedupe_key` per UTC day. Returns false when there is no
- * digest slot configured, so the caller sends it as an ordinary fyi instead.
- */
-export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours">, m: { text: string; dedupe_key?: string }, now = Date.now()): boolean {
-  if (!cfg.digestHours.length) return false;
-  const day = new Date(now).toISOString().slice(0, 10);
-  const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
-  if (key && store.getKv(key) === day) return true;
-  queueDigest(store, { agent: "AidenHQ", text: m.text, source: "kernel", kind: "fyi" }, now);
-  if (key) store.setKv(key, day);
-  return true;
-}
-
 /** The owner-local slot now: its date plus the latest digest hour already reached (none before the first one). */
 export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, now: number): string | undefined {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: cfg.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(now).map((x) => [x.type, x.value]));
@@ -72,18 +58,26 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 
 /** One digest message stays under every transport's limit (Telegram cuts at 3,500 characters). */
 const DIGEST_MAX = 3000;
-const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`;
-
+/** A connection line carries its reconnect link whole: clipping would cut off the URL the owner needs. */
+const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.id?.startsWith("need:") ? i.text : clip(i.text, 300)}`;
 /**
  * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
  * message's items leave the queue (and are told) only once it went; a failed send keeps the rest for the next tick.
  */
-export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now()): Promise<boolean> {
+export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now(), needs?: () => Promise<string[]>): Promise<boolean> {
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
+  // The connections still broken, pulled from the kernel each time the digest is composed (a retry asks again): a recovered one is
+  // simply absent. When the kernel can't be read, one line says so rather than hiding it. Not queue items: nothing to replay or clear.
+  const asked = needs ? await needs().then((l) => l, () => undefined) : [];
+  const extra = (text: string): Item => ({ id: `need:${text}`, agent: "AidenHQ", text, source: "kernel", kind: "fyi" });
+  // Lines of this slot a failed attempt already delivered are not sent again.
+  const done = JSON.parse(store.getKv("digest:needs-sent") || "{}") as { slot?: string; ids?: string[] };
+  const delivered = new Set(done.slot === slot ? done.ids : []);
+  const items = [...q, ...(asked ?? (q.length ? ["couldn't check connections"] : [])).map(extra).filter((i) => !delivered.has(i.id!))];
   const batches: Item[][] = [];
-  for (const i of q) {
+  for (const i of items) {
     const b = batches.at(-1);
     if (b && [...b, i].map(line).join("\n").length <= DIGEST_MAX) b.push(i);
     else batches.push([i]);
@@ -94,11 +88,20 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
     if (out === false) return false;
     // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
     const sent = new Set(b.map((i) => i.id));
+    store.setKv("digest:needs-sent", JSON.stringify({ slot, ids: [...delivered, ...b.filter((i) => i.id?.startsWith("need:")).map((i) => i.id)] }));
+    for (const i of b) if (i.id?.startsWith("need:")) delivered.add(i.id);
     store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
     if (out === true) for (const i of b) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
   }
   store.setKv("digest:slot", slot);
-  return q.length > 0;
+  return items.length > 0;
+}
+
+/** Digest lines the kernel's connection state used to queue (before the digest pulled them): dropped, so none repeats or goes stale. */
+export function dropQueuedNeeds(store: Store): void {
+  const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
+  const keep = q.filter((i) => !(i.source === "kernel" && / isn't connected \(.*\)(, and work is waiting on it)?: https?:\/\//.test(i.text)));
+  if (keep.length !== q.length) store.setKv("digest:queue", JSON.stringify(keep));
 }
 
 /** The digest lines waiting for their slot, as ledger rows (not yet told: the digest hasn't gone). */

@@ -11,6 +11,8 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
     take: async (): Promise<any[]> => ((await call("GET", "/v1/notify/take")).messages ?? []) as any[],
     /** The taken messages this router has routed: the kernel drops them. */
     ack: async (ids: number[]): Promise<void> => { if (ids.length) await call("POST", "/v1/notify/ack", { ids }); },
+    /** The connection needs confirmed down now, as digest lines (the kernel renders them; a recovered or removed one is absent). */
+    connectionNeeds: async (): Promise<string[]> => ((await call("GET", "/v1/connections/needs")).lines ?? []) as string[],
     /** One message to one channel's transport; a channel that isn't installed is off. */
     send: async (to: string, message: Message): Promise<{ sent: boolean; off?: boolean }> => {
       const r = await raw("POST", "/v1/notify/send", { to, message });

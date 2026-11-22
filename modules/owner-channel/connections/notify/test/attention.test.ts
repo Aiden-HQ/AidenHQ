@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { flushDigest, queueDigest } from "../src/attention.js";
+import { dropQueuedNeeds, flushDigest, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
@@ -67,4 +67,60 @@ it("a long digest goes as several messages under the transport limit, each told 
   expect(await flushDigest(store, cfg, async (t) => (sent.push(t), true), Date.UTC(2026, 10, 17, 9, 5))).toBe(true);
   expect(sent.every((t) => t.length <= 3100)).toBe(true);
   expect(store.recentTold(3, 50, Date.UTC(2026, 10, 17, 9, 5))).toHaveLength(20);
+});
+
+it("a digest appends the kernel's confirmed connection needs, and says so when it can't read them", async () => {
+  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const at = Date.UTC(2026, 10, 17, 9);
+  const run = async (needs: () => Promise<string[]>, queued = true) => {
+    const store = openStore(":memory:");
+    if (queued) queueDigest(store, { agent: "Worker", text: "other" }, at - 1000);
+    let out = "";
+    await flushDigest(store, cfg, async (t) => ((out = t), true), at, needs);
+    return { out, left: JSON.parse(store.getKv("digest:queue") || "[]") as unknown[] };
+  };
+  const ok = await run(async () => ["GitHub isn't connected (not connected): https://board/connect/github"]);
+  expect(ok.out).toContain("other");
+  expect(ok.out).toContain("GitHub isn't connected");
+  expect(ok.left).toEqual([]);
+  expect((await run(async () => [])).out).not.toContain("connect");
+  expect((await run(async () => { throw new Error("kernel down"); })).out).toContain("couldn't check connections");
+  expect((await run(async () => ["GitHub isn't connected"], false)).out).toContain("GitHub isn't connected");
+  expect((await run(async () => { throw new Error("kernel down"); }, false)).out).toBe("");
+});
+
+it("a digest that fails partway does not resend the connection lines already delivered (afdc1671)", async () => {
+  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const at = Date.UTC(2026, 10, 17, 9);
+  const store = openStore(":memory:");
+  for (let n = 0; n < 8; n++) queueDigest(store, { agent: "Worker", text: `${n} ${"x".repeat(300)}` }, at - 1000);
+  const lines = [`GitHub isn't connected: ${"a".repeat(260)}`, `Google isn't connected: ${"b".repeat(260)}`];
+  const sent: string[] = [];
+  let calls = 0;
+  await flushDigest(store, cfg, async (t) => (++calls === 2 ? false : (sent.push(t), true)), at, async () => lines);
+  expect(sent.join("\n")).toContain("GitHub isn't connected");
+  expect(sent.join("\n")).not.toContain("Google isn't connected");
+  await flushDigest(store, cfg, async (t) => (sent.push(t), true), at + 60_000, async () => lines);
+  const all = sent.join("\n");
+  expect(all.split("GitHub isn't connected").length - 1).toBe(1);
+  expect(all.split("Google isn't connected").length - 1).toBe(1);
+});
+
+it("queued connection lines from before the digest pulled them are dropped at startup (1099443c)", () => {
+  const store = openStore(":memory:");
+  queueDigest(store, { agent: "AidenHQ", text: "GitHub isn't connected (not connected): http://board/connect/github", source: "kernel" });
+  queueDigest(store, { agent: "AidenHQ", text: "Google isn't connected (sign-in expired), and work is waiting on it: http://board/connect/google", source: "kernel" });
+  queueDigest(store, { agent: "Worker", text: "other" });
+  dropQueuedNeeds(store);
+  expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other"]);
+});
+
+it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", async () => {
+  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const link = `https://github.com/orgs/acme/sso?${"q".repeat(450)}`;
+  const store = openStore(":memory:");
+  queueDigest(store, { agent: "Worker", text: "other" }, Date.UTC(2026, 10, 17, 8));
+  let out = "";
+  await flushDigest(store, cfg, async (t) => ((out = t), true), Date.UTC(2026, 10, 17, 9), async () => [`GitHub isn't connected (acme needs SSO authorization): ${link}`]);
+  expect(out).toContain(link);
 });

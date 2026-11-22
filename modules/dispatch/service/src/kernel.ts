@@ -11,7 +11,7 @@ export interface Wake { key: string; task: string; agent: string; cause: string;
 export interface JobView { id: string; task: string; agent: string; state: string; exit: number | null; final: string; session: string | null; timedOut: boolean; cancelled: boolean; at: number; ended: number | null; acked: boolean; refused?: string; refusedCode?: string; refusedKind?: string; refusedSource?: string; progress?: { steps?: Step[] } }
 
 /** A connection the owner has to fix (kernel connection-state.ts): `connection` is the agent-facing key, `module` the one the owner connects. */
-export interface Down { connection: string; module: string; cause: string; since: string }
+export interface Down { connection: string; module: string; cause: string; account?: string; since: string }
 
 export interface Kernel {
   claim(limit: number): Promise<Wake[]>;
