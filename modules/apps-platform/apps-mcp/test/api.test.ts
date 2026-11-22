@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { authorize, callApi, type ApiRequest, type ResponseHeaders, type Resolve } from "../src/api.js";
+import { apiTarget, authorize, callApi, targetContainer, type ApiRequest, type ResponseHeaders, type Resolve } from "../src/api.js";
 import { agentSigner } from "../src/identity.js";
 import { feedbackOnly } from "../src/mcp.js";
 import { isSensitive, parseApp } from "../src/registry.js";
@@ -26,6 +26,30 @@ export async function identityFixture() {
   return { sign, identify, protect: identity.protect };
 }
 
+describe("registry: api", () => {
+  it("validates the block; a static token is gone", () => {
+    expect(app().secrets).toEqual([]);
+    expect(app({ database: "warehouse", secrets: ["ROADMAP_DATABASE_URL"] }).secrets).toEqual(["ROADMAP_DATABASE_URL", "DATABASE_URL"]);
+    expect(isSensitive(app(), [])).toBe(false);
+    expect(() => app({ api: { ...api, token: "ROADMAP_AGENT_TOKEN" } })).toThrow(/api.token is gone/);
+    expect(() => app({ secrets: ["AIDENHQ_IDENTITY_KEYS"] })).toThrow(/platform/);
+    expect(() => app({ api: { ...api, callers: [] } })).toThrow();
+    expect(() => app({ api: { ...api, paths: ["api/x"] } })).toThrow();
+    expect(() => app({ api: { ...api, paths: ["GET /api/agent/roadmap"] } })).toThrow(); // the app's own paths stay prefixes
+    const routed = app({ api: { callers: [{ agent: "k", paths: ["POST /api/agent/intake/{reference}/decision"] }], paths: api.paths } });
+    expect(routed.api!.callers).toEqual([{ agent: "k", paths: ["POST /api/agent/intake/{reference}/decision"] }]);
+    expect(routed.api!.member_paths).toEqual([]);
+    expect(app({ api: { ...api, member_paths: ["/intake", "/intake/feedback"] } }).api!.member_paths).toEqual(["/intake", "/intake/feedback"]);
+    expect(() => app({ api: { ...api, member_paths: ["intake"] } })).toThrow();
+    for (const bad of ["/intake//feedback", "/intake?x=1", "/intake/../feedback", "/intake/./feedback", "https://example.com/intake"]) {
+      expect(() => app({ api: { ...api, member_paths: [bad] } }), bad).toThrow();
+    }
+    for (const bad of ["GET /api/agent/{a}{b}", "get /api/agent/x", "FETCH /api/agent/x", "GET /api/agent/{a b}", "GET /api/agent/{a/b}", "GET /api/agent//x", "GET /api/agent/x y", "GET/api/agent/x", "GET ", "GET /api/agent/../x"])
+      expect(() => app({ api: { ...api, callers: [{ agent: "k", paths: [bad] }] } }), bad).toThrow();
+    expect(() => app({ health: {} })).toThrow(/health.url/);
+  });
+});
+
 describe("authorize", () => {
   const ok = (path: string, key = "roadmap-keeper") => () => authorize(app(), key, path);
   it("allows a granted caller under a prefix", () => {
@@ -43,12 +67,126 @@ describe("authorize", () => {
   });
 });
 
+describe("a caller's exact routes", () => {
+  // The caller's entry names the two routes it uses; the app's own paths stay the prefixes where its API lives.
+  const rk = app({
+    api: {
+      callers: ["roadmap-keeper", { agent: "roadmap-feedback", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }],
+      paths: ["/api/agent/roadmap", "/api/agent/intake"],
+    },
+  });
+  const as = (method: string, path: string, key = "roadmap-feedback") => () => authorize(rk, key, path, method);
+
+  it("allows its two routes, with a query string on the GET and any reference on the POST", () => {
+    expect(as("GET", "/api/agent/intake?status=received")).not.toThrow();
+    expect(as("POST", "/api/agent/intake/AB12CD34/decision")).not.toThrow();
+    expect(as("POST", "/api/agent/intake/9f3e/decision")).not.toThrow();
+  });
+  it("denies another method, a bare or extra segment, a missing reference, and a path outside the grant", () => {
+    for (const [m, p] of [
+      ["DELETE", "/api/agent/intake"],
+      ["POST", "/api/agent/intake"],
+      ["GET", "/api/agent/intake/AB12CD34/decision"],
+      ["HEAD", "/api/agent/intake"],
+      ["POST", "/api/agent/intake/AB12CD34/decision/extra"],
+      ["POST", "/api/agent/intake/decision"],
+      ["GET", "/api/agent/intake/x"],
+      ["GET", "/api/item"],
+    ] as const)
+      expect(as(m, p), `${m} ${p}`).toThrow(/isn't under/);
+    expect(as("GET", "/api/agent/intake/../decision")).toThrow(/bad path/);
+  });
+  it("is never read as a prefix: a read route can't be spent on a write, and a route never widens the app's own paths", () => {
+    const readOnly = app({ api: { callers: [{ agent: "reader", paths: ["GET /api/agent/intake"] }], paths: ["/api/agent/intake"] } });
+    expect(() => authorize(readOnly, "reader", "/api/agent/intake?status=received", "GET")).not.toThrow();
+    expect(() => authorize(readOnly, "reader", "/api/agent/intake", "POST")).toThrow(/isn't under/);
+    expect(() => authorize(readOnly, "reader", "/api/agent/intake/AB12CD34/decision", "GET")).toThrow(/isn't under/);
+    const outside = app({ api: { callers: [{ agent: "reader", paths: ["GET /api/admin/users"] }], paths: ["/api/agent/intake"] } });
+    expect(() => authorize(outside, "reader", "/api/admin/users", "GET")).toThrow(/isn't under/);
+  });
+  it("holds a member request to the caller's own grants; a plain-string caller reaches any route the app serves", () => {
+    const asMember = (method: string, path: string, key = "roadmap-feedback") => () => authorize(rk, key, path, method, "member");
+    // The same exact routes it may use as admin, and nothing else: a narrow integration never widens to the public surface.
+    expect(asMember("GET", "/api/agent/intake?status=received")).not.toThrow();
+    expect(asMember("POST", "/api/agent/intake/AB12CD34/decision")).not.toThrow();
+    for (const [m, p] of [["POST", "/intake/feedback"], ["DELETE", "/api/agent/intake"], ["GET", "/admin/intake"], ["POST", "/"]] as const)
+      expect(asMember(m, p), `${m} ${p}`).toThrow(/isn't under/);
+    // The app's own agent is a plain-string caller: listed for the whole app, so member reaches any public route.
+    expect(asMember("POST", "/intake/feedback", "roadmap-keeper")).not.toThrow();
+    expect(asMember("GET", "/admin/intake", "roadmap-keeper")).not.toThrow();
+    // The caller gate still applies.
+    expect(() => authorize(rk, "intruder", "/intake/feedback", "POST", "member")).toThrow(/may not call/);
+  });
+  it("extends a member request to api.member_paths, while admin and an object caller's own grant keep their limits", () => {
+    const publicGrants = app({
+      api: {
+        callers: [
+          { agent: "red-teamer", paths: ["/intake", "/intake/feedback"] },
+          { agent: "intake-only", paths: ["/intake/feedback"] },
+          { agent: "exact", paths: ["POST /intake/{reference}"] },
+        ],
+        paths: ["/api/agent/roadmap"],
+        member_paths: ["/intake", "/intake/feedback"],
+      },
+    });
+    const asMember = (method: string, path: string, key = "red-teamer") => () => authorize(publicGrants, key, path, method, "member");
+    expect(asMember("POST", "/intake")).not.toThrow();
+    expect(asMember("POST", "/intake/feedback")).not.toThrow();
+    expect(asMember("POST", "/intake/missing_item")).not.toThrow();
+    expect(asMember("POST", "/intake/feedback", "intake-only")).not.toThrow();
+    expect(asMember("POST", "/intake", "intake-only")).toThrow(/isn't under/);
+    // An exact-route caller keeps its method and segment count under member_paths too.
+    expect(asMember("POST", "/intake/AB12CD34", "exact")).not.toThrow();
+    expect(asMember("GET", "/intake/AB12CD34", "exact")).toThrow(/isn't under/);
+    expect(asMember("POST", "/intake/AB12CD34/extra", "exact")).toThrow(/isn't under/);
+    expect(asMember("POST", "/intake/feedback", "intruder")).toThrow(/may not call/);
+    expect(asMember("POST", "/admin/intake")).toThrow(/isn't under/);
+    // Admin still has the app's own agent API only; member_paths is not a writer path.
+    expect(() => authorize(publicGrants, "red-teamer", "/intake/feedback", "POST")).toThrow(/isn't under/);
+    expect(() => authorize(publicGrants, "red-teamer", "/api/agent/roadmap", "POST")).toThrow(/isn't under/);
+    // An app without member_paths behaves exactly as before: the same object caller cannot reach the public route.
+    const unchanged = app({ api: { callers: [{ agent: "red-teamer", paths: ["/intake", "/intake/feedback"] }], paths: ["/api/agent/roadmap"] } });
+    expect(() => authorize(unchanged, "red-teamer", "/intake/feedback", "POST", "member")).toThrow(/isn't under/);
+    // A plain-string caller is already granted the app's whole surface; member_paths does not narrow or widen it.
+    const plain = app({ api: { callers: ["red-teamer"], paths: ["/api/agent/roadmap"], member_paths: ["/intake"] } });
+    expect(() => authorize(plain, "red-teamer", "/intake/feedback", "POST", "member")).not.toThrow();
+    expect(() => authorize(plain, "red-teamer", "/admin/intake", "POST", "member")).not.toThrow();
+  });
+  it("leaves the app's own agent, and a bare-path {agent, paths} caller, as prefix callers", () => {
+    expect(as("GET", "/api/agent/roadmap/items/3", "roadmap-keeper")).not.toThrow();
+    expect(as("DELETE", "/api/agent/intake/x", "roadmap-keeper")).not.toThrow();
+    expect(as("GET", "/", "roadmap-keeper")).toThrow(/isn't under/);
+    const prefixed = app({ api: { callers: [{ agent: "reader", paths: ["/api/agent/intake"] }], paths: ["/api/agent/intake"] } });
+    for (const [m, p] of [["GET", "/api/agent/intake?status=received"], ["GET", "/api/agent/intake/AB12CD34/decision"], ["DELETE", "/api/agent/intake/x"]] as const)
+      expect(() => authorize(prefixed, "reader", p, m), `${m} ${p}`).not.toThrow();
+    expect(() => authorize(prefixed, "reader", "/api/agent/intake-other", "GET")).toThrow(/isn't under/);
+  });
+});
+
 
 // Fake Docker: containers with compose labels and network IPs; resolve answers like `docker ps -q --filter label=...` + inspect.
 const ctr = (id: string, project: string, service: string, ip: string) => ({ Id: id.padEnd(64, "0"), Config: { Labels: { "com.docker.compose.project": project, "com.docker.compose.service": service } }, NetworkSettings: { Networks: { [project]: { IPAddress: ip } } } });
 const fakeDocker = (cs: ReturnType<typeof ctr>[], forged?: ReturnType<typeof ctr>): Resolve => async (a, service) => ({
   ids: cs.filter((c) => c.Config.Labels["com.docker.compose.project"] === `app-${a.name}` && c.Config.Labels["com.docker.compose.service"] === service).map((c) => c.Id.slice(0, 12)).join("\n"),
   inspect: async (id) => JSON.stringify([forged ?? cs.find((c) => c.Id.startsWith(id))]),
+});
+
+describe("target", () => {
+  it("is the app's own container, found by compose labels, by its full id", async () => {
+    expect(apiTarget(app())).toEqual({ service: "app", protocol: "http:", port: "8080" });
+    expect(() => apiTarget(app({ health: { url: "http://10.0.0.5:8080/h" } }))).toThrow(/compose service/);
+    // app xy service a-b and app xy-a service b share the name app-xy-a-b-1; labels tell them apart.
+    const x = app({ name: "xy" }), xa = app({ name: "xy-a" });
+    const docker = fakeDocker([ctr("1", "app-xy", "a-b", "172.20.0.2"), ctr("2", "app-xy-a", "b", "172.21.0.2"), ctr("3", "app-roadmap-keeper", "app", "172.22.0.5"), ctr("4", "app-other", "app", "172.22.0.9")]);
+    expect(await targetContainer(x, "a-b", docker)).toBe("1".padEnd(64, "0"));
+    expect(await targetContainer(xa, "b", docker)).toBe("2".padEnd(64, "0"));
+    expect(await targetContainer(app(), "app", docker)).toBe("3".padEnd(64, "0"));
+  });
+  it("refuses none, several, or a container that isn't the app's", async () => {
+    await expect(targetContainer(app(), "app", fakeDocker([]))).rejects.toThrow(/found 0/);
+    await expect(targetContainer(app(), "app", fakeDocker([ctr("1", "app-roadmap-keeper", "app", "1.1.1.1"), ctr("2", "app-roadmap-keeper", "app", "1.1.1.2")]))).rejects.toThrow(/found 2/);
+    await expect(targetContainer(app(), "app", fakeDocker([ctr("1", "app-roadmap-keeper", "app", "1.1.1.1")], ctr("1", "app-other", "app", "1.1.1.9")))).rejects.toThrow(/isn't this app's/);
+  });
 });
 
 describe("callApi", () => {
@@ -155,3 +293,20 @@ describe("callApi", () => {
   });
 });
 
+
+describe("an app's feedback agent", () => {
+  const rk = app({ feedback_to: "roadmap-feedback", api: { callers: ["roadmap-keeper", { agent: "roadmap-feedback", paths: ["/api/agent/intake"] }], paths: ["/api/agent/roadmap", "/api/agent/intake"] } });
+  it("calls only its own paths of that app's API", () => {
+    expect(() => authorize(rk, "roadmap-feedback", "/api/agent/intake?status=received")).not.toThrow();
+    expect(() => authorize(rk, "roadmap-feedback", "/api/agent/intake/AB12CD34/decision")).not.toThrow();
+    expect(() => authorize(rk, "roadmap-feedback", "/api/agent/roadmap")).toThrow(/for this caller/);
+    expect(() => authorize(rk, "roadmap-keeper", "/api/agent/roadmap")).not.toThrow();
+  });
+  it("reaches no other app with any tool", () => {
+    const other = app({ name: "wiki" });
+    expect(() => feedbackOnly([rk, other], "roadmap-feedback", "roadmap-keeper")).not.toThrow();
+    expect(() => feedbackOnly([rk, other], "roadmap-feedback", "wiki")).toThrow(/handles feedback for roadmap-keeper only/);
+    expect(() => feedbackOnly([rk, other], "roadmap-feedback", undefined)).toThrow(); // app_list, warehouse_query: no app named
+    expect(() => feedbackOnly([rk, other], "roadmap-keeper", "wiki")).not.toThrow();
+  });
+});
