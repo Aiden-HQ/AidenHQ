@@ -51,7 +51,7 @@ time, so an old task edited later cannot reappear. Paperclip supplies title, lab
 
 Both layouts are built from one issue inventory (`inventory()` in `src/app.ts`: open + recently closed issues, the kernel snapshot,
 labels, agents), built before My day's own filters (`mine()` drops unassigned issues, `unsettled()` hides settled ones); each layout applies its visibility rules to its projection, and Agent work excludes the brief and settings tasks (`isBrief`, `isSettings`) and setup's log tasks an agent holds (`logTasks()`:
-memory inboxes, review logs, a fast chat's task: logs, never work). My day folds agents' sub-tasks into the parent card (`foldedChildren`, `src/crew.ts`) as today. Agent work does
+review logs, a fast chat's task: logs, never work). My day folds agents' sub-tasks into the parent card (`foldedChildren`, `src/crew.ts`) as today. Agent work does
 not fold: every issue is its own card, placed once under its assignee, with a "part of WOR-7790" parent link (kernel state of its
 own, so a child waiting on the owner shows in Needs you). The crew line on My day cards reads the child's kernel state, never
 unread activity alone (`crew.ts` `issueState` today can say "needs" from unread activity).

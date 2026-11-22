@@ -243,8 +243,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const [k, w] of settingWriters(head)) {
     const more = w.filter((r) => !(was.get(k) ?? []).includes(r));
     if (more.length) owner(`lets roles ${more.map(id).join(", ")} write setting ${id(k)}`);
-    // Its owner rules (settings.<key>.owner) are what an agent's change may not do alone: any change to them is the owner's.
-    if (!eq(map(map(b.settings)[k]).owner, map(map(head.settings)[k]).owner)) owner(`changes what agents may change in setting ${id(k)} without the owner`);
   }
   // Each fact type it may record (POST /v1/facts) is a claim on the shared log Flow's views and deploy checks read: the reviewer's.
   const [bf, hf] = [map(b.facts), map(head.facts)];
@@ -372,20 +370,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   if (codeChanged) review("code changes");
   if (!changes.length) review("text only");
   return { module: name, changes, code: codeChanged, ...(official ? { official: true as const } : {}) };
-}
-
-export type Classified = { tier: 1 | 2; rule: "module-authority" | "module-config"; reason: string };
-
-/**
- * The tier of a set of module changes (the AI reviewer's either way): 2 when any change is new authority, its lines first in
- * the reason (`ownerOnly` ones first of all).
- */
-export function classifyModules(diffs: ModuleDiff[]): Classified {
-  const lines = (only: boolean) => diffs.flatMap((d) => d.changes.filter((c) => c.owner && Boolean(c.ownerOnly) === only).map((c) => `${d.module}: ${c.what}`));
-  const owners = [...lines(true), ...lines(false)];
-  const all = owners.length ? owners : diffs.map((d) => `${d.module}: ${d.changes.map((c) => c.what).join(", ")}`);
-  const reason = `${owners.length ? "new module authority" : "module changes without new authority"}: ${all.slice(0, 8).join("; ")}${all.length > 8 ? `; and ${all.length - 8} more` : ""}`;
-  return owners.length ? { tier: 2, rule: "module-authority", reason } : { tier: 1, rule: "module-config", reason };
 }
 
 /** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */

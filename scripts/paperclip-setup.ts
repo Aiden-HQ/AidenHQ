@@ -283,7 +283,9 @@ async function ensureAgents(companyId: string, fleetIssues: string) {
     return { key, a, agent, body, instructions };
   });
   // Only the agents whose record or handbook differ from Paperclip's are written (scripts/paperclip-diff.ts).
-  const live = await syncAgents({ api, companyId, rows: agents, plans: plans.map((p) => ({ key: p.key, name: p.a.name, agent: p.agent, body: p.body, instructions: p.instructions })), step });
+  // Paperclip's copy is what people read (handbook_read, the board's "What it reads"): its `{{memory}}` names what fills it.
+  const shown = (t: string) => t.replaceAll("{{memory}}", "_(This agent's memory, filled in when each run starts; the board's Memory tab shows it.)_");
+  const live = await syncAgents({ api, companyId, rows: agents, plans: plans.map((p) => ({ key: p.key, name: p.a.name, agent: p.agent, body: p.body, instructions: shown(p.instructions) })), step });
   // The kernel's copy: a kernel job's engine home gets it as its instructions file (kernel/src/boxes.ts).
   mkdirSync(join(configDir, "handbooks"), { recursive: true });
   for (const p of plans) {

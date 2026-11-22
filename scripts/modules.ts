@@ -252,13 +252,6 @@ export function frontmatter(text: string) {
 /** A value's shape: list, map, or its JSON type. */
 const shapeOf = (v: unknown) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
 
-/** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). An empty `path` is the setting itself (a scalar). */
-function ownerRules(file: string, key: string, rules: Obj) {
-  const ok = (r: Obj) => r && typeof r === "object" && /^([\w*-]+(\.[\w*-]+)*)?$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
-  if (!Array.isArray(rules) || !rules.every(ok)) fail(`${file}: settings.${key}.owner is a list of { path, one of raise: true, change: true, to: <value>, new: true (before: <text>), and the field's default where unset }`);
-  return rules;
-}
-
 /** The comment above each setting key in module.yaml, as one line: the help the board shows. */
 function settingDocs(file: string): Record<string, string> {
   const map = YAML.parseDocument(readFileSync(file, "utf8")).get("settings", true) as Obj | undefined;
@@ -298,7 +291,7 @@ export const defaultComputersMax = (totalBytes = totalmem()) => Math.min(64, Mat
 /** A module's settings for the board: default, allowed values, required, pattern, when, and the comment above each key as its `doc`. */
 function settingDefs(file: string, def: Obj) {
   const docs = settingDocs(file);
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
@@ -1731,7 +1724,7 @@ function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, r
  * App users' words drive the run, so it is tier0 and its agent is a narrow one: exactly the tools below (task_delegate hands
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
-const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note"] };
+const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note", "memory_forget", "memory_read", "memory_rewrite"] };
 function appFeedbackRoutines(paperclip: Obj, appDefs: Obj[], routineTitles: Set<string>, defaulted: Set<string>) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;

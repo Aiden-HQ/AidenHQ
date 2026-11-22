@@ -124,9 +124,11 @@ test("event routines compile and the lints hold", () => {
   refuses(ev(slack, { schedules: [{ cron: "*/5 * * * *", label: "often" }] }), /cron minute is one number/);
   refuses(Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`x-w${i}`, { title: `W${i}`, agent: "x", description: "Go.", event: slack }])), /an agent has at most 20 local routines/);
   // The bundle's slack-triage is a product event routine: no webhook, no secrets.
-  const r = compile(product, withAgents({}, ["slack", "open-loops"])).paperclip.routines["slack-triage"];
+  const bundle = compile(product, withAgents({}, ["slack", "open-loops"])).paperclip;
+  const r = bundle.routines["slack-triage"];
   assert.deepEqual([r.event.resource, r.concurrency, r.webhook, r.secrets_prefix], ["*", "always_enqueue", undefined, undefined]);
   assert.match(r.description, /routine_events\(batch\)/);
+  assert.ok(bundle.agents[r.agent].enabled_tools.paperclip_tasks.includes("routine_events"), "its agent reads the batch");
 });
 
 test("the Architect: max effort, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {

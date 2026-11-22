@@ -155,8 +155,11 @@ export function createMemory(o: { dir: string; now?: () => number }) {
         const text = raw.replace(/^\s*(?:[-*+]|\d+\.)\s+/, "").trim();
         if (!text || /^#/.test(raw.trim())) continue;
         lines++;
+        // The old format ended each line "(source, date)": the date dates the fact, the tail leaves its text.
+        const tail = /\s*\(([^()]*\b\d{4}-\d{2}-\d{2}\b[^()]*)\)\s*$/.exec(text);
+        const fact = tail ? text.slice(0, tail.index).trim() : text;
         let l: Line;
-        try { l = checkLine({ date: /\b(\d{4}-\d{2}-\d{2})\b/.exec(text)?.[1] ?? today(), src: `migration:${from}`, fact: text }, { migration: from }); } catch { refused++; continue; }
+        try { l = checkLine({ date: /\b(\d{4}-\d{2}-\d{2})\b/.exec(tail?.[1] ?? text)?.[1] ?? today(), src: `migration:${from}`, fact }, { migration: from }); } catch { refused++; continue; }
         if (facts.some((x) => norm(x.fact) === norm(l.fact)) || d.forgotten.includes(norm(l.fact))) { merged++; continue; }
         facts.push(l);
       }

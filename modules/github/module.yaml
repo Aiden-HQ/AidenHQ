@@ -91,17 +91,15 @@ settings:
     default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
   # The org the fleet's repositories live in: bare create_repo names and `@agents` grants resolve to it. Chosen once from the
   # orgs the owner can create repos in; unset, the fleet's repos live in `local`. It survives a disconnect (create_repo then
-  # refuses "GitHub isn't connected" rather than switching to `local`). A change is the owner's.
+  # refuses "GitHub isn't connected" rather than switching to `local`).
   github_fleet_org:
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-    owner: [ { path: "", new: true } ]
   # GitHub orgs/users (besides the fleet org) the owner allows: the apps platform builds trusted apps from their repos, and
   # create_repo may create in them.
   github_orgs:
     default: []
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-    # Adding an org is the owner's: it trusts the org's repos for apps and lets create_repo write there.
-    owner: [ { path: "*", new: true } ]
+    # An org added here is trusted for apps, and create_repo may write there.
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub."

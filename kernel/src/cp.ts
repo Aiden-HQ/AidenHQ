@@ -10,8 +10,7 @@
 //   a child of a task assigned to it, and creates tasks as itself (under such a task, a part of its own under any task, or
 //   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
 //   task of its company; an agent comments on the tasks the
-//   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
-//   and a librarian on every memory inbox. A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
+//   grants table names for it (review log, chat) and on the shared "Fleet issues" log task (grants `fleet_issues`). A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
 //   task of its company an agent made (scope `settle`): a comment, a status (done only on a task in review, through the finish
 //   gate, heard as the task's own close), and handing the task to any agent; never a task a person
 //   made (the owner's own task or chat) and never a log task. Anything else is

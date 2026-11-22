@@ -458,7 +458,7 @@ const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained
 const localRepoExists = (repo: string) => { try { return existsSync(path.join(localCode.bare(repo), "HEAD")); } catch { return false; } };
 const wakes = createWakes({
   db: records.db, facts, owner: ownerApi, post: outcomes.post, log,
-  // Setup's log tasks (memory inboxes, review logs, chat tasks, Fleet issues): held by an agent, they wake nobody.
+  // Setup's log tasks (review logs, chat tasks, Fleet issues): held by an agent, they wake nobody.
   containers: () => logTasks(grantsTable() as never),
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
   dispatches: { may: mayDispatch, agents: (module) => Object.keys(grantsTable().agents ?? {}).filter((id) => mayDispatch(module, id)) },

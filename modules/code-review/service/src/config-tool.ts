@@ -40,7 +40,7 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
   }
   for (const w of ch.watch ?? []) {
     if (typeof w?.repo !== "string" || !REPO.test(w.repo)) throw new Error("each watched repo is { repo: owner/name, … }");
-    // Combos are stored whole as they run (module.yaml settings.code_review.owner reads them).
+    // Combos are stored whole as they run.
     for (const k of MOMENTS) if (w[k] !== undefined) {
       const c = combos(w[k], `${w.repo} ${k}`);
       if ("error" in c) throw new Error(c.error);
@@ -65,7 +65,7 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
 
 /**
  * The combos an agent may start a one-off with: an engine's offered model, or a combo a watched repo
- * already runs. Any other model is the owner's (as in settings: module.yaml settings.code_review.owner), set on
+ * already runs. Any other model is set in settings on
  * the board, whose one-off keeps full choice.
  */
 const watchedCombos = (repos: () => unknown) => ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];

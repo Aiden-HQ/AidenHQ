@@ -68,31 +68,12 @@ settings:
   code_review:
     type: object
     writers: [ reviewer-manager ]
-    # What the Reviewer Manager's change may not do without the owner (Tier 2; it reads strangers' review threads): outside PRs
-    # or drafts reviewed by themselves, a repo in an org not watched before, a combo's engine, model or effort changed or one more
-    # combo (what changes what a review costs or how it judges), a mandatory reviewer turned off or removed (its combo, or its
-    # repo, gone), or a repo's ignore globs (what would quietly weaken reviews). Turning a combo mandatory is its to do: it only
-    # adds a gate.
-    owner:
-      - { path: "repos.*.forks", to: auto, default: manual }
-      - { path: "repos.*.drafts", to: true, default: false }
-      - { path: "repos.*.repo", new: true, before: "/" }
-      # Each combo's fields, an absent one read as the moment's default combo (a combo added past them differs in one of them).
-      - { path: "repos.*.on_open.*.engine", change: true, default: codex }
-      - { path: "repos.*.on_open.*.model", change: true, default: "~deepseek/deepseek-flash-latest" }
-      - { path: "repos.*.on_open.*.effort", change: true, default: medium }
-      - { path: "repos.*.on_open.*.mandatory", to: false, default: false }
-      - { path: "repos.*.on_push.*.engine", change: true, default: codex }
-      - { path: "repos.*.on_push.*.model", change: true, default: "~deepseek/deepseek-flash-latest" }
-      - { path: "repos.*.on_push.*.effort", change: true, default: low }
-      - { path: "repos.*.on_push.*.mandatory", to: false, default: false }
-      - { path: "repos.*.ignore", change: true, default: [] }
     default:
       repos: []
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no
-# code tools and no delegation, and what its settings changes may do alone is bounded by settings.code_review.owner above. Aiden
+# code tools and no delegation; its settings changes are kernel.settings records the AI reviewer decides. Aiden
 # (the chief of staff) delegates code review asks to it; no heartbeat, no schedule: it runs only when a task asks.
 agents:
   reviewer-manager:

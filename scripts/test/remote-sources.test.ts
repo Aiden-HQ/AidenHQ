@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.ts";
-import { classifyModules, diffAll, marketplaceChanges, moduleInputs } from "../compiler/authority.ts";
+import { diffAll, marketplaceChanges, moduleInputs } from "../compiler/authority.ts";
 import { remoteCodeText, sourceOf, withRemote } from "../compiler/sources.ts";
 
 const repo = fileURLToPath(new URL("../..", import.meta.url));
@@ -53,7 +53,7 @@ test("the twin installs from a throwaway local marketplace (unknown marketplace.
     "twin: adds engine twin",
     "twin: code changes",
   ]);
-  assert.equal(classifyModules(diffs).tier, 2, "new authority");
+  assert.ok(diffs.some((d) => d.changes.some((c) => c.owner)), "new authority");
 
   // An update without new authority (the engine's code changes): the AI reviewer alone.
   writeFileSync(join(m.dir, "twin/bin/engine"), "#!/usr/bin/env node\n// v2\n");
@@ -61,8 +61,8 @@ test("the twin installs from a throwaway local marketplace (unknown marketplace.
   const next = [{ ...entry[0], sha: git(m.dir, "rev-parse", "HEAD") }];
   const up = withRemote({ baseInstance: hi, headInstance: { ...hi, marketplaces: next }, baseDefs: {}, headDefs: {}, changed: [] }, f);
   const upd = [...marketplaceChanges(hi, { ...hi, marketplaces: next }), ...diffAll(moduleInputs(up))];
-  assert.equal(classifyModules(upd).tier, 1);
-  assert.match(classifyModules(upd).reason, /module changes without new authority: .*twin: now from acme at \w{12} \(tier declared\), code changes/);
+  assert.ok(!upd.some((d) => d.changes.some((c) => c.owner)), "no new authority");
+  assert.deepEqual(upd.flatMap((d) => d.changes.map((c) => `${d.module}: ${c.what}`)).filter((l) => l.startsWith("twin:")), [`twin: now from acme at ${next[0].sha.slice(0, 12)} (tier declared)`, "twin: code changes"]);
   // The reviewer reads the code itself: the card's diff carries the module's git diff.
   const text = remoteCodeText(hi, { ...hi, marketplaces: next }, f);
   assert.match(text, /Module twin@acme code, \w{12} → \w{12} \(third-party text, quoted\):\n\| diff --git[\s\S]*\n\| \+\/\/ v2/);

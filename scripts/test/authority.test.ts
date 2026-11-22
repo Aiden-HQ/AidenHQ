@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { authorityDiff, classifyModules, diffAll, moduleInputs } from "../compiler/authority.ts";
+import { authorityDiff, diffAll, moduleInputs } from "../compiler/authority.ts";
 import { OFFICIAL_URL, officialSides } from "../compiler/sources.ts";
 
 const IMG = `example.com/acme/tool:1.0@sha256:${"a".repeat(64)}`;
@@ -14,9 +14,9 @@ const base = {
   agents: { closer: { model: "m", connections: { crm: "read" } } },
 };
 const with_ = (patch) => ({ ...structuredClone(base), ...patch });
-const tier = (head, code = false, b = base) => classifyModules([authorityDiff("acme-crm", b, head, code)]);
+const authority = (head, code = false, b = base) => authorityDiff("acme-crm", b, head, code).changes.some((c) => c.owner);
 
-test("a new write kind, privileged entry, secret, role, write tool, services.grants or returns: trusted each make Tier 2 review-first", () => {
+test("a new write kind, privileged entry, secret, role, write tool, services.grants or returns: trusted each are new authority", () => {
   const conn = base.connections.crm;
   const owners = {
     "write kind": with_({ writes: { publish: { floor: 1 } } }),
@@ -46,8 +46,7 @@ test("a new write kind, privileged entry, secret, role, write tool, services.gra
   };
   for (const [what, v] of Object.entries(owners)) {
     const [head, b] = Array.isArray(v) ? v : [v, base];
-    const t = tier(head, false, b);
-    assert.deepEqual([t.tier, t.rule], [2, "module-authority"], what);
+    assert.ok(authority(head, false, b), what);
   }
 });
 

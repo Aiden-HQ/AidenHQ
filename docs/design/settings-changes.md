@@ -4,7 +4,7 @@ The owner changes instance settings (a connection's URL, a kill switch, an agent
 typed changes below) from the board's Settings pages instead of editing `.env` or `instance.yaml` by hand. The change lands as
 an instance-repo commit through a `kernel.apply` record. Saved in the owner's signed-in board session, his Save is his approval
 (owner, 2026-11-20: "Owner saves skip AI review"), like tapping Approve on a card: the kernel checks that session and decides the
-record as his account. An agent's settings change keeps the AI reviewer and its module's owner rules.
+record as his account. An agent's settings change is the AI reviewer's (Tier 1).
 
 ## Where a value lives
 
