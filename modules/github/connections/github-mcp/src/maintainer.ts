@@ -2,8 +2,9 @@
 // issues carrying a repo's label, their label events with a trust verdict, the repo tree and one file, and the three writes
 // (comment, label, state). A label is trusted only when a collaborator whose role is one of that repo's `trusted` roles added
 // it (the owner's login is an admin, so its labels count); the issue's text or author never decide trust.
+import { createHash } from "node:crypto";
 import { GitHubRefused } from "./github.js";
-import { GitHubNeed } from "./client.js";
+import { GitHubNeed, writeBudgetDeadline, writeBudgetSpent } from "./client.js";
 import { scrubProblems, scrubText } from "./scrub.js";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
@@ -105,9 +106,37 @@ function noDots(v: string) {
   if (v.split("/").some((seg) => seg === "." || seg === "..")) throw new GitHubRefused(`${v.slice(0, 200)} has a . or .. segment`);
 }
 
-/** A close note this process posted: its comment (id, URL and objects), whether the state change was confirmed, when GitHub
- * says it was created (the timeline's own order), and when this process recorded it (for the TTL). */
-type NoteRecord = { id: number; url: string; objects: string[]; confirmed: boolean; createdAt: string; at: number };
+/** What a close's posted note says: the note as given, the state it asked for and the agent that signed it. A retry that finds
+ * its own earlier comment by this identifies the note it posted even when the POST's answer was lost. */
+type NoteSpec = { text: string; state: "open" | "closed"; agent: string };
+
+/** A close note this process posted (or may have: see `confirmed`): its comment id, URL and objects, whether the POST's answer
+ * came back, whether the state change was confirmed, when GitHub says it was created (the timeline's own order), when this
+ * process recorded it, and, when the comment POST itself may have landed without an answer, the spec to match it by. A record
+ * whose POST or PATCH is still unconfirmed is kept until `retainUntil`, even when that is well past the short TTL. */
+type NoteRecord = {
+  id: number;
+  url: string;
+  objects: string[];
+  confirmed: boolean;
+  createdAt: string;
+  at: number;
+  spec: NoteSpec;
+  /** What identifies this call's note in its own body, so a retry can find it when the POST's answer was lost. */
+  marker: string;
+  /** Until when an unconfirmed record must survive: a rate limit's advertised reset, or now plus the retry window. */
+  retainUntil: number;
+};
+
+/** Whether a thrown error is a lost answer (a dropped connection or a timed-out fetch) rather than a known refusal: GitHub may
+ * or may not have applied the request, so the caller must be told the outcome is unknown, not told what it was. */
+function lostAnswer(e: unknown): boolean {
+  if (e instanceof GitHubNeed) return false;
+  const name = (e as { name?: unknown })?.name;
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  if (e instanceof TypeError) return true;
+  return /fetch failed|socket hang up|ECONNRESET|ETIMEDOUT|other side closed/i.test(String((e as Error)?.message ?? ""));
+}
 
 export class Maintainer {
   private roles = new Map<string, { role: string | null; at: number }>();
@@ -117,8 +146,11 @@ export class Maintainer {
   private readonly noted = new Map<string, NoteRecord>();
   /** The key whose note is being decided and posted right now: a second, overlapping close of the same thing waits for it. */
   private readonly noteLocks = new Map<string, Promise<unknown>>();
-  /** How long a failed close's posted note is remembered: a retry of that call comes back well inside this. */
+  /** How long a confirmed close's note is remembered: a repeat inside this reuses it rather than posting again. */
   private static readonly NOTED_TTL_MS = 60 * 60_000;
+  /** How long an unconfirmed record (POST or state change unanswered) survives at least, so a retry after a lost answer finds
+   * it: longer than the tool budget, and extended by any refusal's `until`. */
+  private static readonly NOTED_KEEP_MS = 24 * 60 * 60_000;
   private static readonly NOTED_CAP = 200;
 
   /** `repos` is the parsed list, or why it couldn't be parsed: then every tool refuses with that reason. */
@@ -487,9 +519,27 @@ export class Maintainer {
     return `${r.repo.toLowerCase()}#${number}:${state}:${text}`;
   }
 
-  /** Runs `fn` alone for `key`: a second, overlapping close of the same note waits and then reuses what the first posted. */
+  /** Runs `fn` alone for `key`: a second, overlapping close of the same note waits for the first to finish and then reuses what
+   * the first posted. A waiter that cannot still fit a write in its own tool budget fails as `write_busy` before it starts,
+   * rather than waiting out the first call and then running its reads and its write after its caller was told it failed. */
   private async withNoteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.noteLocks.get(key) ?? Promise.resolve();
+    // No budget (a background or test call) or room for one more attempt: go straight through, as before.
+    if (!prev || writeBudgetDeadline() === undefined) return this.runNoteLock(key, prev, fn);
+    const raced = await Promise.race([
+      prev.catch(() => {}).then(() => "free" as const),
+      new Promise<"spent">((resolve) => {
+        const left = writeBudgetDeadline()! - Date.now() - 30_000;
+        const t = setTimeout(() => resolve("spent"), Math.max(left, 0));
+        if (typeof t === "object" && "unref" in t) t.unref();
+      }),
+    ]);
+    if (raced === "spent" || writeBudgetSpent()) throw new GitHubNeed({ cause: "write_busy" });
+    return this.runNoteLock(key, prev, fn);
+  }
+
+  /** Queues `fn` behind `prev` for `key` and clears the entry when it is the last one. */
+  private async runNoteLock<T>(key: string, prev: Promise<unknown>, fn: () => Promise<T>): Promise<T> {
     const run = prev.catch(() => {}).then(fn);
     const tail = run.catch(() => {});
     this.noteLocks.set(key, tail);
@@ -500,13 +550,22 @@ export class Maintainer {
     }
   }
 
-  /** Remembers a posted note so a retry posts it once; forgets the oldest past the cap and anything past the TTL. */
+  /** Remembers a posted note so a retry posts it once. A confirmed record is forgotten after the short TTL; one whose POST or
+   * state change is still unconfirmed is kept until `retainUntil` (which a refusal's own `until` extends), so a retry inside
+   * the advertised window still finds it. Only a record past both goes, oldest first, and the cap never evicts a live one. */
   private rememberNote(key: string, rec: NoteRecord) {
     this.noted.delete(key);
     this.noted.set(key, rec);
     const at = Date.now();
-    for (const [k, v] of this.noted) if (at - v.at > Maintainer.NOTED_TTL_MS) this.noted.delete(k);
-    while (this.noted.size > Maintainer.NOTED_CAP) this.noted.delete(this.noted.keys().next().value!);
+    for (const [k, v] of this.noted) {
+      const live = !v.confirmed || v.retainUntil > at;
+      if (live ? at - v.at > Maintainer.NOTED_KEEP_MS : at - v.at > Maintainer.NOTED_TTL_MS) this.noted.delete(k);
+    }
+    while (this.noted.size > Maintainer.NOTED_CAP) {
+      const oldest = [...this.noted].filter(([, v]) => v.confirmed).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!oldest) break;
+      this.noted.delete(oldest[0]);
+    }
   }
 
   /** The issue's current state. A read that fails throws: its state is what decides whether a note is reused, so guessing it
@@ -587,18 +646,74 @@ export class Maintainer {
     // process's own, so no comment on the issue (whose author this can't verify) can suppress a note.
     if (key === undefined) return this.applyState(r, number, state, reason);
     return this.withNoteLock(key, async () => {
+      const spec: NoteSpec = { text: text!, state, agent };
+      const marker = Maintainer.noteMarker(r, number, spec);
       const earlier = this.noted.get(key);
-      const rec = earlier && (await this.noteApplies(r, number, earlier)) ? earlier : await this.rememberPosted(r, number, key, text!, agent);
+      // A record with no comment id is a POST whose answer was lost: find it on the issue before considering another one.
+      const rec = earlier && earlier.id === 0
+        ? await this.reconcilePosted(r, number, key, earlier)
+        : earlier && (await this.noteApplies(r, number, earlier))
+          ? earlier
+          : await this.postNote(r, number, key, spec, marker);
       const out = await this.applyState(r, number, state, reason, rec);
       this.rememberNote(key, { ...rec, confirmed: true });
       return out;
     });
   }
 
-  /** Posts this call's note and records it (unconfirmed) so a retry or an overlapping close reuses it. */
-  private async rememberPosted(r: MaintainedRepo, number: number, key: string, text: string, agent: string): Promise<NoteRecord> {
-    const p = await this.postComment(r, number, withFooter(text, agent));
-    const rec: NoteRecord = { id: p.id, url: p.url, objects: p.objects, confirmed: false, createdAt: p.createdAt, at: Date.now() };
+  /** Stable across a retry of the same call: the note's body, the state and the agent. */
+  private static noteMarker(r: MaintainedRepo, number: number, spec: NoteSpec) {
+    return createHash("sha256").update(`${r.repo.toLowerCase()}#${number}:${spec.state}:${spec.agent}:${spec.text}`).digest("hex").slice(0, 32);
+  }
+
+  /** The comment a marker names, when one is on the issue: a lost POST's answer is reconciled through it rather than posting
+   * the same note a second time. A failed read throws (it cannot prove the note absent). */
+  private async findByMarker(r: MaintainedRepo, number: number, marker: string) {
+    const tag = `<!-- aidenhq-note:${marker} -->`;
+    const comments = await this.readAll(r, `/issues/${number}/comments`);
+    const hit = comments.find((c) => String(c?.body ?? "").includes(tag));
+    return hit ? { id: Number(hit.id), url: String(hit.html_url ?? ""), createdAt: String(hit.created_at ?? "") } : undefined;
+  }
+
+  /** The body every post of this note carries: the signed note and the marker that identifies it. */
+  private static noteBody(spec: NoteSpec, marker: string) {
+    return `${withFooter(spec.text, spec.agent)}\n\n<!-- aidenhq-note:${marker} -->`;
+  }
+
+  /** Posts this call's note and records it (unconfirmed) before the POST answers, so a retry or an overlapping close reuses it.
+   * A lost POST answer leaves a record with no comment id, and the retry reconciles it by the marker on the issue. */
+  private async postNote(r: MaintainedRepo, number: number, key: string, spec: NoteSpec, marker: string): Promise<NoteRecord> {
+    const pending: NoteRecord = {
+      id: 0,
+      url: "",
+      objects: [],
+      confirmed: false,
+      createdAt: "",
+      at: Date.now(),
+      spec,
+      marker,
+      retainUntil: Date.now() + Maintainer.NOTED_KEEP_MS,
+    };
+    this.rememberNote(key, pending);
+    try {
+      const p = await this.postComment(r, number, Maintainer.noteBody(spec, marker));
+      const rec: NoteRecord = { ...pending, id: p.id, url: p.url, createdAt: p.createdAt, objects: p.objects };
+      this.rememberNote(key, rec);
+      return rec;
+    } catch (e) {
+      // The note may or may not have landed. The pending record stays, so a retry reconciles by its marker first.
+      if (lostAnswer(e)) throw new Error("whether the note posted is unknown (the answer was lost); call this again with the same state and note, and this will reuse it if it landed");
+      this.noted.delete(key);
+      throw e;
+    }
+  }
+
+  /** Settles a note whose POST answer was lost: the marker's comment is this note if it is on the issue, and only if it is not
+   * does the retry post it. A comment read that fails throws (it cannot prove the note absent). */
+  private async reconcilePosted(r: MaintainedRepo, number: number, key: string, pending: NoteRecord): Promise<NoteRecord> {
+    const known = await this.findByMarker(r, number, pending.marker);
+    if (!known) return this.postNote(r, number, key, pending.spec, pending.marker);
+    const rec: NoteRecord = { ...pending, id: known.id, url: known.url, createdAt: known.createdAt, objects: [`${this.ref(r, number)}/comment/${known.id}`] };
     this.rememberNote(key, rec);
     return rec;
   }
@@ -607,19 +722,23 @@ export class Maintainer {
   private async applyState(r: MaintainedRepo, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", noteObj?: NoteRecord) {
     const url = noteObj?.url;
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
-    /** What a caller must hear when the note is on the issue and the state change is not. */
+    /** What a caller must hear when the note is on the issue and a known refusal stopped the state change. */
     const reset = `the note was posted${url ? ` (${url})` : ""}; the state change to ${state} did not complete — call this again with the same state and no note`;
+    /** A lost answer: GitHub may have applied the close. Telling the caller to send the PATCH again could close an issue a
+     * maintainer reopened in between, so say the outcome is unknown and let it decide from the issue's state. */
+    const unknown = `whether the state change to ${state} landed is unknown (the answer was lost)${url ? `; the note was posted (${url})` : ""} — read the issue's state before retrying`;
     let res: Awaited<ReturnType<GitHubAccess["rest"]>>;
     try {
       res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     } catch (e) {
       // The need stays typed (its cause and fields, and the kernel's needs_owner routing), with the note's outcome added to its
       // text. A retry is safe whatever reaches the agent: the record above keeps the note from being posted again.
-      if (url && e instanceof GitHubNeed) {
+      if (e instanceof GitHubNeed) {
         const when = e.need.cause === "rate_limited" ? ` after ${e.need.until}` : "";
-        throw new GitHubNeed(e.need, `${e.message}. ${reset}${when}`);
+        if (e.need.cause === "rate_limited" && e.need.until) this.extendRetention(noteObj, Date.parse(e.need.until));
+        throw new GitHubNeed(e.need, `${e.message}. ${url ? reset : `the state change to ${state} did not complete`}${when}`);
       }
-      // Any other failure (a refusal, a dropped connection): the note is still on the issue, so say so the same way.
+      if (lostAnswer(e)) throw new Error(`GitHub didn't answer the state change to ${state}: ${unknown}`);
       if (url) throw new Error(`${(e as Error).message}. ${reset}`.trim());
       throw e;
     }
@@ -627,6 +746,12 @@ export class Maintainer {
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})${url ? `. ${reset}` : ""}`.trim());
     // The comment is this call's own GitHub object whether it posted it or reused it: the kernel records it for provenance.
     return { repo: r.repo, number, state: res.body.state, state_reason: res.body.state_reason ?? null, ...(noteObj ? { objects: noteObj.objects } : {}) };
+  }
+
+  /** Keeps an unconfirmed record at least until `until` (a refusal's advertised reset), so a retry then still finds it. */
+  private extendRetention(noteObj: NoteRecord | undefined, until: number) {
+    if (!noteObj || !Number.isFinite(until)) return;
+    noteObj.retainUntil = Math.max(noteObj.retainUntil, until + Maintainer.NOTED_KEEP_MS);
   }
 
   /**

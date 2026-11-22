@@ -127,6 +127,17 @@ const invocation = new AsyncLocalStorage<{ deadline: number }>();
 export function withWriteBudget<T>(fn: () => Promise<T>, at: () => number = Date.now): Promise<T> {
   return invocation.run({ deadline: at() + WRITE_BUDGET_MS }, fn);
 }
+/** The deadline of the tool invocation this call belongs to, or undefined outside a tool call. */
+export function writeBudgetDeadline(): number | undefined {
+  return invocation.getStore()?.deadline;
+}
+/** Whether what is left of this tool invocation's budget can still start a write's attempt. A caller that waits for another
+ * write past this point must fail fast instead: its own reads and writes would otherwise run after the caller was told it
+ * failed. Outside a tool call there is no budget, so this is false. */
+export function writeBudgetSpent(at: number = Date.now()): boolean {
+  const deadline = writeBudgetDeadline();
+  return deadline !== undefined && at + ATTEMPT_TIMEOUT_MS > deadline;
+}
 /** Whether a request creates content: any non-read method, except a GraphQL query. */
 const createsContent = (method: string, path: string, body: unknown) =>
   !["GET", "HEAD", "OPTIONS"].includes(method) && (path !== "/graphql" || /^\s*mutation\b/.test(String((body as { query?: unknown } | undefined)?.query ?? "")));
