@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, grantEntry, TRIAL_WRITE_ALLOWED, writeTools } from "../modules.ts";
+import { handbookParts } from "../handbook.ts";
 import { BUNDLE } from "./bundle.ts";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -166,11 +167,11 @@ test("trial_writes: an agent that names none keeps today's behaviour, and a gran
   assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
 });
-test("the Fleet Steward's grants: reads, its predecessors' writes and settling stuck tasks; no public GitHub write, no handoff to the owner and no web", () => {
+test("the Fleet Steward's grants: reads, its predecessors' writes and settling stuck tasks; no public GitHub write and no web", () => {
   // Roster merge 5.3 (Fleet Ops, Agent Coach, Librarian). It reads every agent's evidence (fleet-audit), so it must never
   // gain a write that reaches outside the fleet: product bugs go to the Maintainer. Inside the fleet it settles stuck work
-  // (fleet-settle: task_route, and task_finish/task_cancel on any agent's task) and hands nothing to the owner (no
-  // task_handoff). An edit that widens this fails here.
+  // (fleet-settle: task_route, and task_finish/task_cancel on any agent's task) and ends its own part of the owner's task
+  // with task_handoff (WOR-10233). An edit that widens this fails here.
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
   mkdirSync(join(dir, "agents"));
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github", "meetings", "grafana", "maintainer", "agent-builder"], settings: owner }));
@@ -178,7 +179,7 @@ test("the Fleet Steward's grants: reads, its predecessors' writes and settling s
   const a = r.paperclip.agents["fleet-steward"];
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
   // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
-  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_route", "paperclip_tasks.task_wait"]);
+  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_route", "paperclip_tasks.task_wait"]);
   assert.deepEqual(a.enabled_tools.github, ["github_product_issue_status", "github_issue_link"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
@@ -186,6 +187,25 @@ test("the Fleet Steward's grants: reads, its predecessors' writes and settling s
   assert.deepEqual(a.roles, ["fleet-read", "fleet-settle", "fleet-audit", "librarian", "routing-tuner", "product-issues"]);
   assert.deepEqual(a.delegate_to, ["engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
   assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_product_issue"), "the Maintainer files product bugs");
+});
+
+test("the own-part ending reaches only agents that hold task_handoff; every crew agent keeps the handoff and report-back guidance", () => {
+  // The own-part section names an ending (`task_handoff`) an agent without the tool would be refused, so it goes only to
+  // the agents granted it. The delegation and report-back guidance is every crew agent's, whatever its grant.
+  const dir = mkdtempSync(join(tmpdir(), "inst-"));
+  mkdirSync(join(dir, "agents"));
+  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "apps-platform"], settings: owner }));
+  const r = compile(product, dir);
+  const parts = (key) => handbookParts(r.paperclip, key, r.paperclip.agents[key], { repo: product, instanceDir: dir, fleetIssues: "WOR-0" });
+  const own = (key) => parts(key).find(([id]) => id === "own-part")?.[1];
+  assert.match(own("fleet-steward"), /Your part of the owner's task/);
+  assert.ok(r.paperclip.agents["fleet-steward"].enabled_tools.paperclip_tasks.includes("task_handoff"));
+  // app-maintainer is a crew agent with no task_handoff: it reads no ending it would be refused.
+  assert.ok(!r.paperclip.agents["app-maintainer"].enabled_tools.paperclip_tasks.includes("task_handoff"));
+  assert.equal(own("app-maintainer"), undefined);
+  const handoff = parts("app-maintainer").find(([id]) => id === "handoff")?.[1] ?? "";
+  assert.match(handoff, /Handing work on/);
+  assert.match(handoff, /A report back/);
 });
 test("the security module's agents may hand a fix task to the Fleet Steward, and only to it", () => {
   // Security Watch and the Red Teamer file their fixes as tasks for the Fleet Steward, which routes them to the owner's

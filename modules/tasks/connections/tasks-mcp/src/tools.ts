@@ -1338,26 +1338,68 @@ const TOOLS: Record<string, Tool> = {
   },
   task_handoff: {
     description:
-      "Hand a task back with a comment summarizing what you did or what you need. A task the user gave (theirs, or your part of one) goes back to them; any other task stays yours and its question goes to the chief of staff, who settles it or does the step (never a manual step for the user).",
+      "Hand a task back with a comment summarizing what you did or what you need. A task the user gave (theirs, or your part of one) goes back to them; any other task stays yours and its question goes to the chief of staff, who settles it or does the step (never a manual step for the user). With the fleet-settle role only your part can be handed off: settle any other task the way its holder and state allow (finish, cancel or route it).",
     inputSchema: { type: "object", properties: { issue: { type: "string" }, comment: { type: "string" } }, required: ["issue", "comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
       const owner = await ownerUserId();
       if (!owner) throw new Error("could not determine the task owner");
       await refuseMemoryInbox(issue);
-      const body = await postLeadingParts(issue, comment);
+      // Read the task before posting any part of the comment: a settler's refusal must leave no trace on it.
       const current = await api("GET", `/api/issues/${issueRef(issue)}`);
+      const ownPart = await isOwnPart(current);
+      // A closed part is not handed off: the handoff would post its comment and then move the task to `todo`, reopening work
+      // the owner already closed. Refuse before the comment, naming the paths a closed task has.
+      if (ownPart && ["done", "cancelled"].includes(String(current.status ?? ""))) {
+        throw new Error(`Refused: ${current.identifier ?? current.id} is ${current.status}, and a handoff moves your part to todo, which would reopen it. Leave it closed, file a new task for anything still wanted, or comment on it with task_comment.`);
+      }
+      // A fleet settler never reaches the owner through a handoff: its part of the user's task is the one thing it hands
+      // off, and anything else it settles itself (or routes to the agent that does the work).
+      if (!ownPart && grant().roles.includes(SETTLE)) {
+        // Name only the paths this task actually has: a closed task takes none of them (a settler moves open work only,
+        // and task_route refuses a closed task), a settler's finish on another agent's task waits for `in_review`, and
+        // a task no agent filed (the owner's own) takes no status change at all.
+        const me = (await api("GET", "/api/agents/me")).id;
+        const closed = ["done", "cancelled"].includes(String(current.status ?? ""));
+        const how = closed
+          ? `it is ${current.status}, and a fleet settler moves open work only: leave it closed, file a new task for anything still wanted, or comment on it with task_comment`
+          : current.assigneeAgentId === me
+            ? "Finish it with task_finish, or cancel it with task_cancel"
+            : current.createdByAgentId
+              ? current.status === "in_review"
+                ? "task_finish it (it waits in review), task_route it to the agent that does the work, or cancel it with task_cancel"
+                : "task_route it to the agent that does the work, or cancel it with task_cancel; task_finish only once it waits in review"
+              : "it is not yours to change: comment on it with task_comment, or ask its holder or the chief of staff to pass it on";
+        throw new Error(`Refused: task_handoff on a fleet-settle task hands off only your part of the user's task. ${how}.`);
+      }
+      // A settler's own part is handed off on the task this run is working on: the wait is recorded on the run's task, so
+      // another part would go to `todo` with no wait and the idle sweep would pick it up again.
+      if (ownPart && current.id !== CURRENT() && grant().roles.includes(SETTLE)) {
+        throw new Error(`Refused: your part of the user's task is handed off on the task this run is working on; ${current.identifier ?? current.id} is another task. End this run's own part, or comment on that one with task_comment.`);
+      }
+      const body = await postLeadingParts(issue, comment);
       // The crew: an agent's sub-task on the user's task stays the agent's, as `todo` (a valid
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
-      if (await isOwnPart(current)) {
+      if (ownPart) {
+        // The owner can close the part while this comment posts, and the board has no conditional update (the kernel's
+        // closed-task guard covers `settleScope` only, and an owner-made part is not in it). So read the status again
+        // right before the write: a part closed meanwhile stays closed, and only the report it already posted stands.
+        const latest = await api("GET", `/api/issues/${issueRef(issue)}`);
+        if (["done", "cancelled"].includes(String(latest.status ?? ""))) {
+          // Post the report's last segment first: `postLeadingParts` holds it back for the status write, so a refusal
+          // here would drop the end of the agent's report on a task the owner can still read.
+          if (body) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body });
+          throw new Error(`Refused: ${latest.identifier ?? current.identifier ?? current.id} was ${latest.status} by the time the handoff was applied, so it stays closed: the whole report is posted, and the part was not moved to todo or made to wait. File a new task for anything still wanted.`);
+        }
         const i = await patchIssue(issue, { status: "todo", comment: body });
         // It waits on the user's reply (their comment wakes it): an owner wait carrying the handoff's words, so it isn't idle work.
         if (current.id === CURRENT()) {
           try {
             await retried(() => kernelWait({ for: "owner", asked: true, handoff: true, reason: "the user's reply to my handoff", question: comment }));
           } catch (err) {
-            // The handoff itself landed: say the wait didn't, so the agent calls task_wait rather than idle-wake while waiting.
-            return { ...(await brief(i)), wait_error: `handed off, but the wait wasn't recorded (${String((err as Error).message ?? err).slice(0, 200)}): call task_wait (on: the user's reply) so you aren't woken as idle.` };
+            // The handoff itself landed: say the wait didn't, so the agent records the owner wait itself. An `on` wait is an
+            // event, not the owner's: it wakes the task in 24 hours as idle work instead of ending on their reply.
+            return { ...(await brief(i)), wait_error: `handed off, but the wait wasn't recorded (${String((err as Error).message ?? err).slice(0, 200)}): record the owner wait with task_wait (for: owner, question: the handoff's words), not an event wait, so their reply wakes you.` };
           }
         }
         return brief(i);
