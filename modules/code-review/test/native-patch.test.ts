@@ -94,6 +94,7 @@ test("a group that failed blocks clean and is named", { timeout: 240_000 }, asyn
     if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
     assert.ok(model.requests.length >= 2, "split into groups");
     assert.match(String(r.incomplete), /part 2 of \d+ \((a|b)\.txt/);
+    assert.ok(Array.isArray(r.covered) && r.covered.length < 2, "the file of the part that failed is not reported covered");
   } finally { model.close(); }
 });
 

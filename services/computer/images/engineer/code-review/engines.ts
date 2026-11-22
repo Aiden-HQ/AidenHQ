@@ -551,10 +551,11 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
   const roots = [cwd.replace(/\/$/, ""), realpathSync(cwd)];
   const findings: ReturnType<typeof nativeFindings> = [];
   const failed = oversize.map((o) => `not sent: ${o}`);
+  const unreviewed = new Set(files.filter((p) => oversize.some((o) => o.startsWith(`${p} (`)))); // files with a part that was not delivered
   let ok = 0;
   for (const [i, g] of groups.entries()) {
     const remaining = (deadline - Date.now()) / 60_000;
-    if (remaining < 0.2) { failed.push(`part ${i + 1} of ${groups.length}: not run, the review's time was used up`); continue; }
+    if (remaining < 0.2) { failed.push(`part ${i + 1} of ${groups.length}: not run, the review's time was used up`); g.files.forEach((p) => unreviewed.add(p)); continue; }
     const tmp = mkdtempSync(join(scratch, "codex-native-"));
     const home = join(tmp, "home");
     mkdirSync(home);
@@ -588,9 +589,10 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
       continue;
     }
     const said = events.filter((e) => e.type === "error" || e.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
+    g.files.forEach((p) => unreviewed.add(p));
     failed.push(`part ${i + 1} of ${groups.length} (${g.files.slice(0, 3).join(", ")}${g.files.length > 3 ? ", …" : ""}): ${r.code === 0 && !r.timedOut ? "codex review gave no review" : stopped(r, said)}`);
   }
   const note = failed.length ? failed.join("; ") : undefined;
   if (groups.length && !ok) return { message: "", read: true, cause: note };
-  return { message: JSON.stringify({ findings, stale_guidance: [] }), read: true, ...(note ? { incomplete: note } : {}), untracked: "codex review read the patch it was sent, and the files it chose to open" };
+  return { message: JSON.stringify({ findings, stale_guidance: [] }), read: true, covered: files.filter((p) => !unreviewed.has(p)), ...(note ? { incomplete: note } : {}), untracked: "codex review read the patch it was sent, and the files it chose to open" };
 }
