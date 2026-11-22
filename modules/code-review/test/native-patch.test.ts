@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
+import { PREP_TIMEOUT, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
 import { place } from "../recipe/scope.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -288,4 +288,22 @@ test("snapshot writes a commit's regular files exactly (binary, executable, nest
   const none = join(dir, "none");
   await snapshot(repo, sh(repo, "rev-parse", "HEAD"), none);
   assert.ok(existsSync(none));
+});
+
+test("preparing the patch and the copy is within the review's time: a deadline already gone is incomplete, and no model is asked", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  const head = sh(repo, "rev-parse", "HEAD");
+  const model = await endpoint();
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    if (dir) process.env.PATH = `${dir}:${process.env.PATH}`;
+    process.env.OPENROUTER_BASE_URL = model.url; process.env.OPENROUTER_API_KEY = "test-token";
+    const r = await runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files: ["a.txt"], head, minutes: 1e-9, scratch: mkdtempSync(join(tmpdir(), "native-scratch-")), own: true });
+    assert.equal(r.cause, PREP_TIMEOUT);
+    assert.equal(r.message, "");
+    assert.equal(model.requests.length, 0);
+    assert.throws(() => patchGroups(repo, base, ["a.txt"], undefined, "HEAD", Date.now() - 1), new RegExp(PREP_TIMEOUT));
+    await assert.rejects(snapshot(repo, head, join(mkdtempSync(join(tmpdir(), "snap-")), "o"), Date.now() - 1), new RegExp(PREP_TIMEOUT));
+  } finally { model.close(); }
 });

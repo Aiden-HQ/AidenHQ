@@ -448,9 +448,18 @@ export function gitEnv(): Record<string, string> {
     GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.attributesFile", GIT_CONFIG_VALUE_0: "/dev/null" };
 }
 /** git over such a checkout (gitEnv), without textconv or external diff drivers when diffing. */
-export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> = {}) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv(), ...extraEnv }, stdio: ["ignore", "pipe", "ignore"] });
+export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> = {}, timeout?: number) {
+  return execFileSync("git", args, { cwd, timeout, encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv(), ...extraEnv }, stdio: ["ignore", "pipe", "ignore"] });
 }
+
+/** The review's time was used up before it began to ask (the one allowance covers preparing the patch and the copy too). */
+export const PREP_TIMEOUT = "preparing the review ran out of time";
+/** The milliseconds left until `deadline`; throws when none are. */
+const timeLeft = (deadline: number) => { const ms = deadline - Date.now(); if (ms <= 0) throw new Error(PREP_TIMEOUT); return ms; };
+/** A git call within the deadline: a call cut off by it is the same timeout. */
+const gitBy = (deadline: number, root: string, args: string[], extraEnv?: Record<string, string>) => {
+  try { return gitSafe(root, args, extraEnv, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
+};
 
 /** How many characters of patch one request carries. */
 const BUDGET = 150_000;
@@ -461,7 +470,7 @@ const BUDGET = 150_000;
  * whole-file into requests of at most `budget` characters. A file over the budget is split at hunk boundaries, its header repeated
  * in each part; a hunk that alone is over it, a patch with no hunk to split at, or a file git gave no patch for, is not delivered and comes back in `oversize` (path and why).
  */
-export function patchGroups(root: string, base: string, files: string[], budget = BUDGET, head = "HEAD") {
+export function patchGroups(root: string, base: string, files: string[], budget = BUDGET, head = "HEAD", deadline = Infinity) {
   const groups: { text: string; files: string[] }[] = [];
   const oversize: string[] = [];
   let cur: { text: string; files: string[] } | undefined;
@@ -473,7 +482,7 @@ export function patchGroups(root: string, base: string, files: string[], budget 
   for (const path of files) {
     // The path's own patch, whatever git does to its name in a header (it quotes some): the files under it (a file that became a
     // directory) are left out by an exclude pathspec, never by reading headers.
-    const patch = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
+    const patch = gitBy(deadline, root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
     if (!patch) { oversize.push(`${path} (no patch could be made for it)`); continue; }
     if (patch.length <= budget) { add(patch.endsWith("\n") ? patch : `${patch}\n`, path); continue; }
     const [header = "", ...hunks] = patch.split(/^(?=@@ )/m);
@@ -495,14 +504,15 @@ export function patchGroups(root: string, base: string, files: string[], budget 
  * The regular files of commit `head` written into `dir`, as the commit's blobs hold them: read with ls-tree and cat-file, so no
  * checkout filter, attribute or hook of the clone runs on them. Links and submodules are left out.
  */
-export async function snapshot(root: string, head: string, dir: string) {
+export async function snapshot(root: string, head: string, dir: string, deadline = Infinity) {
   mkdirSync(dir, { recursive: true });
-  const entries = gitSafe(root, ["ls-tree", "-r", "-z", "--full-tree", head]).split("\0").filter(Boolean)
+  const entries = gitBy(deadline, root, ["ls-tree", "-r", "-z", "--full-tree", head]).split("\0").filter(Boolean)
     .flatMap((l) => { const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l); return m ? [{ exec: m[1] === "100755", sha: m[2]!, path: m[3]! }] : []; });
   if (!entries.length) return;
   const bad = () => new Error("the commit's files could not be read");
   const child = spawn("git", ["cat-file", "--batch"], { cwd: root, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "pipe", "ignore"] });
   child.stdin.on("error", () => {});
+  const timer = Number.isFinite(deadline) ? setTimeout(() => child.kill(), Math.ceil(timeLeft(deadline))) : undefined; // the copy is within the review's time too
   child.stdin.end(`${entries.map((x) => x.sha).join("\n")}\n`);
   // The answers as they stream in, each checked (object id, type, size) and written to its file: nothing is held but a chunk.
   let buf = Buffer.alloc(0), i = 0, fd = -1, left = 0, nl = false;
@@ -534,7 +544,7 @@ export async function snapshot(root: string, head: string, dir: string) {
         }
       } catch (err) { child.kill(); fail(err); }
     });
-    child.on("close", (code) => (code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
+    child.on("close", (code) => (clearTimeout(timer), Date.now() >= deadline ? fail(new Error(PREP_TIMEOUT)) : code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
   });
 }
 
@@ -547,19 +557,21 @@ export async function snapshot(root: string, head: string, dir: string) {
 async function codexNative({ instructions, model, effort, root, files, head, left = [], minutes, scratch, own, base }: EngineInput): Promise<EngineResult> {
   if (!own) throw new Error("codex-native only reviews");
   if (!files) throw new Error("codex-native reviews the files it is given");
-  const { groups, oversize } = patchGroups(root, base, files, undefined, head);
-  // With a commit to review at, codex works in a copy of that commit's files (no history, no .git), never the live checkout the
-  // Engineer may still be editing; its findings' paths are relative to that copy.
-  let cwd = root;
-  if (head) {
-    cwd = join(scratch, "tree");
-    await snapshot(root, head, cwd);
+  const deadline = Date.now() + Number(minutes ?? 20) * 60_000; // one allowance for the whole review: preparing it, then each part
+  let groups: ReturnType<typeof patchGroups>["groups"], oversize: string[], cwd = root;
+  try {
+    ({ groups, oversize } = patchGroups(root, base, files, undefined, head, deadline));
+    // With a commit to review at, codex works in a copy of that commit's files (no history, no .git), never the live checkout the
+    // Engineer may still be editing; its findings' paths are relative to that copy.
+    if (head) { cwd = join(scratch, "tree"); await snapshot(root, head, cwd, deadline); }
+  } catch (err) {
+    if ((err as Error).message === PREP_TIMEOUT) return { message: "", read: true, cause: PREP_TIMEOUT };
+    throw err;
   }
   const roots = [cwd.replace(/\/$/, ""), realpathSync(cwd)];
   const findings: ReturnType<typeof nativeFindings> = [];
   const failed = oversize.map((o) => `not sent: ${o}`);
   let ok = 0;
-  const deadline = Date.now() + Number(minutes ?? 20) * 60_000; // one allowance for the whole review, not one per part
   for (const [i, g] of groups.entries()) {
     const remaining = (deadline - Date.now()) / 60_000;
     if (remaining < 0.2) { failed.push(`part ${i + 1} of ${groups.length}: not run, the review's time was used up`); continue; }
