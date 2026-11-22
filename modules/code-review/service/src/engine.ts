@@ -700,7 +700,10 @@ export function createEngine(d: EngineDeps) {
       // rule: our AI's `fixed` holds unless the reviewer flags it). Only the batch's mandatory recheck run, only what it received.
       if (r.mandatory && r.recheck) {
         const cleared = new Set((review.cleared ?? []).filter((x) => typeof x === "string" && !again.has(x)));
-        const trusted = all<{ id: string }>("SELECT DISTINCT id FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND claim LIKE 'fixed:%'", r.repo, r.number).map((x) => x.id).filter((id) => cleared.has(id) && !unsafe.includes(id));
+        // Never at a head the finding was reported or reopened at: a claim stands only once a fix was pushed.
+        const trusted = all<{ id: string }>(`SELECT DISTINCT f.id FROM findings f WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL AND f.claim LIKE 'fixed:%'
+          AND NOT EXISTS (SELECT 1 FROM findings g JOIN runs y ON y.id = g.run WHERE g.repo = f.repo AND g.number = f.number AND g.id = f.id AND y.head = ?)
+          AND NOT EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?)`, r.repo, r.number, r.head, r.head).map((x) => x.id).filter((id) => cleared.has(id) && !unsafe.includes(id));
         for (const id of trusted) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
         dispose(trusted, r, "fixed", "its fixed claim stood: the recheck did not find it still there", `run:${r.id}`);
       }

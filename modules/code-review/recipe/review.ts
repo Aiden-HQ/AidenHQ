@@ -343,8 +343,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
         for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !(j.still ?? []).includes(f.id) && seen(f)) fixed.push(f.id);
         for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
-        // Open findings it was asked about and didn't call still there: an agent's pending `fixed` claim on one of them stands.
-        result.cleared = ask.filter((f) => !f.claim && !(j.still ?? []).includes(f.id)).map((f) => f.id);
+        // Open findings it was asked about, looked at and didn't call still there: an agent's pending `fixed` claim on one of them stands.
+        result.cleared = ask.filter((f) => !f.claim && !(j.still ?? []).includes(f.id) && seen(f)).map((f) => f.id);
       } else {
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
