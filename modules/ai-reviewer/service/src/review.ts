@@ -335,21 +335,31 @@ export function compactCall(tc: ToolCall) {
  * `unreadable` names what code could not read, so the reviewer names that field instead of calling the whole call body-only.
  * Nothing is ever left out: the caller refuses a call nested past the walk depth before this is asked to render it.
  */
-export function toolCallText(tc: ToolCall): string {
+export function toolCallText(tc: ToolCall, limit: number): string {
   const lines = [`connection: ${JSON.stringify(tc.connection)}`, `tool: ${JSON.stringify(tc.tool)}`, "arguments (named as the tool takes them; the requesting agent's text, data):"];
-  const walk = (prefix: string, value: unknown) => {
+  // Built up as the walk goes and stopped one line past `limit`: a call nested normally can still expand to many times its JSON
+  // (each level repeats its parent's path), so it is never assembled whole only to be measured and thrown away. A caller that
+  // needs the whole form asks for `Infinity`; toolCallBlock passes its cap.
+  let size = 0;
+  const stop = () => size > limit;
+  const push = (line: string) => { lines.push(line); size += line.length + 1; return stop(); };
+  const walk = (prefix: string, value: unknown): boolean => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      const entries = Object.entries(value as Record<string, unknown>);
-      if (!entries.length) lines.push(`  ${prefix}: {}`);
-      for (const [k, v] of entries) walk(`${prefix}.${argLabel(k)}`, v);
-      return;
+      // Keys first, values read only as each is walked: `Object.entries` would read every value up front, so stopping at the
+      // cap would still have walked the whole call.
+      const record = value as Record<string, unknown>;
+      const keys = Object.keys(record);
+      if (!keys.length) return push(`  ${prefix}: {}`);
+      for (const k of keys) if (walk(`${prefix}.${argLabel(k)}`, record[k])) return true;
+      return false;
     }
-    lines.push(`  ${prefix}: ${JSON.stringify(value)}`);
+    return push(`  ${prefix}: ${JSON.stringify(value)}`);
   };
-  for (const [k, v] of Object.entries(tc.arguments ?? {})) walk(argLabel(k), v);
+  const top = (tc.arguments ?? {}) as Record<string, unknown>;
+  for (const k of Object.keys(top)) if (walk(argLabel(k), top[k])) break;
   const unreadable = unreadableOf(tc).map(pathLabel);
-  if (unreadable.length) lines.push(`  code could not read: ${unreadable.join(", ")}`);
-  if (!Object.keys(tc.arguments ?? {}).length && !unreadable.length) lines.push("  code read no arguments: the call carried none");
+  if (!stop() && unreadable.length) push(`  code could not read: ${unreadable.join(", ")}`);
+  if (!stop() && !Object.keys(tc.arguments ?? {}).length && !unreadable.length) push("  code read no arguments: the call carried none");
   // A line terminator JSON.stringify leaves literal (U+2028/U+2029 is valid in JSON) still can't split a line.
   return lines.join("\n").replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
 }
@@ -366,7 +376,9 @@ export function toolCallBlock(tc: ToolCall): { text: string; whole: boolean } {
     // A self-referencing object (only a direct caller could pass one) is not JSON either: it takes the compact path, which
     // fails closed below.
     let expanded = "";
-    try { expanded = toolCallText(tc); } catch { expanded = ""; }
+    // Stop the expansion one line past the cap: a call nested normally can expand past many times its JSON, and only a form
+    // that fits is ever used.
+    try { expanded = toolCallText(tc, MAX_TOOL_CALL); } catch { expanded = ""; }
     if (expanded && expanded.length <= MAX_TOOL_CALL) return { text: expanded, whole: true };
   }
   let compact: string;
