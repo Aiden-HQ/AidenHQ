@@ -711,16 +711,18 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // owner/repo#N", in this repo or another), or that line.
   const by = closedBy(i)?.pull_request;
   const keywordPr = i.state === "CLOSED" && by?.merged ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
-  // A close that is not a completion (not planned, a duplicate) carries no PR: it counts when its closer, an owner, member or collaborator (the
-  // fleet acts as the owner), left a comment within two minutes of it, since the latest reopen, saying why.
-  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && comments.some((c) => owned(c) && c.author?.login === closer && Date.parse(c.createdAt) >= reopened && Math.abs(Date.parse(c.createdAt) - Date.parse(i.closedAt)) <= 120_000);
+  // A close that is not a completion (not planned, a duplicate) carries no PR: it counts when a comment by an owner, member or collaborator
+  // (the fleet acts as the owner) within two minutes of the close, since the latest reopen, carries the line `Not fixing: <reason>`
+  // or `Duplicate of <owner>/<repo>#<n>`. No other comment is a reason.
+  const REASON = /^(?:Not fixing: \S.*|Duplicate of [\w.-]+\/[\w.-]+#\d+)\s*$/m;
+  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && comments.some((c) => owned(c) && REASON.test(String(c.body ?? "")) && Date.parse(c.createdAt) >= reopened && Math.abs(Date.parse(c.createdAt) - Date.parse(i.closedAt)) <= 120_000);
   const trusted = Boolean(keywordPr) || lines.length > 0 || reasoned;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (keywordPr) {
     merges.push(keywordPr.merge_commit_sha ?? "");
     facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.merge_commit_sha ? ` (merge commit ${keywordPr.merge_commit_sha})` : ""}`);
-  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: it was not closed by a merged PR, and no comment by an owner, member or collaborator carries a "Fixed by <owner>/<repo>#<n> (merge <sha>)" line, and its closer left no comment of their own, so the issue is treated as not resolved`);
+  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: it was not closed by a merged PR, and no comment by an owner, member or collaborator carries a "Fixed by <owner>/<repo>#<n> (merge <sha>)" line, and a not-planned or duplicate close has no \"Not fixing: <reason>\" or \"Duplicate of <owner>/<repo>#<n>\" line from one of them within two minutes of it, so the issue is treated as not resolved`);
   else {
     const seen = new Set<string>();
     for (const l of lines) {

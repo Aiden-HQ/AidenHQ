@@ -69,7 +69,7 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
   one, and `feature-request` on a feature request. `agent-build` belongs to the owner: the tool refuses it.
 - `github_issue_state`: close the issue `completed` or `not_planned`, or reopen it. A close carries
   its citation in `note` (posted on the issue as part of the close): for `completed`, one line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, the fix's PR and its merge commit;
-  for `not_planned`, the line or path that disproves it. One call,
+  for `not_planned`, the line `Not fixing: <reason>` (the line or path that disproves it, or where it belongs), or `Duplicate of <owner>/<repo>#<n>` for a duplicate, each on its own line. One call,
   so the close and its evidence are reviewed together. **A close carries its citation only on an issue that was open:** on one already closed, a `note` only posts the comment and leaves the earlier close as GitHub recorded it. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
   or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
   does not read, so the close will look uncited.** A fix PR's body carries `Fixes <owner>/<repo>#N` (the brief asks for it), so
@@ -134,11 +134,10 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    `not_planned` or a duplicate) keeps its state and reason: comment that line and finish, never closing it again. Only an
    issue still open after its PR merged means the PR lacked the `Fixes` line: close it `completed` with a `note` carrying
    that line.
-7. `not-real` closes `not_planned` with a `note` quoting the log line or path that disproves it. `already-fixed` closes
+7. `not-real` closes `not_planned` with a `note` carrying `Not fixing: <the log line or path that disproves it>`. `already-fixed` closes
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
-   `out-of-scope` closes `not_planned` with a `note` naming where the defect lives (the upstream project or owner) and
-   the evidence; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
-   `duplicate` closes `not_planned` with a `note` linking the issue it duplicates. `uncertain` stays open with what is missing.
+   `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
+   `duplicate` closes `not_planned` with a `note` carrying `Duplicate of <owner>/<repo>#<n>`. `uncertain` stays open with what is missing.
 
 ## One run sees its issue through
 
@@ -148,7 +147,7 @@ through its merge, then verify the merge closed the issue and cite the PR. While
 task: set it `blocked` with `blocked_by` the engineer's fix task; its finishing wakes it for the next step. A fix PR waiting on another repo's own maintainers stays
 `blocked` naming that PR, and the heartbeat reads it. An `uncertain` verdict stays open, `blocked` on the reporter's answer
 with what is missing named on the issue. When the fleet itself filed the issue, the reporter is an agent: recheck it at each new `good` generation by running its read-only reproduction steps or log query (any step that changes something is a finding for the engineer), and close it
-`not_planned` as not reproduced (citing that recheck) once it finds nothing. A wait on an approval card on this task keeps the task open, and the card's outcome
+`not_planned` as not reproduced (a `note` carrying `Not fixing: not reproduced, <that recheck>`) once it finds nothing. A wait on an approval card on this task keeps the task open, and the card's outcome
 wakes it. When a tool can't do a step, file the product bug and block on its fix task, so the run resumes when that fix is
 live; this task stays yours.
 
@@ -166,8 +165,8 @@ path. Not credible: one comment saying precisely what is missing, leave it unlab
 `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
 Before any verdict, search that repo's history at its live commit (in your computer's clone when you have one) and its
 merged PRs for the symptom's code path. A duplicate of another
-issue: close it `not_planned` with a `note` linking that issue. Out of scope (the defect is in an upstream dependency or
-another owner's code): close it `not_planned` with a `note` saying where it belongs and why.
+issue: close it `not_planned` with a `note` carrying `Duplicate of <owner>/<repo>#<n>`. Out of scope (the defect is in an upstream dependency or
+another owner's code): close it `not_planned` with a `note` carrying `Not fixing: <where it belongs and why>`.
 
 Work through the unlabelled issues; the only limit is the install's daily spend limit. When it is close, report what you could not reach
 rather than going over. A security report is never labelled; a request for new behaviour gets the verdict in "Feature
