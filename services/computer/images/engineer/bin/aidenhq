@@ -161,9 +161,9 @@ const bundle = (repo, branch, sha) => {
   const tmp = join(out, `${sha}.${process.pid}.tmp`);
   try {
     if (execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { encoding: "utf8" }).trim() !== sha) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
-    try { execFileSync("git", ["-C", dir, "update-ref", pub, sha], { stdio: "ignore" }); } catch (e) { // a parallel bundle of this sha may hold the ref's lock
+    try { execFileSync("git", ["-C", dir, "update-ref", pub, sha], { stdio: ["ignore", "ignore", "pipe"] }); } catch (e) { // a parallel bundle of this sha may hold the ref's lock
       const now = (() => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", pub], { encoding: "utf8" }).trim(); } catch { return ""; } })();
-      if (now !== sha) throw e;
+      if (now !== sha) throw new Error(`could not set ${pub}: ${String(e.stderr ?? e.message).trim().slice(0, 300)}`);
     }
     execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", tmp, pub], { stdio: ["ignore", "ignore", "inherit"] });
     const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" }).split("\n").filter(Boolean);
