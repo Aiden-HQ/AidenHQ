@@ -405,7 +405,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const cleaned = down.findings;
   const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
   // A finder's own `same_as` restatement counts as still there only at a line that exists at the head: placed under the earlier id.
-  const refound = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).map((f) => f.id));
+  const refound = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).filter((f) => !f.why.startsWith("[on a file this change deletes")).map((f) => f.id)); // a real line only
   let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
   for (const f of candidates) if (restates(f, f.id)) { restated.add(f.id); refound.add(f.id); }
   candidates = candidates.filter((f) => !restates(f, f.id));
