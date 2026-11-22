@@ -662,6 +662,42 @@ test("a notice dropped for a newer head keeps a write it already filed, so its o
   assert.deepEqual(w.acks.filter((x) => x.head === sha("3")), []);
 });
 
+test("a dropped notice whose write is refused gives up its record, so a restart never restores a terminal write or its slot", async () => {
+  // A's notice is filed (its write is live) when the author pushes B, so A's notice is dropped and its write's record kept: the
+  // write may still land. It settles refused instead (a stale record), which is terminal — nothing will read it again. Its record
+  // is given up there, or every restart would restore its slot from the row and poll a record that is already done, holding the
+  // pull request's acknowledgement slot forever.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9";
+  await w.tick({ github: false });
+  const a = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9");
+  // B arrives: A's notice is dropped, its filed write still tracked.
+  w.ackPending = "";
+  w.pr(3, sha("4"));
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE id = ?").run(a.id);
+  await w.tick();
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "failed");
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9");
+  // Its write settles refused (not posted): terminal, so the record is given up. A restart then has nothing to restore, and no
+  // tick reads that record again.
+  w.outcomes.set("k-9", { state: "refused", why: "write k-9 stale" });
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, null, "a terminal refusal gives the dropped notice's record up");
+  w.restart();
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, null);
+  assert.equal(w.acks.filter((x) => x.state === "failed").length, 1, "no notice is filed again for the dropped row");
+});
+
 test("a restart between filing a notice and learning its comment's id does not make a second acknowledgement", async () => {
   // Two reviewers on the PR, both posts refused: each run wants a notice. The first notice's write is filed and still pending
   // (its comment's id isn't known yet), and it is waiting out a backoff, so only the second run's notice is due this tick. If the

@@ -183,14 +183,17 @@ export function createEngine(d: EngineDeps) {
     // The comment's id and the notices it settles are written in one transaction: the run that filed a notice must never be
     // marked sent while the id of the comment it made is lost, or the next notice would make a second acknowledgement instead of
     // editing that one.
-    if (o?.state === "posted" && (o.ack || write)) {
+    // Any settled outcome (posted, or refused) gives up a dropped notice's filed write: the record is kept only while the write
+    // is still ours to read, and a refused record is never read again, so it would otherwise restore its slot at every restart
+    // and poll a record that is already terminal.
+    if (o && o.state !== "pending" && (o.ack || write)) {
       try {
         tx(() => {
           if (o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
           // A refused post's waiting notice whose own write the shared queue read as done is told; another notice on the same PR
           // is not (its delivery reads its own record).
           if (write) {
-            run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
+            if (o.state === "posted") run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
             // A notice dropped because the head moved keeps its filed write's record only until that write settles: now it has,
             // so the record (and the slot it held) is given up, and a notice for the newer head is free to speak.
             run("UPDATE runs SET notice_write = NULL WHERE notice = 'failed' AND notice_write = ?", write);
