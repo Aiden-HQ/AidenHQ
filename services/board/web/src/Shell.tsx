@@ -214,6 +214,7 @@ export function BottomBar({ view, approvals, agentsActive, onNav, panels, notify
 }
 
 type Entry = { id: string; kind: string; label: string; hint?: string; icon: IconName; run: () => void };
+export type PaletteEntry = Entry;
 
 /** Characters of `q` in order inside `s`; earlier, tighter and word-start matches score higher. -1: no match. */
 function score(s: string, q: string): number {
@@ -231,7 +232,7 @@ function score(s: string, q: string): number {
   return gaps > q.length * 3 ? -1 : 500 - gaps;
 }
 
-export function Palette({ open, onClose, go, crew, apps, onNewTask }: { open: boolean; onClose: () => void; go: (hash: string) => void; crew: Assignee[]; apps: { name: string }[]; onNewTask: () => void }) {
+export function Palette({ open, onClose, go, crew, apps, onNewTask, tasks = [] }: { open: boolean; onClose: () => void; go: (hash: string) => void; crew: Assignee[]; apps: { name: string }[]; onNewTask: () => void; /** Tasks' own entries (Agent work, saved boards, Save board), from cached data. */ tasks?: PaletteEntry[] }) {
   const [q, setQ] = useState("");
   const [at, setAt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -251,6 +252,7 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask }: { open: bo
     return [
       { id: "new-chat", kind: "Action", label: "New chat with Aiden", icon: "chat", run: nav("#/c/") },
       { id: "new-task", kind: "Action", label: "New task", icon: "plus", run: () => (onClose(), onNewTask()) },
+      ...tasks.map((t) => ({ ...t, run: () => (onClose(), t.run()) })),
       ...ITEMS.map((i) => ({ id: `v-${i.view}`, kind: "Go to", label: i.name, icon: i.icon, run: nav(hrefOf(i.view)) })),
       { id: "v-settings", kind: "Go to", label: "Settings", icon: "settings", run: nav("#/settings") },
       ...CATEGORIES.map((c) => ({ id: `s-${c.key}`, kind: "Settings", label: c.name, icon: "settings" as const, run: nav(`#/settings/${c.key}`) })),
@@ -260,7 +262,7 @@ export function Palette({ open, onClose, go, crew, apps, onNewTask }: { open: bo
       ...modules.map((m) => ({ id: `m-${m.name}`, kind: "Module", label: m.name, hint: m.description, icon: "modules" as const, run: nav(`#/modules/${m.name}`) })),
       { id: "help", kind: "Go to", label: "Keyboard shortcuts", icon: "help", run: nav("#/help") },
     ];
-  }, [open, crew, apps, go, onClose, onNewTask]);
+  }, [open, crew, apps, go, onClose, onNewTask, tasks]);
 
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();

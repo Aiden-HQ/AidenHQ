@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { z } from "zod";
 import { paperclipClient, PaperclipError } from "./aidenhq-sdk/paperclip.js";
 
 export { PaperclipError };
@@ -108,6 +109,22 @@ export interface Attachment {
 }
 
 export const OPEN = "backlog,todo,in_progress,in_review,blocked";
+/** A paged list read stops here: past it the board says it shows only the newest (`incomplete`). */
+export const LIST_BOUND = 2000;
+const PAGE = 500;
+
+/** A company project (read-only: the board's Project filter). */
+export interface Project {
+  id: string;
+  name: string;
+}
+const ProjectsSchema = z.array(z.object({ id: z.string().min(1), name: z.string() }).loose());
+
+/** A paged list: every row up to LIST_BOUND, and whether the bound cut it short. */
+export interface Listed {
+  issues: Issue[];
+  incomplete: boolean;
+}
 
 export class Paperclip {
   private cache = new Map<string, { at: number; value: Promise<unknown>; done: boolean }>();
@@ -164,12 +181,38 @@ export class Paperclip {
   }
 
   /**
-   * All open issues of the company (routine runs left out), in one request: Paperclip limits
-   * concurrent list requests per client, so the board filters by assignee itself.
+   * All open issues of the company (routine runs left out), paged one request at a time: Paperclip limits concurrent list
+   * requests per client, so the board filters by assignee itself.
    */
-  openIssues(): Promise<Issue[]> {
+  async openIssues(): Promise<Issue[]> {
+    return (await this.openListed()).issues;
+  }
+
+  /** The open issues with whether LIST_BOUND cut them short (the board's inventory). */
+  openListed(): Promise<Listed> {
     // The biggest read the board makes: requests made while one is on its way share it (never a finished one).
-    return this.cached("open", 0, () => this.list(OPEN));
+    return this.cached("open", 0, () => this.paged(OPEN));
+  }
+
+  /** Every closed issue (routine runs left out) updated after `since`, newest first, up to LIST_BOUND. */
+  closedListed(since: string): Promise<Listed> {
+    return this.paged("done,cancelled", since);
+  }
+
+  /** The company's projects (Paperclip's own list); a reply not shaped `{id, name}[]` is an error, so the filter shows unavailable. */
+  projects(): Promise<Project[]> {
+    return this.cached("projects", 300_000, async () => ProjectsSchema.parse(await this.request("GET", `/api/companies/${this.companyId}/projects`)).map((p) => ({ id: p.id, name: p.name })));
+  }
+
+  /** One status list read page by page, newest update first, until a short page or LIST_BOUND (so the bound cuts the oldest). */
+  private async paged(status: string, updatedSince?: string): Promise<Listed> {
+    const issues: Issue[] = [];
+    for (let offset = 0; offset < LIST_BOUND; offset += PAGE) {
+      const page = await this.list(status, updatedSince, String(PAGE), false, offset, true);
+      issues.push(...page);
+      if (page.length < PAGE) return { issues, incomplete: false };
+    }
+    return { issues, incomplete: true };
   }
 
   /** Every task (routine runs left out) updated after `since`, newest first: what the live watch (watch.ts) announces. */
@@ -254,8 +297,8 @@ export class Paperclip {
     return (await this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${p}`)).filter((i) => i.assigneeAgentId === agentId);
   }
 
-  private list(status: string, updatedSince?: string, limit = "500", routines = false): Promise<Issue[]> {
-    const q = new URLSearchParams({ status, limit, excludeRoutineExecutions: String(!routines) });
+  private list(status: string, updatedSince?: string, limit = "500", routines = false, offset = 0, newest = false): Promise<Issue[]> {
+    const q = new URLSearchParams({ status, limit, excludeRoutineExecutions: String(!routines), ...(offset ? { offset: String(offset) } : {}), ...(newest ? { sortField: "updated", sortDir: "desc" } : {}) });
     if (updatedSince) q.set("updatedSince", updatedSince);
     return this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${q}`);
   }

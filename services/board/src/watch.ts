@@ -16,6 +16,8 @@ const TICK_MS = 2_000;
 const OVERLAP_MS = 5_000;
 /** A working agent's live words come from its session log, which the board reads at most every 5s (live-activity.ts). */
 const PROGRESS_MS = 5_000;
+/** The board's sweep (app.ts `sweep`) runs at most this often while boards listen, and when the watch starts. */
+const SWEEP_MS = 10_000;
 /** Time alone changes a task's state (a task idle for 15 minutes needs someone, a wake falls due), and nothing in Paperclip says so: every 30th tick (a minute) the open tasks' states are read. */
 const OPEN_EVERY_TICKS = 30;
 
@@ -65,12 +67,24 @@ export function startWatch(o: {
   records?: Pick<Records, "list" | "live">;
   log: Logger;
   session?: (agentId: string, startedAt: string | null) => Promise<SessionActivity | null>;
+  /** The board's writes (new tasks placed, crew parts closed, settled tasks back), off its read path; run on its own, never two at once. */
+  sweep?: () => Promise<void>;
   everyMs?: number;
 }): () => void {
   let state: Watched | null = null;
   let busy = false;
   let failing = false;
   let cards: string | undefined;
+  let sweeping = false, sweptAt = 0, sweepFailing = false;
+  const sweep = () => {
+    if (!o.sweep || sweeping) return;
+    sweeping = true;
+    sweptAt = Date.now();
+    void o.sweep().then(
+      () => (sweepFailing && o.log.info("board sweep back"), (sweepFailing = false)),
+      (err) => (!sweepFailing && o.log.warn({ err: String((err as Error).message ?? err).slice(0, 300) }, "board sweep failed; trying again every 10s"), (sweepFailing = true)),
+    ).finally(() => (sweeping = false));
+  };
 
   /** The chat a task belongs to: itself, or the chat it was handed out from. */
   const chatOf = (s: Watched, id: string) => {
@@ -113,6 +127,8 @@ export function startWatch(o: {
     if (busy) return;
     busy = true;
     try {
+      // A watch that starts again (no board listened meanwhile) catches up first: its cursor restarts near now.
+      if (!state || Date.now() - sweptAt >= SWEEP_MS) sweep();
       const s = (state ??= await start());
       const since = new Date(Date.parse(s.cursor) - OVERLAP_MS).toISOString();
       const [changed, live] = await Promise.all([o.pc.changedSince(since), o.liveRuns()]);
@@ -205,6 +221,7 @@ export function startWatch(o: {
     }
   }
 
+  sweep(); // start-up catch-up
   const t = setInterval(() => void tick(), o.everyMs ?? TICK_MS);
   t.unref();
   return () => clearInterval(t);

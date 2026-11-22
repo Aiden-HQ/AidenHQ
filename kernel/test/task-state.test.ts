@@ -118,4 +118,16 @@ const cases = [
   ["a hold ends when the task leaves review", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), status("todo", 5, "in_review")], NOW,
     { kind: "idle", reason: "orphaned" }],
 ];
+// The lane (laneOf): read from every obligation, never from the representative reason alone.
+const blockedBy = (m, ...ids) => f("task.blocked_changed", m, { blocked_by: ids });
+cases.push(
+  ["lane: a queued job outranks a blocker's reason, not its lane", [created(), assignee("kai", 0), blockedBy(1, "t2"), job("job.queued", 2)], NOW,
+    { kind: "waiting", reason: "job_queued", lane: "blocked", blocker: "task:t2" }],
+  ["lane: the owner's card beats a running job", [created(), assignee("kai", 0), job("job.started", 1), card("k1", 2)], NOW, { kind: "working", lane: "needs_you" }],
+  ["lane: an owner wait beats a failure", [created(), job("job.ended", 1, { state: "failed" }), wait("owner_wait", 2, { question: "q" })], NOW, { lane: "needs_you" }],
+  ["lane: a failure is blocked", [created(), assignee("kai", 0), job("job.ended", 1, { state: "failed" })], NOW, { kind: "idle", reason: "failed", lane: "blocked" }],
+  ["lane: an AI review is waiting", [created(), assignee("kai", 0), card("k1", 1, "review")], NOW, { reason: "card_review", lane: "waiting" }],
+  ["lane: backlog is idle", [created(), assignee("kai", 0), status("backlog", 1, "todo")], NOW, { reason: "backlog", lane: "idle" }],
+  ["lane: closed is done", [created(), status("done", 1)], NOW, { lane: "done" }],
+);
 for (const [name, rows, now, want, polled] of cases) test(name as string, () => check(taskState("t1", rows as never, T0 + (now as number) * MIN, STAGES, (polled as Polled | undefined) ?? POLLED), want));

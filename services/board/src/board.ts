@@ -1,7 +1,7 @@
 // Board logic: which tasks show where, who they're assigned to, and how edits map onto Paperclip.
 // Pure functions (unit-tested); I/O is in app.ts.
 import { z } from "zod";
-import { crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
+import { closedIssue, crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { BUCKETS, type Bucket, type Placement } from "./store.js";
@@ -112,6 +112,20 @@ export interface Card {
   crew?: CrewMember[];
   /** The kernel's state of the task (task-state.ts), set when the board is read; null when it has no facts. */
   state?: ShownState | null;
+  /** Ids the filters match (labels, project). */
+  labelIds: string[];
+  projectId: string | null;
+}
+
+/** An Agent work card: one issue, never folded, with its kernel state (its lane) and the task it is part of. */
+export interface WorkCard extends Card {
+  state: ShownState | null;
+  /** The delegating task's identifier, for a sub-task. */
+  parent: string | null;
+  /** The agents working in its sub-tasks (agent ids): the Agent filter matches them too. */
+  crewIds: string[];
+  /** When it closed (a Done card). */
+  closedAt: string | null;
 }
 
 export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
@@ -128,12 +142,23 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
     unread: activityAt > seenAt,
     createdAt: issue.createdAt,
     activityAt,
+    labelIds: issue.labelIds ?? (issue.labels ?? []).map((l) => l.id),
+    projectId: issue.projectId ?? null,
   };
+}
+
+/** Its assignee is the issue's own (an agent removed from the roster stays its holder, named from the kernel's row). */
+export function workCard(issue: Issue, list: Assignee[], state: ShownState | null, parent: string | null, crewIds: string[]): WorkCard {
+  const closed = closedIssue(issue);
+  const assignee = issue.assigneeAgentId ?? (issue.assigneeUserId ? "me" : null);
+  return { ...toCard(issue, list, ""), assignee, unread: false, state, parent, crewIds, closedAt: closed ? closedAt(issue) : null };
 }
 
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
 /** The owner's settings task as the board files it (made by no agent, held by none): a label alone hides nothing. */
 const isSettings = (i: Issue) => !i.assigneeAgentId && !i.createdByAgentId && (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
+/** A task Agent work shows: anything but the brief and the owner's settings tasks. */
+export const isWork = (i: Issue) => !isBrief(i) && !isSettings(i);
 
 export interface BoardInput {
   open: Issue[];
@@ -145,7 +170,7 @@ export interface BoardInput {
   installedAt: string;
   assignees: Assignee[];
   /** Activity for the crew on each card; without it, cards have no crew. */
-  crew?: Omit<CrewInput, "assignees" | "seen">;
+  crew?: Omit<CrewInput, "assignees">;
 }
 
 export interface Board {
@@ -169,7 +194,7 @@ export function buildBoard(input: BoardInput): Board {
   const folded = foldedChildren(all, input.assignees);
   const children = new Map<string, Issue[]>();
   for (const i of all) if (folded.has(i.id)) children.set(folded.get(i.id)!, [...(children.get(folded.get(i.id)!) ?? []), i]);
-  const crewInput = input.crew && { ...input.crew, assignees: input.assignees, seen };
+  const crewInput = input.crew && { ...input.crew, assignees: input.assignees };
   const withCrew = (card: Card, issue: Issue) => {
     const crew = crewInput ? crewOf(issue, children.get(issue.id) ?? [], crewInput) : [];
     if (crew.length) card.crew = crew;
@@ -204,7 +229,7 @@ export function buildBoard(input: BoardInput): Board {
   };
 }
 
-const closedAt = (i: Issue) => i.completedAt ?? i.cancelledAt ?? i.updatedAt;
+export const closedAt = (i: Issue) => i.completedAt ?? i.cancelledAt ?? i.updatedAt;
 
 /** Hidden markers (source, runner) never show; Markdown is rendered and sanitised in the browser. */
 export function displayText(text: string | null | undefined): string {

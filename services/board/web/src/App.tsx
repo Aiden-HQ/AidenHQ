@@ -36,9 +36,13 @@ import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
-import { dayDate, keepsSecureCookies, matches, parkBucket, todayIn } from "./util";
+import { ago, dayDate, keepsSecureCookies, parkBucket, todayIn } from "./util";
 import { panelsOf } from "./sidebar";
 import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
+import { AgentWork, AgentWorkLoading } from "./AgentWork";
+import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTaskBoard } from "./TaskTools";
+import { applyFilters, isEmpty } from "./filters";
+import { Banner, Segmented } from "./ui";
 import "./shell.css";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
@@ -56,7 +60,7 @@ const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.Des
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -117,7 +121,7 @@ function parseRoute(): Route {
   if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
   if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
-  if (/^r\/[0-9a-f-]{36}$/.test(h)) return { kind: "run", id: h.slice(2) };
+  if (/^r\/(j-[0-9a-f]{16}|[0-9a-f-]{36})$/.test(h)) return { kind: "run", id: h.slice(2) };
   // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
   if (h === "c" || h.startsWith("c/")) return { kind: "chat", ref: h.slice(2).split("?")[0] || null };
   if (h === "settings/modules" || h === "modules") return { kind: "view", view: "modules" };
@@ -130,6 +134,9 @@ function parseRoute(): Route {
     return { kind: "settings", cat: isCategory(cat) ? cat : null };
   }
   if (h === "connections" || h === "accounts") return { kind: "settings", cat: h };
+  // #/board?view=<id>: Tasks on a saved board (TaskTools.tsx); an unknown id falls back to All tasks.
+  const saved = /^board\?view=([0-9a-f-]{36})$/.exec(h);
+  if (saved) return { kind: "view", view: "board", saved: saved[1]! };
   // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
@@ -184,9 +191,11 @@ interface Toast {
   action?: { label: string; run: () => void };
 }
 
+/** A cached board from before Agent work (no `work`) waits for the first read instead of painting. */
+const fresh = (b: Board | undefined) => (b && Array.isArray(b.work) ? b : undefined);
 /** The board this device last saw (cache.ts), with its Slack hosts set for links. */
 function cachedBoard(): Board | undefined {
-  const b = peek<Board>("board")?.data;
+  const b = fresh(peek<Board>("board")?.data);
   if (b) setSlackTeams(b.slackTeams ?? {});
   return b;
 }
@@ -213,7 +222,6 @@ export function App() {
       ),
     [],
   );
-  const [query, setQuery] = useState("");
   const [showDone, setShowDone] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -271,6 +279,12 @@ export function App() {
       setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 160);
     }, action ? 7000 : 3500);
   }, []);
+  // What Tasks shows: the layout, the filters (the search field is their text) and the saved boards (tabs once the session is confirmed).
+  const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "view" && route.view === "board" ? route.saved ?? null : undefined, toast, go });
+  const query = tb.filters.text ?? "";
+  const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
+  const filtering = !isEmpty(tb.filters);
+  const [saveOpen, setSaveOpen] = useState(0);
 
   const seq = useRef(0); // only the latest board request counts (an old 401 must not undo a sign-in)
   const refresh = useCallback(async (force = false) => {
@@ -295,7 +309,7 @@ export function App() {
     if (!session) return;
     const admin = session.account?.role === "admin";
     setAccount(admin ? session.account!.id : null);
-    const cached = admin ? peek<Board>("board")?.data : undefined;
+    const cached = admin ? fresh(peek<Board>("board")?.data) : undefined;
     if (!cached) return;
     setSlackTeams(cached.slackTeams ?? {});
     setBoard((b) => b ?? cached);
@@ -530,8 +544,8 @@ export function App() {
   const visibleBuckets: Bucket[] = mobile ? [tab] : BUCKETS;
   const filtered = useMemo(() => {
     if (!items) return null;
-    return Object.fromEntries(BUCKETS.map((b) => [b, items[b].filter((c) => matches(c, query))])) as Items;
-  }, [items, query]);
+    return Object.fromEntries(BUCKETS.map((b) => [b, applyFilters(items[b], tb.filters)])) as Items;
+  }, [items, tb.filters]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -568,10 +582,11 @@ export function App() {
       if (k === "c" || k === "n") return e.preventDefault(), setCreating(true);
       if (k === "b") return go("#/brief");
       if (k === "?") return go("#/help");
+      if (k === "a") return go(view === "agents" ? "#/board" : "#/agents");
+      // My day's own keys: Agent work binds none.
+      if (view !== "board" || tb.layout !== "day") return;
       if (k === "d") return setShowDone((s) => !s);
       if (k === "r") return setShowRecurring((s) => !s);
-      if (k === "a") return go(view === "agents" ? "#/board" : "#/agents");
-      if (view !== "board") return;
       if (k === "j" || k === "ArrowDown") {
         e.preventDefault();
         if (e.shiftKey && p) return void reorder(lists[p.b][p.i]!.id, 1);
@@ -635,7 +650,7 @@ export function App() {
     ) : (
       <div className={`app boot${mobile ? " mobile" : ""}`} aria-busy="true" aria-label="Loading">
         {!mobile && <div className="topnav" />}
-        <div className="app-main" />
+        <div className="app-main">{tb.layout === "work" && <AgentWorkLoading />}</div>
       </div>
     );
 
@@ -657,6 +672,10 @@ export function App() {
     setSelected(c.id);
     go(`#/t/${c.identifier}`);
   };
+  const work = tb.layout === "work";
+  // The cards the filter menu counts over: the layout's own, unfiltered.
+  const filterCards: Card[] = work ? board.work : [...BUCKETS.flatMap((b) => items[b]), ...board.recurring, ...board.done];
+  const workCards = applyFilters(board.work, tb.filters);
 
   return (
     <div className={`app${mobile ? " mobile" : ""}${view === "chat" ? " on-chat" : ""}`}>
@@ -706,35 +725,66 @@ export function App() {
           </div>
         </header>
       )}
+      {onBoard && work && <AttentionStrip onSignIn={signInNeeded} compact />}
       {!mobile && onBoard && (
-        <header className="page-tools">
-          <h1>Tasks</h1>
-          <div className="search">
-            <input ref={searchRef} type="search" placeholder="Search tasks" value={query} onChange={(e) => setQuery(e.target.value)} />
-            <kbd>/</kbd>
-          </div>
-          <span className="spacer" />
-          {board.recurring.length > 0 && (
-            <button className={`btn${showRecurring ? " on" : ""}`} aria-pressed={showRecurring} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
-              Recurring
+        <header className="page-tools tt-tools">
+          <div className="tt-row">
+            <h1>Tasks</h1>
+            <BoardTabs tb={tb} ready={!!session?.account} mobile={false} saveSignal={saveOpen} />
+            <span className="spacer" />
+            {work && <AsOf board={board} stale={!!error} />}
+            <div className="search">
+              <input ref={searchRef} type="search" placeholder="Filter tasks" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <kbd>/</kbd>
+            </div>
+            {!work && board.recurring.length > 0 && (
+              <button className={`btn${showRecurring ? " on" : ""}`} aria-pressed={showRecurring} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
+                Recurring
+              </button>
+            )}
+            {!work && (
+              <button className={`btn${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone(!showDone)} title="Recently done (d)">
+                Done
+              </button>
+            )}
+            <button className="btn primary" onClick={() => setCreating(true)} title="New task (c)">
+              <PlusIcon /> New task
             </button>
-          )}
-          <button className={`btn${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone(!showDone)} title="Recently done (d)">
-            Done
-          </button>
-          <button className="btn primary" onClick={() => setCreating(true)} title="New task (c)">
-            <PlusIcon /> New task
-          </button>
+          </div>
+          <div className="tt-row tt-filters">
+            <FilterChips tb={tb} board={board} cards={filterCards} />
+            <span className="spacer" />
+            {work && (
+              <span className="tt-group">
+                Group by <Segmented label="Group by" value={tb.groupBy} onChange={tb.setGroupBy} options={[["none", "None"], ["agent", "Agent"]] as const} />
+              </span>
+            )}
+            <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />
+          </div>
         </header>
       )}
+      {mobile && onBoard && (
+        <header className="tt-tools phone">
+          <div className="tt-row">
+            <BoardTabs tb={tb} ready={!!session?.account} mobile saveSignal={saveOpen} />
+            {work && <AsOf board={board} stale={!!error} />}
+          </div>
+          <div className="tt-row">
+            <FilterSheet tb={tb} board={board} cards={filterCards} />
+            <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />
+          </div>
+        </header>
+      )}
+      {onBoard && <ConflictBanner tb={tb} onSaveNew={() => setSaveOpen((n) => n + 1)} />}
 
-      {onBoard && <AttentionStrip onSignIn={signInNeeded} />}
+      {onBoard && !work && <AttentionStrip onSignIn={signInNeeded} />}
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} canReconnect={googleConnect} />
       <SignInBanners board={board} canConnect={signInConnect} />
 
-      {mobile && onBoard && (
+      {onBoard && work && board.incomplete && <Banner tone="warn">Showing the newest 2,000 tasks.</Banner>}
+      {mobile && onBoard && !work && (
         <nav className="bucket-tabs" aria-label="Buckets">
           {BUCKETS.map((b) => (
             <button key={b} aria-selected={b === tab} onClick={() => setTab(b)}>
@@ -757,7 +807,8 @@ export function App() {
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
-      <main className={`columns${showDone || showRecurring ? " extra" : ""}`} hidden={view !== "board"}>
+      {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} onClear={() => tb.setFilters({})} />}
+      <main className={`columns${showDone || showRecurring ? " extra" : ""}`} hidden={view !== "board" || work}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
             <Column
@@ -767,7 +818,7 @@ export function App() {
               total={counts[b]}
               board={board}
               selected={selected}
-              dragDisabled={!!query}
+              dragDisabled={filtering}
               onOpen={openCard}
               onDone={markDone}
               onMove={(c, to) => void moveCard(c.id, to)}
@@ -775,7 +826,7 @@ export function App() {
               onMerge={(c, into) => void mergeCard(c, into)}
               mergeTargets={mergeTargets}
               onAdd={(title) => addTask(title, b)}
-              onCarried={b === "today" ? (action) => void carriedAction(action) : undefined}
+              onCarried={b === "today" && !filtering ? (action) => void carriedAction(action) : undefined}
               addRef={b === "triage" ? addRef : undefined}
               timezone={board.timezone}
             />
@@ -790,7 +841,7 @@ export function App() {
               <span className="hint">Runs land on top of Today</span>
             </header>
             <div className="col-body">
-              {board.recurring.filter((c) => matches(c, query)).map((c) => (
+              {applyFilters(board.recurring, tb.filters).map((c) => (
                 <CardView key={c.id} card={c} assignees={board.assignees} onOpen={openCard} />
               ))}
               {!board.recurring.length && <p className="empty">Nothing repeats yet. Open a task and use Repeats.</p>}
@@ -805,7 +856,7 @@ export function App() {
               <span className="hint">Last 48 hours</span>
             </header>
             <div className="col-body">
-              {board.done.filter((c) => matches(c, query)).map((c) => (
+              {applyFilters(board.done, tb.filters).map((c) => (
                 <CardView key={c.id} card={c} assignees={board.assignees} closed onOpen={openCard} />
               ))}
               {!board.done.length && <p className="empty">Nothing closed recently.</p>}
@@ -866,7 +917,19 @@ export function App() {
       {mobile && !chatFull && <BottomBar view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
       </div>
       </div>
-      <Palette open={palette} onClose={closePalette} go={go} crew={board.assignees} apps={appsQ.data?.apps ?? []} onNewTask={newTask} />
+      <Palette
+        open={palette}
+        onClose={closePalette}
+        go={go}
+        crew={board.assignees}
+        apps={appsQ.data?.apps ?? []}
+        onNewTask={newTask}
+        tasks={[
+          { id: "t-work", kind: "Go to", label: "Agent work", icon: "tasks", run: () => tb.select(null, tb.views, "work") },
+          ...(tb.views ?? []).map((v) => ({ id: `t-${v.id}`, kind: "Board", label: v.name, icon: "tasks" as const, run: () => tb.select(v.id) })),
+          ...(tb.views ? [{ id: "t-save", kind: "Action", label: "Save board", icon: "plus" as const, run: () => (go(tb.view ? `#/board?view=${tb.view.id}` : "#/board"), setSaveOpen((n) => n + 1)) }] : []),
+        ]}
+      />
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className={`toast${t.leaving ? " leaving" : ""}`} role="status">
@@ -1001,6 +1064,18 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
         {!cards.length && <p className="empty">{total ? "No matches." : bucket === "triage" ? "All sorted." : "Nothing here."}</p>}
       </div>
     </section>
+  );
+}
+
+/** "As of 10:42": the kernel snapshot the lanes show; after a failed read, how old that last good one is. */
+function AsOf({ board, stale }: { board: Board; stale: boolean }) {
+  if (!board.asOf) return null;
+  const at = new Date(board.asOf).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return (
+    <span className={`tt-asof${stale ? " stale" : ""}`} title="Every lane is one kernel snapshot">
+      As of {at}
+      {stale && `, ${ago(board.asOf) === "now" ? "just now" : `${ago(board.asOf)} ago`}`}
+    </span>
   );
 }
 

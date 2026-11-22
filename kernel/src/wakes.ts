@@ -76,7 +76,7 @@ export async function wakeNotice(owner: Api, task: string, text: string, id?: st
 }
 
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; state: string; claimed_by: string | null; job: string | null; until: number | null }
-type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; labels?: { name?: string }[]; updatedAt?: string; createdAt?: string; statusVersion?: number; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
+type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; labels?: { name?: string }[]; updatedAt?: string; createdAt?: string; statusVersion?: number; completedAt?: string | null; cancelledAt?: string | null; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
 type Comment = { id: string; body?: string; authorAgentId?: string | null; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
@@ -242,7 +242,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     else if (chat !== undefined && chatOf(last) !== chat) fact({ ...base, type: "task.labeled", version: `chat:${chat}@${issue.updatedAt ?? changed}`, at: created.at, data: { chat } });
     const status = String(issue.status ?? "");
     const was = str(last.get("task.status_changed")?.data.to);
-    if (status && was !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(changed), data: { from: was, to: status } });
+    // A close is dated by Paperclip's own close time, not the last edit: a task first seen long after it closed is no recent closure.
+    const closedAt = ms((status === "done" ? issue.completedAt : status === "cancelled" ? issue.cancelledAt : null) ?? "");
+    if (status && was !== status) fact({ ...base, type: "task.status_changed", version: String(issue.statusVersion ?? issue.updatedAt ?? changed), at: iso(closedAt || changed), data: { from: was, to: status } });
     const holder = issue.assigneeAgentId ? `agent:${issue.assigneeAgentId}` : issue.assigneeUserId ? "owner" : null;
     const to = holder ? (holder === "owner" ? holder : keyOf(holder.slice(6))) : null;
     const from = str(last.get("task.assignee_changed")?.data.to);
