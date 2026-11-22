@@ -700,33 +700,39 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const comments: any[] = i.comments?.nodes ?? [];
   const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
   const owned = (c: any) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.authorAssociation);
-  // The closing comment is the closer's own, up to the close; else the one an owner, member or collaborator (the fleet acts as the
-  // owner) leaves after it citing a PR, which is how the Maintainer cites the PR whose Fixes line closed the issue another way.
+  // The comments that cite the fix: the closer's own up to the close, and every later one by an owner, member or collaborator (the
+  // fleet acts as the owner; the Maintainer cites the PR whose Fixes line closed the issue another way). The issue is resolved when
+  // any cited PR is merged, so each citation is read and no link, however unrelated, stands in for another.
   const own = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
-  const closing = findPrs(own?.body).length ? own : i.state === "CLOSED" ? comments.findLast((c) => owned(c) && Date.parse(c.createdAt) > Date.parse(i.closedAt) && findPrs(c.body).length) ?? own : undefined;
-  // Anyone with close rights can close an issue: a close counts only through a merged PR in this repo (GitHub's own record of the
-  // closer: "Fixes #N"), or a comment by an owner, member or collaborator that cites the PR.
+  const citing = i.state === "CLOSED" ? comments.filter((c) => owned(c) && (c === own || Date.parse(c.createdAt) > Date.parse(i.closedAt) && findPrs(c.body).length)) : [];
+  // Anyone with close rights can close an issue: a close counts only through a merged PR that GitHub records as its closer ("Fixes
+  // owner/repo#N", in this repo or another), or a comment by an owner, member or collaborator that cites one.
   const by = closedBy(i)?.pull_request;
-  const keywordPr = i.state === "CLOSED" && by?.merged && String(by.repo ?? "").toLowerCase() === repo.toLowerCase() ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
-  const trusted = Boolean(keywordPr) || owned(closing);
+  const keywordPr = i.state === "CLOSED" && by?.merged ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
+  const trusted = Boolean(keywordPr) || citing.length > 0;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (keywordPr) {
     merges.push(keywordPr.merge_commit_sha ?? "");
     facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.merge_commit_sha ? ` (merge commit ${keywordPr.merge_commit_sha})` : ""}`);
   } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
-  else if (closing) {
-    const prs = findPrs(closing.body).slice(0, 3);
-    facts.push(prs.length ? `the closing comment (by ${closing.author?.login}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closing.author?.login}, ${closing.createdAt}) cites no PR`);
-    for (const p of prs) {
-      if (p.repo.toLowerCase() !== repo.toLowerCase()) { facts.push(`${p.url}: not in ${repo}, so it does not count as this issue's fix`); continue; }
-      const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
-      if (pr?.state === "MERGED") merges.push(pr.mergeCommit?.oid ?? pr.headRefOid);
-      facts.push(`${p.url}: ${!pr ? "could not be read just now" : pr.state === "MERGED" ? `merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ""}${pr.mergeCommit?.oid ? ` (merge commit ${pr.mergeCommit.oid})` : ""}` : pr.state === "OPEN" ? "open, not merged" : "closed without merging"}`);
+  else {
+    const read = new Set<string>();
+    for (const c of citing) {
+      const prs = findPrs(c.body).slice(0, 3);
+      facts.push(prs.length ? `the closing comment (by ${c.author?.login}, ${c.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${c.author?.login}, ${c.createdAt}) cites no PR`);
+      for (const p of prs) {
+        if (read.has(p.url)) continue;
+        read.add(p.url);
+        if (p.repo.toLowerCase() !== repo.toLowerCase()) { facts.push(`${p.url}: not in ${repo}, so it does not count as this issue's fix`); continue; }
+        const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
+        if (pr?.state === "MERGED") merges.push(pr.mergeCommit?.oid ?? pr.headRefOid);
+        facts.push(`${p.url}: ${!pr ? "could not be read just now" : pr.state === "MERGED" ? `merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ""}${pr.mergeCommit?.oid ? ` (merge commit ${pr.mergeCommit.oid})` : ""}` : pr.state === "OPEN" ? "open, not merged" : "closed without merging"}`);
+      }
     }
-  } else if (i.state === "CLOSED") facts.push(`no comment by ${closer} just before the close: nothing is cited`);
+  }
   const text = comments.slice(-5).map((c) => `--- ${c.author?.login ?? "ghost"} (${c.authorAssociation}) ${c.createdAt} ---\n${String(c.body ?? "").slice(0, 2000)}`).join("\n\n");
-  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
+  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(citing.map((c) => c.body).join("\n"))}` : "open";
   return { version: `${ref}@${closed}`.slice(0, 200), facts, data: { ISSUE_COMMENTS: text || "(none)" } };
 }
 
