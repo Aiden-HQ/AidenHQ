@@ -1074,9 +1074,10 @@ const TOOLS: Record<string, Tool> = {
           }
         }
       };
-      // The one recency key for the mine merge: the board's own "newest" for a task (lastActivityAt, then updatedAt). Both
-      // sources are capped on it, the same field the final order uses, so the cap keeps the newest rows either way.
-      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.lastActivityAt ?? i.updatedAt ?? "")) || 0;
+      // The one recency key for the mine merge is Paperclip's own: createdAt, the order the issues list is served in. Each
+      // source is capped on that same key and the merge sorts on it, so the order is the same before and after the cap, and a
+      // newer chat is not crowded out by older assigned work (or the other way round).
+      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.createdAt ?? i.updatedAt ?? "")) || 0;
       const newestKept = (rows: (readonly [Json, Json])[]) => [...rows].sort((a, b) => at(b) - at(a)).slice(0, max);
       /** One row per task; where a task is in both sources the later (newer) snapshot wins. */
       const deduped = (rows: (readonly [Json, Json])[]) => [...new Map(rows.map((r) => [r[0].id, r])).values()];

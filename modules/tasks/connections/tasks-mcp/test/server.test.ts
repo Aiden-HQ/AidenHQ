@@ -205,12 +205,15 @@ test("task_search does not call an exhausted short result set incomplete", async
   assert.equal(out.out.incomplete, undefined, "the set was read to its end, not cut short");
 });
 
-test("task_list(mine) caps both sources on the recency key it merges on", async () => {
-  // The assigned task was created earlier but is the most recently active; the chat was created later but is stale.
-  const assigned = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", lastActivityAt: "2026-03-01T00:00:00Z" };
-  const chat = { ...row("chat-3", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", updatedAt: "2026-02-01T00:00:00Z", lastActivityAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+test("task_list(mine) caps both sources on Paperclip's own createdAt order, the order it returns", async () => {
+  // The chat is newer by createdAt and only touched later on the assigned one: the list is Paperclip's newest-first, so the
+  // newer chat is the one `limit: 1` keeps.
+  const assigned = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-03-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z" };
+  const chat = { ...row("chat-3", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", updatedAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
   const states = { "assigned-2": noAttention("working"), "chat-3": noAttention("waiting") };
   const { call } = bridge({ handler: issueBoard({ rows: [assigned, chat] }), states });
   const out = parse(await call("task_list", { mine: true, limit: 1 }));
-  assert.deepEqual(out.out.tasks.map((t) => t.id), ["assigned-2"], "the most recently active task is kept by the cap");
+  const all = parse(await call("task_list", { mine: true, limit: 10 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["assigned-2"], "the cap keeps Paperclip's newest row");
+  assert.deepEqual(all.out.tasks.map((t) => t.id), ["assigned-2", "chat-3"], "and the full list is in that same order");
 });
