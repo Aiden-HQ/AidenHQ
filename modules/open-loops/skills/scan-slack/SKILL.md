@@ -31,13 +31,13 @@ Read the thread when context isn't obvious. Three outcomes create a task, the re
 - `todo`: the user explicitly promised something concrete and hasn't visibly done it.
 - `waiting-on`: someone promised the user something concrete and hasn't delivered. Title `<person>: <thing owed>`; the due date goes in the description only when stated.
 
-**An ask under an hour old waits** (compare the message's own timestamp with the run time); a later scan takes it if still open. Pinned messages are taken at once Before creating a task for an ask that waited, `task_search` its pin marker `source:slack:pin:<channel_id>:<ask ts>`: a pinned ask already has its task.
+**An ask under an hour old waits** (compare the message's own timestamp with the run time); a later scan takes it if still open. Pinned messages are taken at once
 
 ## 4. Create tasks
 
 One `task_create` per conversation, on the thread root:
 
-- `marker: source:slack:<channel_id>:<thread_ts or ts>`; for a reply in a thread also `related_markers: ["source:slack:pin:<channel_id>:<ask ts>"]`.
+- `marker: source:slack:<channel_id>:<thread_ts or ts>`; `related_markers: ["source:slack:pin:<channel_id>:<ask ts>"]` (the ask's own ts), so a pinned ask keeps one task.
 - `labels`: the outcome's label (`needs-response`, `todo` or `waiting-on`).
 - `title`: `Reply to <person>: <topic>` for needs-response, the action itself for todo.
 - `priority`: `high` for a deadline today or tomorrow or a blocker, `medium` otherwise, `low` for nice-to-haves.
