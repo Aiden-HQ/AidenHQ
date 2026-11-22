@@ -35,7 +35,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const root = git("rev-parse", "--show-toplevel");
   process.chdir(root);
   let base = "", head = "";
-  try { head = git("rev-parse", "HEAD"); base = git("merge-base", `origin/${baseBranch}`, head); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
+  try { head = git("rev-parse", "HEAD"); base = git("merge-base", `refs/remotes/origin/${baseBranch}`, head); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
   // The last finished review of this branch (kept in the clone's .git). A re-run needs the same branch and merge base (a rebase or
   // retarget starts over) and a head that descends from it; it covers only what changed since when nothing important is open.
   // The checked-out branch by its full ref (a tag of the same name can't stand in for it); a detached HEAD has none.
