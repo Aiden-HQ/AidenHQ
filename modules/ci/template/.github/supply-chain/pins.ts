@@ -617,21 +617,29 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // `mv -n` (or `cp -n`) never replaces an existing target, and whether one exists is past what the scanner can
       // see: the source may still be there or the destination may hold its content. Both repositories are therefore
       // kept — the source keeps its own, and the destination gains the source's beside whatever it already held.
-      const noClobber = /(?:^|\s)(?:-[a-zA-Z]*n[a-zA-Z]*|--no-clobber)(?=\s|$)/.test(segment.slice(m.index!));
+      // The mode is the one the parsed flags leave in force (`mv -n -f` forces, `mv -f -n` does not).
       const read = (src: string) => (held.has(src) ? { entries: held.get(src)! } : "unknown");
-      if (noClobber) {
-        for (const t of copyTargets(op, read)) {
-          state.files.add(t.name);
-          state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
+      // A guarded move (`test -f m && mv x x.disabled`) may be skipped, so it is undone at the end of its chain like a
+      // guarded truncation: a later line may still see the repository it would have disabled.
+      const move = () => {
+        if (op!.noClobber) {
+          for (const t of copyTargets(op!, read)) {
+            state.files.add(t.name);
+            state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
+          }
+          state.added = hasRepo(state);
+        } else {
+          if (verb === "mv") for (const src of op!.srcs) {
+            const name = sourceName(src);
+            if (name && !(op!.srcs.length === 1 && !op!.dest.endsWith("/") && sourceName(op!.dest) === name)) { state.files.delete(name); state.entries.delete(name); }
+          }
+          applyCopy(state, copyTargets(op!, read));
         }
-        state.added = hasRepo(state);
-      } else {
-        if (verb === "mv") for (const src of op.srcs) {
-          const name = sourceName(src);
-          if (name && !(op.srcs.length === 1 && !op.dest.endsWith("/") && sourceName(op.dest) === name)) { state.files.delete(name); state.entries.delete(name); }
-        }
-        applyCopy(state, copyTargets(op, read));
-      }
+      };
+      const touched = [...op.srcs.map(sourceName), ...(/sources\.list\.d\//.test(op.dest) ? [sourceName(op.dest)] : [])].filter(Boolean);
+      const before = snapshot(...(touched.length ? touched : [undefined]));
+      move();
+      change(i, () => { before(); state.added = hasRepo(state); });
     }
     // The argument list runs to the next `&`/`|`/`;`, but `2>&1` is a redirect, not the end of the command.
     for (const m of segment.replace(/\d*>&\d+/g, " ").matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
@@ -684,14 +692,17 @@ function hostPins(path: string, text: string): { pins: Pin[]; problems: string[]
 const APT_FILE = /\.(list|sources)$/;
 const baseName = (p: string) => p.replace(/\/+$/, "").split("/").pop() ?? "";
 // The name of a path under `/etc/apt/sources.list.d/`, or none (a path elsewhere is not one APT loads).
-const sourceName = (p: string) => /^\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(p)?.[1];
+const sourceName = (p: string) => /^\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(normalize(p))?.[1];
 /**
  * The operands of a `COPY` (Dockerfile), `cp` or `mv` (a RUN line): its paths and any `--from` stage. Dockerfile COPY's
  * JSON form (`["/a", "/b/"]`) is read as the same paths, and flags (`--chown=…`, `-r`, `-f`) are dropped.
  */
-function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string; parents?: boolean; targetDir?: string } | undefined {
+function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string; parents?: boolean; targetDir?: string; noClobber?: boolean } | undefined {
   let rest = l.replace(new RegExp(`^\\s*${verb}\\s+`, "i"), "").trim();
   let from: string | undefined, parents = false, targetDir: string | undefined;
+  // `-n`/`-f` (and `--no-clobber`/`--force`) decide whether an existing target is replaced, and the last one wins:
+  // `mv -n -f a b` forces, `mv -f -n a b` does not. The mode is read as the flags are consumed, not searched later.
+  let noClobber = false;
   // Every leading flag is consumed before the operands are read, whichever form they take: `--from=<stage>`, a valued
   // `--flag=value`/`--flag value` (`--chmod`, `--chown`, `--exclude`) and a valueless `--flag` (`--link`, `--parents`,
   // `--follow-link`), plus `cp`/`mv` short flags (`-r`, `-t dir`). A flag never takes the JSON array or the first source
@@ -715,6 +726,8 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
         [/^--target-directory\s+("[^"]*"|'[^']*'|\S+)\s*/i, (m) => { targetDir = strip(m[1]!); }],
         [/^--suffix=("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
         [/^--suffix\s+("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
+        [/^--no-clobber\s*/i, () => { noClobber = true; }],
+        [/^--force\s*/i, () => { noClobber = false; }],
         // `-t` may be glued to its directory (`cp -t/etc/apt/sources.list.d/ f`) or followed by it (`cp -rt dir f`).
         [/^-[a-zA-Z]*t(=?\S+)\s*/, (m) => { targetDir = strip(m[1]!.replace(/^=/, "")); }],
         [/^-[a-zA-Z]*t\s+("[^"]*"|'[^']*'|\S+)\s*/, (m) => { targetDir = strip(m[1]!); }],
@@ -722,7 +735,8 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
         // so its cluster stops there and the next word is an operand, not another flag.
         [/^-[a-zA-Z]*S("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
         [/^-[a-zA-Z]*S\s+("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
-        [/^-[a-zA-Z]+(?=\s|$)\s*/, () => {}],
+        // A valueless cluster is read one character at a time, so `-fn` and `-nf` differ the way they do to the shell.
+        [/^-[a-zA-Z]+(?=\s|$)\s*/, (m) => { for (const c of m[0].replace(/^-|\s+$/g, "")) if (c === "n") noClobber = true; else if (c === "f") noClobber = false; }],
         [/^--[\w-]+(?=\s|$)\s*/, () => {}],
       ];
   for (;;) {
@@ -735,16 +749,16 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
     try {
       const j = JSON.parse(rest);
       if (!Array.isArray(j) || !j.every((x) => typeof x === "string") || j.length < 2) return undefined;
-      return { srcs: j.slice(0, -1) as string[], dest: j.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}) };
+      return { srcs: j.slice(0, -1) as string[], dest: j.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}), noClobber };
     } catch { return undefined; }
   }
   // Quoted operands are single paths: `"my file.list"` is one, not two.
   const args = [...rest.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]!);
   // `cp`/`mv -t dir` (or `--target-directory dir`) names the destination as an option: every operand is a source, even
   // a lone one, and the directory is taken as ending with a slash.
-  if (targetDir && args.length >= 1) return { srcs: args, dest: targetDir.endsWith("/") ? targetDir : `${targetDir}/`, ...(targetDir ? { targetDir } : {}) };
+  if (targetDir && args.length >= 1) return { srcs: args, dest: targetDir.endsWith("/") ? targetDir : `${targetDir}/`, ...(targetDir ? { targetDir } : {}), noClobber };
   if (args.length < 2) return undefined;
-  return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}) };
+  return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}), noClobber };
 }
 /**
  * The path `COPY --parents` keeps for a source: its parents relative to the last `./` pivot (`./x/a.txt` keeps `x/a.txt`,
@@ -752,11 +766,14 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
  * `etc/apt/x.list`). Undefined when nothing is left to keep.
  */
 function parentsPath(src: string): string | undefined {
-  const p = src.replace(/^(\.\/)+/, "");
+  const p = src.replace(/^(?:\.\/)+/, "");
   const pivot = p.lastIndexOf("/./");
   const rel = (pivot >= 0 ? p.slice(pivot + 3) : p).replace(/^\/+|\/+$/g, "");
   return rel || undefined;
 }
+// The path a shell or Docker resolves: `.` components dropped and repeated slashes collapsed, so
+// `/etc/apt/./sources.list.d//x.list` is the `sources.list.d/x.list` APT loads.
+const normalize = (p: string) => p.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/|$)/g, "").replace(/\/{2,}/g, "/");
 /**
  * The files a copy puts in sources.list.d, each under the name the destination gives it: `{ name, entries }` when the
  * source file's content is known, `unknown` when it isn't (a `cp` of a file the scanner doesn't track), and nothing for a
