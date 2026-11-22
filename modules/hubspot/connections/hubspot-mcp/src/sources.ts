@@ -7,7 +7,7 @@
 // record never fails the others (a record that can't be shaped is skipped and counted; a database error is rethrown).
 // HubSpot sends no delete signal, so a record deleted there stays here. No LLM.
 import type { Logger } from "pino";
-import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, searchPage, SETTING_OBJECTS, WINDOW, withAssociations, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
+import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, WINDOW, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 
 const CONTACT: Table = {
@@ -95,15 +95,14 @@ export const DAY = 86_400_000;
 export const PASS_BUDGET_MS = 5 * 60_000;
 const text = (v: unknown, cap?: number) => capText(v == null || v === "" ? null : String(v), cap);
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
-const ids = (r: CrmRecord, k: string) => [...new Set(r.associations?.[k] ?? [])].sort();
 const link = (portal: string | undefined, kind: string, id: string) => (portal ? `https://app.hubspot.com/contacts/${portal}/${kind}/${id}` : null);
 
-/** Row builders: one record's columns. TODO(probe): the portal id for links (get_user_details?); null until known. */
+/** Row builders: one record's columns. The portal id for links is not known yet: url is null. */
 export function contactRow(r: CrmRecord, portal?: string): Row {
   const p = r.properties;
   return {
     contact_id: r.id, email: p.email ?? null, first_name: p.firstname ?? null, last_name: p.lastname ?? null, job_title: p.jobtitle ?? null,
-    lifecycle_stage: p.lifecyclestage ?? null, lead_status: p.hs_lead_status ?? null, owner_id: p.hubspot_owner_id ?? null, company_ids: ids(r, "companies"),
+    lifecycle_stage: p.lifecyclestage ?? null, lead_status: p.hs_lead_status ?? null, owner_id: p.hubspot_owner_id ?? null, company_ids: [],
     created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.lastmodifieddate), url: link(portal, "contact", r.id),
   };
 }
@@ -119,7 +118,7 @@ export function dealRow(r: CrmRecord, portal?: string): Row {
   const p = r.properties;
   return {
     deal_id: r.id, name: text(p.dealname).text, pipeline: p.pipeline ?? null, stage: p.dealstage ?? null, amount: num(p.amount), currency: p.deal_currency_code ?? null,
-    close_date: isoOf(p.closedate), owner_id: p.hubspot_owner_id ?? null, company_ids: ids(r, "companies"), contact_ids: ids(r, "contacts"),
+    close_date: isoOf(p.closedate), owner_id: p.hubspot_owner_id ?? null, company_ids: [], contact_ids: [],
     created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "deal", r.id),
   };
 }
@@ -138,7 +137,7 @@ export function activityRow(type: string, r: CrmRecord, portal?: string): Row {
   return {
     activity_id: `${type}:${r.id}`, type: type.slice(0, -1), subject: text(k.subject && p[k.subject]).text, body: b.text, body_truncated: b.truncated,
     direction: (k.direction && p[k.direction]) || null, status: (k.status && p[k.status]) || null, owner_id: p.hubspot_owner_id ?? null,
-    occurred_at: isoOf(p.hs_timestamp), contact_ids: ids(r, "contacts"), company_ids: ids(r, "companies"), deal_ids: ids(r, "deals"),
+    occurred_at: isoOf(p.hs_timestamp), contact_ids: [], company_ids: [], deal_ids: [],
     created_at_src: isoOf(p.hs_createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "record/" + type, r.id),
   };
 }
@@ -151,28 +150,53 @@ export function selected(setting: string[]): string[] {
   return [...want].flatMap((s) => (s === "activities" ? [...ACTIVITY_TYPES] : [s]));
 }
 
-/** Records modified since `sinceIso`, oldest first, paging and restarting windows past HubSpot's 10,000-result search cap. */
-async function* records(call: CallHubSpot, def: ObjectDef, sinceIso: string, state: { ended: boolean }, deadline: number): AsyncGenerator<CrmRecord> {
-  let since = Date.parse(sinceIso);
+/**
+ * Records modified since `sinceIso`, oldest first, paging and restarting windows past HubSpot's 10,000-result search cap. When more
+ * than WINDOW records share one modified time (a bulk edit), that time is read by id instead (`afterId` resumes inside it) and
+ * `state.tieId` is the id read last; it is undefined whenever the generator is not inside such a time.
+ */
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string }, deadline: number): AsyncGenerator<CrmRecord> {
+  let since = Date.parse(from.sinceIso);
+  let afterId = from.afterId;
   for (;;) {
-    let after: string | undefined;
-    let seen = 0;
-    let last = since;
-    do {
-      const page = await searchPage(call, def, since, after);
-      const recs = await withAssociations(call, def, page.records);
-      for (const r of recs) {
-        yield r;
-        const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
-        if (t > last) last = t;
+    // A time that holds more records than a window can read (checked first: a window of them costs a pass) is read by id.
+    if (afterId === undefined && (await searchTie(call, def, since, "0", 1)).total > WINDOW) afterId = "0";
+    if (afterId === undefined) {
+      let after: string | undefined;
+      let seen = 0;
+      let last = since;
+      do {
+        const page = await searchPage(call, def, since, after);
+        for (const r of page.records) {
+          yield r;
+          const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
+          if (t > last) last = t;
+        }
+        seen += page.records.length;
+        after = page.next;
+        if (after && Date.now() >= deadline) return void (state.ended = false);
+      } while (after && seen < WINDOW);
+      if (!after) return void (state.ended = true);
+      if (last > since) {
+        since = last; // overlap at the edge: unchanged rows are no-ops
+        continue;
       }
-      seen += recs.length;
-      after = page.next;
-      if (after && Date.now() >= deadline) return void (state.ended = false);
-    } while (after && seen < WINDOW);
-    if (!after) return void (state.ended = true);
-    if (last <= since) throw new Error(`${def.objectType}: more than ${WINDOW} records share one modified time; can't page past them`);
-    since = last; // overlap at the edge: unchanged rows are no-ops
+      afterId = "0";
+    }
+    let id = afterId ?? "0";
+    for (;;) {
+      const { records: page } = await searchTie(call, def, since, id);
+      for (const r of page) {
+        id = r.id;
+        state.tieId = id;
+        yield r;
+      }
+      if (page.length < SEARCH_LIMIT) break;
+      if (Date.now() >= deadline) return void (state.ended = false);
+    }
+    state.tieId = undefined;
+    since += 1;
+    afterId = undefined;
   }
 }
 
@@ -187,10 +211,13 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   let written = 0, skipped = 0;
   const st = await store.scope(scope);
   const baseline = !st.baselined;
-  let newest = st.cursor ?? new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
-  const state = { ended: false };
+  // The cursor is a time, plus "#<id>" while a bulk-edit time is being read by id.
+  const [cursorTime, cursorId] = (st.cursor ?? "").split("#");
+  let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
+  let tieId = cursorId || undefined;
+  const state: { ended: boolean; tieId?: string } = { ended: false };
   try {
-    for await (const r of records(call, def, newest, state, o.deadline)) {
+    for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
       try {
         row = build(r);
@@ -203,10 +230,12 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
       if ((await store.upsert(table, row, { baseline })) !== "same") written++;
       const u = row.source_updated_at as string | null;
       if (u && Date.parse(u) > Date.parse(newest)) newest = u;
+      tieId = state.tieId;
     }
+    tieId = state.tieId;
   } finally {
     // The cursor moves with what was written, and the type is baselined only when its search ended.
-    await store.saveScope(scope, newest, state.ended);
+    await store.saveScope(scope, tieId ? `${newest}#${tieId}` : newest, state.ended);
   }
   if (skipped) o.log?.warn({ kind, skipped }, "src_hubspot: records skipped");
   return written;
@@ -216,7 +245,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
 export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[]): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
-  for (const o of await listOwners(call)) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, ...(o.email ? { email: o.email } : {}), is_bot: false }, { baseline: false })) !== "same") written++;
+  for (const o of await listOwners(call)) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
   if (kinds.includes("deals"))
     for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
