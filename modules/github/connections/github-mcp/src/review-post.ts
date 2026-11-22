@@ -306,9 +306,10 @@ export class ReviewPoster {
     const w = await this.writer(a.repo);
     const s = renderStatus(a);
     // The latest status of this context on the commit: the same state and words write nothing.
-    const now = await this.gh.request<{ statuses?: { context: string; state: string; description: string | null; target_url?: string | null }[] }>("GET", `${api(ref)}/commits/${a.head}/status`, { query: { per_page: 100 } });
+    const now = await this.gh.request<{ statuses?: { context: string; state: string; description: string | null; target_url?: string | null; creator?: Author }[] }>("GET", `${api(ref)}/commits/${a.head}/status`, { query: { per_page: 100 } });
     const had = now.statuses?.find((x) => x.context === STATUS_CONTEXT);
-    if (had?.state === s.state && had.description === s.description && had.target_url === `https://github.com/${a.repo}/pull/${a.pr}`) return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, state: s.state, unchanged: true }), objects: [] };
+    // The writer's own, word for word: one the other identity set (the owner's, before the App) is set again by the writer.
+    if (had?.state === s.state && isWho(w.who, had.creator) && had.description === s.description && had.target_url === `https://github.com/${a.repo}/pull/${a.pr}`) return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, state: s.state, unchanged: true }), objects: [] };
     await w.gh.request("POST", `${api(ref)}/statuses/${a.head}`, { body: { state: s.state, context: STATUS_CONTEXT, description: s.description, target_url: `https://github.com/${a.repo}/pull/${a.pr}` } });
     return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, state: s.state }), objects: [] };
   }

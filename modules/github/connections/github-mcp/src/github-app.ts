@@ -38,10 +38,14 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
   const quiet = () => { try { return creds(); } catch { return undefined; } };
   const lookups = new Map<string, { id: number | null; at: number }>();
   const tokens = new Map<number, { token: string; expires: number }>();
-  /** Why the App last failed (its key, a suspension, a refusal of its token or of a write), until a write as it succeeds. */
-  let failed: string | undefined;
+  /**
+   * Why the App last failed (its key, a suspension, a refusal of its token or of a write), until a write as it succeeds; kept
+   * for the App it happened to (`for`, its id), so a removed or replaced App never shows an old one's failure.
+   */
+  let failed: { for: string; why: string } | undefined;
+  const fail = (why: string) => { const id = quiet()?.id; failed = id ? { for: id, why: why.slice(0, 200) } : undefined; };
   const track = async <T>(go: () => Promise<T>): Promise<T> => {
-    try { return await go(); } catch (e) { failed = (e as Error).message.slice(0, 200); throw e; }
+    try { return await go(); } catch (e) { fail((e as Error).message); throw e; }
   };
   /** After GitHub rate-limited the App's own requests (Retry-After, or its limit used up): none goes before this (epoch ms). */
   let blockedUntil = 0;
@@ -90,8 +94,12 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
     /** The App's slug (its bot is `<slug>[bot]`), or undefined while it isn't set up (or its saved files are broken). */
     slug: (): string | undefined => quiet()?.slug,
     /** Why the App is failing: its saved files, or its last failure since a write as it last worked. */
-    failure: (): string | undefined => { try { creds(); } catch (e) { return (e as Error).message; } return failed; },
+    failure: (): string | undefined => {
+      let c;
+      try { c = creds(); } catch (e) { return (e as Error).message; }
+      return c && failed?.for === c.id ? failed.why : undefined;
+    },
     /** A write as the App's installation answered (client.ts): a refusal is its failure; a success clears it. */
-    wrote: (refusal?: string): void => void (failed = refusal?.slice(0, 200)),
+    wrote: (refusal?: string): void => (refusal ? fail(refusal) : void (failed = undefined)),
   };
 }

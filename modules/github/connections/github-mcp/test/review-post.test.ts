@@ -3,7 +3,7 @@ import { GitHub, GitHubRefused, guard } from "../src/github.js";
 import { ReviewPoster } from "../src/review-post.js";
 import { gitHubApp, type GitHubApp } from "../src/github-app.js";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accessFor } from "./fake-access.js";
@@ -110,7 +110,7 @@ describe("rendering model text", () => {
 /** A fake GitHub for one pull request: records writes, keeps the ack comment and threads. Everyone posts as the owner. */
 function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: string; merged?: boolean } } = {}) {
   const calls: { method: string; path: string; auth: string; body?: any }[] = [];
-  const state = { status: undefined as { context: string; state: string; description: string; target_url?: string } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
+  const state = { status: undefined as { context: string; state: string; description: string; target_url?: string; creator?: { login: string; type: string } } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
   const impl = (async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -134,7 +134,7 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     if (method === "PUT" && /\/pulls\/12\/reviews\/\d+$/.test(url.pathname)) { state.reviews[0]!.body = body.body; return ok(state.reviews[0]); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/comments")) return ok({ id: 601, html_url: "https://github.com/acme/payments/pull/12#discussion_r601" }, 201);
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status$/.test(url.pathname)) return ok({ statuses: state.status ? [state.status] : [] });
-    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description, target_url: body.target_url }; return ok({}, 201); }
+    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description, target_url: body.target_url, creator: auth.includes("ghs_") ? { login: "aidenhq-review[bot]", type: "Bot" } : { login: "owner1", type: "User" } }; return ok({}, 201); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/reviews")) { const r = { id: 9, body: body.body, comments: body.comments ?? [], user: { login: "owner1" }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" }; state.reviews.push(r); return ok(r); }
     if (method === "GET" && url.pathname.endsWith("/issues/12/comments")) return ok(state.ack ? [{ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7", user: { login: "owner1" } }] : []);
     if (method === "POST" && url.pathname.endsWith("/issues/12/comments")) { state.ack = { id: 7, body: body.body }; return ok({ id: 7, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }, 201); }
@@ -332,6 +332,9 @@ describe("code review's GitHub App", () => {
     await expect(poster(w, app).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "pass", important: 0 })).rejects.toThrow(/suspended/);
     expect(w.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
     expect(app.failure()).toMatch(/suspended/);
+    // Removed (the admin page deletes its files): no old failure lingers on the card.
+    for (const f of ["app_id", "key.pem", "slug"]) rmSync(join(dir, f));
+    expect(app.failure()).toBeUndefined();
     // A saved App that is incomplete is broken, never "not set up": no review falls back to the owner.
     const half = mkdtempSync(join(tmpdir(), "ghapp-"));
     writeFileSync(join(half, "app_id"), "4242");
