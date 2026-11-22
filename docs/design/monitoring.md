@@ -18,7 +18,7 @@ tell the owner.
 | Board `/internal/metrics` | board's internal listener | `board:3122`, monitoring token only |
 | Fleet Steward service `/alerts`, `/metrics` | `aidenhq-mod-fleet-steward`, shared only with Alertmanager and Prometheus | `fleet-steward:8097`, the monitoring token only (the service asks the kernel's `/v1/whoami`: module `monitoring`) |
 | Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, written by the kernel every 30 s while the directory exists | node-exporter's textfile collector |
-| Unit, container and apply-generation states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s): `units.prom`, `containers.prom`, `generations.prom` | the same |
+| Unit, container and apply-generation states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s): `units.prom`, `containers.prom`, `generations.prom`, `docker.prom` | the same |
 
 Networks (generated from `services:` in `modules/monitoring/module.yaml`): `aidenhq-mod-monitoring` (the module's services),
 `aidenhq-mod-monitoring-board` (Prometheus and Alertmanager to the board's internal listener, and the board), and the grafana
@@ -58,7 +58,16 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   running, so a disabled runner that is still retrying keeps it),
   `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps running, so `CiRunnerUnitMissing` ignores a
   retired unit), `aidenhq_fleet_draining`,
-  `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`, `aidenhq_apply_failed{n,reason,log,health}`.
+  `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`, `aidenhq_apply_failed{n,reason,log,health}`,
+  the Docker disk breakdown `aidenhq_docker_{images,containers,build_cache,volumes}_{size,reclaimable}_bytes` (from
+  `docker system df`, capped at 10 s) and `aidenhq_docker_collect_ok`. `docker system df` walks every image, container and
+  volume, so its answer is cached for 5 minutes (`data/modules/monitoring/docker-df.json`): a run inside that window
+  republishes the cache without calling Docker, and each `docker.prom` write does not cost a full walk. When a read past
+  the window times out or errors the file is still rewritten, with `aidenhq_docker_collect_ok 0` and no size series at
+  all: the last bytes never stay on the scrape as if they were current, a fresh install still gets a file whose mtime
+  `HostMetricsStale` reads, and 0 means the breakdown is unknown, never that Docker holds nothing (that would be a size of
+  0). A read that succeeds still publishes even if writing the cache fails, and a successful read with no Build Cache row
+  is not a failure: nothing cached means the 20 GB cap holds.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
   maintenance. They and `CiRunnerRestartLooping` (a unit flipping out of `active` over and over, which `Restart=always`
@@ -71,7 +80,7 @@ No secrets or ids in labels.
 ## Alerts and routing
 
 Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, or on course to fill in 24 h), `DiskNearlyFull`
-(over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `HostMetricsExporterStale`, `ContainerRestarting`,
+(over 95%; a warning too: the kernel's disk sweep tightens itself over 80%, and disk never reaches the owner), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `HostMetricsExporterStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq-project container other than `ci-runner`, the `aidenhq-runner` or `aidenhq-gateway` user unit, or
 the board not answering Prometheus, for 5 minutes, **critical**), `ApplyFailed` (the newest apply generation failed its health
 check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerRestartLooping` (a runner unit that
@@ -82,7 +91,7 @@ held it for ten minutes: the wait is the loop's own state, so it fires even when
 interval between backoffs, while a wait that has since cleared breaks the condition and raises nothing), `CiRunnerUnitMissing` (a runner unit seen in
 the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`, `CiReviewSpendNearCap` and `AppsCpuStarved` (an
 `app-*` container's own CPU pressure over 20% while the host's is over 15%; the alert names the app's project, and host
-pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `ApplyFailed` are critical.
+pressure alone never fires it). Only `CoreServiceDown` and `ApplyFailed` are critical.
 
 The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only spike fires nothing, an `app-*` match carries its
 project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, one going

@@ -12,7 +12,7 @@ export interface Tool {
   inputSchema: object;
   /** Roles of which the caller must hold one. */
   roles?: string[];
-  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string }) => Promise<unknown>;
+  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string; task?: string }) => Promise<unknown>;
 }
 
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
@@ -117,8 +117,8 @@ export function configTools(d: {
   repos: () => unknown;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
-  /** The service's own one-off review of a PR and repo review (POST /reviews), and its runs (GET /reviews). */
-  oneoff: (body: Dict) => Promise<unknown>;
+  /** The service's own one-off review of a PR and repo review (POST /reviews), with the calling agent and its task (verified by the service) so a PR review's one summary reaches them. */
+  oneoff: (body: Dict, asker: { requester: string; task?: string }) => Promise<unknown>;
   repoReview: (body: Dict) => Promise<unknown>;
   runs: (q: { repo?: string; limit?: number }) => unknown[];
 }): Tool[] {
@@ -129,7 +129,7 @@ export function configTools(d: {
       description: `Review now. A pull request: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }, posted to it like a watched repo's review, one run and post per combo; each combo is an engine's offered model, or a combo a watched repo already runs (any other model is the owner's to start from the board); it posts as the owner, signed by AidenHQ. A whole repository at a commit (a repo review): { repo: owner/name, commit? (default: the default branch's head, resolved when it starts), options? (catalog option ids; default the recommended ones its stack fits), combo? { model, effort } for the model options }: its report lands in Primer, private to the owner, and on the board's Reviews page. Any repo the owner's GitHub sign-in can read.`,
       inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" },
         repo: { type: "string" }, commit: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 50 }, combo: { type: "object", properties: { model: { type: "string" }, effort: { type: "string" } }, additionalProperties: false } }, additionalProperties: false },
-      run: async (a) => {
+      run: async (a, caller) => {
         if (a.repo !== undefined) {
           if (a.pr_url !== undefined) throw new Error("give pr_url (a pull request) or repo (a whole repository), not both");
           agentRepoModel(a.combo, d.repos);
@@ -137,7 +137,8 @@ export function configTools(d: {
         }
         if (typeof a.pr_url !== "string") throw new Error("give pr_url (a pull request) or repo (a whole repository)");
         agentCombos(a.combos, d.repos);
-        return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) });
+        return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) },
+          { requester: caller.agent, ...(caller.task ? { task: caller.task } : {}) });
       },
     },
     {

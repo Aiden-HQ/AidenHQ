@@ -1,7 +1,7 @@
 # Security-fix exceptions to the 7-day rule (CONTRIBUTING.md, "Supply chain"): a version under 7 days old that fixes a
 # vulnerability. The owner's review of a change to this file is the approval; Security Watch adds entries (through its
-# normal PR and approval path) when an advisory needs a fresh version, and the CI checks read this file from the base
-# commit, so an entry lands in its own PR before the change that uses it.
+# normal PR and approval path) when an advisory needs a fresh version, and the CI checks read this file from the PR's head,
+# so an entry and the change that uses it land in one PR.
 #
 # One entry per line, in this flow style (other YAML shapes are not read):
 #   - { ecosystem: npm, package: fast-uri, version: 3.1.1, advisory: GHSA-xxxx-xxxx-xxxx, reason: "why it cannot wait" }

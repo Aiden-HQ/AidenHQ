@@ -4,14 +4,16 @@
 //                                        option), and the repo reviews themselves (commit, options, cap, spend, verdict, report)
 //   GET  /reviews?repo=… runs carry engine, model, effort, cost_usd (billed), tokens_in/cached/out, duration_ms and box_at (when its check job got its box; wall time excludes queueing)
 //   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
-//   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any open or merged PR the instance can read, one run per
-//                                        combo (default: the repo's on_open), each posted
+//   POST /reviews { pr_url, combos?, focus?, full? }  x-aidenhq-caller?  → { runs }   a one-off review of any open or merged PR the
+//                                        instance can read, one run per combo (default: the repo's on_open), each posted; with the
+//                                        kernel's signed caller (the Reviewer Manager's tool) its agent and task hear the batch's one
+//                                        summary, otherwise the owner does (the board)
 //   POST /reviews { target: { repo, commit? }, options?, combo?: { model, effort } } → { batch, sha, runs }   a repo
 //                                        review of the whole tree at a commit (default: the default branch's head, resolved now)
 //   GET  /reviews/:batch/report          → the repo review's report (text/markdown), once it ended
 //   GET  /catalog?repo=&commit=          → { sha, options, recommended }   the options the repo's tree fits, and the commit
-//   GET  /repos                          → { repos (with today spend), day_spent_usd, … }
-//   GET  /engines                        → { engines }  each engine's efforts, and offered models
+//   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
+//   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
 //   POST /findings/dismiss { repo, number, id, reason, by? } → { dismissed }   the owner dismisses an open finding (the board)
 //   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }] }   the github module's merge
@@ -39,7 +41,9 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   throw new RequestError("send a JSON object");
 }
 
-export function handler(engine: Engine, token: () => string, isGithub: (authorization: string) => Promise<boolean | undefined>) {
+/** The reviewer of a request's caller: the kernel's signed assertion, checked by the service (main.ts's verifyCaller). */
+export type Ask = (req: IncomingMessage) => Promise<{ requester: string; task?: string } | undefined>;
+export function handler(engine: Engine, token: () => string, isGithub: (authorization: string) => Promise<boolean | undefined>, ask: Ask = async () => undefined) {
   const authorized = (req: IncomingMessage) => {
     const want = Buffer.from(token());
     const got = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
@@ -79,7 +83,7 @@ export function handler(engine: Engine, token: () => string, isGithub: (authoriz
       }
       if (route === "POST /reviews") {
         const b = await body(req);
-        return send(res, 200, b.target !== undefined ? await engine.repoReview(b) : { runs: await engine.oneoff(b) });
+        return send(res, 200, b.target !== undefined ? await engine.repoReview(b) : { runs: await engine.oneoff(b, await ask(req)) });
       }
       if (route === "GET /repos") return send(res, 200, engine.repos());
       if (route === "POST /findings/dismiss") return send(res, 200, engine.dismiss(await body(req)));

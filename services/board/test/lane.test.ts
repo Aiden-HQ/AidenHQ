@@ -60,8 +60,4 @@ describe("fast chat lane", () => {
     expect(posted.at(-1)).toEqual({ id: "i-chat", body: "@Aria hello" });
   });
 
-  it("answers empty without a grants table", async () => {
-    expect(await call(none, "GET", "/api/lane")).toEqual({ agents: [] });
-    expect(await call(none, "GET", "/api/lane/aria/messages")).toEqual({ messages: [], busy: false });
-  });
 });

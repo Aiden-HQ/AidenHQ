@@ -5,6 +5,8 @@
 #                    list-units` and `list-unit-files` read them as the owner's user.
 #   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
 #                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
+#   docker.prom      Docker's own disk breakdown (images, containers, build cache, local volumes) and whether this run could
+#                    read it (aidenhq_docker_collect_ok), so DiskSpaceLow names its top consumer from a query.
 #   containers.prom  every container on the host (compose service, computer box or anything else) and its running state,
 #                    restart count, health and cgroup id, so cAdvisor's per-cgroup usage gets a name and a stopped service still
 #                    reads 0 (cAdvisor has no Docker socket: only apps-mcp holds one). A filter narrower than the host drops a
@@ -136,3 +138,90 @@ gens="$state/generations.jsonl"
     echo "aidenhq_apply_failed 0"
   fi
 } | write generations.prom
+
+# Docker's own disk usage: which consumer is filling `/` (images, containers, build cache, local volumes), so DiskSpaceLow
+# can name it from a query instead of an inference. `docker system df` walks every image, container and volume, which is far
+# too much work for this 30 s timer, so its answer is cached for 5 minutes ($data/modules/monitoring/docker-df.json): a run
+# inside that window republishes the cache, a run past it reads Docker again (capped at 10 s). docker.prom is rewritten
+# every run either way. It carries `aidenhq_docker_collect_ok 1` and the sizes when the bytes are from a read at most the
+# cache window old. A read that fails — the cap hit or `docker system df` erroring — is `collect_ok 0` and NO size series:
+# the bytes before it must not stay on the scrape as if they were current, and a fresh install must still get a file (its
+# mtime is what HostMetricsStale reads) rather than no series at all. `collect_ok 0` means the breakdown is unknown, never
+# that Docker holds nothing (that is `_size_bytes 0`).
+# Each row is flat JSON ({"Active":...,"Reclaimable":...,"Size":...,"TotalCount":...,"Type":...}); one gauge per type.
+docker_sizes() { # the rows on stdin -> the gauges; a row it cannot read is skipped, never guessed
+  awk '
+    function field(key,  re, s) {
+      re = "\"" key "\":\"([^\"]*)\""
+      if (!match($0, re)) return ""
+      s = substr($0, RSTART, RLENGTH)
+      sub("^\"" key "\":\"", "", s); sub("\"$", "", s)
+      return s
+    }
+    function nbytes(s,  n, u) {
+      sub(/[[:space:]].*$/, "", s) # "23.7GB (94%)" -> "23.7GB"
+      if (!match(s, /^[0-9]+(\.[0-9]+)?/)) return ""
+      n = substr(s, 1, RLENGTH) + 0
+      u = substr(s, RLENGTH + 1)
+      if (u == "PB") return n * 1000000000000000
+      if (u == "TB") return n * 1000000000000
+      if (u == "GB") return n * 1000000000
+      if (u == "MB") return n * 1000000
+      if (u == "kB") return n * 1000
+      if (u == "B" || u == "") return n
+      return ""
+    }
+    function gauge(t) {
+      if (t == "Images") return "images"
+      if (t == "Containers") return "containers"
+      if (t == "Build Cache") return "build_cache"
+      if (t == "Local Volumes") return "volumes"
+      return ""
+    }
+    {
+      g = gauge(field("Type")); if (g == "") next
+      s = nbytes(field("Size")); if (s == "") next
+      printf "aidenhq_docker_%s_size_bytes %.0f\n", g, s
+      r = nbytes(field("Reclaimable")); if (r != "") printf "aidenhq_docker_%s_reclaimable_bytes %.0f\n", g, r
+    }'
+}
+cache="$data/modules/monitoring/docker-df.json"
+cache_secs="${AIDENHQ_DOCKER_DF_CACHE_S:-300}"
+now="$(date +%s)"
+age="$( [ -f "$cache" ] && echo $(( now - $(stat -c %Y "$cache") )) || echo "" )"
+gauges=""
+fresh=""
+if [ -z "$age" ] || [ "$age" -ge "$cache_secs" ]; then
+  if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ]; then
+    # A fresh read is current whatever happens to the cache: if the write fails (a read-only data dir, a full disk) this
+    # run still publishes the sample it just read instead of claiming unknown over an answer it has.
+    gauges="$(printf '%s\n' "$df" | docker_sizes)"
+    fresh=1
+    if mkdir -p "$(dirname "$cache")" && printf '%s\n' "$df" > "$cache.tmp" && mv -f "$cache.tmp" "$cache"; then
+      age=0
+    else
+      rm -f "$cache.tmp" 2>/dev/null
+    fi
+  else
+    age="" # this run could not read Docker: report unknown, not the bytes before it
+  fi
+fi
+[ -z "$fresh" ] && [ -n "$age" ] && [ -f "$cache" ] && gauges="$(docker_sizes < "$cache")"
+{
+  echo "# HELP aidenhq_docker_collect_ok 1 when the sizes come from a docker system df read inside the cache window (5 min); 0 when the read failed or timed out, in which case no size is reported at all (unknown, not zero)."
+  echo "# TYPE aidenhq_docker_collect_ok gauge"
+  echo "aidenhq_docker_collect_ok $([ -n "$gauges" ] && echo 1 || echo 0)"
+  if [ -n "$gauges" ]; then
+    for g in images containers build_cache volumes; do
+      case "$g" in images) what="Docker images" ;; containers) what="Docker containers' writable layers" ;; build_cache) what="the Docker build cache" ;; volumes) what="local Docker volumes" ;; esac
+      echo "# HELP aidenhq_docker_${g}_size_bytes Disk used by $what (docker system df)."
+      echo "# TYPE aidenhq_docker_${g}_size_bytes gauge"
+      echo "# HELP aidenhq_docker_${g}_reclaimable_bytes Disk Docker reports reclaimable for $what (docker system df)."
+      echo "# TYPE aidenhq_docker_${g}_reclaimable_bytes gauge"
+    done
+    printf '%s\n' "$gauges"
+  fi
+} | write docker.prom
+# A product version whose collector does not write this file (a rollback to one from before it) leaves the last file here,
+# and node-exporter would serve those bytes and `collect_ok 1` as if current: ops/apply-config-work.sh removes it when it
+# applies such a version, so nothing has to happen in this script.

@@ -33,16 +33,17 @@ test("the grader prompt says a merged PR's body cannot be edited and names where
   assert.match(system, /Before the merge the body is the PR's own record/);
 });
 
-// The base-commit fact is a graph fact: the parent of the PR's oldest commit. It proves where the PR's current history starts,
-// not where the branch was cut, so the prompt must not let a historical "cut from" or "was on the base" criterion be answered
-// yes from it.
-test("the grader prompt treats the base commit as the start of the PR's history, never as the cut point", () => {
+// The base-commit fact is the base ref's commit GitHub records on the PR. It is the commit the PR is based on, and it is not the
+// base branch's moving tip or the git merge base, so the prompt must say so and must not let a matching id alone prove content.
+test("the grader prompt names the PR's recorded base ref commit as its base commit", () => {
   const { system } = gradePrompt({ rubric: [], deliverable: { kind: "pr" }, facts: [], data: {} });
-  assert.match(system, /base commit is the parent of the PR's oldest commit/);
-  assert.match(system, /not proof of where the branch was originally cut/);
-  assert.match(system, /never decide that a change is included because this base commit.s id happens to equal another fact.s commit id/);
-  assert.match(system, /stays unknown unless another trusted fact proves that ordering/);
-  assert.match(system, /never answer it yes from the base commit alone/);
-  assert.match(system, /is met only when the DIFF or another trusted fact shows the change is there/);
-  assert.match(system, /the base commit id alone names a commit and proves no content/);
+  assert.match(system, /The base commit is the base ref's commit recorded on the PR/);
+  assert.match(system, /does not move it as the base branch advances/);
+  assert.match(system, /It is not the base branch's current tip/);
+  assert.match(system, /not the git merge base/);
+  assert.match(system, /answered by comparing that base commit id with the commit id the other trusted fact names/);
+  assert.match(system, /proves nothing about the PR's own history/);
+  assert.match(system, /it is not an ancestor proof/);
+  assert.match(system, /about what the base commit contains, or about whether a change was present at it, is met only when the DIFF/);
+  assert.match(system, /missing evidence, never a yes/);
 });

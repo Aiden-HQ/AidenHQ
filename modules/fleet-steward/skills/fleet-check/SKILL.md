@@ -115,7 +115,7 @@ through their own card or the chief of staff, never through you: log it as `owne
   the same PR: a task that did not push the branch cannot clone it. If that task is still open, make the status write
   yourself: `task_route` *that* task with one line with what to do (merge, fix the named check, or close). If the task is
   done, `task_create` to the app's owner (else the Engineer): "merge, fix or close <PR> with one line why".
-  `aidenhq close` reaches only the agents org, the repos listed in `maintainer_repos` and the product repo's Dependabot PRs:
+  `aidenhq close` reaches only the agents org, the repos listed in `maintainer_repos` and the product repo:
   a PR outside that scope goes to the Maintainer, so file no close task for an Engineer: `task_create` with
   `assignee: maintainer`, marker `pr-close:<repo>#<n>`: the PR link, why it is superseded and the one-line close reason, and
   log `pr · <repo>#<n> · outside-close-scope · maintainer`. Never the same nudge twice.

@@ -67,12 +67,23 @@ setTimeout(() => void tick(true), 5_000);
 // executor@1 for code-review.post, .notice and .status: the kernel calls it with this module's service key, read fresh per request.
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
-const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth) => isModule(kernelUrl, auth, "github"));
+// A POST /reviews that carries the kernel's signed caller (the Reviewer Manager's tool, through the MCP connection below) says
+// whose task hears the batch's summary; the board's own calls send no assertion and the owner hears it instead. Never a body field.
+const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth) => isModule(kernelUrl, auth, "github"), async (req) => {
+  if (!req.headers["x-aidenhq-caller"]) return undefined;
+  try {
+    const c = await verifyCaller(req, jwks, "code-review");
+    return { requester: c.name || c.agent || "an agent", ...(c.task && /^[A-Za-z0-9_-]{1,100}$/.test(c.task) ? { task: c.task } : {}) };
+  } catch (e) {
+    log("reviews: a caller assertion the service can't verify; the batch's summary goes to the owner", { err: String((e as Error).message).slice(0, 200) });
+    return undefined;
+  }
+});
 // The Reviewer Manager's tools on the module's connection (code_review): its setting as instance.yaml holds it, and its changes
 // filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
 const mcp = serveMcp(createMcp(configTools({
-  raw, repos: () => engine.repos(), runs: (q) => engine.runs(q), oneoff: (b) => engine.oneoff(b), repoReview: (b) => engine.repoReview(b),
+  raw, repos: () => engine.repos(), runs: (q) => engine.runs(q), oneoff: (b, asker) => engine.oneoff(b, asker), repoReview: (b) => engine.repoReview(b),
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);

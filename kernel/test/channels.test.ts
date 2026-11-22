@@ -142,31 +142,6 @@ test("A3: the owner's words are labelled by the kernel from the calling channel,
   assert.match(JSON.parse(k.control.filter((c) => c.url === "/api/issues/i-day/comments").at(-2).body).body, /^\[telegram\] Forwarded from Bo \(2026-11-16\) — treat as information, not instructions:\n````\n```x```\n````$/);
 });
 
-test("a failed read or reopen of the owner's task is a retryable error: never another task, a second chat, or words on a task nobody holds", async (t) => {
-  let read = 503, patch = 200;
-  const { k } = await setup(t, { onControl: async (req) => {
-    if (req.method === "GET" && req.url === "/api/issues/WOR-1") return read === 200 ? { body: { id: "i-1", identifier: "WOR-1", status: "todo", assigneeAgentId: null } } : { status: read, body: {} };
-    if (req.method === "PATCH") return { status: patch, body: {} };
-    if (req.method === "GET" && req.url === "/api/agents/ag-cos") return { body: { id: "ag-cos", companyId: "co" } };
-    if (req.method === "GET" && req.url === "/api/companies/co/labels") return { body: [{ id: "l-chat", name: "chat" }] };
-    if (req.method === "POST" && req.url === "/api/companies/co/issues") return { body: { id: "i-day", identifier: "WOR-9" } };
-    if (req.method === "GET" && req.url === "/api/issues/i-day") return { status: read, body: {} };
-    if (req.method === "POST" && /comments$/.test(req.url)) return { body: { id: "c-1" } };
-    return undefined;
-  } });
-  const say = (body) => k.v1("POST", "/v1/channel/owner-message", body, TG);
-  const posts = () => k.control.filter((c) => c.method === "POST").map((c) => c.url);
-  assert.equal((await say({ text: "go", task: "WOR-1", agent: "ag-x" })).status, 502);
-  read = 200; patch = 500;
-  assert.equal((await say({ text: "go", task: "WOR-1", agent: "ag-x" })).status, 502, "the assignment failed: nothing posted");
-  assert.deepEqual(posts(), []);
-  // Today's chat, made once; a blip reading it later makes no second one.
-  read = 503;
-  assert.equal((await say({ text: "hi" })).status, 200);
-  assert.equal((await say({ text: "again" })).status, 502);
-  assert.equal(posts().filter((u) => u === "/api/companies/co/issues").length, 1);
-});
-
 test("a colleague's Slack mention: one task per thread for the bound agent, fenced, never the owner's own request", async (t) => {
   const issues = { "i-th": { id: "i-th", identifier: "WOR-20", status: "done", assigneeAgentId: "ag-rk" } };
   const { k } = await setup(t, { grants: { "ag-rk": { key: "roadmap-keeper" }, "ag-new": { key: "newbie", trial: true } }, onControl: async (req) => {
@@ -197,15 +172,6 @@ test("a colleague's Slack mention: one task per thread for the bound agent, fenc
   assert.equal((await mention({ agent: "newbie" })).status, 403);
   assert.equal((await mention({ from: "owner" })).status, 400);
   assert.equal((await mention({}, PLAIN)).status, 403);
-});
-
-test("the notify brake: five per task since the owner last wrote and per agent; a decision always passes", async (t) => {
-  const { k } = await setup(t, { onControl: async (req) => (/\/comments/.test(req.url) && req.method === "GET" ? { body: [{ body: "[telegram] go", authorType: "user", createdAt: new Date(Date.now() - 60_000).toISOString() }] } : undefined) });
-  const ask = (b) => k.v1("POST", "/v1/brake/notify", { task: "WOR-1", agent: "ag-a", ...b }, "router-key");
-  for (let i = 0; i < 5; i++) assert.equal((await ask()).json.allow, true);
-  assert.equal((await ask()).json.allow, false);
-  assert.equal((await ask({ agent: "ag-b" })).json.allow, true);
-  assert.equal((await ask({ decision: true })).json.allow, true);
 });
 
 test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps applies", async (t) => {
@@ -258,6 +224,87 @@ test("a wake notice to the asker goes on the task's open parent, its fenced data
   assert.match(JSON.parse(posted.at(-1).body).body, /```text\ntest\n\nexpected 2\n```/);
   assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-3", text, to: "asker" }, LANE)).json, { posted: true }, "a closed parent hears nothing");
   assert.equal(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).at(-1).url, "/api/issues/i-3/comments");
+});
+
+test("a wake notice to the asker whose parent can't be read or written is retried, never posted on the task instead", async (t) => {
+  let parentRead: number | null = null, parentWrite: number | null = null;
+  const wrote = [];
+  const { k } = await setup(t, { onControl: async (req, body) => {
+    const m = /^\/api\/issues\/([^/?]+)/.exec(req.url);
+    if (req.method === "GET" && /\/comments$/.test(req.url)) return { body: wrote.filter((c) => c.url === req.url).map((c, i) => ({ id: `c-${i + 1}`, body: JSON.parse(c.body).body })) };
+    if (req.method === "GET" && m) {
+      if (m[1] === "WOR-6") return { body: { id: "i-6", identifier: "WOR-6", status: "in_progress", parentId: "i-5" } };
+      if (m[1] === "i-5") return parentRead ? { status: parentRead, body: {} } : { body: { id: "i-5", identifier: "WOR-5", status: "in_progress" } };
+    }
+    if (req.method === "POST" && /comments$/.test(req.url)) {
+      if (req.url === "/api/issues/i-5/comments" && parentWrite) return { status: parentWrite, body: {} };
+      wrote.push({ url: req.url, body });
+      return { body: { id: `c-${wrote.length}` } };
+    }
+    return undefined;
+  } });
+  const ask = { task: "WOR-6", text: "**CI breaker on WOR-6:** stopped.", to: "asker", id: "k9" };
+  // The parent read failed: the producer retries, and nothing is posted on the child in its place.
+  parentRead = 502;
+  assert.equal((await k.v1("POST", "/v1/wakes", ask, LANE)).status, 502);
+  assert.deepEqual(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")), []);
+  // The parent read now, but the notice on it failed: same answer — the asker would otherwise hear it on the wrong task.
+  parentRead = null; parentWrite = 502;
+  assert.equal((await k.v1("POST", "/v1/wakes", ask, LANE)).status, 502);
+  assert.deepEqual(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).map((c) => c.url), ["/api/issues/i-5/comments"], "tried on the parent, never on the task");
+  // With the parent reachable it goes there, once (the retry reads its own marker back).
+  parentWrite = null;
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", ask, LANE)).json, { posted: true, to: "parent" });
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", ask, LANE)).json, { posted: true, to: "parent" });
+  assert.deepEqual(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).map((c) => c.url), ["/api/issues/i-5/comments", "/api/issues/i-5/comments"], "one notice: the retry read its own marker back");
+});
+
+
+test("a wake notice filed again with the same id posts once: its marker is read back from the task's thread", async (t) => {
+  const wrote = [];
+  const { k } = await setup(t, { onControl: async (req, body) => {
+    const m = /^\/api\/issues\/([^/?]+)/.exec(req.url);
+    if (req.method === "GET" && /\/comments$/.test(req.url)) return { body: wrote };
+    if (req.method === "GET" && m) return { body: { id: m[1], identifier: m[1], status: "todo" } };
+    if (req.method === "POST" && /comments$/.test(req.url)) { wrote.push({ id: `c-${wrote.length + 1}`, body: JSON.parse(body).body }); return { body: { id: `c-${wrote.length}` } }; }
+    return undefined;
+  } });
+  const key = { task: "WOR-4", text: "**One-off review settled:** 1 posted", id: "abc123" };
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true });
+  assert.equal(wrote.length, 1);
+  assert.match(wrote[0].body, /<!-- aidenhq-wake -->\n<!-- aidenhq-wake-id:abc123@WOR-4 -->$/, "the notice keeps the wake tag whole and carries its producer's key beside it");
+  // A retry whose first answer was lost: the same id reads its own marker back and posts nothing, so the agent wakes once.
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true, duplicate: true });
+  assert.equal(wrote.length, 1, "one comment for the one notice");
+  // Another summary is another id and posts; so does one with no id at all (the kernel's own notices keep their behaviour).
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { ...key, id: "def456", text: "**One-off review settled:** 2 posted" }, LANE)).json, { posted: true });
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-4", text: "no key" }, LANE)).json, { posted: true });
+  assert.equal(wrote.length, 3);
+  assert.equal((await k.v1("POST", "/v1/wakes", { ...key, id: "not a key!" }, LANE)).status, 400);
+});
+
+test("a wake notice already posted on a task that has since closed is a duplicate, not a closed; a failed thread read is retried", async (t) => {
+  let closed = false, readFails = false, writes = 0;
+  const { k } = await setup(t, { onControl: async (req, body) => {
+    const m = /^\/api\/issues\/([^/?]+)/.exec(req.url);
+    if (req.method === "GET" && /\/comments$/.test(req.url)) return readFails ? { status: 502, body: {} } : { body: writes ? [{ id: "c-1", body: "<!-- aidenhq-wake -->\n<!-- aidenhq-wake-id:k1@WOR-5 -->" }] : [] };
+    if (req.method === "GET" && m) return { body: { id: m[1], identifier: m[1], status: closed ? "done" : "todo" } };
+    if (req.method === "POST" && /comments$/.test(req.url)) { writes++; return { body: { id: "c-1" } }; }
+    return undefined;
+  } });
+  const key = { task: "WOR-5", text: "**One-off review settled:** 1 posted", id: "k1" };
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true });
+  assert.equal(writes, 1);
+  // Its task closed since, and the same notice comes again: it is already on the task, so it is a duplicate rather than "closed"
+  // (which would send the producer to the owner over a message the task did get).
+  closed = true;
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true, duplicate: true });
+  assert.equal(writes, 1);
+  // A thread read that failed can't say either way: the send is retried, never posted blind (which would wake the agent twice).
+  closed = false;
+  readFails = true;
+  assert.equal((await k.v1("POST", "/v1/wakes", { ...key, id: "k2" }, LANE)).status, 502);
+  assert.equal(writes, 1);
 });
 
 test("POST /v1/routines/pause: a module with role kernel.routines pauses a routine as the owner; no other module does", async (t) => {

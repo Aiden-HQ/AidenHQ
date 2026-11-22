@@ -35,7 +35,11 @@ FROM debian:sid-slim@sha256:07a3205e8583fdff12d2b05bd030f50437e9fd340ee616df0c05
 COPY --from=node /usr/local /usr/local
 RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --create-home --shell /bin/bash node
 ENV NODE_ENV=production HOME=/tmp
-RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates && rm -rf /var/lib/apt/lists/*
+# The krb5 packages are named so apt upgrades them from the base image's 1.22.1-3 to sid's 1.22.3-1.
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
+      libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 \
+      && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libkrb5-3)" ge 1.22.3-1 \
+      && rm -rf /var/lib/apt/lists/*
 # Static Go binaries: the docker CLI with its compose plugin. No tailscale CLI: apps are served by their own tailnet node
 # (the apps-edge sidecar), from a config file this service writes.
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
