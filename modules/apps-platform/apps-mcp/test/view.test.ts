@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Resolve } from "../src/api.js";
 import type { Scope, Sign } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
-import { graderView, isPublicIp, renderArgs, viewApp, viewContent, BROWSER_IMAGE, SNAPSHOT_CAP, SNAPSHOT_MAX, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
+import { graderView, isPublicIp, renderArgs, viewApp, viewContent, BROWSER_IMAGE, GRADER_SNAPSHOT_CAP, SNAPSHOT_CAP, SNAPSHOT_MAX, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
 
 const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, ...o });
 const ID = "c".padEnd(64, "0");
@@ -116,14 +116,16 @@ describe("the grader's live view", () => {
     expect(await graderView(app({ health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/health.url/) });
     expect(calls.length).toBe(2);
   });
-  it("keeps an agent's view at SNAPSHOT_CAP, and lets the grader's own capture ask for more, up to SNAPSHOT_MAX", async () => {
+  it("keeps an agent's view at SNAPSHOT_CAP and the grader's own capture at GRADER_SNAPSHOT_CAP, not a caller's choice", async () => {
     const { calls, render } = fake();
     const d = { resolve, render, sign, running: () => "a".repeat(40) };
-    await graderView(app(), { path: "/changes", cap: 200_000 }, d);
-    expect((calls[0]!.req as { snapshotCap?: number }).snapshotCap).toBe(200_000);
+    await graderView(app(), { path: "/changes" }, d);
+    expect((calls[0]!.req as { snapshotCap?: number }).snapshotCap).toBe(GRADER_SNAPSHOT_CAP);
     await viewApp(app(), agent("scout"), {}, d);
     expect(calls[1]!.req).not.toHaveProperty("snapshotCap"); // an agent's view keeps the renderer's own SNAPSHOT_CAP
-    for (const cap of [0, 999, SNAPSHOT_MAX + 1, 1.5]) await expect(graderView(app(), { cap }, d), String(cap)).rejects.toThrow(/snapshot cap/);
+    // A cap smuggled into the grader request is ignored: the view has no such field, and the cap is the server's constant.
+    await graderView(app(), { path: "/changes", cap: 1 } as never, d);
+    expect((calls[2]!.req as { snapshotCap?: number }).snapshotCap).toBe(GRADER_SNAPSHOT_CAP);
     // The renderer honours the request, bounded by SNAPSHOT_MAX, and reports the cut it made.
     expect(VIEW_SCRIPT).toContain("Math.min(Number(r.snapshotCap) || " + SNAPSHOT_CAP + ", " + SNAPSHOT_MAX + ")");
   });

@@ -76,11 +76,11 @@ describe("rubricPaths", () => {
 });
 
 describe("liveEvidence", () => {
-  /** A fake apps-mcp view: each page's snapshot is `snapshot(path, cap)`. */
-  const view = (snapshot: (path: string, cap: number) => string) => async (name: string, path: string, cap: number) => {
+  /** A fake apps-mcp view: each page's snapshot is `snapshot(path)`, cut by apps-mcp's own cap. */
+  const view = (snapshot: (path: string) => string) => async (name: string, path: string) => {
     assert.equal(name, APP.name);
-    const snap = snapshot(path, cap);
-    return { status: 200, url: `http://127.0.0.1:8080${path}`, title: "Roadmap", timed_out: false, snapshot: snap, truncated: snap.length > cap, sha_before: APP.sha, sha_after: APP.sha };
+    const snap = snapshot(path);
+    return { status: 200, url: `http://127.0.0.1:8080${path}`, title: "Roadmap", timed_out: false, snapshot: snap, truncated: snap.length > PAGE_CAP, snapshotCap: PAGE_CAP, sha_before: APP.sha, sha_after: APP.sha };
   };
 
   it("captures a page longer than the old 8,000-character window whole, with the named row near its end", async () => {
@@ -96,15 +96,12 @@ describe("liveEvidence", () => {
   });
 
   it("asks apps-mcp for PAGE_CAP, and keeps the cut fact honest when a page is still longer than PAGE_MAX", async () => {
-    const seen: number[] = [];
     const huge = "- row \"filler\"\n".repeat(20_000); // 280,000 characters: longer than the capture cap
     const ev = await liveEvidence(APP, ["the /audit page shows both original ETA events"], {
-      view: async (_n: string, _p: string, cap: number) => {
-        seen.push(cap);
-        return { status: 200, url: "http://127.0.0.1:8080/changes", title: "Updates", timed_out: false, snapshot: huge.slice(0, cap), truncated: huge.length > cap, sha_before: APP.sha, sha_after: APP.sha };
+      view: async (_n: string, _p: string) => {
+        return { status: 200, url: "http://127.0.0.1:8080/changes", title: "Updates", timed_out: false, snapshot: huge.slice(0, PAGE_CAP), truncated: huge.length > PAGE_CAP, snapshotCap: PAGE_CAP, sha_before: APP.sha, sha_after: APP.sha };
       },
     });
-    assert.ok(seen.length && seen.every((c) => c === PAGE_CAP), "the grader's own capture asks for the larger cap");
     const fact = ev.facts.find((f: string) => f.includes("/audit"))!;
     const shown = (ev.data.LIVE_PAGE_2 as string).length;
     assert.equal(shown, PAGE_MAX, "the block is still bounded by PAGE_MAX");

@@ -198,7 +198,7 @@ function deployFact(p: any, h: any, app: any): string {
 
 export const PAGE_MAX = 120_000; // one rendered page's text at most, in its own fenced block: a 100k-character page arrives whole, and the block stays bounded
 export const PAGE_TOTAL = 300_000; // all live pages together: with many pages named, each page keeps less than PAGE_MAX, and unused shares go to the pages that were cut
-export const PAGE_CAP = 200_000; // what apps-mcp's renderer keeps of one page's snapshot, so a page up to PAGE_MAX is never cut before it
+export const PAGE_CAP = 200_000; // what apps-mcp keeps of one page's snapshot for the grader's own capture (view.ts GRADER_SNAPSHOT_CAP), so a page up to PAGE_MAX is never cut before it
 const AUTO_DEPLOY_WAIT_MS = 15 * 60_000; // apps-mcp polls origin every 2 minutes; past this, a missing deploy is a real one
 
 /**
@@ -281,7 +281,7 @@ function encodeQuery(query: string): string {
 
 /**
  * A deployed app's live pages (`app` is its status row, with the sha the facts and version name), through deps.view(name,
- * path, cap): { awaiting } or { facts, data }. The facts are what code checked (path, HTTP status, the deployed commit it was
+ * path): { awaiting } or { facts, data }. The facts are what code checked (path, HTTP status, the deployed commit it was
  * captured at, whether its text was cut); each page's text is its own, so it goes to the grader fenced, as data
  * (LIVE_PAGE_<n>, n as in the facts). A redeploy before or during a
  * capture (the running commit read before and after differs from the graded one) or a failed render waits for the next
@@ -293,7 +293,7 @@ export async function liveEvidence(app: any, rubric: unknown[], deps: any): Prom
   for (const path of paths) {
     let v: any;
     try {
-      v = await deps.view(app.name, path, PAGE_CAP);
+      v = await deps.view(app.name, path);
     } catch (err: any) {
       return { awaiting: `the live page ${path} of ${app.name} could not be captured yet (${String(err.message ?? err).slice(0, 160)})` };
     }

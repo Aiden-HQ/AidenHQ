@@ -214,12 +214,13 @@ const http = createServer(async (req, res) => {
       if (!sha) return send(res, 200, { sha: null, roles: [] });
       return send(res, 200, { sha, ...parseManifest(await show(p.cfg.git, a, sha, posix.join(a.path, MANIFEST_FILE))) });
     }
-    // The grader's live view of one page of a deployed app (the grading module): view.ts graderView.
+    // The grader's live view of one page of a deployed app (the grading module): view.ts graderView. Its own capture keeps
+    // GRADER_SNAPSHOT_CAP; the cap is not a request field, so no other apps.read caller can ask for a larger one.
     if (url.pathname === "/internal/view" && req.method === "POST") {
       const refused = await reader(req);
       if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
       const b = await readBody(req);
-      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width, cap: b?.cap }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
+      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });
