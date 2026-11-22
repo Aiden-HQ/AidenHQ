@@ -33,8 +33,10 @@ const execFileP = promisify(execFile);
 /** The fraction of each filesystem used (as `df` and the DiskSpaceLow rule count it), the fullest one. */
 export const diskUsed = (paths: string[]) => Math.max(...paths.map((p) => { try { const s = statfsSync(p); return 1 - s.bavail / s.blocks; } catch { return 0; } }));
 
-export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}, now = Date.now, used = () => diskUsed([workDir, "/"]) }: {
+export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}, now = Date.now, used = () => diskUsed([workDir, stateDir, "/"]), stopping = () => false }: {
   db: DatabaseSync; workDir: string; stateDir: string;
+  /** The kernel is draining (main.ts): its pass stops, so only the next kernel's sweep runs beside its admissions. */
+  stopping?: () => boolean;
   /** The engine kinds that keep a home per task (config/engines.json `state: task`). */
   engines: () => string[];
   log?: (msg: string, f?: Record<string, unknown>) => void; now?: () => number; used?: () => number;
@@ -68,14 +70,15 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
       add(byHome, homeName(r.agent, r.task), r.agent, r.task, r.last);
     }
     const running = () => { try { return new Set((db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]).map((r) => checkAttempt(r.id, r.at))); } catch { return new Set<string>(); } };
+    // Its sessions went with it: the next job starts fresh instead of resuming one whose files are gone (boxes.ts lastSession).
+    const fresh = (u: Use, engine?: string) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = COALESCE(?, engine) AND NOT ${LIVE()}`).run(agent, task, engine ?? null); };
     const roots: { root: string; use: (name: string) => Use | undefined; busy: (name: string, u?: Use) => boolean; gone?: (u: Use) => void }[] = [
-      { root: join(workDir, "tasks"), use: (n) => byIdent.get(n), busy: liveIdent },
+      { root: join(workDir, "tasks"), use: (n) => byIdent.get(n), busy: liveIdent, gone: (u) => fresh(u) },
       { root: join(workDir, ".cache-layers"), use: (n) => byIdent.get(n), busy: liveIdent },
       { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
       ...engines().map((kind) => ({
         root: join(stateDir, kind), use: (n: string) => byHome.get(n), busy: (_: string, u?: Use) => livePair(u),
-        // Its session went with it: the next job starts fresh instead of resuming one that is gone (boxes.ts lastSession).
-        gone: (u: Use) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = ? AND NOT ${LIVE()}`).run(agent, task, kind); },
+        gone: (u: Use) => fresh(u, kind),
       })),
     ];
     let removed = 0;
@@ -84,7 +87,8 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
       let names: string[];
       try { names = readdirSync(root); } catch { continue; }
       for (const name of names) {
-        if (now() > until) break;
+        await new Promise((ok) => setImmediate(ok)); // each folder's step is short; the gateway runs between them
+        if (now() > until || stopping()) break;
         if (name.startsWith(".")) continue;
         const dir = join(root, name);
         // Synchronous from the check to the rename: no job is admitted in between.
@@ -95,7 +99,8 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
         if (busy(name, u)) continue;
         const last = Math.max(u?.last ?? 0, st.mtimeMs);
         const closed = (u?.pairs ?? []).map(({ task }) => closedAt(task));
-        const why = now() - last > idleMs ? "idle" : closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs) ? "closed" : undefined;
+        // Closed: every task of it closed for the grace, and no job since (work after a reopen is never the closed rule's).
+        const why = now() - last > idleMs ? "idle" : closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs && c >= last) ? "closed" : undefined;
         if (!why) continue;
         // One folder that can't be moved (its parent's mode, a race) is logged and skipped; the rest of the pass goes on.
         try {
@@ -108,7 +113,6 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
         }
         removed++;
         log("unused folder removed", { dir, why, ...(pressure ? { pressure: true } : {}) });
-        await new Promise((ok) => setImmediate(ok));
       }
       // Off the event loop: chmod first (read-only Go module caches, an overlay's mode-000 work dir), then remove.
       try { statSync(trash); } catch { continue; }

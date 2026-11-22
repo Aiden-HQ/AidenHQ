@@ -469,7 +469,7 @@ every(() => {
 }, 5 * 60_000);
 // The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
 // go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
-const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
+const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, stopping: () => draining, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
 let diskSweeping = false;
 const sweepDisk = () => {
   if (diskSweeping) return;
