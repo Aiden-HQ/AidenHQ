@@ -117,7 +117,8 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     // An error is no answer: the caller waits and asks again.
     const noAnswer = () => fail(502, `GitHub has no readable ${s.slug}#${b.number}: ${JSON.stringify(r.body?.errors ?? []).slice(0, 200)}`);
     // GitHub's own NOT_FOUND on the PR read is its word that the repository or PR is not there (the nulls below), not a failure.
-    const gone = what === "pullRequest" && r.body?.errors?.length && r.body.errors.every((e: any) => e?.type === "NOT_FOUND");
+    const nulled = r.body?.data?.repository === null || r.body?.data?.repository?.pullRequest === null;
+    const gone = what === "pullRequest" && nulled && r.body.errors?.length && r.body.errors.every((e: any) => e?.type === "NOT_FOUND");
     if (r.body?.errors?.length && !gone) throw noAnswer();
     const data = r.body?.data;
     if (!data || typeof data !== "object") throw noAnswer();

@@ -602,9 +602,10 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   const landed = new Set(candidates.filter((p) => states.get(key(p))?.state === "MERGED").map((p) => String(p.repo).toLowerCase()));
   if (byName && absent.size === candidates.length) return { awaiting: `no pull request at ${candidates.map((p) => p.url).join(", ")}`, missing: true };
   // A ref naming several PRs ("replaces #3, delivered in #7") is delivered by the one that merged: an absent one is left out,
-  // and an open one waits only while none of them has merged.
-  const anyMerged = candidates.some((p) => states.get(key(p))?.state === "MERGED");
-  const graded = candidates.filter((p) => states.has(key(p)) && (states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase())) && !(byName && anyMerged && states.get(key(p)).state !== "MERGED"));
+  // and an open one in the repository where another merged is that merge's predecessor, so it does not hold the grade (an open
+  // one in another repository is its own deliverable and still waits).
+  const mergedIn = new Set(candidates.filter((p) => states.get(key(p))?.state === "MERGED").map((p) => String(p.repo).toLowerCase()));
+  const graded = candidates.filter((p) => states.has(key(p)) && (states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase())) && !(byName && mergedIn.has(String(p.repo).toLowerCase()) && states.get(key(p)).state !== "MERGED"));
   for (const p of graded) {
     // Closed without merging is not a merge, not "still running", and not a branch a revision request can still reach: its head
     // is fixed, so its checks and diff are not read as the task's deliverable. The row holds for evidence instead.
