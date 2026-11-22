@@ -1775,7 +1775,7 @@ export function createEngine(d: EngineDeps) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
     const t = await Promise.race([e.p, slow]).finally(() => clearTimeout(timer));
-    if (t === "slow") throw new Error("it is still being read: ask again in a minute");
+    if (t === "slow") throw new Error("it is still being read: ask again in a few seconds");
     // A default-branch read answers one request, then is kept under the commit it resolved: the next ask for the head reads it afresh.
     if (ref === "HEAD" && treeReads.get(key) === e) { treeReads.delete(key); treeReads.set(`${repo}@${t.sha.toLowerCase()}`, e); }
     return t;
