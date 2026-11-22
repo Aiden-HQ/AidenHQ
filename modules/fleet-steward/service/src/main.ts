@@ -9,7 +9,7 @@ import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts";
 import { coachReads } from "./coach.ts";
-import { checks, detectorState, gateActivity, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
+import { checks, detectorState, gateActivity, parseIgnoredRepos, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
 import { isModule } from "./module-caller.ts";
 import { createStewardServer } from "./server.ts";
@@ -81,7 +81,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 const fileJam = (keys: string[]) => toChief(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${hashOf([...keys].sort().join(","))}`);
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, owner: ownerNotice, gradeFailures, log });
+const all = checks({ kernel, kv, ignoredRepos: parseIgnoredRepos(env.FLEET_OPS_IGNORED_REPOS), pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, owner: ownerNotice, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;

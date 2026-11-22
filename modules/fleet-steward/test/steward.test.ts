@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { dueList } from "../service/src/coach.ts";
-import { checks, detectorState, gateActivity, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, gateActivity, parseIgnoredRepos, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -60,7 +60,7 @@ function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatL
   };
 }
 const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title: `Work ${id}`, status: "todo", updatedAt: ago(1), ...o });
-const detect = (w, now = NOW) => checks({ kernel: w, kv: kvOf(), apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
+const detect = (w, now = NOW, ignoredRepos) => checks({ kernel: w, kv: kvOf(), ignoredRepos, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
 test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved for an hour is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
@@ -390,4 +390,18 @@ test("a review-stall flag's card carries its task, so its activity is checked li
   assert.deepEqual(seen, ["t1"], "the lookup used the task carried with the flag, not the card id");
   // No activity on it at all: it jams like any other gate.
   assert.deepEqual(await jamRun(kvFrom(state), NOW, async () => undefined), ["review-stall:card-1"]);
+});
+
+test("fleet_ops_ignored_repos: a listed repo's open PR is not raised, another repo's is, and the empty default raises both", async () => {
+  const prs = [
+    { repo: "acme/probe", number: 2, opened_at: ago(2), draft: false },
+    { repo: "acme/app", number: 7, opened_at: ago(2), draft: false },
+  ];
+  const raised = async (ignoredRepos) => (await detect(world({ prs }), NOW, ignoredRepos).pr()).map((i) => i.key).sort();
+  assert.deepEqual(await raised(undefined), ["acme/app#7", "acme/probe#2"]);
+  assert.deepEqual(await raised([]), ["acme/app#7", "acme/probe#2"]);
+  assert.deepEqual(await raised(parseIgnoredRepos("Acme/Probe")), ["acme/app#7"]);
+  // The service reads the setting as comma-joined text: an empty value ignores nothing.
+  assert.deepEqual(parseIgnoredRepos(""), []);
+  assert.deepEqual(parseIgnoredRepos(" acme/probe , acme/other ,"), ["acme/probe", "acme/other"]);
 });

@@ -22,6 +22,10 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
     .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
+/** `fleet_ops_ignored_repos` as the service reads it: owner/name entries, lowercased for the detector's case-insensitive match. */
+export function parseIgnoredRepos(raw: string | undefined): string[] {
+  return (raw ?? "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
 const PR_OPEN_MS = 60 * MIN; // a pull request of the agents org or the fleet's own open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
 type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; preview_url?: string };
@@ -488,7 +492,7 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
 }
 
 /** The owner's alert list, as checks. `pause` pauses a routine (kernel role kernel.routines). `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; ignoredRepos?: string[]; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -897,7 +901,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     async pr() {
       const r = await d.apps<{ prs?: PrRow[] }>("/internal/open-prs");
       if (!r.prs) return undefined; // no warehouse or no agents org
-      return stalePrs(r.prs, now());
+      const ignored = new Set(d.ignoredRepos ?? []);
+      return stalePrs(r.prs.filter((x) => !ignored.has(x.repo.toLowerCase())), now());
     },
   };
 }
