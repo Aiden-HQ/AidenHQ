@@ -203,8 +203,8 @@ export function createAccess(o: {
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string }>();
-  /** The GraphQL query that set an org's problem: only that read succeeding clears it (REST's per-org clear leaves it). */
-  const read = new Map<string, string>();
+  /** The GraphQL request that set a problem: only that same request succeeding clears it (REST's per-org clear leaves it). */
+  const read = new Map<string, string>(); // request (query and variables) -> the org its problem is recorded under
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
@@ -401,7 +401,7 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && !read.has(ownerOf(path)!.toLowerCase())) problems.delete(ownerOf(path)!.toLowerCase());
+    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && ![...read.values()].includes(ownerOf(path)!.toLowerCase())) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -430,17 +430,18 @@ export function createAccess(o: {
       // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
       if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
       const org = typeof variables.org === "string" ? variables.org : "";
+      const key = JSON.stringify([query, variables]);
       const { need, fatal } = graphqlNeed(body?.errors, org, o.clientId);
       if (need) {
         // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content
         // (an issue of another org) is recorded but leaves the rest of the board readable.
-        read.set(need.org.toLowerCase(), query);
+        read.set(key, need.org.toLowerCase());
         if (fatal) fail(need);
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}) });
-      } else if (org && body?.data && !body.errors?.length && read.get(org.toLowerCase()) === query) {
-        // Cleared only by the read that was refused succeeding again.
-        problems.delete(org.toLowerCase());
-        read.delete(org.toLowerCase());
+      } else if (read.has(key) && body?.data && !body.errors?.length) {
+        // Cleared only by the request that was refused succeeding again.
+        problems.delete(read.get(key)!);
+        read.delete(key);
       }
       return body;
     },

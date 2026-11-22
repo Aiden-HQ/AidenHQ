@@ -142,7 +142,8 @@ const http = createServer(async (req, res) => {
     // Each source's last good pass and whether its latest pass failed (the board's Fleet Ops detector; never the error text,
     // which agents read with warehouse_query). No sources until the warehouse is set up.
     if (url.pathname === "/internal/sources" && req.method === "GET") {
-      if (!internalAuthorized(req) && (await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
+      const who = internalAuthorized(req) ? "internal" : await readerIdentity(req); // verified once: it also decides the detail below
+      if (typeof who === "number") return send(res, 401, { error: "unauthorized" });
       let d;
       try {
         d = p.warehouse();
@@ -156,7 +157,7 @@ const http = createServer(async (req, res) => {
       // reads the warehouse's health); other apps.read callers get the summary rows. A scope still recording runs (one within 8
       // days: weekly ones too) whose passes have all failed for 24 hours, counted from its first failure after its last good
       // pass; a scope that stops running drops out after 8 days (retired). The last good pass is found once per scope.
-      const detail = internalAuthorized(req) || ((await readerIdentity(req)) as { module?: string }).module === "fleet-steward";
+      const detail = who === "internal" || who.module === "fleet-steward";
       const f = detail
         ? await d.pool.query(
             `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL GROUP BY source, scope),
