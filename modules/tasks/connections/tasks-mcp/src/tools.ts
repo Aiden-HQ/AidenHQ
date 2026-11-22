@@ -479,6 +479,19 @@ function refuseRetiredRepo(deliverable: Json, list: string[], description: Json)
   const named = [deliverable.ref ?? "", ...list, description].flatMap(reposIn);
   if (RETIRED_REPOS.some((r) => named.includes(r.toLowerCase()))) throw new Error(RETIRED_REPO_ERROR);
 }
+// The instance repo takes no PRs by design: the code host refuses every branch push and PR to it, and kernel.apply lands the
+// commit straight on main. A `pr` brief or a copied `Graded before done (pr: …)` rubric naming it can never pass, so it is
+// refused where the brief is filed. The repo is the one the kernel's directory names, so this works for any instance.
+const INSTANCE_REPO_ERROR = "the instance repo changes only through apply — file this as `deliverable: apply` with a rubric on the apply card and the commit on `main`, not a PR.";
+/** Refuses a `pr` deliverable or `Graded before done (pr:` rubric that names the instance repo. */
+function refuseInstanceRepoPr(deliverable: Json, list: string[], description: Json) {
+  const instance = cx().dir.repos?.instance?.toLowerCase();
+  if (!instance) return;
+  const prRubric = /Graded before done \(pr:/i.test(String(description ?? ""));
+  if (deliverable?.kind !== "pr" && !prRubric) return;
+  const named = [deliverable?.ref ?? "", ...list, description].flatMap(reposIn);
+  if (named.includes(instance)) throw new Error(INSTANCE_REPO_ERROR);
+}
 // A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
 // so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
 // is about what the grader does see in facts or pages (errors, warnings, incidents, failing checks, findings, CVEs, overflow).
@@ -540,6 +553,7 @@ function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Js
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
   refuseRetiredRepo(deliverable, list, description);
+  refuseInstanceRepoPr(deliverable, list, description);
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
   const negative = list.find(unprovable);
   if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);

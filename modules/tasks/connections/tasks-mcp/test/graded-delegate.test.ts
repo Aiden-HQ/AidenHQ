@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.ts";
 
-async function call(name, args, { finish, gradingDown = false, assignee = "cos", feedback } = {}) {
+async function call(name, args, { finish, gradingDown = false, assignee = "cos", feedback, repos } = {}) {
   const seen = { created: [], filed: [], patches: [], comments: [] };
   const handler = (req, res) => {
     let body = "";
@@ -33,7 +33,7 @@ async function call(name, args, { finish, gradingDown = false, assignee = "cos",
   };
   const agents = { cos: { key: "chief-of-staff", roles: [], ...(feedback ? { feedback_for: feedback } : {}) }, eng: { key: "engineer-openrouter", roles: [], graded: true }, ops: { key: "fleet-ops", roles: [] } };
   const board = gradingDown ? (req) => req.socket.destroy() : handler;
-  const r = await bridge({ handler, board, agents, agent: "cos", task: "cur" }).call(name, args);
+  const r = await bridge({ handler, board, agents, agent: "cos", task: "cur", repos }).call(name, args);
   return { r, text: r.result?.content?.[0]?.text ?? "", ...seen };
 }
 
@@ -73,6 +73,49 @@ test("a deliverable ref is one strict token: no forged markers", async () => {
 // A retired repo takes no changes: a pr deliverable or rubric naming it can never pass, so it is refused where the brief is
 // filed, for every assignee and in every ref shape DELIVERABLE_REF accepts, with no network lookup.
 const retired = "retired repo: modules live in Aiden-HQ/AidenHQ under modules/";
+// The instance repo takes no PRs: the code host refuses every push and PR to it and kernel.apply lands on main. A `pr`
+// deliverable or a copied `Graded before done (pr:` rubric naming it can never pass, so it is refused where the brief is
+// filed; the repo is the one the kernel's directory names as the instance, so a product-repo `pr` brief still files.
+const instance = "the instance repo changes only through apply — file this as `deliverable: apply` with a rubric on the apply card and the commit on `main`, not a PR.";
+const repos = { instance: "aidenhq-alpha/aidenhq-instance", product: "Aiden-HQ/AidenHQ" };
+
+test("a pr brief or rubric naming the instance repo is refused; a product-repo pr brief files", async () => {
+  for (const ref of ["aidenhq-alpha/aidenhq-instance", "aidenhq-alpha/aidenhq-instance#12", "https://github.com/aidenhq-alpha/aidenhq-instance/pull/12", "git@github.com:aidenhq-alpha/aidenhq-instance.git"]) {
+    const delegated = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref }, rubric }, { repos });
+    assert.equal(delegated.r.result?.isError, true, ref);
+    assert.equal(delegated.text, instance, ref);
+    assert.equal(delegated.created.length, 0, ref);
+    const created = await call("task_create", { title: "Handbook edit", description: "Change agents/aria/AGENTS.md.", marker: "handbook:aria:2026-11-22", assignee: "Kai", deliverable: { kind: "pr", ref } }, { repos });
+    assert.equal(created.r.result?.isError, true, ref);
+    assert.equal(created.text, instance, ref);
+    assert.equal(created.created.length, 0, ref);
+  }
+
+  // The same repo named only in the brief's text, or only in a rubric criterion, is refused too.
+  for (const description of ["Open the PR in aidenhq-alpha/aidenhq-instance against main.", "Change agents/aria/AGENTS.md in the instance repo (aidenhq-alpha/aidenhq-instance)."]) {
+    const bad = await call("task_delegate", { ...ask, description, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, rubric }, { repos });
+    assert.equal(bad.r.result?.isError, true, description);
+    assert.equal(bad.text, instance, description);
+    assert.equal(bad.created.length, 0, description);
+  }
+  const bad = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, rubric: [...rubric, "Merged PR in aidenhq-alpha/aidenhq-instance whose diff touches only agents/aria/AGENTS.md"] }, { repos });
+  assert.equal(bad.r.result?.isError, true);
+  assert.equal(bad.text, instance);
+  // A copied `Graded before done (pr:` rubric in the description is refused whatever the deliverable's kind.
+  const copied = await call("task_delegate", { ...ask, description: "Change agents/aria/AGENTS.md.\n\nGraded before done (pr: aidenhq-alpha/aidenhq-instance):\n1. merged", deliverable: { kind: "apply", ref: "aidenhq-alpha/aidenhq-instance" }, rubric }, { repos });
+  assert.equal(copied.r.result?.isError, true);
+  assert.equal(copied.text, instance);
+  assert.equal(copied.created.length, 0);
+
+  // A product-repo `pr` brief files normally, and an apply deliverable for the instance repo is not a PR.
+  const ok = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, rubric }, { repos });
+  assert.equal(ok.r.result?.isError, undefined, ok.text);
+  assert.deepEqual(ok.filed, [{ issue: "new", rubric, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, as: "caller" }]);
+  const applied = await call("task_delegate", { ...ask, deliverable: { kind: "apply", ref: "aidenhq-alpha/aidenhq-instance" }, rubric }, { repos });
+  assert.equal(applied.r.result?.isError, undefined, applied.text);
+  assert.equal(applied.filed.length, 1);
+  assert.equal(applied.filed[0].deliverable.kind, "apply");
+});
 
 test("task_finish on a held task posts the result as a comment and leaves the status to the grader", async () => {
   const held = await call("task_finish", { comment: "Merged acme/app#12." }, { finish: { status: 202, body: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } } });
