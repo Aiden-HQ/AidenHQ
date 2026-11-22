@@ -571,3 +571,17 @@ test("an unreadable identity record is unknown, not proof the PR is not the task
   });
   assert.deepEqual([own.present, own.unknown], [true, false], "the row's own branch identifies it without the record");
 });
+
+test("a rubric that names a merged PR another task opened is graded on that PR, with no record of the task's own", async () => {
+  const prs = [merged(1301, "d", "e")];
+  const deps = depsFor(prs, { taskMerged: [] });
+  const ev = await prEvidence([], url(1301), deps);
+  assert.equal(ev.awaiting, undefined);
+  assert.match(ev.version, /#1301@/);
+  assert.deepEqual(ev.prs.map((p) => p.number), [1301]);
+  assert.ok(ev.facts.some((f) => f.startsWith(`${url(1301)}: merged`) && f.includes("named by the deliverable's own ref")));
+  const open = Object.assign(merged(1302, "f", "g"), { state: "OPEN", mergedAt: null, mergeCommit: null });
+  assert.equal((await prEvidence([], url(1302), depsFor([open]))).awaiting, `${url(1302)} is not merged yet`);
+  const now = await presentNow({ kind: "pr", ref: url(1301) }, { taskPrs: async () => [], taskMerged: async () => [], pr: deps.pr });
+  assert.equal(now.present, true);
+});
