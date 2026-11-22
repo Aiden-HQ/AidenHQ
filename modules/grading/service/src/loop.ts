@@ -215,8 +215,12 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
 
   async function gradeOne(g: Json) {
     const issue = await pc.issue(g.issueId);
-    // Closed meanwhile (the owner accepted or cancelled it): nothing to grade.
-    if (["done", "cancelled"].includes(issue.status)) return;
+    // Closed meanwhile (the owner accepted or cancelled it): nothing to grade, and a resumed row is settled so it is not
+    // picked up again on every pass (the sweep does the same, but only every five minutes).
+    if (["done", "cancelled"].includes(issue.status)) {
+      if (g.resume) await api.post(`/board/grades/${encodeURIComponent(g.issueId)}/settle`, { reason: `the task was ${issue.status} before the grader settled it` }).catch(() => {});
+      return;
+    }
     gradeLooked.set(g.issueId, Date.now());
     const rubric = g.rubric.length ? g.rubric : template(g.deliverable.kind);
     const deps = gradeDeps(issue);

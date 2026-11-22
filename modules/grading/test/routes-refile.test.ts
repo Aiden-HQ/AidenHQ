@@ -270,6 +270,20 @@ test("a re-file of a task already in review is graded at once, without the assig
   assert.ok(h.grades.due().some((x) => x.issueId === "t1"));
 });
 
+test("a row settled on a closed task stops being due, resume and all", async (t) => {
+  const h = await harness(t);
+  h.grades.file("t1", RUBRIC, PR);
+  h.grades.amend("t1", ["the app serves /totals", "no console errors on /totals", "no open incident"], { by: "agent:cos", delegator: "agent:cos", held: true });
+  assert.ok(h.grades.due().some((x) => x.issueId === "t1"));
+  // The sweep (or the loop) settles the row of a task closed before it was graded: nothing is left to pick up.
+  h.grades.settle("t1", "the task was done before the grader settled it");
+  const g = h.grades.get("t1");
+  assert.equal(g.state, "not_graded");
+  assert.equal(g.resume, false);
+  assert.equal(g.resumedAt, null);
+  assert.equal(h.grades.due().some((x) => x.issueId === "t1"), false);
+});
+
 test("a task's delegator amends an older row that kept no filer record", async (t) => {
   const h = await harness(t);
   // A row written before grade_filers existed: the store has the rubric and no recorded filer.

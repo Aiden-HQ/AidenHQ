@@ -10,7 +10,8 @@ import { uncheckableAbsence } from "./absence.ts";
 export { uncheckableAbsence };
 
 /**
- * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
+ * open: filed with the delegation, the task not finished yet — or restarted by an amendment or a correction, with `resume` set
+ * when the work was already in review and the runner must grade it now. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
  * assignee: only a criterion the grader shows unmet sends work back) or grading_failed (the grader failed or returned no usable
  * criteria: retried on a bounded ladder, never the owner's). Fail open: a grader that is down, can't judge or can't verify, and
@@ -360,7 +361,8 @@ export class Grades {
   settle(issueId: string, reason: string, now = Date.now()): Grade | undefined {
     const g = this.get(issueId);
     if (!g || g.state === "satisfied" || g.state === "not_graded") return g;
-    this.db.prepare("UPDATE grades SET state = 'not_graded', closed_reason = ?, updated_at = ? WHERE issue_id = ?").run(reason.slice(0, 300), new Date(now).toISOString(), issueId);
+    // A row closed this way is no longer the restarted one the runner had to pick up: its resume ends with it.
+    this.db.prepare("UPDATE grades SET state = 'not_graded', closed_reason = ?, resume = 0, resumed_at = NULL, updated_at = ? WHERE issue_id = ?").run(reason.slice(0, 300), new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId);
   }
