@@ -136,13 +136,15 @@ a `notice` (Tier 0, fixed words) per run and a `status` (Tier 0, fixed words) pe
 commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
 changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):
 
-- **Every finding gets one thread**: on its lines when they are on the reviewed diff, else on the nearest diff line of its file
+- **Every important (and pre-existing) finding gets one thread; a nit gets none** (every inline comment is a GitHub write, and the
+  secondary rate limit on those blocked the fleet; owner, 2026-11-22): a nit is one line of the summary, `file:line` and its title.
+  A thread sits on its lines when they are on the reviewed diff, else on the nearest diff line of its file
   (saying where it really is), else a file comment (a file GitHub shows no patch for). Only a finding in no changed file has no
   thread; it is a collapsed block in the summary instead. A finding an earlier review already opened a thread for isn't posted
   again. Each comment has a severity marker, a collapsed "why flagged" and "Copy as fix brief".
 - **The summary scans at a glance**: the title `Aiden review · Haiku 5.5 (medium)` (the model's short name and effort), one line
   of counts (on a gated repo's mandatory review, whether it blocks the merge), the important findings as a table (severity,
-  title linking to its thread, `file:line`), nits and pre-existing ones in the same table collapsed, the commands as one
+  title linking to its thread, `file:line`), pre-existing ones in a collapsed table, nits as a short list of `file:line` and title, the commands as one
   collapsed line, and one muted line with the commit, the scope (whole PR or changes since a commit), the engine and the cost. A
   clean review is one line. Each finding appears once. Partial coverage says so (`coverage_note`, codex-native's "which parts
   it read isn't tracked", is never shown: it isn't a gap).
