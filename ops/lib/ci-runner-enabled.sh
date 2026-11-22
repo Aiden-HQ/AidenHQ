@@ -12,11 +12,18 @@
 # systemd reads only a symlink there whose target exists: a link whose template is gone is dangling (`is-enabled` reads
 # the instance as not-found) and a plain file is not a link (`is-enabled` reads it as disabled). A masked instance keeps
 # its link but will not start, so `is-enabled`'s masked state drops it too. None of those declare a runner.
+#
+# Masking reads as more than an `is-enabled` word here. A `.wants`/`.requires` link may itself point at `/dev/null` (a
+# dependency link masked from its own file, not the instance), which `[ -e ]` follows to a live file; and a product that
+# masks the template under that name makes a `.wants` link of it read `masked` (confirmed on systemd 262 with
+# `systemctl --root`, a `.wants/...` link to `/dev/null` reads enabled). Such a link enables nothing, so both are skipped.
 ci_runner_enabled_units() { # one enabled runner instance per line
-  local unit_dir link
+  local unit_dir link target
   while read -r unit_dir; do
     for link in "$unit_dir"/*.wants/aidenhq-ci-runner@*.service "$unit_dir"/*.requires/aidenhq-ci-runner@*.service; do
       [ -L "$link" ] && [ -e "$link" ] || continue
+      target="$(readlink -f "$link" 2>/dev/null)" || continue
+      [ -n "$target" ] && [ "$target" != /dev/null ] || continue
       link="${link##*/}"
       [ "$link" = aidenhq-ci-runner@.service ] && continue
       case "$(systemctl --user is-enabled "$link" 2>/dev/null)" in masked|masked-runtime) continue ;; esac

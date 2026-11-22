@@ -115,7 +115,7 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   // an install link in a target's .wants dir (the tests write it) and only `is-enabled` names it. ctrl/runners lists the
   // instance names is-enabled reports enabled; ctrl/masked the ones it reports masked. `show` is what health() reads on a
   // /healthz timeout; journalctl tails the journal.
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*) exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*) exit 1 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
   // The user unit dir systemd loads, where enablement links live: HOME is the world's temporary home.\n  "systemd-analyze": `#!/usr/bin/env bash\nprintf 'systemd-analyze %s\\n' "$*" >> "$CALLS"\ncase "$*" in *--user*unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
@@ -353,6 +353,39 @@ test("the CI runner unit template follows the applied checkout, only while runne
   const disabled = await w.run();
   assert.equal(disabled.status, 0, disabled.out);
   assert.equal(template(), "[Unit]\nDescription=old\n", "no enabled runner instance: the apply leaves the template alone");
+});
+
+// The gate calls ops/lib/ci-runner-enabled.sh, which a product from before this change does not have. A rollback
+// (`--generation`, and the auto-revert that runs it) checks out such a product and then re-runs switchOver in this same
+// shell, so the helper must already be loaded: sourcing it after the checkout would abort on a missing file (a failed
+// source under errexit) and the rollback would never land. That ordering is what this pins; it cannot be observed end to
+// end without building a pre-change product, which would itself need the old script.
+test("the runner helper is loaded before any checkout, so a rollback to a product without it still applies", () => {
+  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const main = text.slice(text.indexOf("\nmain() {"), text.indexOf("\n# Step 3:", text.indexOf("\nmain() {")));
+  const source = main.indexOf(". ops/lib/ci-runner-enabled.sh");
+  const checkout = main.indexOf("git checkout");
+  assert.ok(source > 0, "main() loads the runner helper");
+  assert.ok(checkout > 0, "main() checks out the product");
+  assert.ok(source < checkout, "and does so before the checkout");
+});
+
+// A copied runner template systemd never reloaded is not what runs: a failed daemon-reload fails the switch, so the
+// generation is not marked good (the `cp && systemctl && echo` form would swallow it under errexit).
+test("a failed runner daemon-reload fails the switch instead of marking the generation good", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  writeFileSync(w.d("ctrl/runner-reload-fails"), "");
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /ci runner unit template: daemon-reload failed/);
+  assert.match(r.out, /generation 2 failed: the switch failed \(exit 1\)/, "the switch reported the reload failure");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template was copied, and the reload retried on the next apply");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {

@@ -86,6 +86,15 @@ test("a .requires link and a .wants link both declare their instances", async ()
   assert.deepEqual((await enabled(h)).sort(), ["aidenhq-ci-runner@1.service", "aidenhq-ci-runner@2.service"]);
 });
 
+// systemd 262 with --root reads a .wants link to /dev/null as `enabled` (the mask sits on the dependency, not the unit),
+// and a product that masks the template under the instance's name leaves such a link too. Either way the link enables
+// nothing: it must not count.
+test("a dependency link pointing at /dev/null is not an enabled instance", async () => {
+  const h = host();
+  symlinkSync("/dev/null", join(h.wants, "aidenhq-ci-runner@2.service"));
+  assert.deepEqual(await enabled(h), [], "a link masked from its own file starts nothing");
+});
+
 test("the bare template's own link is not an instance", async () => {
   const h = host();
   symlinkSync(join(h.unitDir, "aidenhq-ci-runner@.service"), join(h.wants, "aidenhq-ci-runner@.service"));

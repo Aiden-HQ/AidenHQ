@@ -27,9 +27,12 @@ main() {
   cd "$(dirname "${BASH_SOURCE[0]}")/.."
   local product_dir; product_dir="$(pwd)"
   requireApplyLock
-  # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
+  # Sourced before any checkout: these functions stay whatever a checkout below does to the file. That is also what makes
+  # the runner-template gate safe on a rollback: a product from before ops/lib/ci-runner-enabled.sh has no such file, and
+  # sourcing it after the checkout would abort the switch (a failed source under errexit) instead of rolling back.
   . ops/lib/generations.sh
   . ops/lib/progress.sh
+  . ops/lib/ci-runner-enabled.sh
   local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -807,13 +810,17 @@ switchOver() {
   # the instance declares runner units, so a host without them keeps nothing. An enabled instance has no unit file of its own:
   # systemd records it only as an install link under a target's `.wants`/`.requires` dir, which `list-unit-files` never lists
   # for the instance (only the template, as `indirect`), so this asks the same function the exporter does
-  # (ops/lib/ci-runner-enabled.sh), sourced here from the applied checkout.
-  # shellcheck source=ops/lib/ci-runner-enabled.sh
-  . ops/lib/ci-runner-enabled.sh
+  # (ops/lib/ci-runner-enabled.sh, sourced by main() before any checkout).
   if [ -n "$(ci_runner_enabled_units)" ]; then
     if ! cmp -s ops/units/aidenhq-ci-runner@.service "$units/aidenhq-ci-runner@.service"; then
       cp ops/units/aidenhq-ci-runner@.service "$units/"
-      systemctl --user daemon-reload && echo "ci runner unit template installed/updated"
+      # A failed reload is a failed switch: the copied template is not what systemd runs, and continuing would mark this
+      # generation good with a unit systemd never read (`cp && cmd && echo` would leave the failure unchecked under errexit).
+      if ! systemctl --user daemon-reload; then
+        echo "ci runner unit template: daemon-reload failed" >&2
+        return 1
+      fi
+      echo "ci runner unit template installed/updated"
     fi
   fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
