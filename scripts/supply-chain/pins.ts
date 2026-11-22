@@ -39,15 +39,18 @@ export interface Pin { kind: string; name: string; package: string; version?: st
 // APT loads is `files` or `entries`' key, so a file written empty is neither. A stage extending another inherits the
 // files it still has, never one the parent rewrote or removed.
 // `empty` are the source files this stage wrote and left holding nothing: they exist, so a `cp -n` onto one is skipped
-// (`files` holds the ones that hold a repository, or content we can't read). A name in neither may come from the image.
-interface State { files: Set<string>; empty: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+// (`files` holds the ones that hold a repository, or content we can't read). `maybe` are the names a guarded write may
+// have created and may not have: a `cp -n` onto one may replace, so it is neither certainly skipped nor certainly applied.
+// A name in none of them is one the scanner can't see (an image file), which `-n` treats like `maybe` but a replace
+// overwrites.
+interface State { files: Set<string>; empty: Set<string>; maybe: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
 // Each repository once, in the order its file first held it: two source files naming the same repository (a `mv -n`
 // that keeps both) are one place to date a pin from.
 const sources = (s: State) => [...new Set([...s.entries.values()].flat())];
 // A fresh filesystem: no source files, no repository.
-const emptyState = (): State => ({ files: new Set(), empty: new Set(), entries: new Map(), added: false, releases: new Set() });
+const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), entries: new Map(), added: false, releases: new Set() });
 // A deep copy, so one stage's later writes never reach another's (a stage inherits a snapshot, not a live view).
-const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
 // Whether a stage holds any repository a later install would see: an entry, or a file whose content we can't read.
 const hasRepo = (s: State) => s.entries.has(undefined) || s.files.size > 0;
 
@@ -487,7 +490,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     const taken = new Map([...state.entries].map(([f, v]) => [f, [...v]] as const));
     const held = new Set(state.files);
     const removed = named.filter((f) => /\.(list|sources)$/.test(f));
-    const blank = new Set(state.empty);
+    const blank = new Set(state.empty), unsure = new Set(state.maybe);
     // A skipped removal leaves the file it would have dropped, so its entries are back even when the line also
     // rewrote that name (`test -f m && rm x && printf … > x || true` leaves the old repository when the test fails):
     // both possible sources are kept (the safe direction).
@@ -495,15 +498,16 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       for (const [f, v] of taken) state.entries.set(f, [...new Set([...(state.entries.get(f) ?? []), ...v])]);
       held.forEach((f) => state.files.add(f));
       blank.forEach((f) => state.empty.add(f));
+      unsure.forEach((f) => state.maybe.add(f));
       state.added = hasRepo(state);
     };
     if (removed.length) {
-      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.entries.delete(f); });
+      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.maybe.delete(f); state.entries.delete(f); });
       state.added = hasRepo(state);
       return undo;
     }
     if (!named.length) {
-      state.entries.clear(); state.files.clear(); state.empty.clear();
+      state.entries.clear(); state.files.clear(); state.empty.clear(); state.maybe.clear();
       state.added = false;
       return undo;
     }
@@ -538,12 +542,13 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // The repositories a file holds now, to put them back when a guarded change is undone (merged with whatever a later
   // command on the line wrote, so neither is lost).
   const snapshot = (...names: (string | undefined)[]) => {
-    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n)] as const);
+    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n), n === undefined ? false : state.maybe.has(n)] as const);
     return () => {
-      for (const [n, entries, held, blank] of before) {
+      for (const [n, entries, held, blank, unsure] of before) {
         if (entries) state.entries.set(n, [...new Set([...(state.entries.get(n) ?? []), ...entries])]);
         if (held && n !== undefined) state.files.add(n);
         if (blank && n !== undefined) state.empty.add(n);
+        if (unsure && n !== undefined) state.maybe.add(n);
       }
       state.added = hasRepo(state);
     };
@@ -600,12 +605,14 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
         if (w.append && w.content === "empty") continue;
         state.entries.set(w.file!, w.append ? [...(state.entries.get(w.file!) ?? []), ...written] : written);
-        // A write behind a condition may have been skipped, so it leaves the file as it was: not known to exist (the
-        // undo puts back what it held, and a file it never wrote is not one a `-n` copy is known to skip).
+        // A write behind a condition may have been skipped, so it leaves the file as it was (the undo puts back what it
+        // held) — or it ran, and the file is as the write left it. Either way a `-n` copy onto it is neither certainly
+        // skipped nor certainly applied, so the name is only `maybe` known while a later command may skip it.
         if (alwaysRuns(i)) {
           if (w.content === "empty") { state.files.delete(w.file!); state.empty.add(w.file!); }
           else { state.files.add(w.file!); state.empty.delete(w.file!); }
-        }
+          state.maybe.delete(w.file!);
+        } else state.maybe.add(w.file!);
       }
       state.added = hasRepo(state);
     } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
@@ -632,30 +639,28 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // source's beside whatever it already held.
       const read = (src: string) => (held.has(src) ? { entries: held.get(src)! } : "unknown");
       // `copyTargets` names a target by the file APT loads (`vendor.list`, not the path): the state knows files by that name.
-      const known = (name: string) => state.files.has(name) || state.empty.has(name);
+      // `exists` is a file certainly there, so `-n` certainly skips it. Any other target may already exist (a path from
+      // the image) or may not (a name no write certainly created), so `-n` may keep what it held or put the source there.
+      const exists = (name: string) => state.files.has(name) || state.empty.has(name);
       // A guarded move (`test -f m && mv x x.disabled`) may be skipped, so it is undone at the end of its chain like a
       // guarded truncation: a later line may still see the repository it would have disabled.
       const move = () => {
         const mode = op!.overwrite ?? "replace";
-        // Each destination is decided on its own: `cp -n a b dir/` may skip a `b` the stage wrote while `a` lands.
-        const replaces = (t: { name: string }) => mode === "replace" || (mode === "keep" && !known(t.name));
         const targets = copyTargets(op!, read);
         if (verb === "mv" && mode === "replace") for (const src of op!.srcs) {
           const name = sourceName(src);
           if (name && !(op!.srcs.length === 1 && !op!.dest.endsWith("/") && sourceName(op!.dest) === name)) { state.files.delete(name); state.empty.delete(name); state.entries.delete(name); }
         }
+        // Each destination is decided on its own: `cp -n a b dir/` may skip a `b` the stage wrote while `a` lands.
         for (const t of targets) {
-          // A replacing copy puts the source's content in place of whatever the file held.
-          if (replaces(t) || mode === "replace") {
-            state.files.add(t.name); state.empty.delete(t.name); state.entries.set(t.name, t.unknown ? [] : t.entries);
-            continue;
-          }
-          // `keep` onto a file that exists leaves it exactly as it was (a file the stage wrote empty stays empty); an
-          // interactive answer or a target from the image may go either way, so the file keeps what it held beside the
-          // source's.
-          if (mode === "keep") continue;
+          // `-n` onto a file that certainly exists leaves it exactly as it was (one the stage wrote empty stays empty).
+          if (mode === "keep" && exists(t.name)) continue;
+          // A replacing copy puts the source's content in place of whatever the file held; so does one that may replace
+          // (an interactive answer, or a `-n` whose target may already exist) — except that the file keeps what it
+          // certainly held beside the source's, since the copy may also have been skipped.
+          if (mode === "replace") state.entries.set(t.name, t.unknown ? [] : t.entries);
+          else state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
           state.files.add(t.name); state.empty.delete(t.name);
-          state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
         }
         state.added = hasRepo(state);
       };

@@ -1163,4 +1163,11 @@ test("pins: a known empty target, clustered -t/-S flags and flags after the path
   }
   // A target from the image is not one the stage knows: only the source's repository is certainly there (over-reporting).
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`).problems.length, 1);
+  // A guarded write may not have run, so the file it names is not certainly there: a `cp -n` that follows on the same
+  // chain may replace what the write left, so the repository it wrote is kept beside the copy's (both date a pin).
+  const chain = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && printf 'deb https://vendor.example/apt stable main\n' > ${vendor} && cp -n /tmp/empty.list ${vendor}\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", chain).pins.filter((p) => p.kind === "apt")[0]!.sources, ["https://vendor.example/apt stable main"]);
+  // ...and a `cp -n` on a later line onto that may-be file also records the copy's content (the file may not be there).
+  const laterLine = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && printf 'deb https://vendor.example/apt stable main\n' > ${vendor}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", laterLine).problems.length, 1);
 });
