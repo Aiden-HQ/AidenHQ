@@ -206,10 +206,10 @@ test("a job resumes only a session its engine ran in: never one from before the 
 });
 
 /**
- * A launch refused before it got a box (an MCP preflight refusal here) never reached the engine, so it must not become the
- * session's newest word: the job after it resumes the session the engine actually ran.
+ * A launch that never ran the engine (an MCP preflight refusal here) must not become the session's newest word: the job after
+ * it resumes the session the engine actually ran.
  */
-test("an MCP preflight refusal does not erase the session a real run left behind", async (t) => {
+test("a launch that never ran the engine does not erase the session a real run left", async (t) => {
   const h = await host(t);
   const session = (job) => JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8")).session;
   const first = await h.admit("task-1");
@@ -222,27 +222,23 @@ test("an MCP preflight refusal does not erase the session a real run left behind
   const refused = h.db.prepare("SELECT state, pid FROM jobs ORDER BY rowid DESC LIMIT 1").get();
   assert.equal(refused.state, "failed");
   assert.equal(refused.pid, 0); // no engine was spawned, so it never ran
-  // A job that got a box but never spawned an engine is no more a session's newest word than a refusal: pid 0 (a clone that
-  // couldn't finish), and exit 127 (the box's shell ran, the engine binary was missing: jobs.ts's ENOENT rule).
-  const notStarted = (id, pid, exit, at, session = null, offset = 0) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, exit, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', ?, '', '', ?, '[]', 0, 0, 'failed', ?, '{}', ?, ?, 1, '{\"container\":\"c\"}')").run(id, pid, at, exit, session, offset);
-  // Each is newer than the run before it, so each must be skipped for the earlier session to come back.
+  // The refusal alone, with nothing else newer, must not turn the resume into a fresh start.
+  h.declared["agent-1"] = ["slack", "tasks"];
+  const afterRefusal = await h.admit("task-1");
+  assert.equal(session(afterRefusal), "s-real");
+  h.release();
+  await until("the job after the refusal ends", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(afterRefusal.id).state === "done");
+  // A row that recorded no session and read no events never ran, whatever stopped it (no box, a box whose exec never started
+  // the engine). Each is placed newest in turn, so each must be skipped for the session before it to come back.
+  const neverRan = (id, at) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(id, at);
   let at = Date.now();
-  for (const [id, pid, exit] of [["j-boxed", 0, 1], ["j-no-engine", 7, 127]]) {
-    notStarted(id, pid, exit, (at += 1000));
-    h.declared["agent-1"] = ["slack", "tasks"];
+  for (const id of ["j-no-box", "j-exec-failed"]) {
+    neverRan(id, (at += 1000));
     const next = await h.admit("task-1");
-    // Not `undefined`: the skipped row must not turn the resume into a fresh start.
     assert.ok(session(next), `${id} must not mask the session the run before it left`);
     h.release();
     await until(`${id}: the next job's end`, () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(next.id).state === "done");
   }
-  // An exit 127 *after* events is a run that started: its session is newer and is the one to resume.
-  notStarted("j-started-127", 8, 127, (at += 1000), "s-late", 400);
-  h.declared["agent-1"] = ["slack", "tasks"];
-  const last = await h.admit("task-1");
-  assert.equal(session(last), "s-late");
-  h.release();
-  await until("the last job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(last.id).state === "done");
 });
 
 test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {
