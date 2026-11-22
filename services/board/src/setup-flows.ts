@@ -119,36 +119,78 @@ const DISMISSED = "setup_dismissed";
 export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; states: (module?: string) => Promise<{ module: string; title: string; done: boolean; dismissed: boolean }[]> } {
   const doFetch = d.fetchImpl ?? fetch;
   const changed = () => d.onSetupChange?.();
-  /** Each module's last confirmed pairing state: a change (paired, or revoked) is announced to the open boards once. */
-  const pairedBefore = new Map<string, boolean>();
-  /** Bumped when a pairing read starts, so a slow, older answer cannot overwrite a newer one. */
-  let pairingReads = 0;
-  /** The read that last confirmed each module's pairing. */
-  const confirmedAt = new Map<string, number>();
+  /** A pairing read's answer: the module's `paired` and the time it reports, both from that one answer. */
+  type Pairing = { paired: boolean; paired_at?: string | number };
+  /** Each module's last confirmed pairing: what the board shows, and what a real change is measured against. */
+  const observed = new Map<string, Pairing>();
+  /** Each module's pairing reads: the one out, and the one waiting behind it. */
+  const reads = new Map<string, { running?: Promise<Pairing | undefined>; more?: Promise<Pairing | undefined> }>();
   /** The last confirmed pairing as stored, so it still stands after a restart when the module cannot be asked. */
   const rememberedPairing = (module: string): boolean | undefined => {
     const v = d.store.meta(`setup_paired:${module}`);
     return v === "true" ? true : v === "false" ? false : undefined;
   };
-  /** What the board believes about a module's pairing: a read that failed says nothing, so the last confirmed state stands. */
-  const confirmedPairing = (module: string, paired: boolean | undefined) => paired ?? pairedBefore.get(module) ?? rememberedPairing(module);
-  /** A read that began now: pass it back with the answer, so a later-started read wins when both are out. */
-  const startPairingRead = () => ++pairingReads;
+  /** What the board shows for a module: the accepted read's own answer (state and time together), else the stored one. */
+  const confirmedPairing = (module: string): Pairing | undefined => {
+    const last = observed.get(module);
+    if (last) return last;
+    const stored = rememberedPairing(module);
+    return stored === undefined ? undefined : { paired: stored };
+  };
   /**
-   * Records a confirmed pairing read and returns the state to show: the one this read confirms, or the newer state when this
-   * read began before it. A real change is announced once, and so is a module's first-ever confirmation (nothing known
-   * before it and now paired); a read that matches the stored state after a restart stays quiet.
+   * Records a confirmed pairing read, the state and its time together. A real change is announced once, and so is a module's
+   * first-ever confirmation (nothing known before it and now paired); a read that matches the stored state after a restart
+   * stays quiet.
    */
-  const notePairing = (module: string, paired: boolean, at: number): boolean => {
-    const seen = confirmedAt.get(module);
-    if (seen !== undefined && at < seen) return confirmedPairing(module, undefined) ?? paired;
-    confirmedAt.set(module, at);
+  const notePairing = (module: string, read: Pairing): Pairing => {
     // Compare with what the last read or the stored value said (a restart empties the map): only a real change is announced.
-    const before = pairedBefore.has(module) ? pairedBefore.get(module) : rememberedPairing(module);
-    pairedBefore.set(module, paired);
-    d.store.setMeta(`setup_paired:${module}`, String(paired));
-    if (before === undefined ? paired : before !== paired) changed();
-    return paired;
+    const before = observed.has(module) ? observed.get(module)!.paired : rememberedPairing(module);
+    observed.set(module, read);
+    d.store.setMeta(`setup_paired:${module}`, String(read.paired));
+    if (before === undefined ? read.paired : before !== read.paired) changed();
+    return read;
+  };
+  /**
+   * Reads the module's pairing once, recorded as it lands. Reads for a module never overlap: one is out and at most one waits
+   * behind it, and a caller arriving meanwhile shares one of those rather than stacking another. So an answer is never older
+   * than one already recorded (a read that began earlier can be the one that saw a pairing land), and a slow module does not
+   * pile up polls behind it. Throws what the module's read throws (404, 502, 503, 504); undefined is an answer that says
+   * nothing about pairing.
+   */
+  const readPairing = (f: SetupFlowPoint & { token?: string }): Promise<Pairing | undefined> => {
+    const start = async (): Promise<Pairing | undefined> => {
+      const r = (await pairCall(f, "GET")) as Record<string, unknown> & { paired?: unknown };
+      // Only an explicit boolean is an answer; a 200 with a missing or malformed body says nothing about pairing.
+      if (typeof r?.paired !== "boolean") return undefined;
+      // The time is this answer's own, so a state never ships another answer's time.
+      return notePairing(f.module, { paired: r.paired, ...(r.paired_at != null ? { paired_at: r.paired_at as string | number } : {}) });
+    };
+    const st = reads.get(f.module) ?? {};
+    reads.set(f.module, st);
+    const settle = (which: "running" | "more", run: Promise<Pairing | undefined>) => {
+      const done = () => {
+        if (st[which] === run) delete st[which];
+        if (!st.running && !st.more) reads.delete(f.module);
+      };
+      void run.then(done, done);
+    };
+    // A read already out, or one already waiting behind it: share it.
+    if (st.more) return st.more;
+    if (st.running) {
+      const more = st.running.then(start, start);
+      st.more = more;
+      settle("more", more);
+      return more;
+    }
+    const run = start();
+    st.running = run;
+    settle("running", run);
+    return run;
+  };
+  /** The module's pairing as its endpoint reports it; a flow with no pairing is done, and a failed read is never "unpaired". */
+  const pairedOf = async (f: SetupFlowPoint & { token?: string }): Promise<Pairing | undefined> => {
+    if (!(f.pair_url ?? f.advanced?.pair_url)) return { paired: true };
+    return readPairing(f).catch(() => undefined);
   };
   const dismissed = (): string[] => {
     try {
@@ -203,14 +245,6 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       })),
     };
   };
-  /** The module's pairing as its endpoint reports it; undefined when it has no pairing or the read failed, which is never "unpaired". */
-  const pairedOf = async (f: SetupFlowPoint & { token?: string }): Promise<boolean | undefined> => {
-    if (!(f.pair_url ?? f.advanced?.pair_url)) return true;
-    const r = (await pairCall(f, "GET").catch(() => null)) as { paired?: unknown } | null;
-    // Only an explicit boolean is an answer; a 200 with a missing or malformed body says nothing about pairing.
-    return typeof r?.paired === "boolean" ? r.paired : undefined;
-  };
-
   /** The one completion rule, the setup page's: a connection's real state when the flow has one (sign-in, connect path or pairing), else its secrets (`present`, unknown without a session: not done). */
   const flowDone = (f: SetupFlowPoint, signedIn: boolean, paired: boolean | undefined, present: Record<string, boolean> = {}) =>
     f.signin || f.connect_url || f.pair_url ? signedIn && (f.pair_url ? paired === true : true) : (f.secrets ?? []).every((x) => present[x]);
@@ -222,11 +256,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       d.flows
         .filter((f) => !module || f.module === module)
         .map(async (f) => {
-          const at = startPairingRead();
-          const paired = await pairedOf(f);
-          // A confirmed read is remembered here too, so a later failed read falls back to it rather than to an older state.
-          const pairing = paired === undefined ? confirmedPairing(f.module, paired) : notePairing(f.module, paired, at);
-          return { module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), pairing), dismissed: gone.has(f.module) };
+          // A confirmed read is recorded as it lands (readPairing); a failed one keeps the last confirmed state rather than
+          // reporting the flow as unpaired.
+          const pairing = await pairedOf(f);
+          const shown = pairing ?? confirmedPairing(f.module);
+          return { module: f.module, title: f.title, done: flowDone(f, await signedInOf(f, f.connect_url ? await d.connected(f.connect_url) : undefined), shown?.paired), dismissed: gone.has(f.module) };
         }),
     );
   };
@@ -244,23 +278,21 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             // A connect path counts only if the board serves it; then its connection's state is the sign-in's.
             const connected = connect_url ? await d.connected(connect_url) : undefined;
             const signedIn = await signedInOf(full, connected);
-            const at = startPairingRead();
-            const paired = await pairedOf(full);
             // A pairing completed while no setup page was open is seen here, by whichever board reads the flows next; a read
             // that failed is no answer, so the last confirmed state stands rather than the flow reading as unpaired.
-            const pairing = paired === undefined ? confirmedPairing(f.module, paired) : notePairing(f.module, paired, at);
+            const pairing = (await pairedOf(full)) ?? confirmedPairing(f.module);
             // Basic is done once it is connected (and paired, when the basic flow pairs); advanced once its secrets exist (and paired).
             const scopes = f.signin ? await d.scopeChoice(f.signin) : false;
             // A connection's real state decides when it has one (an upgraded instance keeps values outside the vault and works);
             // only a flow with no sign-in, connect path or pairing is done by its secrets.
-            const done = flowDone(full, signedIn, pairing, present);
-            const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? pairing === true : true) }))(advanced);
+            const done = flowDone(full, signedIn, pairing?.paired, present);
+            const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? pairing?.paired === true : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
             const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
             // How long the wait has left, not when it ends: the page counts it down on its own clock, which need not agree with the board's.
             const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
-            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired: pairing === true, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
+            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired: pairing?.paired === true, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -353,14 +385,17 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       path: /^\/api\/setup-flows\/([a-z0-9-]{1,63})\/pair$/,
       handle: async (m) => {
         const f = flow(m[1]!);
+        // A save that lands while this read is out set the marker after the module answered: that restart is not over.
         const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
-        const at = startPairingRead();
-        const { paired, paired_at } = await pairCall(f, "GET");
-        const known = typeof paired === "boolean" ? paired : undefined;
-        if (known && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
-        // The setup page learns a code was sent by polling here; any change (paired or revoked) tells the other open boards.
-        const pairing = known === undefined ? (confirmedPairing(m[1]!, undefined) ?? false) : notePairing(m[1]!, known, at);
-        return { paired: pairing, ...(paired_at != null ? { paired_at } : {}) };
+        // The setup page learns a code was sent by polling here; any change (paired or revoked) tells the other open boards. A
+        // read that fails is the module's own answer (503, 504), as it always was.
+        const read = await readPairing(f);
+        // Paired: an accepted answer says the restart is over, so a later 409 is a real conflict. A read that failed, said
+        // nothing, or said "not yet" leaves the marker for the next one, and never clears one a concurrent save set meanwhile.
+        if (read?.paired && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
+        // An answer that says nothing keeps the last confirmed state; the state and its time are one answer's, never mixed.
+        const pairing = read ?? confirmedPairing(f.module);
+        return { paired: pairing?.paired ?? false, ...(pairing?.paired_at != null ? { paired_at: pairing.paired_at } : {}) };
       },
     },
   ];

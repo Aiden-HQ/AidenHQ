@@ -312,10 +312,49 @@ describe("setup flows", () => {
 
 describe("setup flows, MCP status", () => {
 
-  it("an older pairing read that lands late does not overwrite a newer one", async () => {
+  it("a read that starts while one is out waits for it, so an early read that saw the pairing is not lost", async () => {
     const store = new Store(":memory:");
     const emit = vi.spyOn(store.events, "emit");
-    // Each GET is held until the test answers it, so the older read can land after the newer one.
+    // Each GET is held until the test answers it, so two reads never overlap: the second starts only after the first lands.
+    const held: { answer: (paired: boolean, paired_at?: string) => void }[] = [];
+    const started: { siblings: number }[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      if (init.method !== "GET") return new Response(JSON.stringify({ code: "ABCD-1234" }), { status: 200 });
+      const here = { siblings: held.length };
+      started.push(here);
+      return new Promise<Response>((resolve) => held.push({ answer: (p, at) => resolve(new Response(JSON.stringify({ paired: p, ...(at ? { paired_at: at } : {}) }), { status: 200 })) }));
+    }) as unknown as typeof fetch;
+    const routes = setupFlowRoutes({
+      flows: [flows[0]!], accounts: {} as never, store, signedIn: async () => true, scopeChoice: async () => false,
+      connected: async () => undefined, boardUrl: () => "http://localhost:3121", redirectUrl: () => undefined,
+      settings: () => undefined, file: async () => ({ identifier: "t-1" }), onSetupChange: () => store.events.emit("setup"), fetchImpl,
+    });
+    try {
+      // The pairing is redeemed while the first read is out, so that read is the one that sees it.
+      const first = routes.states();
+      // A second read arrives while the first is out: it waits rather than racing it, so only one is in flight.
+      const second = routes.states();
+      expect(held).toHaveLength(1);
+      expect(started).toHaveLength(1);
+      held[0]!.answer(true, "2026-11-17T10:00:00.000Z");
+      expect(await first).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+
+      // The read that waited starts now and sees the same state; it cannot discard the earlier read's confirmation.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(held).toHaveLength(2);
+      held[1]!.answer(true, "2026-11-17T10:00:00.000Z");
+      expect(await second).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+      expect(store.meta("setup_paired:phone")).toBe("true");
+      // The first-ever confirmation announced once; the read that repeated it announced nothing.
+      expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(1);
+    } finally {
+      store.delMeta("setup_paired:phone");
+      emit.mockRestore();
+    }
+  });
+
+  it("a pairing read started while one is out shares the one waiting behind it, so a slow module is not piled on", async () => {
+    const store = new Store(":memory:");
     const held: { answer: (paired: boolean) => void }[] = [];
     const fetchImpl = (async (_url: string, init: RequestInit) => {
       if (init.method !== "GET") return new Response(JSON.stringify({ code: "ABCD-1234" }), { status: 200 });
@@ -324,23 +363,87 @@ describe("setup flows, MCP status", () => {
     const routes = setupFlowRoutes({
       flows: [flows[0]!], accounts: {} as never, store, signedIn: async () => true, scopeChoice: async () => false,
       connected: async () => undefined, boardUrl: () => "http://localhost:3121", redirectUrl: () => undefined,
-      settings: () => undefined, file: async () => ({ identifier: "t-1" }), onSetupChange: () => store.events.emit("setup"), fetchImpl,
+      settings: () => undefined, file: async () => ({ identifier: "t-1" }), fetchImpl,
     });
     try {
-      // The older read starts first, the newer one second; the newer (paired) lands first and is what the board shows.
-      const older = routes.states();
-      const newer = routes.states();
-      held[1]!.answer(true);
-      expect(await newer).toEqual([expect.objectContaining({ module: "phone", done: true })]);
-      // The older read lands last with the state from before the pairing: it must not flip the flow back or announce it.
+      // One read is out and one waits; two more polls arriving now join the waiting one instead of stacking up behind it.
+      const reads = [routes.states(), routes.states(), routes.states(), routes.states()];
+      expect(held).toHaveLength(1);
       held[0]!.answer(false);
-      expect(await older).toEqual([expect.objectContaining({ module: "phone", done: true })]);
-      expect(store.meta("setup_paired:phone")).toBe("true");
-      // Only the first-ever confirmation announced; the stale unpaired answer announced nothing.
-      expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(1);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(held).toHaveLength(2);
+      held[1]!.answer(true);
+      const done = await Promise.all(reads);
+      // The first caller had the read already out (unpaired); the one that waited and the two that joined it see the pairing.
+      expect(done.map((r) => r[0]!.done)).toEqual([false, true, true, true]);
+      // Four callers, two module reads: nothing stacked behind them.
+      expect(held).toHaveLength(2);
     } finally {
       store.delMeta("setup_paired:phone");
-      emit.mockRestore();
+    }
+  });
+
+  it("reports a pairing's own time next to its state, never a stale or missing one", async () => {
+    // The pairing was accepted with a time; a later read that says nothing about pairing keeps it, and /pair answers with the
+    // confirmed state and that answer's own time together. A fresh `true` with no time reads on the page as an expired code.
+    const store = new Store(":memory:");
+    let call = 0;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      if (init.method !== "GET") return new Response(JSON.stringify({ code: "ABCD-1234" }), { status: 200 });
+      call++;
+      // The pairing, with its time; then a body that says nothing about pairing at all.
+      return new Response(JSON.stringify(call === 1 ? { paired: true, paired_at: "2026-11-17T10:00:00.000Z" } : {}), { status: 200 });
+    }) as unknown as typeof fetch;
+    const routes = setupFlowRoutes({
+      flows: [flows[0]!], accounts: {} as never, store, signedIn: async () => true, scopeChoice: async () => false,
+      connected: async () => undefined, boardUrl: () => "http://localhost:3121", redirectUrl: () => undefined,
+      settings: () => undefined, file: async () => ({ identifier: "t-1" }), fetchImpl,
+    });
+    const pair = () => routes.routes.find((r) => r.method === "GET" && r.path.test("/api/setup-flows/phone/pair"))!.handle(["/api/setup-flows/phone/pair", "phone"] as unknown as RegExpMatchArray, undefined, { ready: true, account: { role: "admin" } } as never, "localhost:3121");
+    try {
+      expect(await pair()).toEqual({ paired: true, paired_at: "2026-11-17T10:00:00.000Z" });
+      // This read says nothing: the confirmed answer stands, and it still carries the time it was accepted with.
+      expect(await pair()).toEqual({ paired: true, paired_at: "2026-11-17T10:00:00.000Z" });
+    } finally {
+      store.delMeta("setup_paired:phone");
+    }
+  });
+
+  it("a pairing read that isn't an answer leaves the restart marker for the next one", async () => {
+    // Only the answer that is recorded says the restart is over. A read that fails, or a 200 that says nothing about pairing,
+    // must not cut short the wait a save set (the module may still be coming back).
+    const store = new Store(":memory:");
+    let mode: "empty" | "unpaired" | "unreachable" | "paired" = "empty";
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      if (init.method !== "GET") return new Response(JSON.stringify({ code: "ABCD-1234" }), { status: 200 });
+      if (mode === "unreachable") throw new TypeError("fetch failed");
+      if (mode === "empty") return new Response(JSON.stringify({}), { status: 200 });
+      return new Response(JSON.stringify(mode === "unpaired" ? { paired: false } : { paired: true, paired_at: "2026-11-17T10:00:00.000Z" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const routes = setupFlowRoutes({
+      flows: [flows[0]!], accounts: {} as never, store, signedIn: async () => true, scopeChoice: async () => false,
+      connected: async () => undefined, boardUrl: () => "http://localhost:3121", redirectUrl: () => undefined,
+      settings: () => undefined, file: async () => ({ identifier: "t-1" }), fetchImpl,
+    });
+    const pair = () => routes.routes.find((r) => r.method === "GET" && r.path.test("/api/setup-flows/phone/pair"))!.handle(["/api/setup-flows/phone/pair", "phone"] as unknown as RegExpMatchArray, undefined, { ready: true, account: { role: "admin" } } as never, "localhost:3121");
+    try {
+      store.setMeta("setup_restarting:phone", String(Date.now() + 300_000));
+      expect(await pair()).toMatchObject({ paired: false });
+      expect(store.meta("setup_restarting:phone")).toBeDefined();
+      // An answer that says "not paired yet" does not end the wait either: the module may still be coming back.
+      mode = "unpaired";
+      expect(await pair()).toMatchObject({ paired: false });
+      expect(store.meta("setup_restarting:phone")).toBeDefined();
+      mode = "unreachable";
+      await expect(pair()).rejects.toMatchObject({ status: 503 });
+      expect(store.meta("setup_restarting:phone")).toBeDefined();
+      // The answer that is one: the module is back, so the wait is over.
+      mode = "paired";
+      expect(await pair()).toMatchObject({ paired: true });
+      expect(store.meta("setup_restarting:phone")).toBeUndefined();
+    } finally {
+      store.delMeta("setup_restarting:phone");
+      store.delMeta("setup_paired:phone");
     }
   });
 
@@ -367,38 +470,6 @@ describe("setup flows, MCP status", () => {
     }
   });
 
-  it("records a pairing status confirms, so a later failed read keeps it", async () => {
-    const store = new Store(":memory:");
-    const emit = vi.spyOn(store.events, "emit");
-    const routes = setupFlowRoutes({
-      flows: [flows[0]!],
-      accounts: {} as never,
-      store,
-      signedIn: async () => true,
-      scopeChoice: async () => false,
-      connected: async () => undefined,
-      boardUrl: () => "http://localhost:3121",
-      redirectUrl: () => undefined,
-      settings: () => undefined,
-      file: async () => ({ identifier: "t-1" }),
-      onSetupChange: () => store.events.emit("setup"),
-      fetchImpl: fakePair,
-    });
-    // Status is the first to see the pairing: it is remembered, not just used for this one answer.
-    paired = true;
-    expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
-    emit.mockClear();
-    // The module stops answering: status keeps the confirmed pairing rather than listing it as needing setup again.
-    pairUnreachable = true;
-    expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
-    expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(0);
-    pairUnreachable = false;
-    paired = false;
-    emit.mockRestore();
-  });
-});
-
-describe("setup flows, MCP status", () => {
   it("records a pairing status confirms, so a later failed read keeps it", async () => {
     const store = new Store(":memory:");
     const emit = vi.spyOn(store.events, "emit");
