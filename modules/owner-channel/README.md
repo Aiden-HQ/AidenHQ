@@ -13,7 +13,7 @@ Nothing to set up. Slack and Telegram are its channels, each with its own setup.
 ## What agents get
 
 The `owner_channel` connection: write `notify`, and the named read tool `notify_recent`, a ledger of what the owner was
-already told (delivered or queued for the digest, 14 days; granted by name, today to the chief of staff and the Fleet
+already told (delivered, 14 days, plus the lines waiting in the next digest; granted by name, today to the chief of staff and the Fleet
 Steward) so news reaches them once, not once per task. Settings:
 
 - `notify_transports` (default `slack`, `channel-telegram`): channels tried in order.

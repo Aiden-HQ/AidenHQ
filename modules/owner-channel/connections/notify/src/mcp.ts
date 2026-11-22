@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { KINDS, notify, type Caller, type Deps } from "./notify.js";
+import { waitingDigest } from "./attention.js";
+import { KINDS, fence, notify, type Caller, type Deps } from "./notify.js";
 
 const json = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 
@@ -36,14 +37,21 @@ export function buildServer(d: Deps, caller?: Caller, trial = false): McpServer 
   server.registerTool(
     "notify_recent",
     {
-      description: "What the owner was already told, newest first: who sent it, the task, its kind, whether it was delivered or is queued for their next digest, when, and the text. Glance at it before telling them something, so you tell only what is new to them.",
+      description: "What the owner was already told, newest first: who sent it, the task, its kind, whether it was delivered or still waits in their next digest (queued), when, and the text. Glance at it before telling them something, so you tell only what is new to them.",
       inputSchema: z.strictObject({
         days: z.number().int().min(1).max(14).optional().describe("how far back (default 3)"),
         limit: z.number().int().min(1).max(50).optional().describe("how many (default 20)"),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ days, limit }) => json(d.store.recentTold(days ?? 3, limit ?? 20).map((r) => ({ source: r.source, task: r.task, kind: r.kind, state: r.state, at: new Date(r.at).toISOString(), text: r.text }))),
+    // Delivered rows from the ledger plus the digest lines still waiting (read live from the queue). Texts are agents' and
+    // people's words: fenced as data.
+    async ({ days, limit }) => {
+      const since = Date.now() - (days ?? 3) * 86_400_000;
+      const rows = [...d.store.recentTold(days ?? 3, 1000).map((r) => ({ ...r, state: "delivered" })), ...waitingDigest(d.store).filter((r) => r.at >= since).map((r) => ({ ...r, state: "queued" }))]
+        .sort((x, y) => y.at - x.at).slice(0, limit ?? 20);
+      return json(rows.map((r) => ({ source: r.source, task: r.task, kind: r.kind, state: r.state, at: new Date(r.at).toISOString(), text: fence(r.text) })));
+    },
   );
   return server;
 }

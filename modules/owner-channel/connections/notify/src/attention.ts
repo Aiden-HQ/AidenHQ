@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Store } from "./store.js";
+import { clip, TOLD_MAX, type Store, type ToldRow } from "./store.js";
 import type { Kind } from "./notify.js";
 
 // Attention control on notify: per-agent caps, an owner block list and a digest of routine messages. A decision
@@ -15,7 +15,8 @@ export interface AttentionConfig {
   warn?: (obj: Record<string, unknown>, msg: string) => void;
 }
 export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | { do: "digest" };
-type Item = { id?: string; agent: string; task?: string; text: string };
+/** A digest line, with what the ledger records once it goes out: `source` is the agent key ("kernel" for the kernel's), `at` when it was queued. */
+type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number };
 
 const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
@@ -41,11 +42,10 @@ export function attend(store: Store, cfg: AttentionConfig, who: { id: string; ke
   return out;
 }
 
-export function queueDigest(store: Store, item: Item): void {
+export function queueDigest(store: Store, item: Item, now = Date.now()): void {
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   // One line per item: agent-supplied whitespace and newlines collapse so an item can't forge another agent's line.
-  const one = (t: string, max: number) => t.replace(/\s+/g, " ").trim().slice(0, max);
-  q.push({ id: randomUUID(), agent: one(item.agent, 60), ...(item.task ? { task: one(item.task, 40) } : {}), text: one(item.text, 300) });
+  q.push({ id: randomUUID(), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now });
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
 }
 
@@ -58,8 +58,7 @@ export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours
   const day = new Date(now).toISOString().slice(0, 10);
   const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
   if (key && store.getKv(key) === day) return true;
-  queueDigest(store, { agent: "AidenHQ", text: m.text });
-  store.told({ source: "kernel", kind: "fyi", state: "queued", text: m.text }, now);
+  queueDigest(store, { agent: "AidenHQ", text: m.text, source: "kernel", kind: "fyi" }, now);
   if (key) store.setKv(key, day);
   return true;
 }
@@ -76,10 +75,15 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  if (q.length && !(await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.text}`).join("\n")}`))) return false;
+  if (q.length && !(await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`).join("\n")}`))) return false;
   // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
   const sent = new Set(q.map((i) => i.id));
   store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
+  for (const i of q) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: i.text }, now);
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }
+
+/** The digest lines waiting for their slot, as ledger rows (not yet told: the digest hasn't gone). */
+export const waitingDigest = (store: Store): (Omit<ToldRow, "id"> & { queued: true })[] =>
+  (JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).map((i) => ({ at: i.at ?? 0, source: i.source ?? "kernel", task: i.task ?? null, kind: i.kind ?? "fyi", text: i.text, queued: true as const }));

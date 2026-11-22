@@ -5,7 +5,7 @@
 // message waits and goes once one is back.
 import { createHash } from "node:crypto";
 import { attend, queueDigest, type AttentionConfig } from "./attention.js";
-import type { Store, Told } from "./store.js";
+import { clip, TOLD_MAX, type Store, type Told } from "./store.js";
 
 /**
  * decision: needs the owner (never held back by the limit); done: a finished result (never muted); fyi: news (the owner may
@@ -67,7 +67,7 @@ const MIN = 60_000;
 /** The chief of staff's role: the one agent whose questions reach the owner wherever it asks. */
 const CHIEF = "fleet-admin";
 /** Text fenced as data: a fence longer than any backtick run inside it. */
-const fence = (t: string) => { const f = "`".repeat(Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${t}\n${f}`; };
+export const fence = (t: string) => { const f = "`".repeat(Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${t}\n${f}`; };
 const WINDOW = { alert: 60 * MIN, other: 10 * MIN };
 
 /** Marks an agent's comment as its visible reply to the owner (the board shows it as a message, not a run note). */
@@ -177,9 +177,9 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     }
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;
-    if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text });
+    if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text, source: who?.key ?? "kernel", kind }, now);
     // The ledger entry (what the owner gets to read, questions spelled out): written once the message reached them or is queued for the digest.
-    const told: Told = { source: who?.key ?? "kernel", ...(a.task ? { task: a.task } : {}), kind, state: digested ? "queued" : "delivered", text: text + spellOut(a.questions) };
+    const told: Told = { source: who?.key ?? "kernel", ...(a.task ? { task: a.task } : {}), kind, text: clip(text, Math.max(0, TOLD_MAX - Array.from(spellOut(a.questions)).length)) + spellOut(a.questions) };
     // The reply on its chat, as the agent's own comment.
     const mirror = found && caller && d.postReply;
     const onChat = mirror ? await d.postReply!(found.issueId, replyBody(text, a.actions, a.questions), caller.assertion).catch(() => false) : false;
@@ -196,8 +196,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
-    // Reached the owner (a channel took it, or it is on their chat) or waits for the digest; a message still waiting for a channel is written by the retry that delivers it.
-    if (digested || out === "sent" || onChat) d.store.told(told, now);
+    // Reached the owner (a channel took it, or it is on their chat) (a digest item is told when its digest goes); a message still waiting for a channel is written by the retry that delivers it.
+    if (!digested && (out === "sent" || onChat)) d.store.told(told, now);
     // The chief of staff's question on its own task files its owner wait (the kernel refuses any other task; that is no failure).
     // A wait that failed is returned: the task would read orphaned and be woken to ask again.
     let waitError: string | undefined;
@@ -221,7 +221,13 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
  * Sends what waited while every channel was down: done once a channel takes it, or none is set up for it any more. A message
  * still undelivered after a day is dropped (by then the board shows what it was about).
  */
+let retrying = false;
 export async function retry(d: Pick<Deps, "send" | "store">, now = Date.now()): Promise<number> {
+  if (retrying) return 0; // one pass at a time: an overlapping one would send and record the same waiting message twice
+  retrying = true;
+  try { return await retryPass(d, now); } finally { retrying = false; }
+}
+async function retryPass(d: Pick<Deps, "send" | "store">, now: number): Promise<number> {
   let n = 0;
   for (const w of d.store.waiting()) {
     const { m, to, at, keep, told } = w.msg as { m: Message; to: string[]; at: number; keep?: boolean; told?: Told };
