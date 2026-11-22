@@ -153,6 +153,9 @@ const bundle = (repo, branch, sha) => {
   const dir = cloneOf(repo).have;
   mkdirSync(join(workspace, ".aidenhq", "bundles"), { recursive: true });
   execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
+  // The branch may have moved since sha was read: the bundle must hold the commit that was checked.
+  const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`)], { encoding: "utf8" });
+  if (!heads.split("\n").includes(`${sha} refs/heads/${branch}`)) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
 };
 const commitOf = (repo, branch) => { const sha = shaOf(repo, branch); bundle(repo, branch, sha); return sha; };
 /**
