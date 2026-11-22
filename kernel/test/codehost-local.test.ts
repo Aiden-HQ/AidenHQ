@@ -86,6 +86,10 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   assert.equal(again.state, "done", again.outcome?.text);
   const meta = JSON.parse(git(dir, "--git-dir", host.bare("local/hello"), "cat-file", "-p", "refs/changes/1/meta"));
   assert.deepEqual([meta.title, meta.body], ["Say hi", "Why."], "a title-only republish keeps the body");
+  // Whitespace-only text is blank too, and never replaces the description.
+  await file({ kind: "codehost.pr", args: { only: [{ repo: "local/hello", branch: "greet", sha: head }], text: { title: "Say hi", body: " \n\t" } } });
+  const same = JSON.parse(git(dir, "--git-dir", host.bare("local/hello"), "cat-file", "-p", "refs/changes/1/meta"));
+  assert.deepEqual([same.title, same.body], ["Say hi", "Why."], "a blank republish keeps the body");
 
   // A head that isn't the change's is refused by code; the real one is local-merge, the AI reviewer's, with the diff on its card.
   await assert.rejects(writes.request(job, { kind: "codehost.merge", args: { prs: [{ repo: "local/hello", number: 1, head: "f".repeat(40) }] } }), /moved since it was asked for/);
