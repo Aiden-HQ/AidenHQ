@@ -162,6 +162,8 @@ test("a close queued before filings were named is checked against the row, and d
   await loop.runGrades();
   assert.equal(issue.status, "in_review", "the stale close is not replayed onto the amended row");
   assert.deepEqual(calls.resolve, [], "the task is not closed on a filing the amendment replaced");
+  // Neither the close nor the notice worded for it is owed any more: the queue is cleared, not retried every pass.
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t9'").get()?.v ?? "", "", "the stale steps are dropped from the queue");
 });
 
 test("a close queued before filings were named still lands when its row is the same satisfied one", async () => {

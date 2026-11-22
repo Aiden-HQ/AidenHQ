@@ -104,9 +104,16 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // A close queued before filings were named carries none: it is checked against the row as it stands now instead of
           // replaying blindly onto a rubric amended since.
           const filed = await stillFiled(task, s.filing, s);
+          // A failed read is not a stale close: the step stays queued and the next pass asks again.
           if (filed === "unknown") return;
           if (filed === "stale") {
+            // The row was restarted or amended since this close was queued: neither it nor the notice worded for it is owed any
+            // more (the notice says "graded against its rubric" of a filing that is gone). Both are dropped together, so the
+            // task is not closed and its parent is not told of a result the amendment replaced; the restarted row is graded on
+            // its own pass.
             log("a satisfied verdict is stale: the filing was replaced", { issue: task });
+            steps.length = 0;
+            state.set(`owed:${task}`, "");
             return;
           }
           const now = await pc.issue(task);
