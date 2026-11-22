@@ -78,6 +78,9 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "--notes.md"), "A file named like a flag.");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", "--notes.md");
   assert.equal(seen.at(-1).body.args.text.body, "A file named like a flag.");
+  // An explicitly empty body file is refused too: it would leave a stale description behind a new head.
+  writeFileSync(join(ws, "empty.md"), " \n");
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "empty.md")), (e) => e.code === 2 && /is empty/.test(e.stderr));
   // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
   const before = seen.length;
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--fixes", "acme/app#8"), (e) => e.code === 2 && /--fixes needs --body-file/.test(e.stderr));

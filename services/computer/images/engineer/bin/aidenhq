@@ -245,8 +245,11 @@ if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
   // A publish without --body-file names no description: an existing PR keeps its own (never a body generated here), so
   // --fixes (whose whole output is generated text) needs the body file that carries the whole description it belongs in.
-  const supplied = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "";
-  if (fixes.length && !supplied.trim()) fail(`--fixes needs --body-file: a publish without one keeps the existing description, so pass the whole body with its Fixes line (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
+  const supplied = flags["body-file"] !== undefined ? readFileSync(flags["body-file"], "utf8") : "";
+  // An explicit empty file is a broken body, not "keep the description": refuse it rather than push a head whose PR text
+  // (and its Evidence) silently stays stale.
+  if (flags["body-file"] !== undefined && !supplied.trim()) fail(`--body-file ${flags["body-file"]} is empty: pass the whole description with its Evidence section, or omit --body-file to keep an existing PR's description (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
+  if (fixes.length && flags["body-file"] === undefined) fail(`--fixes needs --body-file: a publish without one keeps the existing description, so pass the whole body with its Fixes line (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
   const body = withFixes(supplied, fixes);
   if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {
