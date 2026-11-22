@@ -422,12 +422,13 @@ export function createAccess(o: {
     scopes,
     rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as),
     graphql: async (query, variables, opts = {}) => {
-      const body = (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as)).body;
+      const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
+      const body = res.body;
       if (opts.as) return body;
       const org = typeof variables.org === "string" ? variables.org : "";
       const need = org ? graphqlNeed(body?.errors, org, o.clientId) : undefined;
       if (need) fail(need); // GraphQL answers 200 with the refusal inside `errors`: it is the same need REST's 403 is
-      if (org && !body?.errors?.length) problems.delete(org.toLowerCase());
+      if (org && res.status === 200 && body?.data && !body.errors?.length) problems.delete(org.toLowerCase());
       return body;
     },
     async identity() {

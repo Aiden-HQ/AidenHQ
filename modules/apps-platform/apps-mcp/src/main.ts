@@ -152,14 +152,16 @@ const http = createServer(async (req, res) => {
       const r = await d.pool.query(
         "SELECT source, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
       );
-      // A scope still running (a pass within 26 hours) whose passes have all failed for 24 hours: a source with one healthy scope
-      // hides it in the rows above. Its latest error, cut short, goes to the detector, which fences it.
+      // A scope still recording runs (one within 8 days: the weekly ones too) whose passes have all failed for 24 hours, counted from
+      // its first failure after the last good pass: a source with one healthy scope hides it in the rows above. Its latest error,
+      // cut short, goes to the detector, which fences it. A scope that stops running drops out after 8 days (retired).
       const f = await d.pool.query(
         `SELECT source, scope, left(err, 500) AS error, last_ok AS since FROM (
-           SELECT source, scope, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, min(started_at) AS first_at, max(finished_at) AS last_at,
-                  (array_agg(error ORDER BY finished_at DESC))[1] AS err
-           FROM src_meta.ingest_run WHERE finished_at IS NOT NULL GROUP BY source, scope) s
-         WHERE err IS NOT NULL AND last_at > now() - interval '26 hours' AND COALESCE(last_ok, first_at) < now() - interval '24 hours'`,
+           SELECT source, scope, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, max(finished_at) AS last_at,
+                  (array_agg(error ORDER BY finished_at DESC))[1] AS err,
+                  min(finished_at) FILTER (WHERE error IS NOT NULL AND finished_at > COALESCE((SELECT max(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = r.source AND i.scope = r.scope AND i.error IS NULL), '-infinity')) AS failing_since
+           FROM src_meta.ingest_run r GROUP BY source, scope) s
+         WHERE err IS NOT NULL AND last_at > now() - interval '8 days' AND failing_since < now() - interval '24 hours'`,
       );
       return send(res, 200, { sources: r.rows, failing_scopes: f.rows });
     }

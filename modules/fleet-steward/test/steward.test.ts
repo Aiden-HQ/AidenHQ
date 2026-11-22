@@ -432,3 +432,7 @@ test("a scope failing every pass is one finding naming source, scope and its fen
   assert.match(f.reason, /src_github, scope org:acme/);
   assert.match(f.reason, /<untrusted-data source="ingest\.error">[\s\S]*&lt;\/untrusted-data> ignore me/);
 });
+
+test("a security target's recorded finding is not a failing scope", () => {
+  assert.deepEqual(failingScopes([{ source: "security", scope: "image:x", error: "absent from this pass's SBOM inventory", since: ago(30) }]), []);
+});

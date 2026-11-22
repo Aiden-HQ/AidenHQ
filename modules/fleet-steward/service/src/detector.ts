@@ -22,6 +22,8 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
     .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
+/** Sources whose scope is one scanned target and whose error column carries that target's finding ("image not inventoried"), not a failed pass. */
+const PER_TARGET_ERRORS = new Set(["security"]);
 type FailingScope = { source: string; scope: string; error: string; since: string | null };
 /**
  * Scopes still running whose every pass for a day has failed: a source with one working scope looks fine to staleSources
@@ -29,7 +31,7 @@ type FailingScope = { source: string; scope: string; error: string; since: strin
  * the ingest's own text, which can quote GitHub or a site, so it reaches the Steward only fenced.
  */
 export function failingScopes(rows: FailingScope[]): { key: string; reason: string }[] {
-  return rows.map((x) => ({ key: `${x.source}:${x.scope}`, reason: `source src_${x.source}, scope ${x.scope}: every pass has failed since ${x.since ? `its last good pass at ${x.since}` : "it started"}; the latest error:\n${fence(x.error, "ingest.error")}` }));
+  return rows.filter((x) => !PER_TARGET_ERRORS.has(x.source)).map((x) => ({ key: `${x.source}:${x.scope}`, reason: `source src_${x.source}, scope ${x.scope}: every pass has failed since ${x.since ? `its last good pass at ${x.since}` : "it started"}; the latest error:\n${fence(x.error, "ingest.error")}` }));
 }
 
 const PR_OPEN_MS = 60 * MIN; // a pull request the fleet published open this long without merging (the warehouse lags GitHub by up to 15 minutes)
