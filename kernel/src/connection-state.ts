@@ -5,7 +5,8 @@
 //   own words, escalate.ts ownerWroteAt): one decision message on that root task with the one link, once per need until it
 //   clears (`told`), and the calling task waits on the connection (idle.ts, as an agent's own wait: 7 days for a full cause,
 //   a day for a partial one, so it retries daily);
-// - anything else (a routine's run, its delegated work, a module's own call): one batched digest line a day, never a ping.
+// - anything else (a routine's run, its delegated work, a module's own call): one batched digest line a day, never a ping, and only
+//   for a need that has lasted (LASTING): a restart's blip clears itself on the next success and never reaches the owner.
 // The agent always gets the kernel's fixed words, never the module's text. ok() clears a connection (a successful call with no account; the board's Connect clears every connection of its module, okModule) and wakes every task waiting on it; a multi-account need names its account, and only that
 // account's rows and waits clear, so a healthy account's call never wakes work that failed on another one.
 // Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
@@ -33,6 +34,8 @@ const FULL = new Set<string>(["not_connected", "expired"]);
 const DAY = 864e5;
 /** A full cause waits until Connect wakes it (idle.ts takes at most 7 days ahead). */
 const FULL_WAIT = 7 * DAY - 60_000;
+/** A background need reaches the digest only when hit again this long after it began, with no success in between (a success deletes the row). */
+const LASTING = 10 * 60_000;
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
 const NAME = /^[\w.:/@-]{1,100}$/;
 const day = (ms: number) => iso(ms).slice(0, 10);
@@ -147,10 +150,10 @@ export function createConnectionState(o: {
       }
       const asked = c && ownerWroteAt(c.root, c.comments) !== undefined;
       if (!c || !asked) {
-        // Background: one digest line a day per need, whoever hits it. The marker and the notice commit together, so a notice
+        // Background: one digest line a day per need, whoever hits it, once the need has lasted. The marker and the notice commit together, so a notice
         // `queue` failed to write leaves the need reportable on the next attempt instead of being marked reported without it.
         inTx(db, "connection_digest", () => {
-          if (q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, key, today).changes)
+          if (q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND since <= ? AND (reported_day IS NULL OR reported_day != ?)").run(today, key, t - LASTING, today).changes)
             o.queue({ kind: "digest", batch: true, text: `${label} isn't connected (${ownerWords(n)}): ${link(module, row.url)}`, dedupe_key: `connect:${key}` });
         });
         log("connection need", { connection, cause: n.cause, to: "digest" });

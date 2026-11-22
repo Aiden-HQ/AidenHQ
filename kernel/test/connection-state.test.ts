@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createConnectionState } from "../src/connection-state.ts";
 
-const H = 3600_000, DAY = 24 * H;
+const H = 3600_000, DAY = 24 * H, LASTED = 11 * 60_000;
 const OWNER_COMMENT = { body: "please read my inbox", authorUserId: "u1", createdAt: "2026-11-20T09:00:00Z" };
 
 function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}) {
@@ -75,6 +75,8 @@ test("a second hit on a told need records the wait and sends nothing", async () 
 test("a background hit queues one batched digest line a day", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   const text = await w.s.hit(w.who("r1"), "google", { cause: "expired", detail: "refused" });
+  w.tick(LASTED);
+  await w.s.hit(w.who("r1"), "google", { cause: "expired", detail: "refused" });
   await w.s.hit(w.who("r1"), "google", { cause: "expired", detail: "refused" });
   assert.equal(w.queued.length, 1);
   assert.equal(w.queued[0].kind, "digest");
@@ -87,13 +89,40 @@ test("a background hit queues one batched digest line a day", async () => {
   assert.equal(w.waits.length, 0);
   // A module's own call is background too.
   await w.s.hit({ kind: "module", module: "dispatch", roles: [], tools: {}, credential: "" }, "github", { cause: "not_connected", detail: "" });
+  w.tick(LASTED);
+  await w.s.hit({ kind: "module", module: "dispatch", roles: [], tools: {}, credential: "" }, "github", { cause: "not_connected", detail: "" });
   assert.equal(w.queued.at(-1).kind, "digest");
+});
+
+test("a blip never reaches the digest: one need hit and then a success queues nothing", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.deepEqual(w.queued, [], "the first hit only records the need");
+  w.tick(2 * 60_000);
+  w.s.ok("github", { fullOnly: true });
+  w.tick(LASTED);
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.deepEqual(w.queued, [], "a cleared need starts over: its new `since` is now");
+});
+
+test("a need hit again more than 10 minutes after it began, with no success between, is queued", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.tick(9 * 60_000);
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.equal(w.queued.length, 0, "9 minutes is still a blip");
+  w.tick(2 * 60_000);
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.equal(w.queued.length, 1);
+  assert.equal(w.queued[0].kind, "digest");
 });
 
 test("a routine's run and its delegated child are background", async () => {
   // r1 is a routine run (no chat marker, no owner comment); c1 was created by a job on r1 (provenance, no parent link).
   const w = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync", createdByUserId: "u1" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail" } });
   w.db.exec("INSERT INTO jobs VALUES ('j1', 'r1', 'a1'); INSERT INTO provenance VALUES ('c1', 'j1')");
+  await w.s.hit(w.who("r1"), "google", { cause: "not_connected", detail: "" });
+  w.tick(LASTED);
   await w.s.hit(w.who("r1"), "google", { cause: "not_connected", detail: "" });
   await w.s.hit(w.who("c1"), "google", { cause: "not_connected", detail: "" });
   assert.deepEqual(w.queued.map((n) => n.kind), ["digest"]);
@@ -180,6 +209,8 @@ test("a partial cause waits a day and is not listed down; a success clears only 
 test("a module's hit is background: one digest line, the row keyed by scope, and no agent wait", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   const said = await w.s.hit({ kind: "module", module: "github", roles: [], tools: {}, credential: "" }, "github", { cause: "scope", scope: "admin:org", detail: "GitHub needs the `admin:org` permission" });
+  w.tick(LASTED);
+  await w.s.hit({ kind: "module", module: "github", roles: [], tools: {}, credential: "" }, "github", { cause: "scope", scope: "admin:org", detail: "" });
   assert.match(said, /Skip this source/);
   assert.equal(w.queued.length, 1);
   assert.equal(w.queued[0].kind, "digest");
@@ -244,6 +275,8 @@ test("a module's own restricted need is recorded for its org and goes to the dig
   const w = world({});
   const need = { cause: "restricted" as const, org: "0xPolygon", url: "https://github.com/settings/connections/applications/cid", detail: "x" };
   await w.s.report("github", "github", need);
+  w.tick(LASTED);
+  await w.s.report("github", "github", need);
   await w.s.report("github", "github", need);
   assert.equal((w.db.prepare("SELECT key FROM connection_state").all() as { key: string }[]).map((r) => r.key).join(), "github:restricted:0xPolygon");
   assert.equal(w.queued.length, 1);
@@ -253,6 +286,8 @@ test("a module's own restricted need is recorded for its org and goes to the dig
 
 test("a digest notice and its reported_day marker commit together: a failed notice leaves the need reportable", async () => {
   const w = world({}); // no task chain: background work
+  await w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" });
+  w.tick(LASTED);
   w.state.failQueue = true;
   await assert.rejects(w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" }), /owner_notify is locked/);
   assert.equal((w.db.prepare("SELECT reported_day FROM connection_state").get() as { reported_day: string | null }).reported_day, null, "the marker rolled back with the notice");
