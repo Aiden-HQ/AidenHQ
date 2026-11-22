@@ -30,6 +30,7 @@ main() {
   # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
   . ops/lib/generations.sh
   . ops/lib/progress.sh
+  . ops/lib/ci-runner-units.sh
   local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -147,7 +148,7 @@ main() {
   # through the entry point, which re-takes the lock on fd 9 for the new process; the lock is held across the exec, so
   # no other apply can slip in between. Pinned to the instance commit just checked. A script that predates the hand-over
   # (a rollback) can't take `before`, so this one carries on instead.
-  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh \
+  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-units.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
     local again=("$want"); [ "$force" = 0 ] || again+=(--force)
@@ -804,8 +805,9 @@ switchOver() {
   # The runner template the enabled units run (ops/setup.sh installs it on a fresh host): an apply keeps it in step with the
   # checkout, so a rollout lands the ExecStartPre backoff with the scripts it calls and a rollback (or a checkout without the
   # new helper) never leaves a unit whose ExecStartPre names a file that isn't there; the next start picks it up. Only while
-  # the instance declares runner units, so a host without them keeps nothing.
-  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then
+  # the instance declares runner units, so a host without them keeps nothing. An enabled instance has no unit file of its
+  # own, so the declared set is the install links (ops/lib/ci-runner-units.sh), the same one the exporter reads.
+  if [ -n "$(enabled_runner_units)" ]; then
     if ! cmp -s ops/units/aidenhq-ci-runner@.service "$units/aidenhq-ci-runner@.service"; then
       cp ops/units/aidenhq-ci-runner@.service "$units/"
       systemctl --user daemon-reload && echo "ci runner unit template installed/updated"

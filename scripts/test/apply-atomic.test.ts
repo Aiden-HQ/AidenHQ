@@ -11,7 +11,7 @@ import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,7 @@ import YAML from "yaml";
 const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-units.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -110,9 +110,15 @@ const [cmd, ...rest] = a.slice(i + 1);
 process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process.env, ...env } }).status ?? 1);
 `,
   df: `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 999999999 1%% /\\n'\n`,
-  // list-unit-files is empty unless ctrl/runners names a count: then the CI runner template is enabled (the apply keeps it in
-  // step with the checkout). `show` is what health() reads on a /healthz timeout; journalctl tails the journal.
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
+  // A runner instance is enabled by the install link the test writes in $HOME/.config/systemd/user/default.target.wants
+  // (what `systemctl --user enable aidenhq-ci-runner@<n>` does), never by a unit file of its own. systemd reports the
+  // template alone, as `indirect`, and `--state=enabled` filters that out: the fake does the same, so only the install link
+  // can tell the apply a runner is declared. systemd-analyze names the user unit dir systemd loads; is-enabled says the
+  // runner instances are enabled (the other units are not). `show` is what health() reads on a /healthz timeout;
+  // journalctl tails the journal.
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*)\n    case "\${@: -1}" in aidenhq-ci-runner@*) echo enabled; exit 0 ;; esac\n    exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*)\n    case "$*" in *--state=enabled*) exit 0 ;; esac\n    [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service indirect enabled" ; exit 0 ;; esac\nexit 0\n`,
+  // The user unit dir systemd loads, as `systemd-analyze --user unit-paths` names it.
+  "systemd-analyze": `#!/usr/bin/env bash\ncase "$*" in *unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
   // it (the read's inner `timeout -k` would kill it a second later).
@@ -280,15 +286,19 @@ function resolvedAidenhqDir(unit, home) {
 
 // The runner template the enabled units run is the checkout's, kept in step by the apply: a rollout lands the ExecStartPre
 // backoff with the scripts it calls, and an installed copy from another product is replaced (rollback included) rather than
-// left calling a helper this checkout may not have. A host with no runner unit enabled keeps the template it has.
-test("the CI runner unit template follows the applied checkout, only while runner units are declared", async () => {
+// left calling a helper this checkout may not have. A host with no runner instance enabled keeps the template it has.
+//
+// An enabled instance of the template has no unit file: `systemctl --user enable aidenhq-ci-runner@<n>` only writes an
+// install link in a target's .wants dir, and `list-unit-files` reports the template alone (indirectly enabled), so the
+// gate reads the links (ops/lib/ci-runner-units.sh). Each world starts from a template an older product installed.
+test("the CI runner unit template follows the applied checkout, only while a runner instance is enabled", async () => {
   const w = world();
   const units = w.d("home/.config/systemd/user");
-  mkdirSync(units, { recursive: true });
-  // An enabled runner instance (queue) and a template an older product installed.
-  writeFileSync(w.d("ctrl/runners"), "");
+  mkdirSync(join(units, "default.target.wants"), { recursive: true });
   writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\nExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i\n");
   writeFileSync(join(units, "aidenhq-ci-runner@1.service"), "[Unit]\n");
+  // An enabled runner instance: the install link systemd writes for it.
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(units, "default.target.wants/aidenhq-ci-runner@1.service"));
   const r = await w.run();
   assert.equal(r.status, 0, r.out);
   assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template is the product's");
@@ -302,11 +312,11 @@ test("the CI runner unit template follows the applied checkout, only while runne
   const before = w.calls();
   assert.equal((await w.run()).status, 0);
   assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
-  // Runners retired from the config: the installed template stays as the operator left it.
+  // The instance retired: its link is gone, so the installed template stays as the operator left it.
   writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=kept\n");
-  rmSync(w.d("ctrl/runners"));
+  rmSync(join(units, "default.target.wants/aidenhq-ci-runner@1.service"));
   assert.equal((await w.run()).status, 0);
-  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=kept\n", "no runner units declared: the apply leaves the template alone");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=kept\n", "no runner instance enabled: the apply leaves the template alone");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {
