@@ -310,10 +310,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    * once. Paperclip counts a cancelled blocker as unresolved for a status write, so those relations are cleared first; a 409 is
    * retried once with them all cleared.
    * A blocker that was deleted is gone for good, and a task it held must not stay blocked on it. Paperclip reports that either
-   * by dropping the relation or by keeping it with a stale status. Nothing else says which: an id it had that the live list no
-   * longer holds is read once, and only a 404 counts as deleted (a 200 means the relation was removed on purpose, and the id
-   * is forgotten, never read again). A confirmed deletion is remembered, so it is named alongside the blockers that closed and
-   * never looked up twice. The ids it had come from the single-issue read when the list row left them out, and are the record
+   * by dropping the relation or by keeping it with a stale status. A recorded id the live list no longer holds is gone: the
+   * relation was dropped because the blocker went, so that case needs no read. A listed id whose status is still unresolved is
+   * read once, and a 404 makes it gone too. A deletion is remembered, so it is named alongside the blockers that closed and
+   * never looked up again. The ids it had come from the single-issue read when the list row left them out, and are the record
    * that tells a task blocked from outside from a task a team route parked with no blockers of its own: only the former is
    * released when its live list is empty.
    */
@@ -332,25 +332,18 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     let names = parse<Record<string, string>>(row?.blocked_names, {});
     const gone = new Set<string>(parse<string[]>(row?.blocked_deleted, []));
     const live = blockers.map((b) => b.id);
+    // The live list is the authority on what is still a relation: an id it dropped was deleted, and needs no read.
+    for (const id of remembered) if (!live.includes(id)) gone.add(id);
     const had = [...new Set([...live, ...remembered, ...gone])];
-    // What this read says it has: one path whether the list row left its blockers out or not.
-    const kept = new Set([...live, ...remembered]);
-    for (const b of blockers) { kept.add(b.id); names[b.id] = b.identifier ?? names[b.id] ?? b.id; }
-    // A listed blocker that does not resolve is read once: only a 404 makes it deleted.
+    for (const b of blockers) names[b.id] = b.identifier ?? names[b.id] ?? b.id;
+    // A listed blocker that still does not resolve is read once: a 404 makes it deleted too.
     if (!half && had.length) for (const b of blockers) {
       if (resolved(b) || gone.has(b.id)) continue;
       const g = await owner("GET", `/api/issues/${encodeURIComponent(b.id)}`);
       if (g.status === 404) gone.add(b.id);
       else if (g.status !== 200) throw new Error(`control plane GET blocker ${b.id} → ${g.status}`);
     }
-    // An id the live relation no longer holds: a read tells a deletion from an owner who removed the dependency.
-    if (!half && had.length) for (const id of had) {
-      if (live.includes(id) || gone.has(id)) continue;
-      const g = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
-      if (g.status === 404) gone.add(id);
-      else if (g.status === 200) { kept.delete(id); delete names[id]; }
-      else throw new Error(`control plane GET blocker ${id} → ${g.status}`);
-    }
+    const kept = new Set([...live, ...remembered].filter((id) => !gone.has(id)));
     // Kept for the next poll: a live list that dropped an id, the name it had, and the deletions already confirmed.
     const save = () => q("UPDATE wake_tasks SET blocked = ?, blocked_names = ?, blocked_deleted = ? WHERE task = ?")
       .run([...kept].join(",") || null, Object.keys(names).length ? JSON.stringify(names) : null, gone.size ? JSON.stringify([...gone]) : null, task.id);

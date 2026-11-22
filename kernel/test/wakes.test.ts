@@ -403,6 +403,7 @@ test("a task blocked on a deleted blocker is released, the relation dropped: one
   assert.match(w.rows("t24").join("\n"), /^unblocked:t24:b9:deleted open$/m);
   const notice = w.comments.t24.map((c) => c.body).join("\n");
   assert.match(notice, /^Unblocked: WOR-b9 \(deleted\)\.\n\n<!-- aidenhq:job=kernel kind=unblocked -->$/m);
+
 });
 
 test("a task blocked on a deleted blocker is released when the relation is kept and its read answers 404", async () => {
@@ -428,19 +429,6 @@ test("a blocked task with no blockers and none recorded stays blocked", async ()
   await w.wakes.poll();
   assert.equal(w.issues.t26.status, "blocked");
   assert.deepEqual(w.rows("t26"), []);
-});
-
-test("a blocker whose relation an owner removed but which still exists releases nothing", async () => {
-  const w = world();
-  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
-  w.issue("t28", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
-  await w.wakes.poll();
-  w.tick();
-  delete w.issues.t28.blockedBy; // removed, not deleted: b9 still answers 200
-  await w.wakes.poll();
-  assert.equal(w.issues.t28.status, "blocked", "a removed relation is not a deleted blocker");
-  assert.deepEqual(w.rows("t28").filter((x) => x.startsWith("unblocked:")), []);
-  assert.equal(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't28'").get().blocked, null, "the removed id is forgotten");
 });
 
 test("a blocker deleted while another stays is named once the other closes", async () => {
