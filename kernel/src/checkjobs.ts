@@ -37,9 +37,9 @@
 // Each run attempt (the row's start time `at`) has its own folder and lands its end only while the row is still that attempt's;
 // a re-run asked meanwhile supersedes it.
 // A judge that writes no usable result is the harness's failure, never the change's: the check ends in error, with no receipt.
-// A judged run a spend cap cut short (a case the reviewer returns `review_cap`, named in the eval's `capped` list with the cap's
-// scope) is the same: the reviewer never judged it, so the check ends in error naming that cap, with no receipt, the run does not
-// use up a try (the same head is judged again once the cap frees), and it never runs the partial second pass into it.
+// A judged run a spend cap cut short is the same: the gateway's ledger records the refusal (`refusedByKey`), so the check ends in
+// error naming that cap, with no receipt, the run does not use up a try (the same head is judged again once the cap frees), and it
+// never runs the partial second pass into it. The ledger is the authority, so a harness too old to name the cap still can't pass.
 // Missing evidence never counts as passing: whether a recipe's declared check is due is read from the base commit, and a receipt
 // says whether a check ran (`ran`); verify refuses one that didn't unless the caller's policy accepts "none" (product and
 // modules repos never do).
@@ -102,8 +102,8 @@ export type Binding = { repo: string; head: string; run: Run; judge?: string; po
 /** `result`: the recipe's result object (data: made from the repo's text); `billed_usd`: its model token's spend by the gateway's
  * ledger (a failed run's too; a running check's so far); both null for other recipes. */
 export type CheckView = { id: string; repo: string; head: string; run: Run; state: string; receipt: Receipt | null; error: string | null; version: number; result: Record<string, unknown> | null; billed_usd: number | null;
-  /** Its last end was a spend cap ("eval-day", "install", …): a budget outcome, not the change's failure (a later ask runs
-   * it again); null when it didn't end at one. */
+  /** Its last end was a spend limit ("day", "month", …): a budget outcome, not the change's failure (a later ask runs it again);
+   * null when it didn't end at one. A reader may wait on it; nothing refuses a merge for it. */
   capped: string | null;
   /** Running, but still waiting for a computer (the pool is full): nothing is running in a box yet. */
   waiting: boolean;
@@ -243,38 +243,46 @@ export function judgedCases(base: Map<string, string>, head: Map<string, string>
   return out;
 }
 type Failure = { file: string; want?: string; got?: string; reason?: string };
-/** A budget's name for a person, from the name the eval reports (module/ai-reviewer/scripts/reviewer-eval.ts one place): the
- * eval's day cap, the install's daily cap, or (unrecognised) a spend cap. */
-const capName = (cap: string) => (cap === "eval-day" ? "eval-day cap" : cap === "install" ? "install's daily cap" : "spend cap");
+/** A limit's name for a person, from the scope the gateway ledger or the eval reports: the install's daily or monthly spend
+ * limit, or (anything older or unrecognised, such as the retired `eval-day` scope) a spend limit. */
+const capName = (cap: string) => (cap === "day" ? "the install's daily spend limit" : cap === "month" ? "the install's monthly spend limit" : "spend limit");
 /** A case the reviewer never judged: its call stopped at the spend cap (`review_cap`), so it is neither a pass nor a miss. */
 type EvalResult = { total: number; passed: number; failed: Failure[]; capped: string[]; cap: string; broken?: true };
 /** The shared pass rule (kernel/sdk/src/pass-rule.ts) over a run's failures, each named by the kind of miss it is. */
 const evalPasses = (failed: Failure[], total: number, added: string[]) =>
   passes(total, failed.map((f) => ({ file: f.file, kind: missKind((f.want ?? "").split("|"), (f.got ?? "").split(" ")[0]!) })), added);
 /** The judge's result, checked against the cases it was given; missing, malformed or miscounted, every case failed (broken). */
-function readResult(file: string, cases: string[]): EvalResult {
+function readResult(file: string, cases: string[], refused: string[] = []): EvalResult {
   let r: any;
   try { r = JSON.parse(smallFile(file) ?? ""); } catch { return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: "the eval wrote no result" })), capped: [], cap: "unknown", broken: true }; }
   const rows: Failure[] = (Array.isArray(r?.failed) ? r.failed : []).filter((f: any) => cases.includes(f?.file)).map((f: any) => ({ file: f.file, want: String(f.want ?? "").slice(0, 80), got: String(f.got ?? "").slice(0, 80), reason: String(f.reason ?? "").slice(0, 600) }));
-  // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list), and the field is required:
-  // a judge that names no list is one this kernel can't read, so its result is malformed (broken, no receipt), never a pass. A
-  // name that isn't one of the cases (or a value that isn't a list) could hide a capped case the same way.
-  const named: unknown = r?.capped;
+  // The eval names the cases the spend cap cut before the reviewer judged them (its `capped` list), and a malformed list is the
+  // harness's failure, as any malformed result is: a name that isn't one of the cases (or a value that isn't a list) could hide
+  // a capped case and let a run pass. An omitted list is an older harness's normal result: the gateway's ledger still ends a
+  // capped run (below), so nothing rests on the harness writing it.
+  const named: unknown = r?.capped === undefined ? [] : r.capped;
   const cappedOk = Array.isArray(named) && (named as unknown[]).every((f: unknown) => typeof f === "string" && cases.includes(f));
-  // A failure row whose `got` names the cap code is a case the cap cut, not the reviewer's verdict: a harness that scores it a
-  // miss (an older one, which has no `capped` list) still can't turn that case into a pass, so lift it into `capped`.
-  const cutByCap = (f: Failure) => /(?:^|\s)review_cap(?:\s|$)/.test(f.got ?? "");
-  const failed = rows.filter((f) => !cutByCap(f));
-  const capped = cappedOk ? [...new Set<string>([...(named as string[]), ...rows.filter(cutByCap).map((f) => f.file)])] : [];
-  // Which cap stopped it, when the eval names one ("eval-day" or "install"): a name, never a path or free text. A judge whose
-  // harness predates `capScope` names none: the error then says a spend cap, never a budget it wasn't told about.
-  const cap = r?.capScope === "eval-day" || r?.capScope === "install" ? r.capScope : "unknown";
+  // The gateway refused this run's token at a cap: the run never completed, whatever the eval scored. Every case it lists as failed
+  // is one the cap may have cut (an old harness scores the cut case a miss), so none of them is a scored miss. And every case the
+  // eval names as capped is capped wherever it also sits.
+  const cut = refused.length > 0;
+  const failed = cut ? [] : rows;
+  const capped = cappedOk ? [...new Set<string>(cut ? [...(named as string[]), ...rows.map((f) => f.file)] : (named as string[]))] : [];
+  // A refused run that named no case: every case it didn't pass is one the cap may have cut, so none can count as a pass. The
+  // cases it did pass stay passes (the cap stopped the run, it didn't invalidate what was judged before it).
+  if (cut && capped.length === 0) for (const c of cases) if (!rows.some((f) => f.file === c)) capped.push(c);
+  // Which limit stopped it: the ledger's scope when it refused the run ("day" or "month"), else the eval's `capScope` (which names
+  // the install's day or month limit, and older harnesses' `eval-day`/`install` too). A name, never a path or free text; when
+  // neither names a limit the error says a spend limit, never a limit it wasn't told about.
+  const scopes = ["day", "month", "eval-day", "install"];
+  const cap = refused.find((c) => scopes.includes(c)) ?? (refused.length ? "unknown" : scopes.includes(String(r?.capScope)) ? String(r.capScope) : "unknown");
   // Each case counts once, capped or failed: a capped case's line may sit in `failed` beside the `capped` list. A duplicate
   // row in `failed` is malformed, never counted twice into the pass rule.
   const failedFiles = failed.map((f) => f.file), namedFiles = rows.map((f) => f.file);
-  const notPassed = new Set([...failedFiles, ...capped]);
-  const why = named === undefined ? "it writes no `capped` list"
-    : !cappedOk ? "its `capped` list isn't a list of its cases"
+  // What the eval says it didn't pass, by its own rows and list — not the set the ledger's refusal lifts, which only decides the
+  // verdict: its counts must agree with what it wrote, whatever the ledger adds.
+  const notPassed = new Set([...namedFiles, ...(cappedOk ? (named as string[]) : [])]);
+  const why = !cappedOk ? "its `capped` list isn't a list of its cases"
     : new Set(namedFiles).size !== namedFiles.length ? "it lists one failed case twice"
     : r?.total !== cases.length || r?.passed !== cases.length - notPassed.size ? `its counts don't match its ${cases.length} cases` : "";
   if (why) return { total: cases.length, passed: 0, failed: cases.map((f) => ({ file: f, reason: `the eval's result is malformed: ${why}` })), capped: [], cap: "unknown", broken: true };
@@ -303,7 +311,7 @@ const runKey = (token: string) => createHash("sha256").update(token).digest("hex
 /** The result's sha256 as the receipt carries it. */
 export const resultHash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export function createChecks({ db, secret, recipes, box, snapshot, modelToken, spent = () => 0, tokens, gatewayUrl, workDir, log, now = Date.now }: {
+export function createChecks({ db, secret, recipes, box, snapshot, modelToken, spent = () => 0, tokens, refused = () => [], gatewayUrl, workDir, log, now = Date.now }: {
   db: DatabaseSync;
   /** The installed modules' recipes (compiled `check_jobs:`), read fresh. */
   recipes: () => Recipes;
@@ -319,6 +327,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   spent?: (runKey: string) => number;
   /** A model token's tokens so far (the same ledger): stamped on a model recipe's result. */
   tokens?: (runKey: string) => { input: number; cached: number; output: number };
+  /** The caps a model token was refused at (the gateway's `cap_reached` rows, by the token's run key): the cap event itself,
+   * so a judged run stops at a cap even when the eval it ran is too old to report one. */
+  refused?: (runKey: string) => string[];
   /** The model gateway as a box reaches it. */
   gatewayUrl: string;
   /** Where the checks' snapshots go (one folder per run attempt, `checks/<attempt>`, removed when it ends). */
@@ -341,8 +352,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   if (!cols.has("follow")) db.exec("ALTER TABLE checks ADD COLUMN follow TEXT");
   // When the running attempt got its box (epoch ms; the first box of its passes).
   if (!cols.has("box_at")) db.exec("ALTER TABLE checks ADD COLUMN box_at INTEGER");
-  // Which spend cap the attempt ended at ("eval-day", "install", …): a budget outcome, not the change's failure (a later ask
-  // runs it again); NULL when it didn't end at one.
+  // Which spend limit the attempt ended at ("day", "month", …): a budget outcome, not the change's failure (a later ask runs
+  // it again); NULL when it didn't end at one.
   if (!cols.has("capped")) db.exec("ALTER TABLE checks ADD COLUMN capped TEXT");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
@@ -459,7 +470,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   }
 
   /** A judged run (the reviewer eval), laid out by the judging rules: the subject commit with the judge's files and the judged cases. */
-  async function evaluate(id: string, snapshot: Snapshot, r: Recipe, head: string, s: Record<string, string>, dir: string, launched: Launch) {
+  async function evaluate(id: string, snapshot: Snapshot, r: Recipe, head: string, s: Record<string, string>, dir: string, launched: Launch, caps: { refused: () => string[]; keep: (runKey: string) => void }) {
     const J = r.judged!, cases = `${J.cwd}/${J.cases}`;
     const tree = join(dir, "tree"), judge = join(dir, "judge"), from = join(dir, "from");
     for (const d of [tree, judge]) mkdirSync(d);
@@ -482,21 +493,26 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     rmSync(join(tree, cases), { recursive: true, force: true });
     mkdirSync(join(tree, cases), { recursive: true });
     for (const [n, text] of judged) writeFileSync(join(tree, cases, n), text);
-    return judgedRun(id, r, head, dir, { n: 1, names: [...judged.keys()], added }, launched);
+    return judgedRun(id, r, head, dir, { n: 1, names: [...judged.keys()], added }, launched, caps);
   }
   /** One pass of a judged run on the cases laid in its tree, or (`o`) the end of one a previous kernel launched; then the verdict. */
-  async function judgedRun(id: string, r: Recipe, head: string, dir: string, step: Extract<Step, { n: 1 | 2 }>, launched: Launch, o?: BoxOut): Promise<{ verdict: "pass" | "fail"; ran: boolean; summary: string }> {
+  async function judgedRun(id: string, r: Recipe, head: string, dir: string, step: Extract<Step, { n: 1 | 2 }>, launched: Launch, caps: { refused: () => string[]; keep: (runKey: string) => void }, o?: BoxOut): Promise<{ verdict: "pass" | "fail"; ran: boolean; summary: string }> {
     const J = r.judged!, out = join(dir, `out-${step.n}`);
     if (!o) {
-      const env = checkEnv("judged", { modelToken: modelToken(`eval:${head}`, { ttlMs: 3 * 3600_000 }), gatewayUrl });
+      const token = modelToken(`eval:${head}`, { ttlMs: 3 * 3600_000 });
+      // Its run key on the row before it runs: a restart's next kernel reads the same ledger rows (a judged run has no retry).
+      caps.keep(runKey(token));
+      const env = checkEnv("judged", { modelToken: token, gatewayUrl });
       o = await launched(await inBox(id, r, join(dir, "tree"), out, J.cwd, env), step);
     }
-    const res = readResult(join(out, "result.json"), step.names);
+    // The gateway's own record of a cap refusal, which no eval can misreport: an eval older than its `capped` list scores the
+    // cut case as a miss (or, for a case that expects `escalate`, as a pass), so the ledger is what ends the run here.
+    const res = readResult(join(out, "result.json"), step.names, caps.refused());
     // The harness broke, not the change: no receipt (asking again runs it again), and the box's output says why.
     if (res.broken) throw new Error(`${r.title} wrote no usable result (${res.failed[0]?.reason ?? "no cases"})\n${tail(o)}`);
     // A spend cap cut the run short: the reviewer didn't judge those cases, so it is no verdict on the change. No receipt,
     // the check ends in error with a budget reason (the cap the eval names, so the operator waits on the right one), and
-    // asking again runs it again once that cap frees. Either pass ends here: in particular step 1 never goes on to the partial
+    // asking again runs it again once that cap frees. A pass cut at the cap ends here: in particular step 1 never goes on to the partial
     // second pass, which would only spend into the same exhausted cap.
     if (res.capped.length) throw new CapReached(res.cap, `${capName(res.cap)} reached; retry when it frees: ${r.title} judged ${res.total - res.capped.length} of its ${res.total} case(s) before the cap (${res.capped.slice(0, 6).join(", ")}${res.capped.length > 6 ? `, … ${res.capped.length - 6} more` : ""})`);
     const first = step.first ?? { passed: res.passed, total: res.total };
@@ -507,7 +523,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       const cases = `${J.cwd}/${J.cases}`, keep = new Set(res.failed.map((f) => f.file));
       noLinks(join(dir, "tree"), cases);
       for (const n of readdirSync(join(dir, "tree", cases))) if (!keep.has(n)) rmSync(join(dir, "tree", cases, n), { recursive: true, force: true });
-      return judgedRun(id, r, head, dir, { n: 2, names: [...keep], added: step.added, first }, launched);
+      return judgedRun(id, r, head, dir, { n: 2, names: [...keep], added: step.added, first }, launched, caps);
     }
     const rerun = `, and ${res.passed}/${res.total} of the failed cases on their one re-run`;
     if (evalPasses(res.failed, first.total, step.added)) return { verdict: "pass", ran: true, summary: `${r.title} scored ${score}${rerun}` };
@@ -540,6 +556,15 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     };
     // The box run's handle on the row before it is followed: a restart's next kernel follows it from there.
     const launched: Launch = (h, step) => (db.prepare("UPDATE checks SET follow = ?, box_at = COALESCE(box_at, ?) WHERE id = ? AND at = ?").run(JSON.stringify({ box: h, step }), h.at, id, r.at), follow(h));
+    // A judged run's token on the row, and the caps the gateway refused it at: the same read for a pass a previous kernel
+    // launched and left running, since the ledger outlives the kernel.
+    const caps = {
+      keep: (key: string) => void db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at),
+      refused: () => {
+        const key = (db.prepare("SELECT run_key FROM checks WHERE id = ? AND at = ?").get(id, r.at) as { run_key: string | null } | undefined)?.run_key;
+        return key ? refused(key) : [];
+      },
+    };
     // What its model token has spent so far, with what earlier attempts spent.
     const spentSoFar = () => {
       const key = (db.prepare("SELECT run_key FROM checks WHERE id = ? AND at = ?").get(id, r.at) as { run_key: string | null } | undefined)?.run_key;
@@ -551,12 +576,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       let v: { verdict: "pass" | "fail"; ran: boolean; summary: string; result?: string; cost?: number; retry?: boolean };
       if (adopted) {
         const o = await follow(adopted.box);
-        v = "n" in adopted.step ? await judgedRun(attempt, recipe, r.head, dir, adopted.step, launched, o) : codeEnded(recipe, dir, o, r.run_key ?? undefined, adopted.step);
+        v = "n" in adopted.step ? await judgedRun(attempt, recipe, r.head, dir, adopted.step, launched, caps, o) : codeEnded(recipe, dir, o, r.run_key ?? undefined, adopted.step);
       } else {
         rmSync(dir, { recursive: true, force: true });
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const snap = snapshot(r.module);
-        v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched);
+        v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched, caps) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched);
       }
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString(), ...(v.result !== undefined ? { result: resultHash(v.result) } : {}) });
       if (await ended("done", { receipt: JSON.stringify(receipt), ...(v.result !== undefined ? { result: v.result } : {}), ...(v.cost !== undefined ? { cost: v.cost } : {}), retry: v.retry === true })) log("check done", { ...ids, verdict: v.verdict });

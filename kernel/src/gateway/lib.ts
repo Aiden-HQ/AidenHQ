@@ -326,6 +326,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
+    // A cap refusal's ledger row: its key is `cap:<run key>:<scope>:<subject>:<cap>`.
+    refusedRun: db.prepare("SELECT key, rowid AS n FROM calls WHERE run_key = ? AND status = 'cap_reached' ORDER BY rowid"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -766,5 +768,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const spentBy = (cred: string) => spentByKey(sha256(cred));
   /** A run key's tokens (settled calls' input, cached input and output). */
   const tokensByKey = (runKey: string) => ({ ...(q.tokensRun.get(runKey) as { input: number; cached: number; output: number }) });
-  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
+  /** The limits a run key was refused at, as the scope each named (`day`, `month` or `task`): `[]` when it wasn't. The gateway
+   *  refuses and records them, so this is the limit event itself, never a caller's account of it. A refusal is never forgotten
+   *  for the key: a call settling after it means the limit was raised, not that the case the limit cut was judged. */
+  const refusedByKey = (runKey: string) => [...new Set((q.refusedRun.all(runKey) as { key: string }[]).map((r) => r.key.split(":")[2] ?? ""))];
+  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, refusedByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
 }

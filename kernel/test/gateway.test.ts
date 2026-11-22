@@ -3,7 +3,7 @@
 // way to switch them off (G10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import http from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,9 +114,20 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
   assert.match(told[0][1], /^Task spend cap reached: .*\$0\.09 of \$0\.08/);
   assert.equal((await usage()).filter((r) => r.status === "cap_reached").length, 2); // one per run key
   assert.deepEqual(gw.exhausted("ag1", "iss1").map((o) => o.scope), ["task"]);
+  // The refusals are on the run's ledger key, as the limits they named: what the kernel reads to end a judged run at a spend
+  // limit even when the eval it ran is too old to report one.
+  const run1 = createHash("sha256").update(jobToken("ag1", "run1")).digest("hex");
+  assert.deepEqual(gw.refusedByKey(run1), ["task"]);
+  assert.deepEqual(gw.refusedByKey(createHash("sha256").update("no such token").digest("hex")), []);
   // Handed to another agent, the task keeps what it spent.
   assert.equal((await call(jobToken("ag2", "h1"))).status, 402);
   assert.deepEqual(gw.exhausted("ag2", "iss1").map((o) => o.scope), ["task"]);
+  // The owner raises the task's limit (settings.task_usd): a later call on the same run key goes through, and the refusal
+  // stays on that key. A case the limit cut was never judged, and a call settling after it doesn't un-cut it: a concurrent
+  // eval's in-flight calls are exactly that, so an older harness must not be able to credit the cut case.
+  writeFileSync(settingsFile, JSON.stringify({ task_usd: 0.16 }));
+  assert.equal((await call(jobToken("ag1", "run1"))).status, 200);
+  assert.deepEqual(gw.refusedByKey(run1), ["task"], "the refusal is never cleared by a later settled call");
 
   // The monitoring module's metrics (a textfile gateway.ts writes; no route): agent keys as labels.
   assert.equal((await fetch(`${front.url}/metrics`)).status, 404);

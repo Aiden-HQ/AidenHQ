@@ -1,4 +1,4 @@
-// A case whose reviewer call stopped at the eval-day spend cap (the gateway's 402 cap_reached, which review.ts reports as
+// A case whose reviewer call stopped at the install's spend limit (the gateway's 402 cap_reached, which review.ts reports as
 // reviewer_failed) was never judged: the eval reports it as capped, never as a pass, a false block or any other miss, and a run
 // with one can never print or record PASS (CI's reviewer-eval job and the kernel's check job both read that). Run end to end
 // against a local 402.
@@ -12,23 +12,24 @@ import { after, before, it } from "node:test";
 import { capReached, capScope } from "../scripts/reviewer-eval.ts";
 
 const CASE = "clean-add-only-critical-paths-push.json";
-const CAPPED = 'the reviewer failed (OpenRouter 402: {"type":"cap_reached","scope":"eval-day"})';
+const CAPPED = 'the reviewer failed (OpenRouter 402: {"type":"cap_reached","scope":"day"})';
 
-it("a cap is recognised from the gateway's own message, and the budget it names", () => {
+it("a cap is recognised from the gateway's own message, and the limit it names", () => {
   assert.equal(capReached(CAPPED), true, "the gateway's 402 cap_reached, as review.ts reports it");
-  assert.equal(capReached("the reviewer failed (OpenRouter 402: spend cap reached: eval-day $0.30 of $0.20)"), true);
+  assert.equal(capReached("the reviewer failed (OpenRouter 402: spend cap reached: the install's daily limit, $0.30 of $0.20)"), true);
   assert.equal(capReached("the reviewer failed (OpenRouter 500: upstream)"), false, "another failure is not a cap");
   assert.equal(capReached("clean: the change is the one asked for"), false);
-  assert.equal(capScope("the reviewer failed (spend cap reached: eval-day $0.30 of $0.20)"), "eval-day");
-  assert.equal(capScope("the reviewer failed (spend cap reached: the install's daily $1.00 of $0.50)"), "install");
-  assert.equal(capScope("the reviewer failed (OpenRouter 402: cap_reached)"), "unknown", "a budget it can't name is never guessed");
+  assert.equal(capScope("the reviewer failed (spend cap reached: the install's daily limit, $0.30 of $0.20)"), "day");
+  assert.equal(capScope("the reviewer failed (spend cap reached: the install's monthly limit, $1.00 of $0.50)"), "month");
+  assert.equal(capScope("the reviewer failed (spend cap reached: eval-day $0.30 of $0.20)"), "eval-day", "a judge from before #1286 still names its cap");
+  assert.equal(capScope("the reviewer failed (OpenRouter 402: cap_reached)"), "unknown", "a limit it can't name is never guessed");
 });
 
 let server: http.Server, base = "", dir = "";
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "eval-cap-"));
-  // Every call is the eval-day cap: the gateway's answer when the day's spend is used up.
-  server = http.createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: { type: "cap_reached", message: "spend cap reached: eval-day $0.30 of $0.20" } }))); });
+  // Every call is past the install's daily limit: the gateway's answer when the day's spend is used up.
+  server = http.createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: { type: "cap_reached", message: "spend cap reached: the install's daily limit, $0.30 of $0.20 (settings.spend_day_usd); the owner can raise it in Settings" } }))); });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`;
 });
@@ -50,6 +51,6 @@ it("a capped eval run reports the case as CAPPED, writes no PASS and records no 
   assert.doesNotMatch(run.stdout, /PASS\b/, "never a PASS line, whatever the case expected");
   assert.doesNotMatch(run.stdout, /FAIL \(/, "a cap is not a scored miss either");
   const r = JSON.parse(readFileSync(result, "utf8"));
-  assert.deepEqual([r.capped, r.failed, r.pass, r.capScope], [[CASE], [], false, "eval-day"]);
+  assert.deepEqual([r.capped, r.failed, r.pass, r.capScope], [[CASE], [], false, "day"]);
   assert.equal(existsSync(join(dir, "state")), false, "no passing receipt is recorded");
 });

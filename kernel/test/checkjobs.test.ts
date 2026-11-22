@@ -19,7 +19,7 @@ import { checkJobs as compileCheckJobs } from "../../scripts/modules.ts";
 const A = "a".repeat(40), B = "b".repeat(40), J = "1".repeat(40), S = "2".repeat(40);
 const CASES = "modules/ai-reviewer/test/reviewer-cases";
 
-function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun) {
+function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun, ledger = {}) {
   const dir = mkdtempSync(join(tmpdir(), "checks-"));
   const runs = [];
   const box = fakeBox(async (o) => {
@@ -39,7 +39,7 @@ function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun) {
     for (const [f, text] of Object.entries(trees[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text));
   };
   const db = new DatabaseSync(":memory:");
-  const checks = createChecks({ db, secret: () => "receipt-secret", recipes: () => ({ ...recipes(), ...extra }), box, snapshot: () => snapshot, modelToken: (component, o) => mintToken("job-secret", { kind: "check", component, ...o }), spent: () => 0.0123, gatewayUrl: "http://gw", workDir: dir, log: () => {} });
+  const checks = createChecks({ db, secret: () => "receipt-secret", recipes: () => ({ ...recipes(), ...extra }), box, snapshot: () => snapshot, modelToken: (component, o) => mintToken("job-secret", { kind: "check", component, ...o }), spent: () => 0.0123, refused: () => ledger.refused ?? [], gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const done = async (v) => { while (v.state === "running") v = await checks.get("github", v.id, { after: v.version, waitMs: 1000 }); return v; };
   return { checks, runs, done, db };
 }
@@ -198,22 +198,22 @@ test("checks: an eval that writes no result is an error with the box's output, n
   assert.equal(runs, 2);
 });
 
-test("checks: a judged run the eval-day cap cut short ends in error with no receipt and a budget reason, and the same head runs again later", async () => {
-  // The eval names the cases the spend cap cut before the reviewer judged them (review_cap, the gateway's 402 cap_reached):
+test("checks: a judged run the install's daily limit cut short ends in error with no receipt and a budget reason, and the same head runs again later", async () => {
+  // The eval names the cases the spend limit cut before the reviewer judged them (review_cap, the gateway's 402 cap_reached):
   // the run is an eval error (no fail receipt cached for the head), not a verdict, and it doesn't use up a try.
   let capped = true, calls = 0;
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     calls++;
     const cases = readdirSync(join(o.workspace, CASES)).sort();
     writeFileSync(join(o.out, "result.json"), capped
-      ? JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [], capped: [cases[0]], capScope: "eval-day" })
+      ? JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [], capped: [cases[0]], capScope: "day" })
       : JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [], capped: [] }));
     return { exit: 0, out: "402 cap_reached", timedOut: false };
   });
   const first = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
   assert.deepEqual([first.state, first.receipt], ["error", null], "a capped eval is an error, never a fail receipt");
-  assert.equal(first.capped, "eval-day", "the view names the budget outcome, so the merge gate waits instead of counting an ask");
-  assert.match(first.error, /eval-day cap reached; retry when it frees/);
+  assert.equal(first.capped, "day", "the view names the limit outcome, so a reader can wait on it");
+  assert.match(first.error, /the install's daily spend limit reached; retry when it frees/);
   assert.match(first.error, /judged 2 of its 3 case/);
   assert.equal(calls, 1, "a second pass would only spend into the same exhausted cap");
   // The same head and spec is judged again on a later ask, once the cap has freed.
@@ -224,8 +224,8 @@ test("checks: a judged run the eval-day cap cut short ends in error with no rece
   assert.deepEqual([second.state, second.receipt.verdict, second.capped], ["done", "pass", null]);
 });
 
-test("checks: a cap the eval doesn't name is reported as a spend cap, never as the eval-day one", async () => {
-  // A judge whose harness predates `capScope` names no budget: the error must not claim the eval-day cap (which may have room).
+test("checks: a limit the eval doesn't name is reported as a spend limit, never as the day's", async () => {
+  // A judge whose harness predates `capScope` names no limit: the error must not claim the day's limit (which may have room).
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
     writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases }));
@@ -241,27 +241,27 @@ test("checks: the budget reason survives the error row's 300-character cut, howe
   // The row keeps the first 300 characters of the error: with many capped cases named, the reason must still be there.
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
-    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases, capScope: "eval-day" }));
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases, capScope: "day" }));
     return { exit: 0, out: "", timedOut: false };
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
   assert.equal(v.state, "error");
-  assert.match(v.error, /^eval-day cap reached; retry when it frees/);
-  assert.equal(v.capped, "eval-day");
+  assert.match(v.error, /^the install's daily spend limit reached; retry when it frees/);
+  assert.equal(v.capped, "day");
 });
 
-test("checks: a cap the eval names as the install's daily one is the budget the error names, not eval-day", async () => {
-  // Check tokens spend against the install's cap as well as the eval day's (kernel/src/gateway/lib.ts): when the install's
-  // cap is what stopped the eval, the operator must wait on that one, and the row carries it for the merge gate's wait.
+test("checks: a limit the eval names as the install's monthly one is the limit the error names", async () => {
+  // Check tokens spend against the install's day and month limits (kernel/src/gateway/lib.ts): when the month's is what stopped
+  // the eval, the operator must wait on that one, and the row carries it.
   const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
     const cases = readdirSync(join(o.workspace, CASES)).sort();
-    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases, capScope: "install" }));
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: 0, pass: false, failed: [], capped: cases, capScope: "month" }));
     return { exit: 0, out: "", timedOut: false };
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
-  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "install"]);
-  assert.match(v.error, /^install's daily cap reached; retry when it frees/);
-  assert.doesNotMatch(v.error, /eval-day/);
+  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "month"]);
+  assert.match(v.error, /^the install's monthly spend limit reached; retry when it frees/);
+  assert.doesNotMatch(v.error, /daily/);
 });
 
 test("checks: a capped list that isn't the run's cases is malformed, never read as empty and passed", async () => {
@@ -278,31 +278,38 @@ test("checks: a capped list that isn't the run's cases is malformed, never read 
   }
 });
 
-test("checks: a result that omits the capped list is malformed, never a passing run", async () => {
-  // Fail closed: a judge that writes no `capped` list could be scoring a cap-cut case as a miss, so this kernel can't read its
-  // result at all. No receipt; asking again runs it again.
-  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
-    const cases = readdirSync(join(o.workspace, CASES)).sort();
-    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [] }));
-    return { exit: 0, out: "", timedOut: false };
-  });
-  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
-  assert.deepEqual([v.state, v.receipt], ["error", null]);
-  assert.match(v.error, /writes no `capped` list/);
+test("checks: a judged run the gateway refused at a cap ends in error even when its eval scores the case a pass", async () => {
+  // The eval script comes from the judging commit, so a check can run a harness older than the `capped` list. That harness scores
+  // a cap-cut case by its expectation: approve-expected is a miss, but escalate-expected (60 of the base's cases) is a *pass*.
+  // The gateway's ledger is the cap event itself, so the run ends in error with no receipt and the budget it names, whatever the
+  // harness wrote.
+  for (const failed of [[], [{ file: "c0.json", want: "approve", got: "escalate review_cap", reason: "402 cap_reached" }]]) {
+    const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+      const cases = readdirSync(join(o.workspace, CASES)).sort();
+      writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - failed.length, pass: failed.length === 0, failed }));
+      return { exit: 0, out: "", timedOut: false };
+    }, { refused: ["day"] });
+    const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+    assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "day"], `failed rows: ${failed.length}`);
+    assert.match(v.error, /the install's daily spend limit reached; retry when it frees/);
+  }
 });
 
-test("checks: a failed row whose case was cut by the cap is capped, never counted as a miss", async () => {
-  // A harness that scores a `review_cap` escalation as a failure (an older one, with no `capped` list) must still not pass:
-  // the row names the cap code, so the case is lifted into `capped` and the run ends in error with no receipt.
-  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
-    const cases = readdirSync(join(o.workspace, CASES)).sort();
-    const line = { file: cases[0], want: "approve", got: "escalate review_cap", reason: 'OpenRouter 402: {"type":"cap_reached","scope":"eval-day"}' };
-    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - 1, pass: false, failed: [line], capped: [] }));
-    return { exit: 0, out: "402 cap_reached", timedOut: false };
-  });
-  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
-  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "unknown"], "a cap-scored miss is no verdict on the head");
-  assert.match(v.error, /spend cap reached; retry when it frees/);
+test("checks: an uncapped run judged by an older harness that writes no capped list is still a verdict", async () => {
+  // No cap in the ledger and no list in the result: the harness just predates the field, and its run is judged as before — a
+  // clean run passes and a genuine miss still fails.
+  const run = async (failed) => {
+    const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+      const cases = readdirSync(join(o.workspace, CASES)).sort();
+      writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - failed.length, failed }));
+      return { exit: 0, out: "", timedOut: false };
+    });
+    return done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  };
+  const clean = await run([]);
+  assert.deepEqual([clean.state, clean.receipt?.verdict, clean.capped], ["done", "pass", null]);
+  const miss = await run([{ file: "c0.json", want: "approve", got: "reject", reason: "said no" }]);
+  assert.deepEqual([miss.state, miss.receipt?.verdict], ["done", "fail"], "a genuine miss is still a verdict");
 });
 
 test("checks: a result that lists one failed case twice is malformed, never counted twice into the pass rule", async () => {
