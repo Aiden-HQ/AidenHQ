@@ -1,6 +1,6 @@
 ---
 name: task-replies
-description: Load when your run task says "Process replies on: <tasks>" - acting on the user's newest comments on their own tasks.
+description: "Load when your run task says \"Process replies on: <tasks>\" - acting on the user's newest comments on their own tasks."
 when: { fields: { name: Researcher } }
 ---
 
@@ -8,7 +8,7 @@ when: { fields: { name: Researcher } }
 
 For each task named in the run task, first read its newest agent comments and any task that supersedes it: the reply may already be actioned, and a superseded task gets one line saying so, not its choices again.
 
-1. `task_get` and `task_comments`; act on the user's comments since the last AidenHQ comment. "Attached: `name`" means files: read them with `task_files` and `task_file_read` first.
+1. `task_get` and `task_comments`; act on each user comment your own comments haven't answered (an agent comment about something else, such as a publish outcome, answers nothing). "Attached: `name`" means files: read them with `task_files` and `task_file_read` first.
 2. Act only on clear intent:
    - **Correction:** `task_update`; if the task came from a meeting, also `meeting_note_correct` (event ID from Source, exact wrong and right text).
    - **Bring it back on a date:** `task_schedule` with the calendar date (the run task has today's date) and column (default `today`, `top`); "never mind" is `clear: true`. Reply with the weekday, "It'll be at the top of Today on Thursday, Oct 15."
