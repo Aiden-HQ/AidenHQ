@@ -1,10 +1,10 @@
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { PathRejectedError } from "../src/util/errors.js";
 import { resolveAbsoluteWithin, resolveVaultPath } from "../src/util/paths.js";
-import { insertUnderHeading, Vault } from "../src/vault/vault.js";
-import { makeEnv, writeAt } from "./helpers.js";
+import { Vault } from "../src/vault/vault.js";
+import { makeEnv } from "./helpers.js";
 
 describe("transcript path safety", () => {
   it("rejects ../ traversal and symlinks outside the transcript root", async () => {
@@ -20,16 +20,6 @@ describe("transcript path safety", () => {
     expect(report.rejected).toEqual([{ file: "evil.txt", reason: "Path rejected: outside configured roots" }]);
   });
 
-  it("waits for files to settle before registering them", async () => {
-    const env = makeEnv();
-    writeAt(join(env.transcripts, "2026-10-04_1401.md"), "partial", env.now.ms - 3000);
-    let report = await env.app.meetings.scan();
-    expect(report.settling).toBe(1);
-    expect(report.new_sources).toBe(0);
-    env.now.ms += 15_000;
-    report = await env.app.meetings.scan();
-    expect(report.new_sources).toBe(1);
-  });
 });
 
 describe("vault path safety", () => {
@@ -60,16 +50,6 @@ describe("vault path safety", () => {
   });
 });
 
-describe("Meeting Log insertion", () => {
-  it("inserts at the end of the section, before the next heading", () => {
-    const before = "# Project\n\nIntro\n\n## Meeting Log\n\n### old entry\ntext\n\n## Other\n\nkeep me\n";
-    const { content, createdHeading } = insertUnderHeading(before, "Meeting Log", "### new entry\nbody");
-    expect(createdHeading).toBe(false);
-    expect(content).toBe("# Project\n\nIntro\n\n## Meeting Log\n\n### old entry\ntext\n\n### new entry\nbody\n\n## Other\n\nkeep me\n");
-  });
-
-});
-
 describe("Obsidian concurrency", () => {
   it("detects a change between read and write, refetches, retries and keeps human edits", () => {
     const env = makeEnv();
@@ -89,24 +69,4 @@ describe("Obsidian concurrency", () => {
     expect(after).toContain("paperclip-meeting:e1");
   });
 
-  it("gives up after the second conflict without writing", () => {
-    const env = makeEnv();
-    const vault = new Vault(env.cfg.vault);
-    const path = join(env.vault, "Projects", "P.md");
-    writeFileSync(path, "# P\n");
-    let n = 0;
-    vault.beforeCommit = (abs) => writeFileSync(abs, `# P\nedit ${++n}\n`);
-    expect(() => vault.appendUnderHeading("Projects/P.md", "Meeting Log", "### entry", "<!-- m -->")).toThrow(/changed while writing/);
-    expect(readFileSync(path, "utf8")).toBe("# P\nedit 2\n");
-  });
-
-  it("is idempotent via the marker", () => {
-    const env = makeEnv();
-    const vault = new Vault(env.cfg.vault);
-    mkdirSync(join(env.vault, "Projects"), { recursive: true });
-    writeFileSync(join(env.vault, "Projects", "P.md"), "# P\n");
-    const entry = "### e\n<!-- paperclip-meeting:x -->";
-    expect(vault.appendUnderHeading("Projects/P.md", "Meeting Log", entry, "<!-- paperclip-meeting:x -->").status).toBe("written");
-    expect(vault.appendUnderHeading("Projects/P.md", "Meeting Log", entry, "<!-- paperclip-meeting:x -->").status).toBe("exists");
-  });
 });

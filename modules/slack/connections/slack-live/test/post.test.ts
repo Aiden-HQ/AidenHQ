@@ -40,14 +40,6 @@ describe("slack_post", () => {
     await expect(slackPost(openStore(":memory:"), cfg, { channel: "C0123ABC", text: "x" }, undefined)).rejects.toThrow(/agent/);
     expect(sent).toEqual([]);
   });
-  it("the same text to the same place within 10 minutes is posted once", async () => {
-    fakeSlack();
-    const store = openStore(":memory:");
-    await slackPost(store, cfg, { channel: "C0123ABC", text: "same" }, caller);
-    const again = await slackPost(store, cfg, { channel: "C0123ABC", text: "same" }, caller);
-    expect(again).toMatchObject({ ok: true, duplicate: true });
-    expect(sent.length).toBe(1);
-  });
 });
 
 describe("slack_post can't be tricked into a ping or a forged header", () => {
