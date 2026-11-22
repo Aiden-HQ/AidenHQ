@@ -32,7 +32,7 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
     focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3,
     intent: `Fix refunds\r\n\r\nRefunds now go negative on purpose.\u0007${"x".repeat(3000)}` };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "intent", "pr", "previous"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "combo", "focus", "incremental_from", "intent", "pr", "previous"]);
   // The kernel's text kind (no control characters but newline and tab, at most 2000): a CRLF body never fails the run's start.
   assert.match(spec.intent, /^Fix refunds\n\nRefunds now go negative on purpose\.x+$/);
   assert.equal(spec.intent.length, 2000);

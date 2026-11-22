@@ -590,15 +590,15 @@ test("on a gated repo, `aiden review stop` (anyone posting as the owner can writ
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("4"), "codex/low"]]);
 });
 
-test("a mandatory review the install's spend limit refused stays queued past its retries, holds the merge saying why, and resumes when the limit allows", async () => {
+test("a mandatory review the install's spend limit refused stays queued, never counting its attempts, holds the merge saying why, and resumes when the wait is over", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));
   const refuse = (i) => w.results.set(`c-${i}`, { state: "failed", why: "the review produced no result: the install's spend limit was reached", billed_usd: 0 });
-  for (const [i, wait] of [[1, 60_000], [2, 240_000], [3, 960_000]]) { refuse(i); await w.tick({ github: false }); w.later(wait + 1); await w.tick({ github: false }); }
+  for (const i of [1, 2, 3]) { refuse(i); await w.tick({ github: false }); w.later(30 * 60_000 + 1); await w.tick({ github: false }); }
   refuse(4); await w.tick({ github: false });
   assert.equal(w.engine.runs({ repo: REPO }).find((r) => r.number === 2).status, "queued");
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["spend_limit"]);
-  w.later(3_840_001); await w.tick({ github: false });
+  w.later(30 * 60_000 + 1); await w.tick({ github: false });
   w.finish(4, NONE); await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
 });

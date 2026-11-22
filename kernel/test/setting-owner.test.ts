@@ -76,8 +76,8 @@ test("the shipped modules declare these rules: an agent's new fleet org or maint
   checkTyped({ kind: "setting", key: "github_fleet_org", value: "othercorp" }, { compiled: { settings: {}, agents: {} }, catalog: [{ name: "github", enabled: true, settings: { github_fleet_org: {} } }] });
 });
 
-test("raising a spend limit or the task cap is the owner's under every autonomy; unset is the default, and tightening is the panel's", () => {
-  const owner = (b, h) => applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify({ settings: b }) }, head: { "instance.yaml": YAML.stringify({ settings: h }) } }).some((p) => p.rule === "spend-cap" && p.ownerOnly);
+test("raising a spend limit or the task cap is merit 2 (the owner's with autonomy off) at any autonomy; unset is the default, and tightening is not", () => {
+  const owner = (b, h) => applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify({ settings: b }) }, head: { "instance.yaml": YAML.stringify({ settings: h }) } }).some((p) => p.rule === "spend-cap" && p.tier === 2);
   for (const [b, h] of [[{}, { spend_month_usd: 2000 }], [{}, { task_usd: 30 }], [{ spend_day_usd: 10 }, {}]]) assert.equal(owner(b, h), true, JSON.stringify([b, h]));
   for (const [b, h] of [[{}, { spend_day_usd: 50 }], [{}, { spend_month_usd: 500 }], [{ task_usd: 30 }, {}]]) assert.equal(owner(b, h), false, JSON.stringify([b, h]));
 });
