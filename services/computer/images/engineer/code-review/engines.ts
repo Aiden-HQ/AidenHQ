@@ -448,18 +448,25 @@ export function gitEnv(): Record<string, string> {
     GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.attributesFile", GIT_CONFIG_VALUE_0: "/dev/null" };
 }
 /** git over such a checkout (gitEnv), without textconv or external diff drivers when diffing. */
-export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> = {}, timeout?: number) {
-  return execFileSync("git", args, { cwd, timeout, encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv(), ...extraEnv }, stdio: ["ignore", "pipe", "ignore"] });
+export function gitSafe(cwd: string, args: string[], extraEnv?: Record<string, string>, timeout?: number): string;
+export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> | undefined, timeout: number | undefined, raw: true): Buffer;
+export function gitSafe(cwd: string, args: string[], extraEnv: Record<string, string> = {}, timeout?: number, raw = false): string | Buffer {
+  return execFileSync("git", args, { cwd, timeout, encoding: raw ? "buffer" : "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv(), ...extraEnv }, stdio: ["ignore", "pipe", "ignore"] });
 }
 
 /** The review's time was used up before it began to ask (the one allowance covers preparing the patch and the copy too). */
 export const PREP_TIMEOUT = "preparing the review ran out of time";
+/** A path that isn't valid UTF-8 can't be written under its own name into the review's copy. */
+export const NAMES = "the commit has file names that are not valid UTF-8, so its copy for the reviewer can't be made";
 /** The milliseconds left until `deadline`; throws when none are. */
 const timeLeft = (deadline: number) => { const ms = deadline - Date.now(); if (ms <= 0) throw new Error(PREP_TIMEOUT); return ms; };
 /** A git call within the deadline: a call cut off by it is the same timeout. */
-const gitBy = (deadline: number, root: string, args: string[], extraEnv?: Record<string, string>) => {
-  try { return gitSafe(root, args, extraEnv, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
-};
+function gitBy(deadline: number, root: string, args: string[], extraEnv?: Record<string, string>): string;
+function gitBy(deadline: number, root: string, args: string[], extraEnv: Record<string, string> | undefined, raw: true): Buffer;
+function gitBy(deadline: number, root: string, args: string[], extraEnv?: Record<string, string>, raw?: boolean): string | Buffer {
+  const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined;
+  try { return raw ? gitSafe(root, args, extraEnv, ms, true) : gitSafe(root, args, extraEnv, ms); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
+}
 
 /** How many characters of patch one request carries. */
 const BUDGET = 150_000;
@@ -506,8 +513,17 @@ export function patchGroups(root: string, base: string, files: string[], budget 
  */
 export async function snapshot(root: string, head: string, dir: string, deadline = Infinity) {
   mkdirSync(dir, { recursive: true });
-  const entries = gitBy(deadline, root, ["ls-tree", "-r", "-z", "--full-tree", head]).split("\0").filter(Boolean)
-    .flatMap((l) => { const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l); return m ? [{ exec: m[1] === "100755", sha: m[2]!, path: m[3]! }] : []; });
+  // The tree as bytes: a path that doesn't survive being text can't be written under its own name, so the copy isn't made (named).
+  const mangled: string[] = [];
+  const entries = gitBy(deadline, root, ["ls-tree", "-r", "-z", "--full-tree", head], undefined, true).toString("latin1").split("\0").filter(Boolean)
+    .flatMap((l) => {
+      const m = /^(100644|100755) blob ([0-9a-f]+)\t([\s\S]*)$/.exec(l);
+      if (!m) return [];
+      const raw = Buffer.from(m[3]!, "latin1"), path = raw.toString("utf8");
+      if (!Buffer.from(path, "utf8").equals(raw)) { mangled.push(JSON.stringify(path)); return []; }
+      return [{ exec: m[1] === "100755", sha: m[2]!, path }];
+    });
+  if (mangled.length) throw new Error(`${NAMES}: ${mangled.slice(0, 5).join(", ")}${mangled.length > 5 ? ", …" : ""}`);
   if (!entries.length) return;
   const bad = () => new Error("the commit's files could not be read");
   const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined; // checked before the process starts
@@ -517,6 +533,7 @@ export async function snapshot(root: string, head: string, dir: string, deadline
   child.stdin.end(`${entries.map((x) => x.sha).join("\n")}\n`);
   // The answers as they stream in, each checked (object id, type, size) and written to its file: nothing is held but a chunk.
   let buf = Buffer.alloc(0), i = 0, fd = -1, left = 0, nl = false;
+  const shut = () => { if (fd >= 0) { const f = fd; fd = -1; closeSync(f); } }; // exactly once, whichever path gets there first
   await new Promise<void>((ok, fail) => {
     child.stdout.on("data", (d: Buffer) => {
       try {
@@ -539,13 +556,12 @@ export async function snapshot(root: string, head: string, dir: string, deadline
           buf = buf.subarray(n);
           left -= n;
           if (left > 0) return;
-          closeSync(fd);
-          fd = -1;
+          shut();
           nl = true;
         }
-      } catch (err) { child.kill(); if (fd >= 0) closeSync(fd); fail(err); }
+      } catch (err) { child.kill(); shut(); fail(err); }
     });
-    child.on("close", (code) => (clearTimeout(timer), fd >= 0 && closeSync(fd), Date.now() >= deadline ? fail(new Error(PREP_TIMEOUT)) : code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
+    child.on("close", (code) => (clearTimeout(timer), shut(), Date.now() >= deadline ? fail(new Error(PREP_TIMEOUT)) : code === 0 && (i === entries.length || (nl && i + 1 === entries.length)) ? ok() : fail(bad())));
   });
 }
 
@@ -567,6 +583,7 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
     if (head) { cwd = join(scratch, "tree"); await snapshot(root, head, cwd, deadline); }
   } catch (err) {
     if ((err as Error).message === PREP_TIMEOUT) return { message: "", read: true, cause: PREP_TIMEOUT };
+    if ((err as Error).message.startsWith(NAMES)) return { message: "", read: true, cause: (err as Error).message };
     throw err;
   }
   const roots = [cwd.replace(/\/$/, ""), realpathSync(cwd)];
@@ -602,7 +619,9 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
       const keptAt = new Set(kept.map((f) => `${f.path}\n${f.line}`)); // what clean() rejected as malformed counts when the failure-scenario rule would keep it important
       const lost = important(downgrade(got.filter((f) => !keptAt.has(`${f.path}\n${f.line}`))).findings) + important(asked) - important(placed);
       if (lost > 0) failed.push(`part ${i + 1} of ${groups.length}: ${lost} important finding${lost === 1 ? "" : "s"} at a place that is not in the change`);
-      if (v!.overall_correctness === "patch is incorrect" && !got.length) failed.push(`part ${i + 1} of ${groups.length}: the verdict says the patch is incorrect, with no finding that could be read`);
+      // "Usable" is what is left after clean, the failure-scenario rule and place (a finding in a file the scope leaves out is accounted for).
+      const accounted = placed.length + downgrade(kept).findings.filter((f) => left.includes(f.path)).length;
+      if (v!.overall_correctness === "patch is incorrect" && !accounted) failed.push(`part ${i + 1} of ${groups.length}: the verdict says the patch is incorrect, with no finding that could be used`);
       else if (got.length < said) failed.push(`part ${i + 1} of ${groups.length}: ${said - got.length} finding${said - got.length === 1 ? "" : "s"} without a usable location`);
       continue;
     }

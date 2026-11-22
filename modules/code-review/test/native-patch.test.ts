@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { PREP_TIMEOUT, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
+import { NAMES, PREP_TIMEOUT, patchGroups, runEngine, snapshot } from "../recipe/engines.ts";
 import { place } from "../recipe/scope.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
@@ -298,4 +298,48 @@ test("preparing the patch and the copy is within the review's time: a deadline a
   assert.equal(r.message, "");
   assert.throws(() => patchGroups(repo, base, ["a.txt"], undefined, "HEAD", Date.now() - 1), new RegExp(PREP_TIMEOUT));
   await assert.rejects(snapshot(repo, head, join(mkdtempSync(join(tmpdir(), "snap-")), "o"), Date.now() - 1), new RegExp(PREP_TIMEOUT));
+});
+
+const lineZero = (path: string, body: string) => ({ findings: [{ title: "[P1] at line zero", body, confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: path, line_range: { start: 0, end: 0 } } }], overall_correctness: "patch is incorrect", overall_explanation: "x", overall_confidence_score: 0.9 });
+
+test("line 0: an incorrect verdict whose only finding clean() drops is incomplete through codexNative, with or without a failure scenario", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
+  for (const body of ["no scenario given", "Failure scenario: s(1) returns 2"]) {
+    const model = await endpoint([], undefined, lineZero(join(realpathSync(repo), "s.txt"), body));
+    try {
+      const r = await review(repo, base, ["s.txt"], model);
+      if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+      assert.match(String(r.incomplete), /part 1 of 1: .*(incorrect|important finding)/, body);
+    } finally { model.close(); }
+  }
+});
+
+test("line 0: self-review does not print clean for an incorrect verdict whose only finding is dropped", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const model = await endpoint([], undefined, lineZero("s.txt", "no scenario given"));
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    assert.equal(out.status, 2, out.stdout);
+    assert.match(out.stdout, /: incomplete$/m);
+    assert.doesNotMatch(out.stdout, /: clean/);
+  } finally { model.close(); }
+});
+
+test("a path that isn't valid UTF-8 makes the copy fail, named, instead of being written under a mangled name", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "snap-utf-")), repo = join(dir, "r");
+  mkdirSync(repo); sh(repo, "init", "-q");
+  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repo, input: "x\n", encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["mktree", "-z"], { cwd: repo, input: Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), Buffer.from([0x62, 0xff, 0x61]), Buffer.from("\0")]), encoding: "utf8" }).trim();
+  const commit = execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit-tree", tree, "-m", "x"], { cwd: repo, encoding: "utf8" }).trim();
+  await assert.rejects(snapshot(repo, commit, join(dir, "out")), (e: Error) => e.message.startsWith(NAMES) && e.message.includes("b"));
+  assert.equal(existsSync(join(dir, "out", "b\ufffda")), false);
 });
