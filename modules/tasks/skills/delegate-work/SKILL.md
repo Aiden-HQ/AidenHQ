@@ -61,7 +61,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
   its pages".
 - Image and CVE fixes are proven by the PR's image scan: in app repos built from the CI template the rubric says
   "`image-scan` green on the PR's head"; in the product repo, where the scan is advisory (always green, findings as its
-  error annotations), it says "`image-scan` on the PR's head reports no fixable high or critical CVE"; elsewhere it names the change and the PR carries the registry's
+  error annotations), it says "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere it names the change and the PR carries the registry's
   vulnerability data for the tag and digest it pins. What a Dockerfile's RUN steps install is proven by the deployed
   image's security scan.
 - One task per change: the Engineer publishes, merges and rebases its one PR. A change over about 2,000 changed lines
