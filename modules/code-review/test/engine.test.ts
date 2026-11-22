@@ -374,6 +374,43 @@ test("a notice is not marked sent unless its comment's id was recorded with it: 
   assert.equal(w.acks.length, 1);
 });
 
+test("the PR's slot is held while a posted acknowledgement's id is unsaved: the acknowledgement queued behind it cannot start a second one", async () => {
+  // The first acknowledgement is on the pull request and its write is read back with its comment's id, but recording that id
+  // fails. If the delivery released the PR's slot on that failure, the answer queued behind it (someone's `aiden review`) would
+  // start a second acknowledgement whose comment no record names, and no later notice could edit it in place.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // the notice's write is filed; its comment's id isn't known yet, so it holds the PR's slot
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1);
+  // The notice waits out a backoff, so the next look is the command's: its answer queues behind the notice's write.
+  w.db.prepare("UPDATE runs SET notice_due = ? WHERE notice_write = 'k-9'").run(w.now() + 3_600_000);
+  w.later(1000);
+  w.say(3, "alice", "aiden review");
+  await w.tick();
+  assert.equal(w.acks.length, 1, "the answer waits for the notice's slot");
+  // Its write is done with the comment it made, but recording the id fails: the slot must not be given up.
+  w.outcomes.set("k-9", { state: "posted", ack: 424 });
+  w.db.exec("CREATE TRIGGER no_ack BEFORE UPDATE OF ack ON prs BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE notice_write = 'k-9'").run();
+  w.later(1000);
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1, "no second acknowledgement while the first one's id is unrecorded");
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, null);
+  // The id can be recorded again: the notice is marked sent, and the queued answer then edits that same comment (it carries its id).
+  w.db.exec("DROP TRIGGER no_ack");
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, 424);
+  assert.equal(w.acks.length, 2);
+  assert.equal(w.acks[1].ack, 424);
+});
+
 test("a refusal's retry state and its deadline are written together, and a retry row a restart left without one is filed again, never stranded", async () => {
   const w = world();
   w.posts.pending = true;

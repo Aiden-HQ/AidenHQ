@@ -192,10 +192,15 @@ export function createEngine(d: EngineDeps) {
           if (write) run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
         });
       } catch (e) {
-        // Neither half landed: the notice is still pending with its write's id, so its next tick reads that record again and
-        // learns the comment's id. One half without the other is what would make a second acknowledgement.
+        // Neither half landed, and the comment on the pull request has no id recorded: the PR's slot stays taken by that comment's
+        // write, so a queued notice cannot start a second acknowledgement meanwhile. Its next read of the same record saves the id
+        // and releases the slot; an answer queued behind it goes then, editing the one comment, never making another.
         log("notice's comment id not recorded; the notice asks again", { repo, pr: n, err: String((e as Error).message).slice(0, 200) });
-        release(repo, n);
+        // The slot stays taken by that comment's write, whose record the next tick reads again to learn the id. Nothing was
+        // recorded to read back (no write): there is no comment to guard, so the slot is freed for whatever waits behind it.
+        const held = write ?? o?.write;
+        if (held) acking.set(held, { repo, number: n });
+        else release(repo, n);
         return false;
       }
     }
@@ -223,7 +228,7 @@ export function createEngine(d: EngineDeps) {
     // The PR's slot is taken now, before the call returns: a second notice meanwhile waits behind it.
     const slot = `slot:${randomBytes(6).toString("hex")}`;
     acking.set(slot, { repo: a.repo, number: a.number });
-    return d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o)), (e) => {
+    return d.poster.ack({ ...a, ack: ackOf(a.repo, a.number) }).then((o) => (acking.delete(slot), acked(a.repo, a.number, o, o?.write)), (e) => {
       acking.delete(slot);
       log("ack not posted", { repo: a.repo, pr: a.number, state: a.state, err: String((e as Error).message).slice(0, 200) });
       acked(a.repo, a.number, undefined);
@@ -701,7 +706,9 @@ export function createEngine(d: EngineDeps) {
       // The record that made this comment is kept on the row first: if recording its id below is lost (a crash, a full disk), the
       // next tick reads that same record back and learns the id, instead of filing a second acknowledgement comment.
       if (o.write && r.notice_write !== o.write) run("UPDATE runs SET notice_write = ? WHERE id = ?", o.write, r.id);
-      if (!acked(r.repo, r.number, o, o.write)) return void run("UPDATE runs SET notice_due = ? WHERE id = ?", now() + NOTICE_RETRY, r.id);
+      // The write that made the comment is this run's own when its outcome names none: the slot must stay under that id, or the
+      // next tick's guard (another notice holds the PR's slot) could block the very notice whose id is still unrecorded.
+      if (!acked(r.repo, r.number, o, o.write ?? mine ?? undefined)) return void run("UPDATE runs SET notice_due = ? WHERE id = ?", now() + NOTICE_RETRY, r.id);
       return void run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
     }
     // Its outcome says whether filing it again could change anything: a rejection or a cancel is final, a stale or failed
