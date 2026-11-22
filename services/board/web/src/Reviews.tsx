@@ -242,6 +242,8 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     />
   );
 
+  const connectBanner = <Banner tone="info">GitHub isn't connected, so pull request reviews can't run. <LinkButton variant="primary" href="#/settings/connections?connect=github">Connect GitHub</LinkButton></Banner>;
+
   return (
     <Page className="rv-page" label="Code review">
       {header}
@@ -261,12 +263,12 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
           Code review is off on this instance. Turn on the Code review module to get a review on every pull request. Nothing runs or spends until you pick a repo.
         </EmptyState>
       ) : runs === null ? (
-        !error && <div className="rv-loading" aria-busy="true" />
+        error ? !ready && connectBanner : <div className="rv-loading" aria-busy="true" />
       ) : !runs?.length && !batches.length && (!ready || !config?.repos.length) ? (
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
-          {!ready && <Banner tone="info">GitHub isn't connected, so pull request reviews can't run. <LinkButton variant="primary" href="#/settings/connections?connect=github">Connect GitHub</LinkButton></Banner>}
+          {!ready && connectBanner}
           <div>
             <Tabs label="Reviews views" tabs={TABS} value={tab} href={(t) => `#/reviews/${t}`} />
           </div>
