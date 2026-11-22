@@ -1,5 +1,5 @@
-// An agent's settings change (kernel.settings) that does what the setting's module makes the owner's is Tier 2, the owner's
-// under every autonomy; the same change from the owner's own settings page stays the panel's.
+// An agent's settings change (kernel.settings) that does what the setting's module makes the owner's is merit Tier 2 (labelled
+// so for the AI reviewer, which decides it); the same change from the owner's own settings page is merit Tier 1.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import YAML from "yaml";
@@ -17,8 +17,8 @@ const BASE = { repos: [{ repo: "acme/api", day_usd: 50 }], day_usd: 200 };
 const tierOf = (cr, byAgent = true, base = { code_review: BASE }) => highest(applyParts({ files: ["instance.yaml"], byAgent, settingDefs: defs,
   base: { "instance.yaml": YAML.stringify({ settings: base }) }, head: { "instance.yaml": YAML.stringify({ settings: { ...base, code_review: cr } }) } }));
 
-test("an agent's spend raise, wider reach or combo change is the owner's; other edits stay the panel's", () => {
-  const owner = (cr) => { const t = tierOf(cr); assert.equal(t.tier, 2, JSON.stringify(cr)); assert.equal(t.ownerOnly, true); };
+test("an agent's spend raise, wider reach or combo change is merit Tier 2; other edits merit Tier 1", () => {
+  const owner = (cr) => assert.equal(tierOf(cr).tier, 2, JSON.stringify(cr));
   owner({ ...BASE, day_usd: 300 });
   owner({ ...BASE, repos: [{ repo: "acme/api", day_usd: 80 }] });
   owner({ ...BASE, repos: [{ repo: "acme/api", day_usd: 50, forks: "auto" }] });
@@ -31,7 +31,7 @@ test("an agent's spend raise, wider reach or combo change is the owner's; other 
   assert.equal(tierOf({ ...BASE, repos: [{ repo: "acme/api" }] }, true, { code_review: { ...BASE, repos: [{ repo: "acme/api", day_usd: 20 }] } }).tier, 2);
   owner({ ...BASE, repos: [{ repo: "acme/api", day_usd: 50, on_open: [{ engine: "codex", model: "~m/big", effort: "medium", run_usd: 1 }] }] });
   owner({ ...BASE, repos: [{ repo: "acme/api", day_usd: 50, on_open: [{ engine: "codex", model: "~m/flash", effort: "medium", run_usd: 1 }, { engine: "claude-code", model: "~m/flash", effort: "high", run_usd: 2 }] }] });
-  // Within what was already allowed: the panel (Tier 1).
+  // Within what was already allowed: Tier 1.
   for (const cr of [{ ...BASE, day_usd: 100 }, { ...BASE, repos: [...BASE.repos, { repo: "acme/web" }] }, { ...BASE, repos: [{ repo: "acme/api", day_usd: 20 }] }, { ...BASE, repos: [{ repo: "acme/api", day_usd: 50, on_open: [{ engine: "codex", model: "~m/flash", effort: "medium", run_usd: 1 }] }] }])
     assert.equal(tierOf(cr).tier, 1, JSON.stringify(cr));
   // The owner's own change from the board: their authority already.

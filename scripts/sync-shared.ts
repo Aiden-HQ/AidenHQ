@@ -93,7 +93,7 @@ export function sharedCopies(root = repo) {
   // The changed files' shaping: the code host's plan shapes them for the reviewer, which (and its eval) reads this copy.
   "services/shared/review-files.ts": ["modules/ai-reviewer/service/src/review-files.ts", "modules/github/service/src/review-files.ts"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.
-  "modules/ci/template/.github/review-checklist.ts": ["modules/ai-reviewer/service/src/review-checklist.ts", "modules/code-review/recipe/review-checklist.ts"],
+  "modules/ci/template/.github/review-checklist.ts": ["modules/code-review/recipe/review-checklist.ts"],
   // The review core (the CI reviewer's codex runner, its brief and parse, and its read-only repo tools): CI's code-review job
   // and the code review module's recipe run the same code (canonical in the CI template, MIT, copied as is into app repos).
   ...Object.fromEntries(["code-review.ts", "review-tools.ts"].map((f) => [`modules/ci/template/.github/${f}`, [`modules/code-review/recipe/${f}`]])),

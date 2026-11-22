@@ -1,6 +1,9 @@
 // The channel's own state: key-values (tokens, card messages, offsets) and the reply-to-chat map.
 import Database from "better-sqlite3";
 
+/** What a pairing code did: paired this chat, was right but past its 15 minutes, or matched no live code. */
+export type TakePairCode = "paired" | "expired" | "wrong";
+
 export function openStore(path: string) {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -22,12 +25,13 @@ export function openStore(path: string) {
     codeClear.run();
     codeAdd.run(hash, expires);
   });
-  const takePairCode = db.transaction((hash: string, chatId: string, now: number): boolean => {
+  const takePairCode = db.transaction((hash: string, chatId: string, now: number): TakePairCode => {
     const row = codeTake.get(hash) as { expires: number } | undefined;
-    if (!row || row.expires < now) return false;
+    if (!row) return "wrong";
+    if (row.expires < now) return "expired";
     kvSet.run("owner_chat", chatId);
     kvSet.run("paired_at", new Date(now).toISOString());
-    return true;
+    return "paired";
   });
 
   return {
@@ -40,8 +44,8 @@ export function openStore(path: string) {
       kvSet.run("paired_at", new Date(now).toISOString());
     },
     putPairCode: (hash: string, expires: number): void => putPairCode(hash, expires),
-    /** Uses the code with this hash, if live, and makes chatId the owner chat. An expired code is used up too. */
-    takePairCode: (hash: string, chatId: string, now: number): boolean => takePairCode(hash, chatId, now),
+    /** Uses the code with this hash, if live, and makes chatId the owner chat. An expired code is used up too, and says so. */
+    takePairCode: (hash: string, chatId: string, now: number): TakePairCode => takePairCode(hash, chatId, now),
     getKv: (k: string): string | undefined => (kvGet.get(k) as { v: string } | undefined)?.v,
     /** Which chat task a message we sent belongs to, so a reply to it continues that chat. */
     setThread: (channel: string, chatId: string, messageId: string, issueId: string): void => void threadSet.run(channel, chatId, messageId, issueId),

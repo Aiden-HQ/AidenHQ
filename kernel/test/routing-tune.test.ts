@@ -103,12 +103,12 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
 }
 const REVERT = { metric: "blocked_rate", min_sample: 1, threshold: 0.5, deadline_days: 3 };
 
-test("autonomy off: the reviewer's yes goes on to the owner; the owner's no closes it and its content stays refused", async () => {
+test("autonomy off: the change is the owner's; his no closes it and its content stays refused", async () => {
   const w = world({ autonomy: "off" });
   const t = w.decide();
   const { base_sha } = await w.routing.evidence({});
   const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", weights: { continuity: 2 }, decisions: [t], hypothesis: "continuity matters", revert: REVERT });
-  const { record } = await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
+  const record = w.records.get(r.record);
   assert.equal(record.state, "owner");
   // The owner's no closes the experiment, and the team gets no other proposal for 3 days, whatever its values (no review
   // shopping); after that, the same change is still never filed again unchanged.
@@ -151,11 +151,11 @@ test("the one routing gate: only members' repos and weights move; anything else,
   const aliased = INSTANCE.replace("kai: { name: Kai }", "kai: &k { name: Kai, repos: [acme/api] }").replace("        repos: [acme/web]\n", "        repos: [acme/web]\n    defaults: *k\n");
   assert.ok("problem" in routingDiff(INSTANCE, aliased), "an alias");
   // The planner's rules: the loop's own commit, proven, is the reviewer's (routing-only), and one that moves more is refused;
-  // anyone else's teams change keeps its rule (the panel's), routing leaves included.
+  // anyone else's teams change keeps its rule, routing leaves included.
   const parts = (h, routingTune = true) => highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": INSTANCE }, head: { "instance.yaml": h }, routingTune }));
   const repos = head((t) => (t.members.kai.repos = ["acme/api"]));
-  assert.deepEqual([parts(repos).rule, parts(repos).tier, parts(repos).panel], ["routing-only", 1, undefined]);
-  assert.deepEqual([parts(repos, false).rule, parts(repos, false).panel], ["teams", true]);
+  assert.deepEqual([parts(repos).rule, parts(repos).tier], ["routing-only", 1]);
+  assert.equal(parts(repos, false).rule, "teams");
   assert.equal(parts(head((t) => (t.members.kai.model = "~x/y"))).reject, true);
 });
 

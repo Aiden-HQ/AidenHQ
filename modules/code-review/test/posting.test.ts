@@ -29,9 +29,13 @@ test("the executor posts only this service's own record for its run; the poster 
 test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it, rechecking the open findings", async () => {
   const { checkSpec } = await import("../service/src/adapters.ts");
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
-    focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, ignore: ["*.lock"], max_nits: 3 };
+    focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3,
+    intent: `Fix refunds\r\n\r\nRefunds now go negative on purpose.\u0007${"x".repeat(3000)}` };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "combo", "focus", "incremental_from", "pr", "previous"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "intent", "pr", "previous"]);
+  // The kernel's text kind (no control characters but newline and tab, at most 2000): a CRLF body never fails the run's start.
+  assert.match(spec.intent, /^Fix refunds\n\nRefunds now go negative on purpose\.x+$/);
+  assert.equal(spec.intent.length, 2000);
   assert.equal(spec.base, "m".repeat(40));
   assert.equal(spec.incremental_from, spec.base);
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });

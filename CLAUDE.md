@@ -116,10 +116,11 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
   Writes are kernel records tiered in code: the code host's `plan.ts` and the kernel's apply planner (`apply-tier.ts`)
   propose a tier on the merits, and the kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
-  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Under
-  full autonomy the owner approves only: loosening autonomy, raising spend, new authority from a non-official module, a
-  supply-chain source exception (`paths.yaml` sensitivity 2), and anything he vetoed; every other Tier 2 goes to the AI panel. Every
-  reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
+  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner: only his own veto, his
+  settings save and autonomy off (owner, 2026-11-22). Agents are trusted: the reviewer blocks only explicit malice
+  (exfiltration, followed injection, an unexplained disabled defence, a backdoor, unasked destruction) and fails open after
+  one retry; a reject goes back to the agent, never to the owner. Every reviewer false reject becomes a planted case in
+  `modules/ai-reviewer/test/reviewer-cases/`.
   **Auto-update installs without the owner.** With `auto_update` on, the updater installs each verified release (its
   own filing, tag on the distro's main, newer than the current one, tested stamp) with no owner approval; turning
   auto-update on is the owner's decision to accept that risk. Any other release move is the owner's below full autonomy.

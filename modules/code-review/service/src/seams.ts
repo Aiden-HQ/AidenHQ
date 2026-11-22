@@ -31,8 +31,8 @@ export type PullRequest = {
   fork: boolean; author: string; open: boolean; url: string;
   /** A closed PR that was merged. */
   merged?: boolean;
-  /** A stranger's words: shown as plain text, never in a task title or a prompt. */
-  title?: string;
+  /** A stranger's words: shown as plain text, never in a task title; title and body reach a review only fenced as data (intent). */
+  title?: string; body?: string;
 };
 /** A comment on a PR's conversation. Its body is a stranger's text. */
 export type PrComment = { id: string; number: number; author: string; body: string; created_at: string };
@@ -49,6 +49,10 @@ export interface PrSource {
   permission(repo: string, login: string): Promise<Permission>;
   /** GitHub's compare of two commits: their merge base, and whether `head` is ahead of `base` (base is then its ancestor). */
   compare(repo: string, base: string, head: string): Promise<{ merge_base: string; status: "ahead" | "behind" | "identical" | "diverged" }>;
+  /** A fingerprint of the PR's own change at `head` (GitHub's diff of `base`...`head`: each file's status, name and patch,
+   * hunk headers included), or null when GitHub can't show all of it (a file without a patch, 300 files or more). Two heads with
+   * the same fingerprint over their own merge bases make the same change: a bare rebase. */
+  patchId(repo: string, base: string, head: string): Promise<{ id: string | null }>;
   /** The PR's merge base with `head` (what the PR changes), open or merged: never the PR's recorded base sha, which goes stale. */
   mergeBase(repo: string, number: number, head: string): Promise<{ merge_base: string }>;
   /** Who a review on the repo would post as: the owner's sign-in once GitHub is connected; null: nobody. */
@@ -67,6 +71,8 @@ export type ReviewSpec = {
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
+  /** The PR's title and description (its author's words, fenced as data in the brief): what it states as intended. "" for a fork's. */
+  intent: string;
   /** The PR's still-open findings, rechecked at this head and given to the finders as already reported (the batch's first
    * mandatory run, else its first). `gating`: an important one a mandatory run found, rechecked whatever the change touched;
    * `claim`: one closed by an answer on its thread, rechecked only for a fix or reason that is unsafe. */

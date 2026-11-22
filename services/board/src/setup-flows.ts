@@ -6,6 +6,9 @@ import { z } from "zod";
 import { AccountError, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import type { Store } from "./store.js";
 
+/** A pair code's life when the channel doesn't say: the 15 minutes every pairing module keeps. */
+export const PAIR_CODE_TTL_S = 15 * 60;
+
 /** One compiled flow (modules/board/schemas/setup_flows.json) plus the module's name; `pair_token` names a secret. */
 export interface SetupFlowPoint {
   module: string;
@@ -247,8 +250,10 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         if (!who.account.owner) throw new AccountError(403, "only the owner can pair a channel");
         // minted_at (the board's clock, like the service's paired_at): a pairing after it is this code's, so a re-pair shows.
         const minted_at = Date.now();
-        const { code, link } = (await pairCall(flow(m[1]!), "POST")) as { code?: string; link?: string };
-        return { code, ...(link ? { link } : {}), minted_at };
+        const { code, link, expires_in } = (await pairCall(flow(m[1]!), "POST")) as { code?: string; link?: string; expires_in?: number };
+        // How many seconds the code lives, as the channel keeps it: the page times its screen by this, not by a copy or a clock.
+        const ttl = typeof expires_in === "number" && expires_in > 0 ? Math.round(expires_in) : PAIR_CODE_TTL_S;
+        return { code, ...(link ? { link } : {}), minted_at, expires_in: ttl };
       },
     },
     {

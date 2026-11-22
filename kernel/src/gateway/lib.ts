@@ -648,7 +648,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const tap = usageTap(sse);
     const text = new TextDecoder();
     // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger. A stream that goes quiet
-    // for streamIdleMs is cut: its reservation is settled (and trued up from OpenRouter's record) instead of held for minutes.
+    // for streamIdleMs is cut: it is settled at its reservation (fail closed; only restart-closed calls are trued up from OpenRouter's record) instead of held for minutes.
     let status = "upstream_aborted";
     let idle: NodeJS.Timeout | undefined;
     const poke = () => { clearTimeout(idle); idle = setTimeout(() => attempt.abort(new Error("the answer's stream went quiet")), streamIdleMs); };

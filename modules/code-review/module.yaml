@@ -29,7 +29,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 180
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, previous: json, intent: text }
     model: true
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is

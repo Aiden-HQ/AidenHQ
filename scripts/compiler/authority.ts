@@ -1,7 +1,6 @@
 // The authority diff (spec §5.7): what a module change hands out that it did not before, read from its manifest and its
-// code diff, never from its own description. Every module change goes to the AI reviewer first; a change marked `owner`
-// (new authority) then goes to the owner too, with the reviewer's verdict on the card. Under full autonomy only the
-// `ownerOnly` ones do (tier.ts computeTier): new authority from a module that isn't official, and new spend from any.
+// code diff, never from its own description. Every module change goes to the AI reviewer, which reads these lines (new
+// authority marked `owner`, a module that isn't official's or new spend `ownerOnly`, listed first) and blocks only malice.
 // Pure: callers read the manifests.
 //
 // Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
@@ -14,7 +13,7 @@ import { heir } from "../../kernel/src/successor.ts";
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
 /**
- * `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). `spend`: a
+ * `ownerOnly`: new authority from a module that isn't official, or new spend (listed first for the reviewer). `spend`: a
  * spend or limit increase, which the card names as one.
  */
 export type Change = { what: string; owner: boolean; ownerOnly?: true };
@@ -389,20 +388,18 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   return { module: name, changes, code: codeChanged, ...(official ? { official: true as const } : {}) };
 }
 
-export type Classified = { tier: 1 | 2; panel: boolean; rule: "module-authority" | "module-config"; reason: string; reviewFirst: boolean; ownerOnly?: true };
+export type Classified = { tier: 1 | 2; rule: "module-authority" | "module-config"; reason: string };
 
 /**
- * The tier of a set of module changes: AI review always, first; the owner after it when any change is new authority
- * (`ownerOnly` when one of those is the owner's under every autonomy; those lines come first in the reason).
+ * The tier of a set of module changes (the AI reviewer's either way): 2 when any change is new authority, its lines first in
+ * the reason (`ownerOnly` ones first of all).
  */
 export function classifyModules(diffs: ModuleDiff[]): Classified {
   const lines = (only: boolean) => diffs.flatMap((d) => d.changes.filter((c) => c.owner && Boolean(c.ownerOnly) === only).map((c) => `${d.module}: ${c.what}`));
   const owners = [...lines(true), ...lines(false)];
-  const ownerOnly = diffs.some((d) => d.changes.some((c) => c.ownerOnly));
-  const panel = diffs.some((d) => d.code);
   const all = owners.length ? owners : diffs.map((d) => `${d.module}: ${d.changes.map((c) => c.what).join(", ")}`);
   const reason = `${owners.length ? "new module authority" : "module changes without new authority"}: ${all.slice(0, 8).join("; ")}${all.length > 8 ? `; and ${all.length - 8} more` : ""}`;
-  return owners.length ? { tier: 2, panel, rule: "module-authority", reason, reviewFirst: true, ...(ownerOnly ? { ownerOnly: true as const } : {}) } : { tier: 1, panel, rule: "module-config", reason, reviewFirst: false };
+  return owners.length ? { tier: 2, rule: "module-authority", reason } : { tier: 1, rule: "module-config", reason };
 }
 
 /** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */

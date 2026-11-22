@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { plain, readSmall, run, stopped } from "./proc.ts";
 
 /** A finding in the finder JSON the recipe takes (the recipe adds each finding's option and lens). */
-export interface DeepsecFinding { severity: "important" | "nit"; path: string; line: number; title: string; why: string; evidence: string; fix_brief: string }
+export interface DeepsecFinding { severity: "important" | "nit"; path: string; line: number; title: string; failure_scenario: string; why: string; evidence: string; fix_brief: string }
 export interface DeepsecInput {
   /** base: what a change is diffed from (the last reviewed head on an incremental review); trusted: the merge base, where its
    * summary (INFO.md) is read from. */
@@ -72,7 +72,9 @@ export function readRecords(dir: string) {
     (r.status === "analyzed" ? covered : pending).push(r.filePath);
     for (const f of r.findings ?? []) {
       if (RESOLVED.includes(String(f.revalidation?.verdict))) continue;
-      findings.push({ severity: deepsecSeverity(f.severity), path: r.filePath, line: Number.isInteger(f.lineNumbers?.[0]) ? f.lineNumbers![0]! : 1, title: String(f.title ?? ""), why: String(f.description ?? ""), evidence: "", fix_brief: String(f.recommendation ?? "") });
+      findings.push({ severity: deepsecSeverity(f.severity), path: r.filePath, line: Number.isInteger(f.lineNumbers?.[0]) ? f.lineNumbers![0]! : 1, title: String(f.title ?? ""),
+        // Its description is the exploit it revalidated: the failure scenario an important finding needs (review.ts).
+        failure_scenario: String(f.description ?? ""), why: "", evidence: "", fix_brief: String(f.recommendation ?? "") });
     }
   }
   return { findings, covered, pending };

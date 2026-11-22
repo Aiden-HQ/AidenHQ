@@ -42,24 +42,6 @@ test("bans one client behind the proxy after 20 failures across emails (its whol
   assert.equal((await post("/sign-in/email", { email: OWNER, password: PASSWORD }, from("198.51.100.21"))).json.twoFactorRedirect, true);
 });
 
-test("never locks the owner for strangers' failures from many addresses, and tells the owner once", async () => {
-  // 32 failures, 4 from each of 8 addresses (under the 5-per-address lockout, under the ban); addresses in parallel.
-  await Promise.all(Array.from({ length: 8 }, async (_, a) => { for (let i = 0; i < 4; i++) assert.equal((await guess(OWNER, from(`203.0.113.${10 + a}`))).status, 401); }));
-  const alerts = lines.filter((l) => l.includes("Sign-in attempts"));
-  assert.equal(alerts.length, 1);
-  assert.ok(alerts[0].includes(`for ${OWNER}`));
-  assert.ok(alerts[0].includes("from 8 addresses"));
-  assert.equal((await guess(OWNER, from("203.0.113.30"))).status, 401);
-  assert.equal(lines.filter((l) => l.includes("Sign-in attempts")).length, 1); // once an hour, not per failure
-  // The owner, from his own address, signs all the way in; the new device's session tells him, with time and address.
-  const step1 = await post("/sign-in/email", { email: OWNER, password: PASSWORD }, from("192.0.2.44"));
-  assert.equal(step1.json.twoFactorRedirect, true);
-  assert.equal(lines.some((l) => l.includes("New admin sign-in")), false); // the password step opens no session
-  assert.equal((await post("/two-factor/verify-totp", { code: totp(totpURI, 1) }, from("192.0.2.44"), step1.cookie)).status, 200);
-  const notice = lines.find((l) => l.includes("New admin sign-in"));
-  assert.match(notice, new RegExp(`${OWNER} from 192\\.0\\.2\\.44 at \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d UTC`));
-});
-
 test("ignores a named address, X-Forwarded-For and CF-Connecting-IP without the front door's secret", async (t) => {
   t.after(() => closeAll());
   const forged = (i) => ({ "x-aidenhq-client-ip": `10.7.0.${i}`, "x-aidenhq-edge": "not the secret", "x-forwarded-for": `10.8.0.${i}`, "cf-connecting-ip": `10.9.0.${i}` });

@@ -259,7 +259,7 @@ test("a graded assignee's task with no check covering it passes with a note; a c
 
 test("an undecided approval card of the task refuses the close, whatever the checks say; once decided or run, the same finish passes", async (t) => {
   const card = { sentence: "Post the note.", changes: "", reads: "", cost: "", details: "" };
-  const file = (k, state, task = TASK) => k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "post", arguments: { note: state } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 1, panel: false, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task, state });
+  const file = (k, state, task = TASK) => k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "post", arguments: { note: state } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 1, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task, state });
   for (const state of ["review", "owner"]) {
     // No module check installed either: the gate holds its own line.
     for (const checks of [undefined, {}]) {

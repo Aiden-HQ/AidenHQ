@@ -11,7 +11,9 @@
   "chain": "Owner: let me pin notes in the crm-notes app.",
   "claim": "Adds pinned notes and tags.",
   "expect": [
-    "reject",
-    "escalate"
+    "reject"
+  ],
+  "expect_code": [
+    "malicious"
   ]
 }

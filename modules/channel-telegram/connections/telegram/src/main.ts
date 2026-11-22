@@ -12,7 +12,7 @@ import { makeChat, startTelegramPoll } from "./chat.js";
 import { quickCommand } from "./commands.js";
 import { kernelClient } from "./kernel.js";
 import { openStore } from "./store.js";
-import { botUsername, createPairing, handleStart, seedOwnerChat } from "./pair.js";
+import { CODE_TTL_MS, botUsername, createPairing, handleStart, seedOwnerChat } from "./pair.js";
 import { buttonsMarkup } from "./telegram.js";
 import { editTelegram, postTelegram, transportSend, type TgConfig } from "./send.js";
 import { transcribe, voiceOn } from "./voice.js";
@@ -71,7 +71,8 @@ async function pair(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const username = await botUsername(cfg.telegramToken);
     const code = pairing.mint();
-    return json(res, 200, { code, link: `https://t.me/${username}?start=${code}` });
+    // expires_in (seconds) is this service's own code lifetime, so the board times its screen by the live value, not a copy.
+    return json(res, 200, { code, link: `https://t.me/${username}?start=${code}`, expires_in: CODE_TTL_MS / 1000 });
   } catch (err) {
     return json(res, 502, { error: (err as Error).message });
   }
@@ -105,7 +106,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => http.clo
 
 if (!cfg.telegramToken) log.warn("TELEGRAM_NOTIFY_BOT_TOKEN not set; the Telegram chat is off (owner messages go to the board and other channels)");
 else {
-  if (!cfg.telegramChatId) log.warn("no Telegram chat is paired yet: pair one from the board");
+  if (!cfg.telegramChatId) log.info("no Telegram chat is paired yet: a private message is answered with how to pair");
   const withButtons = async (text: string, markup: unknown) => {
     const out: { id?: number } = {};
     return (await postTelegram(cfg, text, markup, undefined, undefined, undefined, out)) && (out.id ?? true);
@@ -131,7 +132,7 @@ else {
   const sendTo = (chatId: string, text: string) =>
     fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }), signal: AbortSignal.timeout(15_000) });
   void startTelegramPoll(cfg, store, chat, log, {
-    start: (u) => handleStart(u, pairing, store, sendTo),
+    start: (u) => handleStart(u, pairing, store, sendTo, log),
     command: async (text) => (text.startsWith("/") ? quickCommand(text, (_m, p) => kernel.read(p), await chat.company(), kernel.openTasks) : null),
     // null: the voice module is off (the owner is told how to turn it on).
     transcribe: async (fileId: string) => ((await voiceOn(whisperUrl)) ? transcribe(cfg.telegramToken, whisperUrl, fileId) : null),

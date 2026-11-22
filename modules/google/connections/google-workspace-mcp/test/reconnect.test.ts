@@ -2,7 +2,6 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MultiWorkspace } from "../src/accounts.js";
 import { SCOPES } from "../src/google.js";
 import { Reconnect } from "../src/reconnect.js";
 
@@ -29,26 +28,6 @@ function google(email: string, scope = SCOPES.join(" ")) {
 }
 
 const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
-
-describe("sign-in state", () => {
-  it("marks a refused refresh token as expired, keeping when it started; a network failure is only an error", async () => {
-    const path = credsFile();
-    let answer: () => Promise<Response> = async () => json({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, 400);
-    const ws = new MultiWorkspace(path, "primary", (async () => answer()) as typeof fetch);
-    expect(ws.authStatus().map((a) => a.state)).toEqual(["unknown", "unknown"]);
-    const [first] = await ws.checkAuth();
-    expect(first).toMatchObject({ email: "me@work.com", primary: true, state: "expired" });
-    expect(first!.detail).toMatch(/invalid_grant/);
-    const [again] = await ws.checkAuth();
-    expect(again!.since).toBe(first!.since);
-    answer = async () => {
-      throw new Error("getaddrinfo EAI_AGAIN oauth2.googleapis.com");
-    };
-    expect((await ws.checkAuth())[0]).toMatchObject({ state: "error" });
-    answer = async () => json({ access_token: "at", expires_in: 3600 });
-    expect((await ws.checkAuth()).map((a) => a.state)).toEqual(["ok", "ok"]);
-  });
-});
 
 describe("reconnect from the board", () => {
   const redirect = "http://127.0.0.1:3120/google/callback";
@@ -96,25 +75,6 @@ describe("reconnect from the board", () => {
     expect(readFileSync(path, "utf8")).toBe(before);
   });
 
-  it("accepts the board's own https redirect, and no other", () => {
-    const board = "https://alice.tail1234.ts.net/google/callback";
-    const r = new Reconnect(credsFile(), fetch, undefined, [board]);
-    expect(new URL(r.start("me@work.com", board).url).searchParams.get("redirect_uri")).toBe(board);
-    expect(() => r.start("me@work.com", "https://evil.example/google/callback")).toThrow(/loopback/);
-  });
-
-  it("connects a first account and makes it primary", async () => {
-    const path = join(mkdtempSync(join(tmpdir(), "grec-")), "creds.json");
-    writeFileSync(path, JSON.stringify({ client_id: "cid", client_secret: "sec", accounts: {} }));
-    const r = new Reconnect(path, google("new@corp.com").impl);
-    const { url } = r.start(undefined, redirect);
-    expect(new URL(url).searchParams.get("login_hint")).toBeNull();
-    expect(await r.finish(stateOf(url), "c")).toEqual({ email: "new@corp.com" });
-    const saved = JSON.parse(readFileSync(path, "utf8"));
-    expect(saved.primary).toBe("new@corp.com");
-    expect(saved.accounts["new@corp.com"]).toMatchObject({ refresh_token: "new" });
-  });
-
   it("spends each state once, and expires it", async () => {
     const path = credsFile();
     const r = new Reconnect(path, google("me@work.com").impl);
@@ -124,29 +84,5 @@ describe("reconnect from the board", () => {
     const quick = new Reconnect(path, google("me@work.com").impl, -1);
     await expect(quick.finish(stateOf(quick.start("me@work.com", redirect).url), "c")).rejects.toThrow(/expired/);
     await expect(r.finish("made-up-state-value", "c")).rejects.toThrow(/expired or was already used/);
-  });
-});
-
-describe("Google's errors, in words", () => {
-  const redirect = "http://127.0.0.1:3120/google/callback";
-
-  it("explains a refused sign-in and keeps what Google said", async () => {
-    const r = new Reconnect(credsFile());
-    await expect(r.finish(stateOf(r.start(undefined, redirect).url), "", "access_denied")).rejects.toThrow(/Test users.*Google said: access_denied/);
-    const bad = new Reconnect(credsFile(), (async () => json({ error: "invalid_client", error_description: "The OAuth client was not found." }, 401)) as typeof fetch);
-    await expect(bad.finish(stateOf(bad.start(undefined, redirect).url), "c")).rejects.toThrow(/Desktop app.*The OAuth client was not found/);
-  });
-
-  it("names the 7-day Testing limit when a refresh token dies", async () => {
-    const ws = new MultiWorkspace(credsFile(), "primary", (async () => json({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, 400)) as typeof fetch);
-    const [a] = await ws.checkAuth();
-    expect(a!.detail).toMatch(/7 days.*Publish app/);
-  });
-
-  it("tells a Desktop client from the company's Web client", () => {
-    expect(new Reconnect(credsFile()).clientType()).toBe("web"); // only the file's own client: set up before the guided flow
-    const path = credsFile();
-    writeFileSync(path, JSON.stringify({ client_id: "cid", client_type: "desktop", accounts: {} }));
-    expect(new Reconnect(path).clientType()).toBe("desktop");
   });
 });

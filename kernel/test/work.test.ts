@@ -52,7 +52,7 @@ test("a task's read carries its status as the wake scan last saw it, null when i
 test("a task's read carries an apply's card diff (its grader's APPLY_CHANGE) and no other kind's card details", () => {
   const { work, records } = setup();
   const card = (details) => ({ sentence: "s", changes: "c", reads: "r", cost: "none", details });
-  const file = (kind, details) => records.file({ kind, module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, panel: false, card: card(details), requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "job" }, task: "t1", state: "review" });
+  const file = (kind, details) => records.file({ kind, module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, card: card(details), requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "job" }, task: "t1", state: "review" });
   const apply = file("kernel.apply", "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n");
   const cap = file("acme.post", "note: hello");
   const rows = work.task("t1").records;
@@ -122,13 +122,13 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   assert.deepEqual(a.jobs.map((j) => [j.id, j.state, j.exit, j.steps]), [["j-2", "running", null, 0], ["j-1", "failed", 1, 2]]);
   assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 2, priced: 1 }]);
   assert.equal((await get("/v1/work?since=yesterday")).status, 400);
-  // A reviewer rejection of a branch is `judged` and names its branch; code's own refusal (a moved head) is not judged.
-  const file = (args) => records.file({ kind: "runner.pr", module: "runner", args, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, panel: false, card: {}, requester: { agent: "", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state: "review" });
+  // A reviewer's malice rejection is `judged`; code's own refusal (a moved head) is not.
+  const file = (args) => records.file({ kind: "runner.pr", module: "runner", args, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, card: {}, requester: { agent: "", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state: "review" });
   const [judged, stale] = [file({ only: [{ repo: "acme/app", branch: "feat-a" }] }), file({ only: [{ repo: "acme/app", branch: "feat-b" }] })];
-  records.db.prepare("UPDATE records SET state = 'rejected', decided_by = 'reviewer:m', review_code = ? WHERE id = ?").run("out_of_scope", judged.id ?? judged);
+  records.db.prepare("UPDATE records SET state = 'rejected', decided_by = 'reviewer:m', review_code = ? WHERE id = ?").run("malicious", judged.id ?? judged);
   records.db.prepare("UPDATE records SET state = 'rejected', decided_by = 'reviewer:m', review_code = ? WHERE id = ?").run("stale_head", stale.id ?? stale);
   const rows = (await (await get("/v1/work?since=2000-01-01T00:00:00Z")).json()).records;
-  assert.deepEqual(rows.map((r) => [r.judged, r.targets]), [[true, ["acme/app|feat-a"]], [false, ["acme/app|feat-b"]]]);
+  assert.deepEqual(rows.map((r) => r.judged), [true, false]);
 });
 
 test("activity: waiting counts the wakes that could start now (open and due, or lease-expired) of agents with no live job, and says when a job last started", () => {
@@ -155,7 +155,7 @@ test("an agent's timeline: each job's wake and who caused it, why it ended, its 
   const fact = (subject, type, data) => records.db.prepare("INSERT INTO facts (id, type, subject, version, task, at, seen_at, actor, data) VALUES (?, ?, ?, 'v', 't1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'kernel', ?)").run(`${subject}|${type}`, type, subject, JSON.stringify(data));
   fact("wake:comment:c1", "wake.opened", { cause: "comment", author: "account:owner-1" });
   fact("job:j-1", "job.ended", { state: "failed", why: "the engine exited 1", cost_usd: 0.42 });
-  const rec = records.file({ kind: "runner.pr", module: "runner", args: {}, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, panel: false, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t1", state: "review" });
+  const rec = records.file({ kind: "runner.pr", module: "runner", args: {}, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t1", state: "review" });
   const [running, failed] = work.agent("a1").jobs;
   assert.deepEqual([failed.identifier, failed.cause, failed.caused_by, failed.cost_usd, failed.error, failed.writes], ["ACME-1", "comment", "account:owner-1", 0.42, "the engine exited 1", []]);
   assert.deepEqual([running.cause, running.cost_usd, running.error, running.writes.map((w) => [w.id, w.kind, w.tier, w.state])], [null, null, null, [[rec.id, "runner.pr", 1, "review"]]], "a record filed while the job runs is its; no cost until it ends");

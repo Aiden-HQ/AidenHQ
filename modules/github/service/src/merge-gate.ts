@@ -122,7 +122,7 @@ export function decide(data: Json, head: string, { uiReview, designAdvisory }: {
   if (pr.state !== "OPEN") return { do: "fail", why: "closed" };
   const def = data.repository.defaultBranchRef?.name;
   if (!def || pr.baseRefName !== def) return { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
-  if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): ask for its merge again at the new head` };
+  if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): for an agent's PR the queue files its merge again at the new head once its checks are green, so there is nothing to do; any other PR needs a new merge request` };
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
   if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: "fail", why: "changes are requested on it" };
   if (pr.isDraft) return { do: "fail", why: "it is a draft" };

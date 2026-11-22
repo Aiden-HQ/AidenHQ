@@ -198,8 +198,8 @@ interface CommentRow { authorType?: string; authorAgentId?: string | null; body?
 interface WorkRecord { task: string | null; identifier: string | null; state?: string; judged?: boolean; targets?: string[]; decided_at: string | null; created_at?: string }
 
 const HOUR_MS = 60 * MIN;
-// n = the kernel's MAX_REJECTS (tier.ts): the point where a branch is parked and the kernel wakes the task's delegator
-// (escalate.ts); a park nothing moved for quietMs (no new request on the task) is the Steward's to settle. An hour is the
+// n malice rejections (the reviewer rejects only malice, tier.ts MALICE) on one task with nothing approved since, quiet for
+// quietMs (no new request on the task): the Steward's to look at, a possibly compromised agent. An hour is the
 // judgement rule's window too: a delegator that re-briefs does so within its own woken run, so an hour of quiet means nobody will.
 const REJECT_LOOP = { n: 5, windowMs: 7 * DAY_MS, quietMs: HOUR_MS };
 /** A record someone said yes to (the kernel's record states past approval). */

@@ -34,7 +34,7 @@ function instance(modules, marketplaces) {
 }
 const fetch = () => ({ cacheDir: mkdtempSync(join(tmpdir(), "sources-")), parse: (t) => YAML.parse(t) });
 
-test("the twin installs from a throwaway local marketplace (unknown marketplace.json fields load): owner after review, tier shown", () => {
+test("the twin installs from a throwaway local marketplace (unknown marketplace.json fields load): reviewed, tier shown", () => {
   const m = marketplace();
   const entry = [{ name: "acme", source: { source: "url", url: m.dir }, sha: m.sha }];
   const f = fetch();
@@ -53,7 +53,7 @@ test("the twin installs from a throwaway local marketplace (unknown marketplace.
     "twin: adds engine twin",
     "twin: code changes",
   ]);
-  assert.deepEqual([classifyModules(diffs).tier, classifyModules(diffs).reviewFirst, classifyModules(diffs).panel], [2, true, true], "new code runs: the panel first");
+  assert.equal(classifyModules(diffs).tier, 2, "new authority");
 
   // An update without new authority (the engine's code changes): the AI reviewer alone.
   writeFileSync(join(m.dir, "twin/bin/engine"), "#!/usr/bin/env node\n// v2\n");
@@ -61,7 +61,7 @@ test("the twin installs from a throwaway local marketplace (unknown marketplace.
   const next = [{ ...entry[0], sha: git(m.dir, "rev-parse", "HEAD") }];
   const up = withRemote({ baseInstance: hi, headInstance: { ...hi, marketplaces: next }, baseDefs: {}, headDefs: {}, changed: [] }, f);
   const upd = [...marketplaceChanges(hi, { ...hi, marketplaces: next }), ...diffAll(moduleInputs(up))];
-  assert.deepEqual([classifyModules(upd).tier, classifyModules(upd).panel], [1, true]);
+  assert.equal(classifyModules(upd).tier, 1);
   assert.match(classifyModules(upd).reason, /module changes without new authority: .*twin: now from acme at \w{12} \(tier declared\), code changes/);
   // The reviewer reads the code itself: the card's diff carries the module's git diff.
   const text = remoteCodeText(hi, { ...hi, marketplaces: next }, f);

@@ -15,9 +15,9 @@ export type DecideSetting = "all" | "standard" | "none";
 const plain = (s: string, n: number) => clip(s.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link removed]").replace(/[\\`*_[\]()~>#|<!]/g, "\\$&"), n);
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-/** Whether the owner may decide this card here: `standard` keeps Tier 2 panel cards and applies (installs) for the board. */
-export function decidable(c: Pick<Card, "panel" | "kind">, setting: DecideSetting): boolean {
-  return setting === "all" || (setting === "standard" && !c.panel && c.kind !== "apply" && c.kind !== "kernel.apply");
+/** Whether the owner may decide this card here: `standard` keeps applies (installs) for the board. */
+export function decidable(c: Pick<Card, "kind">, setting: DecideSetting): boolean {
+  return setting === "all" || (setting === "standard" && c.kind !== "apply" && c.kind !== "kernel.apply");
 }
 
 /** An exact typed reply: "apply WOR-184", "approve WOR-184" or "reject WOR-184" (any case, one trailing . or !). */

@@ -267,7 +267,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a graded commit hasn't scrolled out.
       deploys: store.recentDeploys(app.name, 20).map(({ sha, at, by, status }) => ({ sha, at, by, status })),
       // Its open PRs' previews (previews.ts): reviewers may open them; nothing depends on them.
-      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)) })),
+      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)), ...(r.reason ? { reason: r.reason } : {}) })),
       ...(inc ? { incident: { opened_at: inc.opened_at, kind: inc.kind, detail: inc.detail } } : {}),
       ...(stats ? { stats } : {}),
     };
@@ -275,7 +275,11 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
 
   // Before the first health tick the row is still identified (repo and auto_deploy), so a reader can match it to its app.
   const cached = (app: App) => cache.get(app.name) ?? { name: app.name, repo: app.repo, auto_deploy: app.auto_deploy, healthy: false, state: "unknown" };
-  const refresh = async (app: App) => void cache.set(app.name, await status(app));
+  // The cache feeds /internal/status, which has no per-caller app check: a PR's failure text stays out of it.
+  const refresh = async (app: App) => {
+    const row = await status(app);
+    cache.set(app.name, { ...row, previews: row.previews.map(({ reason: _reason, ...p }) => p) });
+  };
 
   /** Registry plus (cached) status, for the catalog. */
   async function listing() {

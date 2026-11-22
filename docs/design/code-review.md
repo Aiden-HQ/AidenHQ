@@ -88,12 +88,13 @@ PR state, not config.
 The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
-rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR's opening
-moment (`on_open`, or `aiden review`) completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
+rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR (but a one-off)
+completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
-retries by itself (a mandatory one up to three times, 1, 4 and 16 minutes later; any other once, a minute later); a check that
+retries by itself a minute later (a mandatory one up to three times, any other once); a check that
 failed before it got a computer spent nothing. A run's model calls count against the install's spend limit like any call (the
-gateway's 402 past it; a mandatory run waiting on it shows "install spend limit reached" in the verdict); a run whose PR moved on or closed while it ran is
+gateway's 402 past it: the run waits 30 minutes, its attempt not counted, and a mandatory run waiting on it shows "install spend
+limit reached" in the verdict); a run whose PR moved on or closed while it ran is
 superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason, never
 silent: draft, fork, closed, stopped, superseded.
 
@@ -114,10 +115,18 @@ Asking Aiden "review <PR URL> with Claude Code and Codex" (the Reviewer Manager'
 
 `recipe/review.ts`, one check job per PR head and combo: the engine's finders on the diff with the guidance (the plan in
 `engines.ts`), then, when the plan verifies, a verifier that keeps a finding only with a `file:line` it confirmed, then dedupe and rank. It returns findings JSON (severity
-`important`, `nit` or `pre_existing`; path, line, title, why, evidence, fix brief), a `coverage` block (files reviewed and
-excluded, `incomplete` reason) and the run's billed cost, bound into the kernel's signed receipt. Incremental runs diff from the
-last reviewed head; force-pushes, retargets and changed guidance reset the baseline; previous findings are rechecked. PR title,
-body, comments and code are fenced as data throughout. The box runs without repo hooks, plugins, shell or network beyond the
+`important` or `nit`, `pre_existing` kept only as a stored kind; path, line, title, why, evidence, fix brief), a `coverage` block (files reviewed and
+excluded, `incomplete` reason), `downgraded` (importants made nits, below) and the run's billed cost, bound into the kernel's signed receipt. Incremental runs diff from the
+last reviewed head (only the PR's own files: main merged in is not the change); a force-push or rebase that drops it from the head's ancestry makes the run full; previous findings are rechecked. PR title,
+body (`spec.intent`, none for a fork), comments and code are fenced as data throughout.
+
+**What "important" means (owner, 2026-11-22).** One rubric, in the brief (codex, Claude Code and codex review read it; codegenie and deepsec map their own fields): an important finding is a realistic
+failure with a concrete scenario (a specific input or state and the wrong result), old code and new alike; behaviour the PR's
+description states as intended is a design choice, not a finding, unless it fails concretely. The finder schema's
+`failure_scenario` is required for an important finding (codex review, which answers in its own format, writes a
+"Failure scenario:" line in its body; codegenie's `failureMode` and deepsec's revalidated description are theirs). Code, never the
+model, makes an important finding without one a nit, and one in a file the PR doesn't change a nit too (GitHub gives it no thread
+to fix or answer on); the scenario leads the finding's why on GitHub. Nits never gate. The box runs without repo hooks, plugins, shell or network beyond the
 model gateway. The service accepts what the recipe runs: each engine's own efforts.
 
 ## Posting
@@ -172,15 +181,25 @@ rulesets) knowing that; the merge queue's gate is the verdict.
 A combo marked `mandatory` gates its repo's merges (the compile lists the gated repos for the github module and the kernel's
 `ai_review_code: unless_code_review_mandatory`). The parts:
 
-- **Policy.** The repo's mandatory reviewers (each moment's mandatory combos) are one key (`policyOf`), stamped on each run and
-  each covered head. Coverage and incremental baselines count only under the current key, so when the owner adds a mandatory
-  reviewer, an open PR gets that reviewer's run at its head (the next poll queues each one a head lacks) and doesn't pass on the
-  old coverage.
-- **Coverage (baselines).** A head is covered once a batch that reviewed it has every mandatory run's review stored whole (no
+- **What reviewed a head.** The verdict and coverage read the mandatory runs that reviewed the head (the latest per combo and
+  moment there), never the setting now: a settings change or a deploy applies from each PR's next head and never re-reviews open
+  heads (2026-11-21 20:06Z: #1243 added columns read against the setting, and the first poll after it re-ran a whole opening
+  review on every open PR). A head with no mandatory run at all (a PR open when its repo became gated) gets its trigger.
+- **Coverage (baselines).** A head is covered once every mandatory reviewer that reviewed it has its review stored whole (no
   `coverage.incomplete`, no important finding withheld), each over a range that starts at the merge base or at a covered head.
-  On a gated repo an incremental run starts from the last covered head (else it is full), so a partial or failed review, a
-  force-push or a policy change is followed by a whole review. A non-mandatory combo never holds anything; its findings are
+  On a gated repo an incremental run starts from the last covered head while it is an ancestor of the head (main moving on never
+  resets it; a retry is incremental too), else it is full, so a partial or failed review or a force-push is followed by a whole
+  review.
+- **Bare rebase (owner, 2026-11-22).** When a push's PR diff (GitHub's compare from its merge base, every file's patch) is the
+  baseline head's own (from the merge base its review recorded), the run ends done at no cost with nothing posted ("carried: a
+  bare rebase"): the head is covered and the PR's open findings stay as they are. Anything GitHub can't fingerprint (a file
+  without a patch, 300 files) is reviewed as usual. A non-mandatory combo never holds anything; its findings are
   advice.
+- **Posted first.** A finding gates only once a mandatory run that found it posted (its GitHub thread exists, so it can be fixed
+  or answered). While a head's mandatory review is still being posted the verdict waits on the post; a post refused by something
+  other than a decision (a rate limit, a restart, a failed call) is filed again 2, 4, 8, 16, then every 32 minutes while the PR is
+  open; one rejected never gates. A module's own write (the post, filed on the PR's review task) runs even when that task has
+  closed meanwhile: the kernel's closed-task rule ends an agent's leftover request only.
 - **Findings.** A finding stays open (`findings.outcome` null) until a mandatory run's recheck confirms it fixed, it is answered
   on its thread, or the owner dismisses it on the board. Old and new findings gate alike. Every new head's first mandatory run gets
   every open gating finding with its evidence (whatever the change touched; `spec.previous` fits 16 KB by shrinking texts first)
@@ -196,9 +215,8 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   its row linking its earlier thread. Answers are rechecked at every new head, one that changes only lockfiles or ignored
   files included. There is no judge.
 - **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's
-  `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer of every moment the head has mandatory runs for (a push's and an `aiden review`'s
-  alike) has a run at the head that is done
-  (whole or partial) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks
+  `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer that reviewed the head has a run there that is done
+  (whole, partial or carried) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks
   (not started, the PR moved, queued or running, skipped, findings open). There is no fail.
 - **Merge gate.** `modules/github/service/src/review-gate.ts`: before the merge call at the bound head, a gated repo's PR asks
   the verdict; a wait waits with no time limit, until it passes or the PR moves or closes. Infrastructure never stalls it: code

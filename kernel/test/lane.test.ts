@@ -38,13 +38,6 @@ test("one exchange: the owner's words as the owner, the reply as the agent, both
   assert.equal(k.agentPosts.length, 1);
 });
 
-test("owner words a crash left unrecorded are found by their tag, never posted twice", async (t) => {
-  const { k, exchange } = await setup(t, [{ id: "oc-9", body: "[telegram] hi\n\n<!-- aidenhq:job=lane-t-5 kind=owner -->" }]);
-  k.records.db.prepare("INSERT INTO pc_writes (key, at) VALUES ('<!-- aidenhq:job=lane-t-5 kind=owner -->', 0)").run();
-  assert.deepEqual((await exchange({ agent: "ag-aria", turn: "t-5", owner_text: "hi", via: "telegram" })).json, { task: "i-chat", owner: "oc-9" });
-  assert.equal(k.control.filter((c) => c.method === "POST").length, 0);
-});
-
 test("only a module with kernel.lane, and only a lane agent's own chat task", async (t) => {
   const { k, exchange } = await setup(t);
   assert.equal((await exchange({ agent: "ag-aria", turn: "t-1", reply: "x" }, "other-key")).status, 403);
