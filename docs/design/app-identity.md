@@ -89,7 +89,7 @@ agent and is redacted from any response that echoes it.
   `api.callers` and only under `api.paths`, enforced in apps-mcp. `api` is `{ callers, paths }`; there is no static
   `api.token` (the registry refuses one). With `role: "member"` it reuses `app_view`'s signed-in member identity for that one
   method and path: the same `api.callers` gate, but on any route the app serves, so an agent can POST to a public route as a
-  test user and read the app's real status and body.
+  test user and read the app's real status, headers and body.
 - `app_view`: `role: member`, `methods: [GET, HEAD]`.
 
 The key is separate from the gate's because apps-mcp holds the Docker socket and sits on bridge networks the gate's

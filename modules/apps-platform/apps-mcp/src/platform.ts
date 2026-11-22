@@ -327,10 +327,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   }
   /** app_api's transport: a one-shot container on the app's network (like the probe); the request, bearer included, goes on stdin, never argv. */
   /** status 0: the request got no answer (body: why). Throws only when the container couldn't run. */
-  const sendRaw = async (req: ApiRequest, container: string): Promise<{ status: number; body: string }> => {
+  const sendRaw = async (req: ApiRequest, container: string): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
     if (!/^[0-9a-f]{64}$/.test(container)) throw new Error("bad container id");
     const out = await exec(["run", "--rm", "-i", "--pull", "never", "--network", `container:${container}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "128m", cfg.healthImage, "node", "-e", SEND_SCRIPT], { input: JSON.stringify(req), timeout: (req.timeout ?? TIMEOUT_MS) + 15_000 });
-    return JSON.parse(out) as { status: number; body: string };
+    return JSON.parse(out) as { status: number; headers: Record<string, string>; body: string };
   };
   const sendApi: Send = async (_app, req, container) => {
     const r = await sendRaw(req, container);
@@ -420,7 +420,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
         continue;
       }
       const req: ApiRequest = { url: base + x.path, method: "GET", headers: { [IDENTITY_HEADER]: token, accept: "application/json" }, timeout: AGENT_TIMEOUT_MS };
-      const r = await sendRaw(req, container).catch(() => ({ status: -1, body: "" }));
+      const r = await sendRaw(req, container).catch(() => ({ status: -1, headers: {}, body: "" }));
       out.push(probeResult("agent", x.path, r.status < 0 ? [{ hard: false, what: "not checked: the probe container didn't run" }] : judgeAgent(r, x.declared)));
     }
     return out;

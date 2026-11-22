@@ -69,8 +69,8 @@ export function authorize(app: App, callerKey: string, path: string, method?: st
 }
 
 export interface ApiRequest { url: string; method: Method; headers: Record<string, string>; body?: string; timeout?: number }
-/** Delivers one request from inside the given container's network namespace (platform.ts: a one-shot container on `--network container:<id>`) and returns status + body text. */
-export type Send = (app: App, req: ApiRequest, container: string) => Promise<{ status: number; body: string }>;
+/** Delivers one request from inside the given container's network namespace (platform.ts: a one-shot container on `--network container:<id>`) and returns status, headers and body text. */
+export type Send = (app: App, req: ApiRequest, container: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
 
 /** The service and port app_api targets, from health.url (which must name the app's compose service, e.g. http://app:8080/...). */
 export function apiTarget(app: App): { service: string; protocol: string; port: string } {
@@ -100,7 +100,7 @@ export async function targetContainer(app: App, service: string, resolve: Resolv
   return c.Id;
 }
 
-export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown; role?: "admin" | "member" }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; body: unknown }> {
+export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown; role?: "admin" | "member" }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; headers: Record<string, string>; body: unknown }> {
   if (!METHODS.includes(req.method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
   const role = req.role ?? "admin";
   authorize(app, callerKey, req.path, req.method, role);
@@ -117,7 +117,7 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
   const body = req.body === undefined ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body);
   if (body !== undefined) headers["content-type"] = "application/json"; // a string body is taken as JSON already serialized
   const audit = (status: number | string) => d.audit?.({ caller: callerKey, app: app.name, method: req.method, path: req.path, role, status });
-  let res: { status: number; body: string };
+  let res: { status: number; headers: Record<string, string>; body: string };
   try {
     res = await d.send(app, { url: url.href, method: req.method, headers, ...(body !== undefined ? { body } : {}) }, container);
   } catch (e) {
@@ -125,13 +125,14 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
     throw new Error(hide(`${app.name} API call failed: ${String((e as Error).message ?? e)}`));
   }
   audit(res.status);
+  const responseHeaders = Object.fromEntries(Object.entries(res.headers ?? {}).map(([k, v]) => [k, hide(String(v))]));
   const text = hide(res.body).slice(0, BODY_CAP);
   let parsed: unknown = text;
   try {
     parsed = JSON.parse(text);
   } catch {}
-  return { status: res.status, body: parsed };
+  return { status: res.status, headers: responseHeaders, body: parsed };
 }
 
-/** The one-shot request inside the app's network: reads the request JSON on stdin (never argv), prints only {status, body}. */
-export const SEND_SCRIPT = `let s="";process.stdin.on("data",c=>s+=c).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(r.url,{method:r.method,headers:r.headers,body:r.body,redirect:"manual",signal:AbortSignal.timeout(r.timeout||${TIMEOUT_MS})});const t=await res.text();process.stdout.write(JSON.stringify({status:res.status,body:t.slice(0,${BODY_CAP * 2})}))}catch(e){process.stdout.write(JSON.stringify({status:0,body:String(e&&e.message||e)}))}})`;
+/** The one-shot request inside the app's network: reads the request JSON on stdin (never argv), prints only {status, headers, body}. */
+export const SEND_SCRIPT = `let s="";process.stdin.on("data",c=>s+=c).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(r.url,{method:r.method,headers:r.headers,body:r.body,redirect:"manual",signal:AbortSignal.timeout(r.timeout||${TIMEOUT_MS})});const t=await res.text();process.stdout.write(JSON.stringify({status:res.status,headers:Object.fromEntries(res.headers),body:t.slice(0,${BODY_CAP * 2})}))}catch(e){process.stdout.write(JSON.stringify({status:0,headers:{},body:String(e&&e.message||e)}))}})`;
