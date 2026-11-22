@@ -253,7 +253,7 @@ resolve_ref() { # <pin manifest> <container .Image> [platform]
 # entry per image, and a failed read of either is not proof of anything: it is refused. Why is left in archive_err.
 archive_err=""
 plain_archive_single() { # <tar> <pin>
-  local tar="$1" pin="$2" idx mt digest blob nested legacy n
+  local tar="$1" pin="$2" idx mt digest blob nested legacy n cfg config
   if idx="$(archive_read "$tar" index.json)"; then :; else
     case "$?" in 124) archive_err="the snapshot deadline reached while checking the archive"; return 1 ;; esac
     idx=""
@@ -276,7 +276,20 @@ plain_archive_single() { # <tar> <pin>
         if [ "$n" -ne 1 ]; then archive_err="the archive's index $digest names $n platform manifests"; return 1; fi
         digest="$(printf '%s' "$nested" | sed -n 's/.*"digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' | tail -1)" ;;
     esac
-    if [ "$digest" != "$pin" ]; then archive_err="the archive holds $digest, not the running image $pin"; return 1; fi
+    if [ "$digest" != "$pin" ]; then
+      # A pin can be a manifest digest (a container's `ImageManifestDescriptor`) or a classic-store image id, which Docker
+      # reports as the *config* digest. The one manifest the archive holds names both, so the config digest is the id the
+      # classic store would have reported: the archive is the running image if either matches.
+      blob="blobs/sha256/${digest#sha256:}"
+      if cfg="$(archive_read "$tar" "$blob")"; then :; else
+        case "$?" in 124) archive_err="the snapshot deadline reached while checking the archive"; return 1 ;; esac
+        cfg=""
+      fi
+      config="$(printf '%s' "$cfg" | sed -n 's/.*"config": *{[^}]*"digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' | tail -1)"
+      if [ -z "$config" ] || [ "$config" != "$pin" ]; then
+        archive_err="the archive holds $digest (config ${config:-unknown}), not the running image $pin"; return 1
+      fi
+    fi
     return 0
   fi
   # No OCI index: a legacy `docker save` writes manifest.json, one entry per image.

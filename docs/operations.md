@@ -431,8 +431,9 @@ store) is read on the Docker server platform, and the pass says on stderr how ma
 than 1.48 (which has no `image save --platform`) uses a plain save, sized as the whole reference because that is what the
 save writes, and then reads the archive back under the same deadline: an `index.json` must name exactly one manifest, a
 descriptor that is itself an index is resolved into the blob it names (one platform manifest), and that manifest must be
-the platform manifest the container runs; an archive with no `index.json` must have a single-image `manifest.json`, and an
-archive that cannot be read is a line. So the scan is always of the running variant, never of another platform or build
+the platform manifest the container runs (or, on the classic image store, whose image id is the config digest, the sole
+manifest's `config.digest`); an archive with no `index.json` must have a single-image `manifest.json`, and an archive that
+cannot be read is a line. So the scan is always of the running variant, never of another platform or build
 under its target, and the fallback is also said on stderr.
 Its descriptor is the authority on what a container runs: the tag is a target only while it names that manifest, and the
 Compose label or the container's own id only answer for a daemon that reports none. A second pass started

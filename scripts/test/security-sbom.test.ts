@@ -177,7 +177,12 @@ case "$1" in
           if [ "$shape" != none ]; then
             d="$(mktemp -d)"; mkdir -p "$d/blobs/sha256"
             case "$shape" in
-              one) printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"manifests\":[{\"digest\":\"%s\",\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}\n' "$pin" > "$d/index.json" ;;
+              one|classic)
+                # one names a manifest whose digest is the pin; classic names a manifest whose config digest is the pin
+                # (a classic-store image id), with the manifest digest different, as docker image inspect .Id reports.
+                md="\${FAKE_SAVE_MANIFEST_DIGEST:-$pin}"
+                printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"manifests\":[{\"digest\":\"%s\",\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}\n' "$md" > "$d/index.json"
+                printf '{\"schemaVersion\":2,\"config\":{\"digest\":\"%s\"},\"layers\":[]}\n' "$pin" > "$d/blobs/sha256/\${md#sha256:}" ;;
               multi) printf '{\"schemaVersion\":2,\"manifests\":[{\"digest\":\"sha256:%064d\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"digest\":\"sha256:%064d\",\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\",\"variant\":\"v8\"}}]}\n' 1 2 > "$d/index.json" ;;
               nested)
                 printf '{\"schemaVersion\":2,\"manifests\":[{\"digest\":\"sha256:%064d\",\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}\n' 7 > "$d/index.json"
@@ -981,6 +986,24 @@ test("security-sbom: a pre-1.48 daemon accepts a legacy manifest.json archive wi
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+});
+
+test("security-sbom: a classic-store image id is matched as the manifest's config digest", { skip: NOT_LINUX }, async () => {
+  // Docker's classic image store reports .Id as the *config* digest, while a plain save's index.json names the manifest
+  // digest. Comparing only manifest digests would reject every correct archive on such a host and drop every image from
+  // the batch, so the sole manifest's config.digest counts as the running image too.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "classic", FAKE_SAVE_PIN: "sha256:1111", FAKE_SAVE_MANIFEST_DIGEST: `sha256:${"a".repeat(64)}` }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(scanned[1], "-", `a classic-store archive was refused: ${scanned[2]}`);
+  assert.ok(calls.some((c) => c.startsWith("save ") && !c.includes("--platform")), calls.join("\n"));
 });
 
 test("security-sbom: a pre-1.48 daemon refuses an archive it cannot verify", { skip: NOT_LINUX }, async () => {
