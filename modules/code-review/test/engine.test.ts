@@ -1574,6 +1574,24 @@ test("an answer on a gating finding's thread closes it: fixed, disputed, by desi
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["findings"], "the recheck found the answer unsafe: open again");
   assert.deepEqual(w.posted.at(-1).review.findings.map((f) => [f.id, f.title]), [["f1", "Reopened, its answer found unsafe: t"]], "its post shows why it came back");
 });
+test("a second answer on a thread, left unread while the first closed the finding, can't close it again after a recheck reopens it", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "posted", comments: [41] }); await w.tick({ github: false });
+  const reply = (id, body) => ({ id, author: "bob", body });
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [reply(50, "by design: the caller holds the lock"), reply(51, "by design: and it is documented")] }]);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "the first reply closed it");
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [], unsafe: ["f1"] }); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the recheck reopened it");
+  await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the second reply was consumed while it was closed: still open");
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [reply(50, "x"), reply(51, "y"), reply(52, "by design: the lock is held by the caller, see pay.ts:10")] }]);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "a reply posted after the reopen closes it");
+});
 test("a PR open before its repo was gated gets its mandatory review; a fork's author can't answer a finding closed", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [CODEX] }] });
   await opened(w, 2, sha("2"));

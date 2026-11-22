@@ -1590,9 +1590,11 @@ export function createEngine(d: EngineDeps) {
   async function claims(cfg: Repo) {
     for (const p of all<{ number: number; author: string; fork: number; head: string }>("SELECT number, author, fork, head FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
-      if (!open.size) continue;
+      if (!one("SELECT 1 FROM findings WHERE repo = ? AND number = ?", cfg.repo, p.number)) continue;
       for (const t of await d.source.threads(cfg.repo, p.number)) {
-        if (!t.finding || !open.has(t.finding)) continue;
+        // Each reply is read once, whether or not its finding is open now: one that arrives while the finding is closed is consumed
+        // as nothing, so only a reply posted after it reopens can close it again.
+        if (!t.finding || !one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND id = ?", cfg.repo, p.number, t.finding)) continue;
         // A thread posted before the service recorded its posts' comments (deployed 2026-11-21): its first comment's marker names
         // an open finding of this PR, so it is recorded as that finding's thread. The marker only maps a reply to its finding: who
         // may answer is still the author or a writer. Its replies were never read (never seen), so each is handled below.
@@ -1603,6 +1605,7 @@ export function createEngine(d: EngineDeps) {
         for (const r of t.replies) {
           const key = `reply:${r.id}`;
           if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
+          if (!open.has(t.finding)) { run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key); continue; }
           const m = answerOf(r.body);
           const may = !!m && ((r.author.toLowerCase() === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author)));
           if (m && !may) log("an answer from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
@@ -1611,7 +1614,6 @@ export function createEngine(d: EngineDeps) {
             open.delete(t.finding);
           }
           run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
-          if (!open.has(t.finding)) break;
         }
       }
     }
