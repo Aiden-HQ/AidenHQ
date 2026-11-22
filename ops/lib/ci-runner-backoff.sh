@@ -9,9 +9,43 @@ CI_RUNNER_BACKOFF_MAX=60
 # A marker older than this was not written by a refusal loop still running: start at once rather than serve it.
 CI_RUNNER_BACKOFF_STALE=900
 
-# <data>/ci-runner/<id>.backoff, the id reduced to the characters a filename takes (an org id may hold more).
+# The checkout this helper is sourced from, resolved from its own file rather than the caller's cwd, so `.env` is the one the
+# host's other ops scripts read whatever directory the unit starts in.
+ci_runner_backoff_root() {
+  local here="${BASH_SOURCE[0]%/*}"
+  cd "$here/../.." && pwd
+}
+
+# The data dir as the host configures it: the environment when the unit has it, else the checkout's `.env` when it names one.
+# `.env` is read, never sourced (it holds other settings and may hold values this script has no business running), and a
+# failure to read it leaves the default rather than aborting under `set -e`.
+ci_runner_backoff_data() {
+  local root value
+  if [ -n "${AIDENHQ_DATA_DIR:-}" ]; then printf '%s\n' "${AIDENHQ_DATA_DIR%/}"; return 0; fi
+  root="$(ci_runner_backoff_root)" || return 0
+  [ -f "$root/.env" ] || { printf '%s\n' data; return 0; }
+  value="$(sed -n 's/^[[:space:]]*AIDENHQ_DATA_DIR[[:space:]]*=[[:space:]]*//p' "$root/.env" 2>/dev/null | tail -n 1)" || true
+  # A quoted value ends at its closing quote (a trailing comment is not part of the path); an unquoted one ends at its
+  # first ` #`.
+  value="${value%$'\r'}"
+  case "$value" in
+    \"*) value="${value#\"}"; value="${value%%\"*}" ;;
+    \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+    *) value="${value%%[[:space:]]#*}" ; value="${value%"${value##*[![:space:]]}"}" ;;
+  esac
+  printf '%s\n' "${value:-data}"
+}
+
+# <data>/ci-runner/<id>.backoff, the id reduced to the characters a filename takes (an org id may hold more). A relative data
+# dir is the checkout's, as ops/host-metrics.sh resolves it, so the marker and the exporter's read are the same file.
 ci_runner_backoff_marker() {
-  printf '%s/ci-runner/%s.backoff' "${AIDENHQ_DATA_DIR:-data}" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100)"
+  local data root
+  data="$(ci_runner_backoff_data)"
+  case "$data" in
+    /*) ;;
+    *) root="$(ci_runner_backoff_root 2>/dev/null || true)" && [ -n "$root" ] && data="$root/$data" ;;
+  esac
+  printf '%s/ci-runner/%s.backoff' "$data" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100)"
 }
 
 # The wait the last refusal left; nothing when there is no marker, it is unreadable or stale, or it is not a delay at all.

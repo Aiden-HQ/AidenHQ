@@ -38,7 +38,7 @@ function checkout() {
 }
 
 /** One unit start: ExecStartPre (the backoff wait), then ExecStart, as aidenhq-ci-runner@.service runs them. */
-function run(dir, arg = "1") {
+function run(dir, arg = "1", env: Record<string, string> = {}) {
   const log = join(dir, "log");
   writeFileSync(log, "");
   const unit = [join(dir, "ops/ci-runner-backoff.sh"), join(dir, "ops/ci-runner.sh")]
@@ -47,7 +47,7 @@ function run(dir, arg = "1") {
   return new Promise<{ status: number; out: string; calls: string[] }>((resolve) => {
     execFile("bash", ["-c", unit], {
       cwd: dir,
-      env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, LOG: log, FAIL_TOKEN: join(dir, "fail"), AIDENHQ_DATA_DIR: join(dir, "data") },
+      env: { ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, LOG: log, FAIL_TOKEN: join(dir, "fail"), AIDENHQ_DATA_DIR: join(dir, "data"), ...env },
     }, (error, stdout, stderr) => {
       const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
       resolve({ status: error ? (error.code as number) : 0, out: `${stdout}${stderr}`, calls });
@@ -88,6 +88,25 @@ test("a refused token waits 1s, 2s, 4s before the next attempt; a token that min
   const clean = await run(dir);
   assert.equal(clean.status, 0, clean.out);
   assert.deepEqual(retries(clean.calls), [], "a clean start does not sleep");
+});
+
+// A host that names its data dir in the checkout's .env (every install's .env.example does) gets the marker there, not under a
+// default `data` the unit never reads: the unit's environment carries no AIDENHQ_DATA_DIR, only the file names one.
+test("the checkout's .env names the data dir, and the marker goes there", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "fail"), "");
+  writeFileSync(join(dir, ".env"), "# the fleet's settings\nAIDENHQ_DATA_DIR=\"moved\"  # beside the checkout\nOTHER=1\n");
+  const first = await run(dir, "1", { AIDENHQ_DATA_DIR: "" });
+  assert.equal(first.status, 1, first.out);
+  const moved = join(dir, "moved/ci-runner/1.backoff");
+  assert.ok(existsSync(moved), `${first.out}\nexpected the marker under the .env data dir`);
+  assert.equal(readFileSync(moved, "utf8").trim(), "1");
+  assert.equal(existsSync(marker(dir)), false, "nothing under the default data dir");
+  rmSync(join(dir, "fail"));
+  const minted = await run(dir, "1", { AIDENHQ_DATA_DIR: "" });
+  assert.equal(minted.status, 0, minted.out);
+  assert.deepEqual(retries(minted.calls), [1], "the wait is served from the .env marker");
+  assert.equal(existsSync(moved), false, "and clearing it removes that marker");
 });
 
 // A marker left before a drain or an outage is not a refusal that is still looping: once it is old, the runner starts at once

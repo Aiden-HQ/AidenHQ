@@ -414,13 +414,14 @@ minute is a hard cap: a longer `ExecStartPre` wait would outlast systemd's 90-se
 clears the delay, and a marker more than 15 minutes old (a drain, an outage) is dropped rather than served, so a
 persistent refusal retries slowly rather than hot-looping while a clean job exit still starts the next runner
 immediately. Because the wait runs before `ExecStart`, a unit backing off is `activating` rather than `active`. The
-missing permission also reaches the owner: a codehost op's
-`needs_owner` answer is recorded as connection state, so it lands in the owner's digest (the GitHub card's own row comes
-from the sign-in's granted scopes), a 2xx op clears a full cause, and two warnings in
-`modules/monitoring/prometheus/rules.yml` cover the loop: `CiRunnerRestartLooping` on a unit that keeps restarting, and
-`CiRunnerBackoff` on a unit whose persisted wait has sat at the one-minute cap for ten minutes, which the host-metrics timer
-writes as `aidenhq_unit_backoff` from the runner's own marker (the wait itself, so a scrape that misses the brief active
-intervals between backoffs still alerts).
+marker sits under the host's data dir: the unit's environment when it sets `AIDENHQ_DATA_DIR`, else the checkout's
+`.env` (the setting is read from the file, never sourced), so it is the same file `ops/host-metrics.sh` exports its
+backoff series from. The missing permission also reaches the owner: a codehost op's `needs_owner` answer is recorded
+as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
+scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
+`CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat
+at the one-minute cap for ten minutes, which the host-metrics timer writes as `aidenhq_unit_backoff` from the runner's
+own marker (the wait itself, so a scrape that misses the brief active intervals between backoffs still alerts).
 
 Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
 sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI
