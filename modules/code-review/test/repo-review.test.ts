@@ -48,6 +48,15 @@ test("options must fit the tree", async () => {
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["maint.vulture"] }), /not offered for acme\/app: maint.vulture/);
 });
 
+test("a finished default-branch read is never reused for a new ask of the head; an asked-for commit is", async () => {
+  const w = world();
+  assert.equal((await w.engine.catalogFor({ repo: REPO })).sha, sha("1"));
+  w.heads.HEAD = sha("2");
+  assert.equal((await w.engine.catalogFor({ repo: REPO })).sha, sha("2"));
+  w.heads.HEAD = sha("3");
+  assert.equal((await w.engine.catalogFor({ repo: REPO, commit: sha("2") })).sha, sha("2"));
+});
+
 test("the commit is resolved once at start: the default branch moving mid-run changes nothing; tools then each model option run in sequence", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks", "sec.cloudflare"] });

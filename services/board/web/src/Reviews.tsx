@@ -829,7 +829,13 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
           // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
           setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
         },
-        (e) => !stale && setErr((e as Error).message),
+        (e) => {
+          if (stale) return;
+          // A slow first read names its commit: asking for that commit finds the same read.
+          const named = !commit.trim() && /ask again for commit ([0-9a-f]{40})/.exec((e as Error).message)?.[1];
+          if (named) setCommit(named);
+          else setErr((e as Error).message);
+        },
       );
     }, 300);
     return () => {

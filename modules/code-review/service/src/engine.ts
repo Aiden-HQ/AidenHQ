@@ -1755,29 +1755,31 @@ export function createEngine(d: EngineDeps) {
 
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   /**
-   * A repo's snapshot listing, read once and kept for two minutes (under its commit; the default branch's head is read afresh for each new ask). A cold read of a big repo can outlast the board's deadline: the
-   * request then says so and the read goes on, so asking again a moment later finds it ready (nothing is queued before it is).
+   * A repo's snapshot listing, read once and kept for two minutes under its commit. A default-branch read is shared only while it is
+   * in flight: once it finishes it is kept under the commit it resolved, and a new ask for the head reads afresh. A cold read of a
+   * big repo can outlast the board's deadline: the request then names the commit (known as soon as the code host answers) so the
+   * board asks again for that commit, which finds the same read; before the commit is known, asking again joins the read.
    */
-  // A default-branch read nobody collected (every caller timed out) is kept only briefly for the retry: the branch moves on.
-  const HEAD_READ_KEPT_MS = 15_000;
-  const treeReads = new Map<string, { p: Promise<{ sha: string; paths: string[] }>; at: number }>();
+  type TreeRead = { p: Promise<{ sha: string; paths: string[] }>; at: number; sha?: string };
+  const treeReads = new Map<string, TreeRead>();
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
-    if (!e || now() - e.at > (ref === "HEAD" ? HEAD_READ_KEPT_MS : 120_000)) {
-      const p = d.codehost.tree(repo, ref);
-      // `at` is when the read settled: one still under way never expires, so a retry after a slow read always finds it.
-      const entry = { p, at: Infinity };
+    if (!e || now() - e.at > 120_000) {
+      // `at` is when the read settled: one still under way never expires.
+      const entry: TreeRead = { p: undefined as never, at: Infinity };
+      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD") treeReads.set(`${repo}@${entry.sha}`, entry); });
       e = entry;
       treeReads.set(key, entry);
-      p.then(() => { entry.at = now(); }, () => { if (treeReads.get(key)?.p === p) treeReads.delete(key); });
+      entry.p.then((t) => {
+        entry.at = now();
+        if (ref === "HEAD") { if (treeReads.get(key) === entry) treeReads.delete(key); treeReads.set(`${repo}@${t.sha.toLowerCase()}`, entry); }
+      }, () => { for (const [k, v] of treeReads) if (v === entry) treeReads.delete(k); });
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
     const t = await Promise.race([e.p, slow]).finally(() => clearTimeout(timer));
-    if (t === "slow") throw new Error("it is still being read: ask again in a few seconds");
-    // A default-branch read answers one request, then is kept under the commit it resolved: the next ask for the head reads it afresh.
-    if (ref === "HEAD" && treeReads.get(key) === e) { treeReads.delete(key); treeReads.set(`${repo}@${t.sha.toLowerCase()}`, e); }
+    if (t === "slow") throw new Error(`it is still being read: ask again${e.sha ? ` for commit ${e.sha}` : " in a few seconds"}`);
     return t;
   }
   async function readTree(repoIn: unknown, commit: unknown) {
