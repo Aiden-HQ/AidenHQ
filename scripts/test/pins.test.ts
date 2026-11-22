@@ -106,12 +106,17 @@ test("pins: a FROM ${ARG} base still falls back to noble", async () => {
   }
 });
 
-test("pins: a suite alias is followed only where its codename never moves", async () => {
+test("pins: a moving Debian suite alias is dated from that alias, not a codename it would outgrow", async () => {
   const d = "@sha256:" + "f".repeat(64);
-  // `debian:unstable` is permanently sid, so it is dated from Debian's own suite rather than the Ubuntu default.
-  for (const [base, release, distro] of [["debian:unstable", "sid", "debian"], ["debian:unstable-slim", "sid", "debian"], ["debian:stable", "noble", undefined]]) {
+  // `stable`, `testing` and `oldstable` move with each release, so the alias itself is the release and Debian resolves
+  // it: the pin must not fall back to Ubuntu noble, and must not be frozen to today's codename either.
+  for (const [base, release] of [["debian:stable-slim", "stable"], ["debian:nowhere-stable", "stable"], ["debian:oldstable", "oldstable"], ["debian:testing-slim", "testing"], ["debian:unstable", "unstable"]]) {
     const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.8-1\n`).pins.filter((x) => x.kind === "apt");
-    assert.deepEqual([p.distro, p.release], [distro, release], base);
+    assert.deepEqual([p.distro, p.release], ["debian", release], base);
+    const tried: string[] = [];
+    await dateApt(p, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+    // Every pocket Debian serves for the alias, not Ubuntu's.
+    assert.deepEqual(tried, [`http://deb.debian.org/debian ${release} main`], base);
   }
 
   // A numeric suite tag is that suite: `debian:12` is bookworm and `ubuntu:24.04` is noble, so neither falls to the
