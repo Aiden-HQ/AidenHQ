@@ -5,6 +5,7 @@
   "task_comment",
   "task_delegate (say the assignee in text)",
   "task_handoff",
+  "task_route (say `issue: <id>` in text, and `to: <agent key>` when it names one)",
   "task_cancel (say `issue: <id>` in text when it cancels a task other than the run's)",
   "task_finish (say `issue: <id>` in text when it closes a task other than the run's)",
   "notify (the old handbooks call it notify_owner: use the name your handbook gives)",

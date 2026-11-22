@@ -298,11 +298,13 @@ async function requireDelegated(issue: Json) {
   if (i.id !== CURRENT() && i.createdByAgentId !== me && !(CURRENT() && i.parentId === CURRENT())) throw new Error("Refused: that is not a task you delegated (one you created, or a child of your current task).");
   return i;
 }
-/** A task the caller holds: assigned to it, or one it delegated. */
+/** The role that settles stuck work on other agents' tasks (the Fleet Steward); the kernel enforces it (cp.ts SETTLE). */
+const SETTLE = "fleet-settle";
+/** A task the caller holds: assigned to it, or one it delegated; any task for a fleet settler (the kernel bounds which). */
 async function requireHeld(issue: Json) {
   const me = (await api("GET", "/api/agents/me")).id;
   const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-  if (i.id !== CURRENT() && i.assigneeAgentId !== me && i.createdByAgentId !== me) throw new Error("Refused: that task is neither assigned to you nor one you delegated.");
+  if (i.id !== CURRENT() && i.assigneeAgentId !== me && i.createdByAgentId !== me && !grant().roles.includes(SETTLE)) throw new Error("Refused: that task is neither assigned to you nor one you delegated.");
   return i;
 }
 
@@ -1364,6 +1366,41 @@ const TOOLS: Record<string, Tool> = {
       return brief(i);
     },
   },
+  task_route: {
+    description:
+      "fleet-settle role: put a stuck open task back in work (a closed one, done or cancelled, stays closed). Sets it to todo with your `comment` (what is decided and what to do next), held by `to` (an agent's key or name) or, without `to`, by the agent that holds it now. The comment wakes that agent. Use it to hand a task the owner was handed back to the agent that does the work, or to restart an agent's own task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue: { type: "string" },
+        to: { type: "string", description: "the agent that takes it, by key or name (task_team, fleet_catalog); default: its agent now" },
+        unblock: { type: "boolean", description: "true: drop the task's blockers too (a cycle of tasks blocked on each other, broken at this one)" },
+        comment: { type: "string" },
+      },
+      required: ["issue", "comment"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: async ({ issue, to, unblock, comment }: Args) => {
+      await requireRole(SETTLE, "route another agent's task");
+      const t = await api("GET", `/api/issues/${issueRef(issue)}`);
+      if (memoryInboxes().has(t.id)) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
+      if (["done", "cancelled"].includes(t.status)) throw new Error(`Refused: ${t.identifier ?? issue} is ${t.status}: task_route moves open work only. New work is a new task.`);
+      let agent = t.assigneeAgentId;
+      if (to) {
+        const want = String(to).trim().toLowerCase();
+        const hits = (await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`)).filter((a: Json) => a.status !== "terminated" && [keyOf(a), a.name].some((n) => String(n ?? "").toLowerCase() === want));
+        if (hits.length !== 1) throw new Error(hits.length ? `"${to}" is ambiguous: use the key from task_team` : `"${to}" is not an agent here (see task_team, fleet_catalog)`);
+        agent = hits[0].id;
+      }
+      if (!agent) throw new Error("this task is with the owner: name the agent it goes to (`to`)");
+      // The move first, with the comment's first part: a refused move wakes nobody. A long comment's other parts follow it.
+      const [first, ...more] = commentParts(comment);
+      const moved = await brief(await patchIssue(issue, { status: "todo", assigneeAgentId: agent, assigneeUserId: null, ...(unblock ? { blockedByIssueIds: [] } : {}), comment: first ?? "" }));
+      for (const p of more) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: p });
+      return moved;
+    },
+  },
   task_comment: {
     description: "Add a comment to a Paperclip task. `reopen: true` on a closed task you delegated moves it back to todo with the comment as one message (new instructions for the assignee, who is woken).",
     inputSchema: { type: "object", properties: { issue: { type: "string" }, body: { type: "string" }, reopen: { type: "boolean", description: "a closed task you delegated: reopen it with this comment" } }, required: ["issue", "body"], additionalProperties: false },
@@ -1405,7 +1442,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_finish: {
-    description: "Mark a task done, with a summary comment: the task this run is working on, or with `issue` another task assigned to you or one you delegated (accepting a delegate's work).",
+    description: "Mark a task done, with a summary comment: the task this run is working on, or with `issue` another task assigned to you or one you delegated (accepting a delegate's work); a fleet settler (role fleet-settle) also closes any agent's finished task.",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you or one you delegated; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
@@ -1448,7 +1485,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_cancel: {
-    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated. Your part of the user's task stays open for their replies: finish it with task_handoff.",
+    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: any agent's stale or superseded task). Your part of the user's task stays open for their replies: finish it with task_handoff.",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you or one you delegated; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {

@@ -7,15 +7,16 @@ import { createJobs } from "../src/jobs.ts";
 import { ORIGIN } from "../src/provenance.ts";
 import { taskRoutineCap } from "../src/tier.ts";
 import { SELF_TAG } from "../src/wakes.ts";
+import { taskState } from "../src/task-state.ts";
 import { post } from "../../services/paperclip-events/post.js";
 import { kernel, moduleServer, pluginHost } from "./helpers.ts";
 
 const ADA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", BO = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", COS = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", EVE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const LEAD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", REP = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", ENG = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2";
-const STW = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const STW = "ffffffff-ffff-4fff-8fff-ffffffffffff", SET = "ffffffff-ffff-4fff-8fff-fffffffffff1";
 const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-8000-000000000002", CHAT = "10000000-0000-4000-8000-000000000003";
-const FLEET = "10000000-0000-4000-8000-000000000004";
-const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW };
+const FLEET = "10000000-0000-4000-8000-000000000004", HANDED = "10000000-0000-4000-8000-000000000005", MINE = "10000000-0000-4000-8000-000000000006";
+const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW, "key-set": SET };
 
 async function setup(t) {
   const h = pluginHost({
@@ -23,6 +24,9 @@ async function setup(t) {
     [OTHER]: { id: OTHER, identifier: "WOR-2", status: "in_progress", assigneeAgentId: BO, companyId: "co", parentId: null },
     [CHAT]: { id: CHAT, identifier: "WOR-3", status: "todo", assigneeAgentId: BO, companyId: "co", parentId: null },
     [FLEET]: { id: FLEET, identifier: "WOR-4", status: "todo", assigneeAgentId: null, companyId: "co", parentId: null },
+    // An agent's task it handed back to the owner (task_handoff), and a task the owner made for themselves.
+    [HANDED]: { id: HANDED, identifier: "WOR-5", status: "todo", assigneeAgentId: null, assigneeUserId: "u-owner", createdByAgentId: BO, companyId: "co", parentId: null },
+    [MINE]: { id: MINE, identifier: "WOR-6", status: "todo", assigneeAgentId: BO, createdByUserId: "u-owner", companyId: "co", parentId: null },
   });
   const plugin = [];
   let k;
@@ -37,9 +41,9 @@ async function setup(t) {
   const tool = { todo: ["act"] };
   k = await kernel(t, {
     settings: { fleet_issues: "WOR-4" },
-    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
-    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
-    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${STW}`]: "key-stw", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
+    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, settler: { id: SET, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
+    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [SET]: { key: "fleet-steward", roles: ["fleet-audit", "fleet-settle"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
+    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${STW}`]: "key-stw", [`paperclip-agents/${SET}`]: "key-set", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
     connections: { todo: { url: `${todo.url}/mcp`, auth_secret: "todo_service_key", module: "todo", returns: "trusted", tools: { read: [], write: ["act"], destructive: [] } } },
     onControl: async (req, body, auth) => {
       const me = KEYS[auth];
@@ -150,6 +154,69 @@ test("the Fleet Steward comments on any task of its company, heard by that task'
   // A status or a patch from the same scope is still refused.
   assert.equal((await act("steward", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
   assert.equal((await act("steward", "PATCH", "/api/issues/WOR-2", { title: "Renamed" })).status, 403);
+});
+
+test("a fleet settler settles another agent's stuck task: answers its delegator wait, cancels it, re-routes a handback to an agent; never a person's own task, a log task or a non-agent", async (t) => {
+  const { h, act, plugin } = await setup(t);
+  h.issues[OTHER].createdByAgentId = LEAD; // another agent's delegation
+  // A delegator wait nobody answered (WOR-9094): the settler's comment is the delegator's answer. It ends the wait in the task's
+  // state and wakes the task's agent (the op tag).
+  let r = await act("settler", "POST", "/api/issues/WOR-2/comments", { body: "Decided: ship it as is; the reviewer's note is out of scope." });
+  assert.equal(r.status, 201);
+  assert.ok(!SELF_TAG.test(h.comments.at(-1).body));
+  const at = (m) => new Date(Date.now() - m * 60_000).toISOString();
+  const fact = (type, m, data, actor = "kernel", subject = `task:${OTHER}`) => ({ seq: 0, id: `${type}:${m}`, type, subject, version: String(m), at: at(m), seen_at: at(m), actor, task: OTHER, source: "live", data });
+  // Written as the settler (the wake inbox records the comment's author as its actor), never as the waiting task's agent.
+  assert.equal(h.comments.at(-1).authorAgentId, SET);
+  const answer = [fact("task.commented", 1, { kind: "comment" }, "agent:fleet-steward")];
+  const before = [fact("task.created", 120, { identifier: "WOR-2" }), fact("task.assignee_changed", 119, { to: "bo" }), fact("work.waiting", 90, { reason: "delegator_wait", question: "Ship it?" }, "agent:bo", `wait:${OTHER}`)];
+  assert.equal(taskState(OTHER, before, Date.now(), []).reason, "delegator_wait");
+  assert.notEqual(taskState(OTHER, [...before, ...answer], Date.now() + 1000, []).reason, "delegator_wait");
+  // A stale task of another agent: cancelled, as the settler, with its comment (the op tag wakes the task's agent).
+  r = await act("settler", "PATCH", "/api/issues/WOR-2", { status: "cancelled", comment: "Superseded by WOR-1, which shipped the change." });
+  assert.deepEqual([r.status, h.issues[OTHER].status, h.issues[OTHER].updatedBy], [200, "cancelled", SET]);
+  // A closed task stays closed: settling moves open work only.
+  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-2", { status: "todo", comment: "Again." })).status, 409);
+  assert.equal(plugin.at(-1).scope, "settle");
+  // A task an agent handed back to the owner goes back to work with the agent that does it (WOR-9318).
+  r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "todo", assigneeAgentId: BO, assigneeUserId: null, comment: "Run the audit yourself: the engineer has the command." });
+  assert.equal(r.status, 200);
+  assert.deepEqual([h.issues[HANDED].assigneeAgentId, h.issues[HANDED].assigneeUserId, h.issues[HANDED].status], [BO, null, "todo"]);
+  // A task the settler delegated itself (scope `created`) goes to another agent the same way.
+  const mine = await act("settler", "POST", "/api/companies/co/issues", { title: "Check the queue", assigneeAgentId: SET, status: "todo" });
+  assert.equal(mine.status, 201);
+  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "todo", assigneeAgentId: BO, comment: "Yours: the queue is your team's." });
+  assert.deepEqual([r.status, h.issues[mine.json.id].assigneeAgentId], [200, BO]);
+  // Work still in progress is never closed over its agent; once it waits in review, the settler closes it through the finish gate.
+  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
+  assert.deepEqual([r.status, h.issues[mine.json.id].status], [403, "todo"]);
+  h.issues[mine.json.id].status = "in_review";
+  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
+  assert.deepEqual([r.status, h.issues[mine.json.id].status], [200, "done"]);
+  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-5", { status: "done" })).status, 403);
+  // On another agent's task it changes the status, the holder and the blockers only: never the brief or its labels, never to a person.
+  for (const body of [{ title: "Renamed" }, { description: "New brief." }, { priority: "low" }, { labelIds: [OTHER] }, { assigneeUserId: "u-owner", assigneeAgentId: null }]) {
+    assert.equal((await act("settler", "PATCH", "/api/issues/WOR-5", body)).status, 403, JSON.stringify(body));
+  }
+  // A cycle broken at one task: its blockers dropped as it goes back to work.
+  h.issues[HANDED].blockedBy = [OTHER];
+  r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "todo", blockedByIssueIds: [], comment: "No longer waits on WOR-2." });
+  assert.deepEqual([r.status, h.issues[HANDED].blockedBy], [200, []]);
+  // Only to an agent of this instance.
+  r = await act("settler", "PATCH", "/api/issues/WOR-5", { assigneeAgentId: "99999999-9999-4999-8999-999999999999" });
+  assert.equal(r.status, 400);
+  // A task a person made stays theirs, and a log task takes comments only.
+  // A task no agent made (no creator on record) is not the settler's either.
+  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-1", { status: "cancelled" })).status, 403);
+  r = await act("settler", "PATCH", "/api/issues/WOR-6", { status: "cancelled" });
+  assert.equal(r.status, 403);
+  assert.equal(h.issues[MINE].status, "todo");
+  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-4", { status: "done" })).status, 403);
+  // It makes no task through the settle scope: a create is the job's own, as ever (none under another agent's task).
+  assert.equal((await act("settler", "POST", "/api/companies/co/issues", { title: "Under WOR-3", parentId: CHAT, assigneeAgentId: BO })).status, 403);
+  // Another agent without the role still only comments (the Fleet Steward's audit role alone).
+  assert.equal((await act("steward", "PATCH", "/api/issues/WOR-3", { status: "cancelled" })).status, 403);
+  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-3", { assigneeAgentId: ADA })).status, 403);
 });
 
 test("any agent comments on the shared Fleet issues log, and only comments, even the agent that holds it; a refusal's log line names its agent", async (t) => {

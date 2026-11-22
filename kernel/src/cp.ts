@@ -11,14 +11,18 @@
 //   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
 //   task of its company; an agent comments on the tasks the
 //   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
-//   and a librarian on every memory inbox. Anything else is
+//   and a librarian on every memory inbox. A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
+//   task of its company an agent made (scope `settle`): a comment, a status (done only on a task in review, through the finish
+//   gate, heard as the task's own close), and handing the task to any agent; never a task a person
+//   made (the owner's own task or chat) and never a log task. Anything else is
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
 //   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
 //   agent's comment does.
-// - A status change to `done` is for the job's own task, or a task the job's agent holds (from an earlier run that left it
-//   open); it passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
+// - A status change to `done` is for the job's own task, a task the job's agent holds (from an earlier run that left it
+//   open), or a fleet settler's task to settle; it passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
 // - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
-// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), never to another agent.
+// A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), and only a fleet
+// settler's hands it to another agent.
 // Every open task has a holder, an agent or the owner (leavesNoHolder): a create or a change that would leave one with neither
 // is refused, here and on the board's owner writes.
 // Answers look like Paperclip's: the task as it is now (a PATCH 200, a create 201 with `deduplicated`), a comment's {id} (201).
@@ -55,7 +59,9 @@ const MAX = 32 * 1024 * 1024;
 /** What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
-type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
+type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string };
+/** The role that settles stuck work on another agent's task (the Fleet Steward): see `settle` above. */
+export const SETTLE = "fleet-settle";
 
 /** Every open task has a holder: an agent, or the owner's user. Whether a create (`cur` undefined) or a change to who holds a task would leave it open with neither. */
 export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null } | undefined, b: Record<string, unknown>): boolean {
@@ -141,6 +147,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       if (roles.includes("librarian") && Object.values(table).some((g) => g.memory_inbox === t.id)) return "listed";
       return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
+    /** A task a fleet settler may change: one an agent made (never a person's own task or chat), and not a log task. */
+    const settleScope = (t: Issue) => (roles.includes(SETTLE) && !isLogTask(t, logs) && t.createdByAgentId && !t.createdByUserId ? "settle" : undefined);
     const refuse = (t: Issue): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
       throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the chief of staff to pass it on`);
@@ -221,16 +229,32 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const patch = method === "PATCH" ? Object.fromEntries(Object.entries(b).filter(([k]) => k !== "status" && k !== "comment")) : {};
     const extra = Object.keys(patch).filter((k) => !PATCH.includes(k));
     if (extra.length) throw fail(400, "bad_request", `a task's change takes status, comment, ${PATCH.join(", ")}; not ${extra.join(", ")}`);
-    if (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");
-    await ownerOnly(patch.assigneeUserId);
-    if (leavesNoHolder(t, { ...patch, ...(status !== undefined ? { status } : {}) })) throw fail(400, "bad_request", `${NO_HOLDER}: handing a task back names the owner (assigneeUserId)`);
     // Setup's log tasks take comments only, even from the agent that holds them.
     if ((status !== undefined || Object.keys(patch).length) && isLogTask(t, logs)) throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
-    const scope = (await scopeOf(t)) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
+    // A settler acts as one on any task it may settle, its own and its delegations included.
+    const settling = settleScope(t) === "settle";
+    const scope = (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
+    // On a task it holds by settling alone, a settler changes only what settling needs: the status, who holds it (an agent; never
+    // handed to a person) and its blockers (a cycle broken); never its title, brief, priority or labels.
+    if (scope === "settle") {
+      // Settling moves open work: a closed task (done or cancelled) stays closed; new work is a new task.
+      if ((status !== undefined || Object.keys(patch).length) && ["done", "cancelled"].includes(String(t.status))) throw fail(409, "refused", `${t.identifier ?? t.id} is ${t.status}: a settler moves open work only`);
+      const beyond = Object.keys(patch).filter((k) => !["assigneeAgentId", "assigneeUserId", "blockedByIssueIds"].includes(k) || (k === "assigneeUserId" && patch[k] !== null));
+      if (beyond.length) throw fail(403, "forbidden", `a settler changes another agent's task's status, holder (an agent) and blockers only; not ${beyond.join(", ")}`);
+    }
+    const handTo = patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null ? String(patch.assigneeAgentId) : undefined;
+    // Only a settler hands a task to another agent here, and only to an agent of the grants table.
+    if (handTo && !settling) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");
+    if (handTo && !table[handTo]) throw fail(400, "bad_request", "assigneeAgentId is not an agent of this instance");
+    await ownerOnly(patch.assigneeUserId);
+    if (leavesNoHolder(t, { ...patch, ...(status !== undefined ? { status } : {}) })) throw fail(400, "bad_request", `${NO_HOLDER}: handing a task back names the owner (assigneeUserId)`);
     let gated = false;
     if (status === "done") {
-      // The finish gate. Only this job's own task, or one this job's agent holds (an orphaned routine run's), is finished here.
-      if (t.id !== task && t.assigneeAgentId !== agent) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee`);
+      // The finish gate. Only this job's own task, one this job's agent holds (an orphaned routine run's), or, for a fleet settler,
+      // a task it may settle that waits in review (finished work nobody closed; work still in progress is cancelled or routed,
+      // never closed over its agent) is finished here; the checks hear the close as the task's own.
+      const own = t.id === task || t.assigneeAgentId === agent;
+      if (!own && !(settling && t.status === "in_review")) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee${settling ? " (a settler closes another agent's task only once it waits in review)" : ""}`);
       if (checks) {
         const tool = String(c.tool ?? "").split(".").pop()!;
         const f = await checks.finish(t.id, { agent, tool, via: tool });
@@ -248,6 +272,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       ...(typeof comment === "string" && comment.trim() ? { body: comment } : {}),
       ...(status !== undefined ? { status } : {}), ...(gated ? { gated } : {}),
       ...(blocked ? { blockedBy: blockedByIssueIds ?? [] } : {}),
+      ...(handTo ? { delegateTo: [handTo] } : {}),
       ...(Object.keys(rest).length || (!blocked && blockedByIssueIds !== undefined) ? { patch: { ...rest, ...(!blocked && blockedByIssueIds !== undefined ? { blockedByIssueIds } : {}) } } : {}),
     });
     if (!d) return;

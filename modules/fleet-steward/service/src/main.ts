@@ -49,7 +49,24 @@ const gradeFailures = async () => {
   if (!r.ok) throw new Error(`grading: ${r.status}`);
   return ((await r.json()) as { failures: { task: string; at: string; reason: string }[] }).failures;
 };
-const notify = async (text: string, key = createHash("sha256").update(text).digest("hex").slice(0, 16)) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${key}` }));
+const hashOf = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+/** The owner's lines: only the Steward itself unreachable, or dispatch stalled (the self-healer, or every agent, is down, so
+ * someone outside the fleet must know). */
+const ownerNotice = async (text: string) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${hashOf(text)}` }));
+/**
+ * Every other fleet notice (a paused routine, a component down, a critical alert, a jammed gate) is a task for the chief of
+ * staff: fixed text from code, one per notice and day. The owner hears nothing of them. Under quiet start, until the owner turns
+ * the Steward on, nothing is filed: the call fails, so the notice is tried again once it is on.
+ */
+const toChief = async (text: string, key = hashOf(text), at = new Date()) => {
+  if (!(await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START))) throw new Error("quiet start: the Steward is off");
+  await kernel.call("POST", "/v1/tasks", {
+  title: `Fleet: ${text.split(/\.\s/)[0]!.slice(0, 120)}`,
+  description: `${text}\n\nSettle it as the fleet's chief of staff (the Fleet Steward's check task has the detail), then make sure its cause is fixed at the source: a rule through the Engineer, or a product bug. Close this task with one line.`,
+  role: "fleet-admin",
+  source: `fleet-notice:${key.replace(/[^\w.:/@#-]/g, "-").slice(0, 120)}:${at.toISOString().slice(0, 10)}`,
+  });
+};
 
 /** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). Its source
  * says whether something new tripped (fleet-incident:, Flow's DORA incidents) or only recovered (fleet-check:). */
@@ -60,8 +77,11 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
   return true;
 }
 
+/** A gate jammed two hours that the Steward didn't clear: the detector's own keys name each task or card; one task per batch of keys. */
+const fileJam = (keys: string[]) => toChief(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${hashOf([...keys].sort().join(","))}`);
+
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, notify), openKeys: () => Object.keys(detectorState(kv).open), notify, gradeFailures, log });
+const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, owner: ownerNotice, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;
@@ -71,7 +91,7 @@ const run = async () => {
       const ok = await fileCheck(b).then(() => true, (e) => (log("check task not filed", { err: String(e.message ?? e) }), false));
       log("fleet check", { ok, incidents: b.incidents.map((i) => i.key), recovered: b.recovered.map((r) => r.key) });
       return ok;
-    }, notify, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false), gateActivity({ kernel }));
+    }, ownerNotice, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false), gateActivity({ kernel }), (keys) => fileJam(keys));
   } catch (err) {
     log("detector failed", { err: String(err) });
   } finally {
@@ -101,7 +121,7 @@ const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 createStewardServer({
   serviceKey,
   isMonitoring: (authorization) => isModule(kernelUrl, authorization, "monitoring"),
-  receiveAlerts: async (b) => { const r = await receiveAlerts(kv, parseAlerts(b), notify); void run(); return r; },
+  receiveAlerts: async (b) => { const r = await receiveAlerts(kv, parseAlerts(b), toChief); void run(); return r; },
   // Its own gauges plus the kernel's job metrics (aidenhq_kernel_jobs_*, role kernel.work-read): Prometheus scrapes only this service.
   metrics: async () => {
     const jobs = await fetch(`${kernelUrl}/v1/work/metrics`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) }).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`kernel metrics ${r.status}`))));
