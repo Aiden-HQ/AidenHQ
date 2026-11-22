@@ -8,6 +8,7 @@
 // what the owner's account can reach. Never add a route or a GraphQL document without checking what it does.
 
 import { withFooter } from "./aidenhq-sdk/attribution.js";
+import { CLOSED_EVENT_SELECTION, closedBy } from "./aidenhq-sdk/closed-event.js";
 import { GitHubNeed, type GitHubAccess, type Identity } from "./client.js";
 
 const API = "https://api.github.com";
@@ -94,6 +95,7 @@ export const GRAPHQL = {
   project: `query($org: String!, $number: Int!) { organization(login: $org) { projectV2(number: $number) { id title url closed field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } } items(last: 50) { nodes { content { ... on Issue { repository { nameWithOwner } } } } } } } }`,
   addItem: `mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } } }`,
   setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
+  issueCloser: `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { ${CLOSED_EVENT_SELECTION} } } }`,
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
   // Comment ids are 64-bit: `fullDatabaseId` (a BigInt, a JSON string). `databaseId` is the deprecated 32-bit Int and isn't read.
@@ -326,6 +328,11 @@ export class GitHub {
       comments_shown: shown.length,
       comments: shown.map((c) => ({ id: c.id, author: c.user?.login, created_at: c.created_at, url: c.html_url, body: c.body ?? "" })),
     };
+    if (!isPr && issue.state === "closed") {
+      const c = await this.graphql<{ repository?: { issue?: Parameters<typeof closedBy>[0] } | null }>("issueCloser", { owner: ref.owner, name: ref.repo, number: ref.number });
+      const by = closedBy(c.repository?.issue);
+      if (by) out.closed_by = by;
+    }
     if (isPr) {
       const pr = await this.request<GhPull>("GET", `${base}/pulls/${ref.number}`);
       const reviews = await this.request<GhReview[]>("GET", `${base}/pulls/${ref.number}/reviews`, { query: { per_page: 100 } });
