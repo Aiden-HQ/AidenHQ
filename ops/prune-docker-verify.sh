@@ -3,25 +3,34 @@
 # fails the unit when they did not do their work. The prune steps themselves stay independent (every one is `-`-prefixed,
 # so a failing builder prune never skips the image prune — that is the shape of the 45 h with no drop on 2026-11-20/21),
 # and this is what keeps that from hiding a prune that did nothing at all: a daemon that is down, or a build cache still
-# far over its 20 GB cap because neither flag form was accepted, is a failed unit (UnitFailed) rather than a clean one.
+# far over any level a working prune leaves because neither flag form was accepted, is a failed unit (UnitFailed) rather
+# than a clean one.
 #
 # It checks these, each one a way the reclaim can silently not happen:
 #   1. the daemon answers (`docker info`);
-#   2. the build cache was under the 20 GB cap right after the builder prunes — the snapshot the `build-cache` step took
-#      then, not a `docker system df` taken here, which a build started since could have grown past 20 GB (that growth is
-#      not a failed prune). A displayed size carries only the precision Docker printed it with, so the size is allowed to
-#      be up to half of its last printed digit over the cap and no more: `20.9GB` (one decimal) is over, `20.0GB` is not;
+#   2. the build cache was under `CACHE_CEILING_GB` right after the builder prunes — the snapshot the `build-cache` step
+#      took then, not a `docker system df` taken here, which a build started since could have grown past it (that growth is
+#      not a failed prune). The ceiling is not the 20 GB the builder prune aims at: the prune's floor plus in-use cache
+#      leaves the fleet normally on the 20 GB line (29.9 GB peak in the five hours to 2026-11-22T12:45Z), so a 20 GB
+#      ceiling failed every run after an ordinary build. It is a backstop for a prune that did nothing at all — 40 GB is
+#      above that measured peak and far under the 104 GB an uncapped store held — not the disk-pressure guard, which is
+#      DiskSpaceLow/DiskNearlyFull. A displayed size carries only the precision Docker printed it with, so the size is
+#      allowed to be up to half of its last printed digit over the ceiling and no more: `40.0GB` (one decimal) is under,
+#      `40.1GB` is over;
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
 #      should have removed it), and every container it lists can be read (an unreadable one is a cleanup it could not do,
 #      not a clean run);
 #   4. the image and container steps' recorded exit status is 0 (their `-` prefix keeps a failure from skipping the next
 #      step, and this is how it still fails the unit — a container listing that failed while the daemon was unreachable can
-#      recover before the re-listing below, so the fresh listing alone would read as a clean scan), and the `build-cache`
-#      step — which took the snapshot the cap is judged on — could run and save it;
+#      recover before the re-listing below, so the fresh listing alone would read as a clean scan), the `build-cache`
+#      step — which took the snapshot the ceiling is judged on — could run and save it, and at least one of the two
+#      builder forms exited 0 (one is expected to fail with `unknown flag`; both failing is no cap at all, which the size
+#      alone would miss under the ceiling);
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
-CAP_BYTES=$((20 * 1000 * 1000 * 1000)) # the cap itself; the tolerance is the display precision of the size, below
+CACHE_CEILING_GB=40 # a prune that did nothing, not the 20 GB target; above the measured peak (29.9 GB), see above
+CACHE_CEILING_BYTES=$((CACHE_CEILING_GB * 1000 * 1000 * 1000)) # the tolerance is the display precision of the size, below
 STOPPED_SECS=86400
 LABEL=aidenhq.oneoff=1
 
@@ -35,8 +44,8 @@ echo "prune-docker: verify"
 # image prune on a large host doubles the work and can outlast the unit's timeout). Under systemd a missing record means
 # the wrapper ran but could not record its result, which is unknown, not a pass; a run outside systemd (no INVOCATION_ID)
 # has no record to expect, and the direct checks below still apply. The two builder forms are alternatives — one is
-# expected to fail with `unknown flag` on a CLI that lacks the other — so their status is not read; the cache size is what
-# says whether the cap held.
+# expected to fail with `unknown flag` on a CLI that lacks the other — so one failing is not held against the run. Both
+# failing is: no flag form capped the cache, so the prune did nothing whatever the size under the ceiling says.
 state="${AIDENHQ_STATE_DIR:-${HOME:-/nonexistent}/.local/state/aidenhq}/prune-docker"
 step_status() { # name -> the status of this invocation's step, or nothing (the step's one record: `<run> <rc>`, then rows)
   local f="$state/$1" run rc
@@ -45,6 +54,18 @@ step_status() { # name -> the status of this invocation's step, or nothing (the 
   [ "$run" = "${INVOCATION_ID:-manual-$$}" ] && printf '%s' "$rc"
   return 0
 }
+# Both builder forms failing is a prune that did nothing. One failing is the expected `unknown flag` on a CLI that lacks
+# that form, so only the pair is judged: a small cache would otherwise pass a run where neither prune ran.
+buildx_rc="$(step_status builder-buildx)"
+classic_rc="$(step_status builder-classic)"
+for pair in "buildx:$buildx_rc" "classic:$classic_rc"; do
+  form="${pair%%:*}"; rc="${pair#*:}"
+  [ -n "$rc" ] || [ -z "${INVOCATION_ID:-}" ] || bad+=("the $form builder prune left no status, so its result is unknown")
+done
+if [ -n "$buildx_rc" ] && [ -n "$classic_rc" ] && [ "$buildx_rc" != 0 ] && [ "$classic_rc" != 0 ]; then
+  bad+=("neither builder prune ran (buildx exited $buildx_rc, the classic builder $classic_rc): no flag form capped the cache")
+fi
+
 for name in images containers; do
   rc="$(step_status "$name")"
   case "$rc" in
@@ -78,16 +99,16 @@ if [ -f "$df_file" ] && [ -n "${INVOCATION_ID:-}" ]; then
     [ "$header" = "$record" ] || df_out="${record#*$'\n'}"
   fi
   if [ "$run" != "$INVOCATION_ID" ]; then
-    bad+=("the build-cache record is from another run ($run, not $INVOCATION_ID), so the snapshot the cap is judged on is unknown"); df_ok=""
+    bad+=("the build-cache record is from another run ($run, not $INVOCATION_ID), so the snapshot the ceiling is judged on is unknown"); df_ok=""
   else
     case "$rc" in
       0) ;;
-      "") bad+=("the build-cache record has no status, so the snapshot the cap is judged on is unknown"); df_ok="" ;;
-      *) bad+=("the build-cache step could not read the cache (exit $rc), so the 20 GB cap cannot be confirmed"); df_ok="" ;;
+      "") bad+=("the build-cache record has no status, so the snapshot the ceiling is judged on is unknown"); df_ok="" ;;
+      *) bad+=("the build-cache step could not read the cache (exit $rc), so the build-cache ceiling cannot be confirmed"); df_ok="" ;;
     esac
   fi
 elif [ -n "${INVOCATION_ID:-}" ]; then
-  bad+=("the build-cache step left no record, so the snapshot the cap is judged on is unknown"); df_ok=""
+  bad+=("the build-cache step left no record, so the snapshot the ceiling is judged on is unknown"); df_ok=""
 elif ! df_out="$(timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null)"; then
   bad+=("docker system df failed, so the build-cache cap cannot be confirmed"); df_ok=""; df_out=""
 fi
@@ -113,7 +134,7 @@ done < <(printf '%s\n' "$df_out" | awk '
   END { if (!found) print "none" }')
 
 # Bytes in a size `docker system df` prints (`20.9GB`, `0B`, `1.2 kB`), and how precise that display is: half the last
-# printed digit is as far as the true value can be from what is shown, which is the only tolerance the cap may take.
+# printed digit is as far as the true value can be from what is shown, which is the only tolerance the ceiling may take.
 to_bytes() { # size -> bytes
   awk -v s="$1" 'BEGIN {
     sub(/[[:space:]].*$/, "", s)
@@ -135,27 +156,27 @@ display_slack() { # size -> half of its last printed digit, in bytes
 }
 
 # `docker system df` prints a Build Cache row even when the cache is empty ("0B"). Some stores leave the row out entirely
-# when there is no build cache at all: with nothing cached the 20 GB cap holds by definition, so the absence is not a
+# when there is no build cache at all: with nothing cached the ceiling holds by definition, so the absence is not a
 # failure. A read that FAILED is a different thing (above), and so is a row whose size is unreadable: the row is there,
 # so something is cached, and what it is cannot be confirmed.
 if [ "$have_row" = 0 ]; then
-  [ -n "$df_ok" ] && echo "prune-docker: no Build Cache row: nothing cached, so the 20 GB cap holds"
+  [ -n "$df_ok" ] && echo "prune-docker: no Build Cache row: nothing cached, so the ceiling holds"
 elif [ -z "$size" ]; then
-  [ -n "$df_ok" ] && bad+=("docker system df reported a Build Cache row with no readable size, so the 20 GB cap cannot be confirmed")
+  [ -n "$df_ok" ] && bad+=("docker system df reported a Build Cache row with no readable size, so the build-cache ceiling cannot be confirmed")
 else
   bytes="$(to_bytes "$size")"
   slack="$(display_slack "$size")"
-  [ -n "$bytes" ] || bad+=("the build cache size ($size) is unreadable, so the 20 GB cap cannot be confirmed")
-  if [ -n "$bytes" ] && [ -n "$slack" ] && [ "$bytes" -gt $((CAP_BYTES + slack)) ]; then
+  [ -n "$bytes" ] || bad+=("the build cache size ($size) is unreadable, so the build-cache ceiling cannot be confirmed")
+  if [ -n "$bytes" ] && [ -n "$slack" ] && [ "$bytes" -gt $((CACHE_CEILING_BYTES + slack)) ]; then
     reclaim_bytes="$(to_bytes "$reclaim")"
     if [ -z "$reclaim_bytes" ]; then
-      bad+=("the build cache is $size, over the 20 GB cap, and its reclaimable size ($reclaim) is unreadable: whether the cap held cannot be confirmed")
+      bad+=("the build cache is $size, over the $CACHE_CEILING_GB GB ceiling, and its reclaimable size ($reclaim) is unreadable: whether the prune capped anything cannot be confirmed")
     elif [ "$reclaim_bytes" -gt 0 ]; then
-      # Any reclaimable cache at all is cache a prune could have freed: if one was, the cap did not hold. Only zero (a
-      # build holding the whole cache in use) makes an over-cap size legitimate, so there is no tolerance on it here.
+      # Any reclaimable cache at all is cache a prune could have freed: if one was, the prune did nothing. Only zero (a
+      # build holding the whole cache in use) makes an over-ceiling size legitimate, so there is no tolerance on it here.
       bad+=("the build cache is $size with $reclaim still reclaimable after the prune: neither builder flag form capped it")
     else
-      echo "prune-docker: build cache is $size but nothing is reclaimable: a build holds that cache in use, so the cap holds"
+      echo "prune-docker: build cache is $size but nothing is reclaimable: a build holds that cache in use, so the ceiling holds"
     fi
   fi
 fi
@@ -198,4 +219,4 @@ if [ "${#bad[@]}" -gt 0 ]; then
   printf 'prune-docker: %s\n' "${bad[@]}" >&2
   exit 1
 fi
-echo "prune-docker: verified: daemon answers, build cache under 20 GB, no one-off stopped over a day is left"
+echo "prune-docker: verified: daemon answers, build cache under $CACHE_CEILING_GB GB, no one-off stopped over a day is left"
