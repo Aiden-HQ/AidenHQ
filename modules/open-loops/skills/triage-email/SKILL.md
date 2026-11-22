@@ -1,6 +1,6 @@
 ---
 name: triage-email
-description: Load for the inbox scan run (Intake): one task per email thread the user labels Aiden in Gmail (any connected account), closed when the label is removed.
+description: "Load for the inbox scan run (Intake): one task per email thread the user labels Aiden in Gmail (any connected account), closed when the label is removed."
 when: { fields: { name: Intake } }
 ---
 

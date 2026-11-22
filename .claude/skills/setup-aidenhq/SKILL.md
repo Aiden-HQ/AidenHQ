@@ -1,6 +1,6 @@
 ---
 name: setup-aidenhq
-description: Load when asked to "set up AidenHQ", "install my instance", "install AidenHQ on my server" or "walk me through docs/setup.md": drives the manual setup section by section with its Checks.
+description: "Load when asked to \"set up AidenHQ\", \"install my instance\", \"install AidenHQ on my server\" or \"walk me through docs/setup.md\": drives the manual setup section by section with its Checks."
 ---
 
 # Set up AidenHQ

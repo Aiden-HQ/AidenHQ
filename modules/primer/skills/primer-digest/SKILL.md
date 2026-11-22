@@ -1,6 +1,6 @@
 ---
 name: primer-digest
-description: Load when the "Primer digest" routine wakes you: post the owner's digest of what others did on their Primer documents in the last day.
+description: "Load when the \"Primer digest\" routine wakes you: post the owner's digest of what others did on their Primer documents in the last day."
 when: { fields: { name: Researcher } }
 ---
 

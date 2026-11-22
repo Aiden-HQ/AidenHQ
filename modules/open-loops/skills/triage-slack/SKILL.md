@@ -1,6 +1,6 @@
 ---
 name: triage-slack
-description: Load for the Slack live-feed triage run (Intake): decide each pending event as nothing, a needs-response or waiting-on task, or (rarely) an urgent page to the user.
+description: "Load for the Slack live-feed triage run (Intake): decide each pending event as nothing, a needs-response or waiting-on task, or (rarely) an urgent page to the user."
 when: { fields: { name: Intake } }
 ---
 

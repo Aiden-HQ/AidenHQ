@@ -1,6 +1,6 @@
 ---
 name: scan-slack
-description: Load for the half-hourly Slack scan run (Intake): turn asks to the user, their commitments, promises to them and messages pinned with their task emoji into deduplicated tasks, and close tasks once answered or unpinned.
+description: "Load for the half-hourly Slack scan run (Intake): turn asks to the user, their commitments, promises to them and messages pinned with their task emoji into deduplicated tasks, and close tasks once answered or unpinned."
 when: { fields: { name: Intake } }
 ---
 
@@ -31,13 +31,14 @@ Read the thread when context isn't obvious. Three outcomes create a task, the re
 - `todo`: the user explicitly promised something concrete and hasn't visibly done it.
 - `waiting-on`: someone promised the user something concrete and hasn't delivered. Title `<person>: <thing owed>`; the due date goes in the description only when stated.
 
-**An ask under an hour old waits** (compare the message's own timestamp with the run time); a later scan takes it if still open. Pinned messages are taken at once.
+**An ask under an hour old waits** (compare the message's own timestamp with the run time); a later scan takes it if still open. Pinned messages are taken at once Before creating a task for an ask that waited, `task_search` its pin marker `source:slack:pin:<channel_id>:<ask ts>`: a pinned ask already has its task.
 
 ## 4. Create tasks
 
 One `task_create` per conversation, on the thread root:
 
 - `marker: source:slack:<channel_id>:<thread_ts or ts>`; for a reply in a thread also `related_markers: ["source:slack:pin:<channel_id>:<ask ts>"]`.
+- `labels`: the outcome's label (`needs-response`, `todo` or `waiting-on`).
 - `title`: `Reply to <person>: <topic>` for needs-response, the action itself for todo.
 - `priority`: `high` for a deadline today or tomorrow or a blocker, `medium` otherwise, `low` for nice-to-haves.
 - `description`: your mission's format. When the ask is to review, approve or merge one pull request, add `PR: https://github.com/<owner>/<repo>/pull/<n>` under Source (the task then closes itself with the PR).
@@ -49,7 +50,7 @@ One `task_create` per conversation, on the thread root:
 Every message the user reacted to with their task emoji is a task, whoever wrote it and however old, until they remove the reaction or close it.
 
 - **Find:** `query: "hasmy:<emoji>"` (e.g. `hasmy::pushpin:`), the search options above with no date filter, following the cursor up to 5 pages. The pinned set is known only when the last page had no cursor, nothing failed, and it agrees with the threads you read. An empty or unfiltered page with no error is possible: when the search returns nothing, or misses a message whose thread shows the emoji, the set is unknown. Skip closing then, and report `pinned: unavailable` with what failed.
-- **Create:** `task_create` with `marker: source:slack:pin:<channel_id>:<message ts>` (the pinned message's own ts), `dedupe_closed: true`, `labels: ["todo"]`, a title of what the user needs to do ("Read: <topic>" when informational), priority as above, `Type: Slack (pinned)` and a Reason starting "Reacted <emoji> in Slack.", plus `related_markers: ["source:slack:<channel_id>:<thread_ts>"]` for a thread reply.
+- **Create:** `task_create` with `marker: source:slack:pin:<channel_id>:<message ts>` (the pinned message's own ts), `dedupe_closed: true`, `labels: ["todo"]`, a title of what the user needs to do ("Read: <topic>" when informational), `priority` `high` for a deadline today or tomorrow or a blocker, else `medium`, `Type: Slack (pinned)` and a Reason starting "Reacted <emoji> in Slack.", plus `related_markers: ["source:slack:<channel_id>:<thread_ts>"]` for a thread reply. A deduplicated open task gets a `task_comment` only for a genuinely new message since it was created.
 - **Close the unpinned** (known set only): `task_search` `query: "source:slack:pin"`, `limit: 50`. A task whose marker isn't in the set: confirm with `slack_read_thread` the emoji is gone, then `task_finish` with "Reaction removed in Slack".
 
 ## 6. Finish
