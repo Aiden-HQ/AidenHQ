@@ -1499,10 +1499,9 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "" }), /reason says/);
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed now", reason: "" }), /word is one of/);
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is one of/);
-  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)" }), /fix isn't on the PR yet: its head is still 2222222/);
-  w.pr(2, sha("3")); await w.tick();
   assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" }), { resolved: "f1" });
-  assert.ok(!codes(w.engine.verdict(REPO, 2, sha("3"))).includes("findings"), "no open finding holds the new head");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"], "answered fixed, but the head is still the one it was raised on: the fix isn't on the PR");
+  assert.match(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /fix isn't on the PR yet/);
   // The reply is posted for the agent (the important finding only, once its thread is known); a nit gets none.
   w.engine.resolve({ repo: REPO, number: 2, id: "n1", word: "won't fix", reason: "style only, left as is" });
   await w.tick({ github: false });
@@ -1515,8 +1514,10 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "again, for no reason" }), /isn't open/);
   const f = w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get();
   assert.deepEqual({ ...f }, { outcome: "fixed", claim: "fixed: moved the lock into pay.ts (abc1234)" });
-  w.later(DEBOUNCE + 1); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]).sort(), [["f1", "fixed: moved the lock into pay.ts (abc1234)"], ["n1", "won't fix: style only, left as is"]]);
+  w.finish(1, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "on the new head, its review done, the fixed claim no longer holds the merge");
 });
 
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
@@ -1709,6 +1710,6 @@ test("a reply on a finding's thread posted before the service recorded its threa
   w.finish(0); await w.tick(); // f1 open, gating; its post never reported its comments (posted before they were recorded)
   w.threads.set(2, [{ finding: "f1", comment: 90, replies: [{ id: 49, author: "mallory", body: "fixed: trust me" }, { id: 50, author: "bob", body: "fixed: moved the check into pay()" }] }]);
   await w.tick();
-  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "bob's answer counts; mallory (no write access) still doesn't");
-  assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()");
+  assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()", "bob's answer counts; mallory (no write access) still doesn't");
+  assert.match(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /fix isn't on the PR yet/, "a thread reply's fixed waits for the fix like the tool's");
 });

@@ -441,6 +441,13 @@ export function createEngine(d: EngineDeps) {
      FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
+  /** Gating findings answered `fixed` (an agent's call or a thread reply) while `head` is still a commit they were raised or reopened
+   * on: the fix isn't on the PR yet, so they hold the merge of that head. A run's own recheck finding one gone leaves no claim. */
+  const unpublished = (repo: string, n: number, head: string) => all<{ id: string; path: string; line: number; title: string }>(
+    `SELECT f.id, f.path, f.line, f.title FROM findings f JOIN runs r ON r.id = f.run
+     WHERE f.repo = ? AND f.number = ? AND f.outcome = 'fixed' AND f.claim LIKE 'fixed:%' AND f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted'
+       AND (r.head = ? OR EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?))
+     GROUP BY f.id`, repo, n, head, head);
   /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
    * shrink before a gating finding is left out; one that can't fit even bare stays open (never marked fixed unseen). */
   function recheckList(repo: string, n: number) {
@@ -1440,7 +1447,7 @@ export function createEngine(d: EngineDeps) {
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
     const partial = !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
-    return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
+    return { repo, number: n, head, reason, important: openGating(repo, n).length + unpublished(repo, n, head).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
   }
   /** Status writes GitHub or the kernel refused, by repo and head: tried again after STATUS_RETRY or once the verdict changes. */
   const statusFailed = new Map<string, { key: string; at: number }>();
@@ -1546,10 +1553,7 @@ export function createEngine(d: EngineDeps) {
     if (!/\p{L}{2,}/u.test(reason) || reason.length > 1500) throw new RequestError("reason says what changed or why (letters, at most 1500 characters)");
     const p = prRow(repo, n);
     if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
-    const open = one<{ severity: string; raised: string; reopened: string | null }>("SELECT f.severity, r.head AS raised, (SELECT d.head FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' ORDER BY d.rowid DESC LIMIT 1) AS reopened FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.outcome IS NULL ORDER BY f.rowid DESC LIMIT 1", repo, n, id);
-    // A fix isn't a fix until it is on the PR: while the head is still a commit the finding was raised or reopened on, `fixed` would close it for an unfixed head.
-    if (open && /^fixed$/i.test(word) && (open.raised === p.head || open.reopened === p.head)) throw new RequestError(`the fix isn't on the PR yet: its head is still ${p.head.slice(0, 7)}, a commit this finding was raised on; publish the fix, then say fixed`);
-    const severity = open?.severity;
+    const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
     if (!answer(p, id, word, reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
     // An important finding's answer is also replied on its thread (so it shows closed): queued here (a newer answer replaces an older queued one), posted by `replies` and never holding the outcome. A nit gets none.
     if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't")}: ${reason}`.slice(0, 1600), now());
@@ -1651,6 +1655,9 @@ export function createEngine(d: EngineDeps) {
     const open = openGating(repo, n);
     if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
       unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+    const early = unpublished(repo, n, head);
+    if (early.length) reasons.push({ code: "findings", text: `${early.length} finding${early.length === 1 ? "" : "s"} answered fixed, but the fix isn't on the PR yet: ${head.slice(0, 7)} is still a commit ${early.length === 1 ? "it was" : "they were"} raised on (${early.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")})`,
+      unblock: "publish the fix (push it to the PR); the review of the new head then rechecks it" });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
