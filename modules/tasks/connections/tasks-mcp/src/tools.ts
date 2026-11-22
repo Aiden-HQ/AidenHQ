@@ -110,7 +110,7 @@ function toolMarkup(args: Json) {
 }
 
 const paperclip = paperclipClient({ url: KERNEL, token: SERVICE_KEY, lane: "agent", headers: () => ({ "x-aidenhq-caller": cx().assertion }) });
-const api = (method: string, path: string, body?: Json) => paperclip.request(method, path, body);
+const api = (method: string, path: string, body?: Json, o?: { timeoutMs?: number }) => paperclip.request(method, path, body, o);
 
 /** The kernel records a wait on the caller's own task (POST /v1/wait, kernel idle.ts): its reason, and when it resumes. */
 async function kernelWait(body: Json) {
@@ -985,8 +985,9 @@ const TOOLS: Record<string, Tool> = {
           stopped = true;
           break;
         }
-        // Advance by what came back, not by what was asked: a server capping its page size would skip the rows between.
-        offset += page.length;
+        // Advance by half of what came back: a page capped smaller than asked leaves no gap, and a hit deleted ahead of the
+        // offset shifts later hits up by one, which the overlap re-reads (deduped above) rather than skips.
+        offset += Math.max(1, Math.floor(page.length / 2));
       }
       return {
         tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))),
