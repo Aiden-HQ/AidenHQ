@@ -26,14 +26,14 @@ test("the lane speaks for an agent with a chat; it never reaches memory, a job's
   k = await kernel(t, {
     agents: { ada: { id: ADA, name: "Ada" } },
     onControl: (req) => (req.url === "/api/agents/me" ? { body: { id: ADA, companyId: "co" } } : req.url.endsWith("/actions/post") ? { body: { data: { child: "new-1", found: false, comment: null, status: null } } } : req.url === "/api/issues/new-1" ? { body: { id: "new-1", identifier: "WOR-1", assigneeAgentId: ADA, createdByAgentId: ADA } } : undefined),
-    grants: { [ADA]: { key: "ada", roles: [], chat_task: "chat-ada", chat_tools: ["docs.doc_read", "docs.memory_note", "docs.doc_create"], tools: { docs: ["doc_read", "memory_note", "doc_create", "doc_admin"] } }, "ag-bo": { key: "bo", roles: [], tools: { docs: ["doc_read"] } } },
+    grants: { [ADA]: { key: "ada", roles: [], chat_task: "chat-ada", chat_tools: ["paperclip_tasks.doc_read", "paperclip_tasks.memory_note", "paperclip_tasks.doc_create"], tools: { paperclip_tasks: ["doc_read", "memory_note", "doc_create", "doc_admin"] } }, "ag-bo": { key: "bo", roles: [], tools: { paperclip_tasks: ["doc_read"] } } },
     secrets: { docs_service_key: "docs-key", lane_token: "lane-key", other_token: "other-key", [`paperclip-agents/${ADA}`]: "ada-pc-key", paperclip_post_key: "post-key" },
     modules: { modules: { "chat-lane": { roles: ["kernel.lane"], token: "lane_token" }, other: { roles: [], token: "other_token" }, docs: { roles: ["kernel.memory"] } } },
-    connections: { docs: { url: `${docs.url}/mcp`, auth_secret: "docs_service_key", module: "docs", returns: "trusted", tools: { read: ["doc_read", "memory_note", "doc_admin"], write: ["doc_create"], destructive: [] } } },
+    connections: { paperclip_tasks: { url: `${docs.url}/mcp`, auth_secret: "docs_service_key", module: "docs", returns: "trusted", tools: { read: ["doc_read", "memory_note", "doc_admin"], write: ["doc_create"], destructive: [] } } },
   });
   // jobs.ts's table (the harness doesn't wire jobs): provenance reads it when a task is created.
   k.records.db.exec("CREATE TABLE IF NOT EXISTS jobs (id TEXT, agent TEXT, task TEXT, state TEXT, routine TEXT, routine_cap TEXT)");
-  const call = (token, agent, name) => k.call("docs", token, { method: "tools/call", params: { name, arguments: {} } }, { headers: { "x-aidenhq-lane-agent": agent } });
+  const call = (token, agent, name) => k.call("paperclip_tasks", token, { method: "tools/call", params: { name, arguments: {} } }, { headers: { "x-aidenhq-lane-agent": agent } });
 
   // The lane, as Ada: her grants, on her chat task.
   assert.equal((await (await call("lane-key", ADA, "doc_read")).json()).result.content[0].text, "done");
@@ -56,8 +56,8 @@ test("the lane speaks for an agent with a chat; it never reaches memory, a job's
   await call("lane-key", ADA, "memory_note");
   assert.equal(memory.at(-1).status, 401);
   // A job's doc_read can't write memory; its memory_note writes its own agent's.
-  await k.call("docs", "ada", { method: "tools/call", params: { name: "doc_read", arguments: {} } });
+  await k.call("paperclip_tasks", "ada", { method: "tools/call", params: { name: "doc_read", arguments: {} } });
   assert.equal(memory.at(-1).status, 403);
-  await k.call("docs", "ada", { method: "tools/call", params: { name: "memory_note", arguments: {} } });
+  await k.call("paperclip_tasks", "ada", { method: "tools/call", params: { name: "memory_note", arguments: {} } });
   assert.deepEqual(memory.at(-1), { tool: "memory_note", status: 200, json: { line: `- (${new Date().toISOString().slice(0, 10)}, src: WOR-12) The acme API pages at 50 items` } });
 });

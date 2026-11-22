@@ -661,10 +661,13 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         if (!row?.key) throw fail(403, "forbidden", "the job's agent has no grants row");
         const requester = { agent: job.agent ?? "", key: String(row.key), name: job.name ?? "", roles: [...(row.roles ?? [])], kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
         const b = await json(req, 400_000);
-        const tool = String(live.caller.tool ?? "").split(".").pop();
-        // A run an event fired (its task bound to a batch: events.ts, kept 7 days) read outside text (Slack, GitHub): it changes
-        // nothing about itself; a task of its own may.
-        if (tool === "self_change" && events?.fired(job.task)) throw fail(403, "forbidden", "a run fired by events changes nothing about its agent: file the change as a task of your own (task_create), with the evidence, and make it there");
+        // The task tools' own self_change (paperclip_tasks), never a same-named tool on another connection.
+        const signed = String(live.caller.tool ?? ""), tool = signed === "paperclip_tasks.self_change" ? "self_change" : signed.endsWith(".self_change") ? "" : signed.split(".").pop();
+        // A run an event routine fired (its job's routine is an event subscription, or its task was bound to a batch) read outside
+        // text (Slack, GitHub): it changes nothing about itself; a task of its own may.
+        const routine = (() => { try { return (records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined)?.routine; } catch { return undefined; } })();
+        const evented = Boolean(routine && Object.values((grantsFile().routine_events ?? {}) as Record<string, { key?: string }>).some((s) => s.key === routine)) || Boolean(events?.fired(job.task));
+        if (tool === "self_change" && evented) throw fail(403, "forbidden", "a run fired by events changes nothing about its agent: file the change as a task of your own (task_create), with the evidence, and make it there");
         try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
       if (hit?.path === "/v1/memory/:op") {
@@ -678,7 +681,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reaches memory");
         const op = m[0]!;
         if (!["note", "forget", "read", "rewrite"].includes(op)) throw fail(404, "not_found", `no memory op ${op}`);
-        if (String(live.caller.tool ?? "").split(".").pop() !== `memory_${op}`) throw fail(403, "forbidden", `memory ${op} is memory_${op}'s only`);
+        if (String(live.caller.tool ?? "") !== `paperclip_tasks.memory_${op}`) throw fail(403, "forbidden", `memory ${op} is memory_${op}'s only`);
         const agents = grantsFile().agents ?? {}, row = agents[job.agent!];
         if (!row?.key) throw fail(403, "forbidden", "the job's agent has no grants row");
         const keys = Object.values(agents).map((g) => String(g.key ?? "")).filter(Boolean);
@@ -703,7 +706,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
           const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
           if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reads a batch");
-          if (String(live.caller.tool ?? "").split(".").pop() !== "routine_events") throw fail(403, "forbidden", "a batch is routine_events's only");
+          if (String(live.caller.tool ?? "") !== "paperclip_tasks.routine_events") throw fail(403, "forbidden", "a batch is routine_events's only");
           const row = records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined;
           return send(res, 200, await events.batch({ task: job.task, agent: job.agent!, routine: row?.routine }, m[0]!));
         } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
