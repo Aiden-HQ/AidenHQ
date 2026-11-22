@@ -48,7 +48,7 @@ export function teamProblems(name: string, t: unknown): string[] {
     out.push(...memberProblems(`${at}.members.${k}`, m, true));
   }
   if (t.defaults != null) out.push(...memberProblems(`${at}.defaults`, t.defaults, false));
-  if (t.caps != null && (!isMap(t.caps) || Object.keys(t.caps).some((k) => k !== "day_usd") || !(typeof t.caps.day_usd === "number" && t.caps.day_usd > 0 && t.caps.day_usd <= 1000))) out.push(`${at}.caps: { day_usd } (USD, above 0, at most 1000): the whole team's day cap`);
+  if (t.caps != null) out.push(`${at}.caps is gone: one install limit, spend_day_usd / spend_month_usd, and settings.task_usd per task`);
   if (t.routing != null) {
     const w = isMap(t.routing) ? t.routing.weights : undefined;
     if (!isMap(t.routing) || Object.keys(t.routing).some((k) => k !== "weights") || !isMap(w) || Object.entries(w).some(([k, v]) => !Object.hasOwn(DEFAULT_WEIGHTS, k) || typeof v !== "number" || !Number.isFinite(v) || v < (k === "load" ? LOAD_MIN : 0) || v > WEIGHT_MAX))
@@ -75,17 +75,16 @@ export type Scored = { key: string; id: string; score: number; repo: number; con
 export type Decision = { pick?: Scored; scored: Scored[]; excluded: { key: string; why: string }[] };
 
 /**
- * The member a team task goes to. Eligible: not paused, and the team's day cap not used up (`overBudget`). Score =
+ * The member a team task goes to. Eligible: not paused. Score =
  * w.repo × repo match (0 or 1) + w.continuity × continuity (0 or 1: finished something in the repo within the window) −
  * w.load × (running + queued) / max_parallel. Continuity is familiarity, not volume, so load decides between familiar members
  * (a count let the busiest member win every task). Ties go to the least load, then the member key. A busy member still gets
  * it: the task waits in its backlog (wakes.ts re-places it if it never starts). No eligible member: no pick.
  */
-export function pickMember({ repos, candidates, weights, overBudget = false }: { repos: string[]; candidates: Candidate[]; weights: Weights; overBudget?: boolean }): Decision {
+export function pickMember({ repos, candidates, weights }: { repos: string[]; candidates: Candidate[]; weights: Weights }): Decision {
   const excluded: Decision["excluded"] = [];
   const scored: Scored[] = [];
   for (const c of candidates) {
-    if (overBudget) { excluded.push({ key: c.key, why: "the team's day cap is used up" }); continue; }
     if (c.paused) { excluded.push({ key: c.key, why: "paused" }); continue; }
     const repo = repos.some((r) => c.repos.some((p) => repoMatches(p, r))) ? 1 : 0;
     const load = (c.running + c.queued) / Math.max(1, c.maxParallel);

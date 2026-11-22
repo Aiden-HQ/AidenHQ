@@ -488,10 +488,9 @@ settings:
   company_name: $(json "$COMPANY")
   channels: [web]
   exposure: $EXPOSURE
-  # Quiet start (docs/design/quiet-start.md): schedules and heartbeats wait until you turn them on; spend stops at \$10 a day.
+  # Quiet start (docs/design/quiet-start.md): schedules and heartbeats wait until you turn them on.
   quiet_start: "on"
-  spend_day_usd: 10
-  # The AI reviewer decides writes; your taps are for authority (vetoes, autonomy, spend caps, following a release).
+  # The AI reviewer decides writes; your taps are for authority (vetoes, autonomy, spend limits, following a release).
   autonomy: full
 $AUTO_UPDATE
 ${FLEET_ORG:+  github_fleet_org: $FLEET_ORG}

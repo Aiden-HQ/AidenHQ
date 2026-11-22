@@ -12,7 +12,7 @@ test("records of a replaced module's kinds read under the successor's, once", (t
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const records = openRecords(join(dir, "kernel.db"));
   const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
-  const file = (kind, state) => records.file({ kind, module: kind.split(".")[0], args: {}, targets: {}, executor: { module: kind.split(".")[0] }, policy: "p", tier: 0, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state });
+  const file = (kind, state) => records.file({ kind, module: kind.split(".")[0], args: {}, targets: {}, executor: { module: kind.split(".")[0] }, policy: "p", tier: 0, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state });
   file("runner.pr", "done"); file("codehost-github.merge", "done"); file("runner.gone", "done"); file("runner.pr", "review");
   const catalog = [{ name: "github", enabled: true, replaces: ["codehost-github", "runner"] }];
   assert.equal(renameKinds(records.db, catalog, { "github.pr": {}, "github.merge": {} }), 2);

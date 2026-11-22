@@ -63,7 +63,7 @@ test("a record move fails with its fact", (t) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const records = openRecords(join(dir, "kernel.db"));
   const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
-  const r = records.file({ kind: "kernel.apply", module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 2, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state: "owner" });
+  const r = records.file({ kind: "kernel.apply", module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 2, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state: "owner" });
   fault(records.db, "record.decided");
   assert.throws(() => records.decide(r.id, r.digest, "approve", "account:a-1", "board"), /facts unwritable/);
   assert.equal(records.db.prepare("SELECT state FROM records WHERE id = ?").get(r.id).state, "owner");
@@ -115,7 +115,7 @@ test("an expired card and a superseded card each leave a closing fact", (t) => {
   let clock = Date.parse("2026-11-20T10:00:00Z");
   const records = openRecords(join(dir, "kernel.db"), () => new Date(clock));
   const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
-  const file = (task, args, target) => records.file({ kind: "kernel.apply", module: "kernel", args, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 2, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task, state: "owner", ...(target ? { target } : {}) });
+  const file = (task, args, target) => records.file({ kind: "kernel.apply", module: "kernel", args, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 2, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task, state: "owner", ...(target ? { target } : {}) });
   const closing = (id) => records.db.prepare("SELECT actor, data FROM facts WHERE type = 'record.decided' AND subject = ?").all(`record:${id}`).map((f) => ({ actor: f.actor, ...JSON.parse(f.data) }));
   // Superseded: a changed request on the same task, kind and target.
   const first = file("t-1", { n: 1 }, "main");
@@ -141,7 +141,7 @@ test("a card closed by the code (cancelled, stale, unknown) leaves its closing f
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const records = openRecords(join(dir, "kernel.db"));
   const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
-  const file = (n, state) => records.file({ kind: "kernel.apply", module: "kernel", args: { n }, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: `t-${n}`, state });
+  const file = (n, state) => records.file({ kind: "kernel.apply", module: "kernel", args: { n }, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: `t-${n}`, state });
   const closing = (id) => records.db.prepare("SELECT data FROM facts WHERE type = 'record.decided' AND subject = ?").all(`record:${id}`).map((f) => JSON.parse(f.data));
   const open = file(1, "review"), claimed = file(2, "claimed"), lost = file(3, "claimed");
   assert.equal(records.close(open.id, "cancelled", "module removed"), true);

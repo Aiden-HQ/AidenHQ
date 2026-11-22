@@ -36,7 +36,7 @@ Pause/Resume (or pause and stop it now).
 - **Chats:** its general chats and New chat.
 - **Handbook:** Your rules, the main handbook, What it reads, History (below).
 - **Settings:** rows that show the module default beside the instance value, each edit opening the preview-to-progress
-  flow: model, effort, heartbeat, max parallel, routines (schedule, status, model), spend caps, connection grants
+  flow: model, effort, heartbeat, max parallel, routines (schedule, status, model), connection grants
   (per connection, the exact tools; null resets to the module's grant), and recent changes to this agent.
 
 Pause is operational, not configuration: a signed-in admin pauses the agent in Paperclip (`POST .../pause`), logged as an

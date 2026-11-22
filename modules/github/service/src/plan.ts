@@ -1,7 +1,7 @@
 // The code host's git rules: which tier a push, PR, merge, close or create_repo is on its merits, from verified state only
 // (the requester the runner looked up, the repos, branches, files, heads and checks git and GitHub report). Pure: no I/O.
 // Code refuses (`reject`) what nobody may do and the agent can fix (the instance repo, a default branch outside the agents
-// org, a head that moved); Tier 0 runs at once, Tier 1 goes to the AI reviewer, `panel` adds a second reviewer.
+// org, a head that moved); Tier 0 runs at once, Tier 1 goes to the AI reviewer.
 // What a change to particular files needs (the gate's core, compose files, the owner-approval records) is never decided here:
 // `plan` returns the files each push, PR and merge changes (`paths`), and the kernel raises the tier by the path inventory
 // (paths.yaml, kernel/src/paths.ts) and runs the platform check (modules/platform/src/check.ts) on them (writes.ts).
@@ -9,7 +9,7 @@
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
-interface Part { tier: 0 | 1 | 2; rule: string; reason: string; panel?: boolean; reject?: boolean }
+interface Part { tier: 0 | 1 | 2; rule: string; reason: string; reject?: boolean }
 interface Check { ok?: boolean; pending?: boolean; skipped?: boolean }
 interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
 interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string }
@@ -30,7 +30,6 @@ interface State {
 
 const T = (tier: 0 | 1 | 2, rule: string, reason: string): Part => ({ tier, rule, reason });
 /** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
-const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
 const REJECT = (rule: string, reason: string): Part => ({ tier: 2, rule, reason, reject: true });
 const same = (a: unknown, b: unknown) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const orgOf = (repo: unknown) => String(repo).split("/")[0];
@@ -83,7 +82,7 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   if (inAgents) {
     if (b.empty) parts.push(T(1, "empty-repo", `${b.repo} is empty: the first push lands on its default branch`));
     // Straight onto the branch apps deploy from or merge into, past the PR and its checks: weakens the merge gate.
-    else if (b.branch === b.defaultBranch || (b.deployBranch && b.branch === b.deployBranch)) parts.push(PANEL("default-branch", `\`${b.branch}\` is ${b.repo}'s default or deploy branch, past its PR checks`));
+    else if (b.branch === b.defaultBranch || (b.deployBranch && b.branch === b.deployBranch)) parts.push(T(1, "default-branch", `\`${b.branch}\` is ${b.repo}'s default or deploy branch, past its PR checks`));
     else parts.push(T(0, workflow ? "ci-template-copy" : "agents-org-branch", workflow ? `${b.repo}'s \`.github/\` is exactly the product's CI template` : `an ordinary branch of ${b.repo} in the agents org`));
     return parts;
   }
@@ -207,7 +206,6 @@ function productMergePart(p: Pr, ref: string) {
   return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
 }
 
-const rank = (p: Part) => p.tier * 2 + (p.panel ? 1 : 0);
 /**
  * executor@1's plan for github.{push,pr,merge,close,create_repo} (and codehost-local's): `state` is the verified state the code host read
  * for this request (as `s` above). A refusal throws (the kernel answers it as refused); otherwise the tier above 0 comes back
@@ -224,12 +222,12 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   if (!parts.length) throw Object.assign(new Error("nothing recognised in the request"), { rule: "unrecognised" });
   const refused = parts.find((p) => p.reject);
   if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule });
-  const top = parts.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+  const top = parts.reduce((a, b) => (b.tier > a.tier ? b : a));
   const targets = action === "merge" || action === "close"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null }]));
   const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
-  return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, ...(top.panel ? { panel: true } : {}), reason: top.reason, rule: top.rule } } : {}) };
+  return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, reason: top.reason, rule: top.rule } } : {}) };
 }

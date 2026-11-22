@@ -46,7 +46,7 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
                 <dt>Tokens</dt>
                 <dd>{run.tokens ? `${tok(run.tokens.input)} in (${tok(run.tokens.cached)} cached) · ${tok(run.tokens.output)} out` : "—"}</dd>
                 <dt>Cost</dt>
-                <dd>{usd(run.ledger.usd)}{run.ledger.capUsd != null && <span className="faint"> of {usd(run.ledger.capUsd)} run cap</span>}{!run.ledger.rows.length && <span className="faint"> (no ledger rows for this run)</span>}</dd>
+                <dd>{usd(run.ledger.usd)}{!run.ledger.rows.length && <span className="faint"> (no ledger rows for this run)</span>}</dd>
               </dl>
               {run.error && <p className="run-note bad">{run.error}</p>}
               {run.plan.length > 0 && (

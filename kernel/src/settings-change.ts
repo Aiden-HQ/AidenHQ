@@ -103,15 +103,6 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
       if (!ok!(c.value)) refuse(`${c.agent}.${c.field} can't be ${JSON.stringify(c.value)}`);
       return;
     }
-    case "caps": {
-      only(c, ["kind", "agent", "value"]);
-      const a = agentOf(c.agent);
-      if (a.member_of) refuse(`${c.agent} is a team member: it has no cap of its own (the team's day cap covers it)`);
-      const v = c.value;
-      if (a.team && isMap(v) && Object.keys(v).some((k) => k !== "day_usd")) refuse("a team has one cap: day_usd, over all its members' spend");
-      if (!isMap(v) || !Object.keys(v).length || Object.entries(v).some(([k, x]) => !["run_usd", "task_usd", "day_usd"].includes(k) || typeof x !== "number" || !(x > 0) || x > 1000)) refuse("caps are run_usd, task_usd, day_usd: USD above 0, at most 1000");
-      return;
-    }
     case "module": {
       only(c, ["kind", "name", "on"]);
       const m = moduleOf(c.name);
@@ -198,7 +189,6 @@ type TeamOf = (key: string) => { team: string; record: boolean } | undefined;
 const PATHS: Record<string, (ch: Change, isInstance: IsInstance) => string[]> = {
   setting: () => ["instance.yaml"],
   agent: () => ["instance.yaml"],
-  caps: () => ["instance.yaml"],
   module: () => ["instance.yaml"],
   routine: () => ["instance.yaml"],
   pin: () => ["instance.yaml"],
@@ -260,11 +250,6 @@ export function planFiles(changes: Change[], { read, isInstance, teamOf, moduleH
       case "agent":
         set([...fieldsOf(ch.agent), ch.field], ch.value);
         break;
-      case "caps": {
-        const t = teamOf(ch.agent);
-        for (const [k, v] of Object.entries(ch.value)) set(t ? ["teams", t.team, "caps", k] : ["overrides", "agents", ch.agent, "caps", k], v);
-        break;
-      }
       case "routine":
         set(["overrides", "routines", ch.routine, ch.field], ch.value);
         break;

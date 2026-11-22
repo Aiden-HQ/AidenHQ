@@ -6,6 +6,9 @@ import { z } from "zod";
 import { AccountError, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import type { Store } from "./store.js";
 
+/** A pair code's life when the channel doesn't say: the 15 minutes every pairing module keeps. */
+export const PAIR_CODE_TTL_S = 15 * 60;
+
 /** One compiled flow (modules/board/schemas/setup_flows.json) plus the module's name; `pair_token` names a secret. */
 export interface SetupFlowPoint {
   module: string;
@@ -32,6 +35,13 @@ export interface SetupFlowPoint {
   /** Its `mode: advanced` flow: the person's own app, for what basic can't do; done once its secrets exist (and it is paired). */
   advanced?: AdvancedFlow;
 }
+
+/** A saved secret's services are still being recreated: the board's pairing waits on this, not on every module 409. */
+const RESTARTING = (module: string) => `setup_restarting:${module}`;
+export const RESTART_MS = 5 * 60_000;
+
+/** How long a module's pairing endpoint may take to answer before the board calls it a timeout (a POST may have minted). */
+const PAIR_TIMEOUT_MS = 15_000;
 
 /** A module's advanced flow (compile nests it in the basic one): what it unlocks, its steps, secrets and pairing. */
 export interface AdvancedFlow {
@@ -126,9 +136,20 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
     // A module pairs once: on its basic flow, or on its advanced one.
     const url = f.pair_url ?? f.advanced?.pair_url;
     if (!url || !f.token) throw new AccountError(404, "this module has no pairing");
-    const res = await doFetch(url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(15_000) });
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) throw new AccountError(502, String(data.error ?? `${f.module} answered ${res.status}`));
+    // While a saved secret's service is being recreated, the fetch itself can fail. That is "not reachable yet", which the
+    // page may wait out only when the save said the service is restarting; it is not a 502 application failure. A timeout is
+    // its own answer: a mint it was still running may have made a code the board never saw, so the page must not retry it.
+    const res = await doFetch(url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(PAIR_TIMEOUT_MS) }).catch((e: unknown) => {
+      throw new AccountError((e as Error)?.name === "TimeoutError" ? 504 : 503, (e as Error)?.name === "TimeoutError" ? `${f.module} didn't answer in time` : `${f.module} isn't reachable yet`);
+    });
+    // The body is part of the answer: a response cut off mid-body (the module restarted while sending it) is a timeout too,
+    // so the page neither reads it as an empty success nor retries it as a second mint.
+    const data = (await res.json().catch((e: unknown) => {
+      throw new AccountError((e as Error)?.name === "TimeoutError" ? 504 : 502, (e as Error)?.name === "TimeoutError" ? `${f.module} didn't answer in time` : `${f.module} sent a bad answer`);
+    })) as Record<string, unknown>;
+    // 409 is the module's conflict (for pairing, a token it does not have yet): keep it, so the page can decide whether a
+    // reported restart makes it retryable. Every other refusal is the board's 502.
+    if (!res.ok) throw new AccountError(res.status === 409 ? 409 : 502, String(data.error ?? `${f.module} answered ${res.status}`));
     return data;
   };
   const chosenOf = (module: string): string | null => d.store.meta(`setup_choice:${module}`) ?? null;
@@ -183,7 +204,9 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
             const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
-            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
+            // How long the wait has left, not when it ends: the page counts it down on its own clock, which need not agree with the board's.
+            const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
+            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -199,7 +222,15 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         if (!parsed.success) throw new AccountError(400, "secret and value are required");
         const { secret, value } = parsed.data;
         if (!f.secrets?.includes(secret) && !f.advanced?.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
-        return d.accounts.call("save_secret", who, { module: f.module, secret, value });
+        const saved = await d.accounts.call<{ ok: boolean; restarted?: string[] }>("save_secret", who, { module: f.module, secret, value });
+        // The kernel recreates those services after answering; remember it briefly, so the page (and a reload) can wait for
+        // them instead of treating the module's own "not ready" answer as a failure. Saves go out together (one POST per
+        // field), so a save that restarts nothing must not clear a marker another save just set: only an expired one goes.
+        const until = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
+        if (saved.restarted?.length) d.store.setMeta(RESTARTING(f.module), String(Date.now() + RESTART_MS));
+        else if (until <= Date.now()) d.store.delMeta(RESTARTING(f.module));
+        const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
+        return { ...saved, ...(restarting_for > 0 ? { restarting_for } : {}) };
       },
     },
     {
@@ -247,15 +278,26 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         if (!who.account.owner) throw new AccountError(403, "only the owner can pair a channel");
         // minted_at (the board's clock, like the service's paired_at): a pairing after it is this code's, so a re-pair shows.
         const minted_at = Date.now();
-        const { code, link } = (await pairCall(flow(m[1]!), "POST")) as { code?: string; link?: string };
-        return { code, ...(link ? { link } : {}), minted_at };
+        const f = flow(m[1]!);
+        // A save that lands while this request is out set the marker after the module answered: that restart is not over.
+        const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
+        const { code, link, expires_in } = (await pairCall(f, "POST")) as { code?: string; link?: string; expires_in?: number };
+        // How many seconds the code lives, as the channel keeps it: the page times its screen by this, not by a copy or a clock.
+        const ttl = typeof expires_in === "number" && expires_in > 0 ? Math.round(expires_in) : PAIR_CODE_TTL_S;
+        // Paired: the restart this marker was waiting out is over, so it must not turn a later 409 into a five-minute wait. Only
+        // the marker this call found goes, never one a concurrent save set meanwhile.
+        if (Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
+        return { code, ...(link ? { link } : {}), minted_at, expires_in: ttl };
       },
     },
     {
       method: "GET",
       path: /^\/api\/setup-flows\/([a-z0-9-]{1,63})\/pair$/,
       handle: async (m) => {
-        const { paired, paired_at } = await pairCall(flow(m[1]!), "GET");
+        const f = flow(m[1]!);
+        const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
+        const { paired, paired_at } = await pairCall(f, "GET");
+        if (paired && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
         return { paired: Boolean(paired), ...(paired_at != null ? { paired_at } : {}) };
       },
     },

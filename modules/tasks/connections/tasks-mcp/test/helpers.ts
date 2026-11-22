@@ -16,6 +16,8 @@ const read = async (req) => { let b = ""; for await (const c of req) b += c; ret
 let current = { handler: () => {}, board: undefined, directory: { agents: {} }, states: {}, repos: undefined };
 /** Requests the kernel forwarded to the control plane, with the assertion and module key they came with. */
 export const cpSeen = [];
+/** Waits the tasks server asked the kernel to record (POST /v1/wait), for a bridge made with `acceptWaits`; else /v1/wait is a 404. */
+export const waits = [];
 
 const front = await listen(async (req, res) => {
   const u = req.url ?? "";
@@ -40,6 +42,10 @@ const kernel = await listen(async (req, res) => {
     if (!moduleKey) return send(401, {});
     const ids = decodeURIComponent(u.split("ids=")[1]).split(",");
     return send(200, { as_of: new Date().toISOString(), tasks: ids.filter((id) => current.states[id]).map((id) => ({ task: id, ...current.states[id] })), counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } });
+  }
+  if (u === "/v1/wait" && req.method === "POST" && current.acceptWaits) {
+    waits.push(JSON.parse(await read(req)));
+    return send(200, { waiting: true });
   }
   if (u.startsWith("/v1/cp/agent/")) {
     if (!moduleKey || !req.headers["x-aidenhq-caller"]) return send(401, {});
@@ -81,8 +87,8 @@ export async function rpc(msg, headers = {}) {
  * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key, roles and trial from
  * `agents`), `task`/`run` what the kernel knows of its run. call(name, args) resolves with the JSON-RPC reply ({ result }).
  */
-export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {}, repos }) {
-  current = { handler, board, directory: { agents }, states, repos };
+export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {}, repos, acceptWaits = false }) {
+  current = { handler, board, directory: { agents }, states, repos, acceptWaits };
   forget();
   const g = agents[agent] ?? {};
   const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? []), ...(g.trial ? ["kernel.trial"] : [])], task, run };

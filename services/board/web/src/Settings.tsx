@@ -21,7 +21,7 @@ import { Banner, Button, LinkButton, Segmented, StatusDot, Switch, Tag, safeHref
 export const CATEGORIES = [
   { key: "connections", name: "Connections", group: "Connect" },
   { key: "approvals", name: "Approvals and autonomy", group: "Fleet" },
-  { key: "spend", name: "Spend caps", group: "Fleet" },
+  { key: "spend", name: "Spend limits", group: "Fleet" },
   { key: "switches", name: "Kill switches", group: "Fleet" },
   { key: "notifications", name: "Notifications", group: "You" },
   { key: "accounts", name: "Accounts and access", group: "You" },
@@ -175,7 +175,7 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
     );
   const rows = (keys: string[]) => keys.map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
   if (cat === "approvals") return <ApprovalsPage data={data} rows={rows} />;
-  if (cat === "spend") return <SpendPage data={data} />;
+  if (cat === "spend") return <SpendPage rows={rows(["spend_day_usd", "spend_month_usd", "task_usd"])} />;
   if (cat === "switches") {
     const sw = data.settings.filter((s) => s.switch);
     const off = sw.filter((s) => (s.live ?? s.value ?? s.default) === "off").length;
@@ -187,7 +187,7 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
   }
   if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "notify_transports", "notify_fyi", "slack_post_channels"])} conns={conns} />;
   if (cat === "general") {
-    const elsewhere = new Set(["autonomy", "channels", "notify_transports", "notify_fyi", "slack_post_channels"]);
+    const elsewhere = new Set(["autonomy", "spend_day_usd", "spend_month_usd", "task_usd", "channels", "notify_transports", "notify_fyi", "slack_post_channels"]);
     const general = data.settings.filter((s) => !s.switch && !elsewhere.has(s.key) && s.type !== "url");
     return (
       <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
@@ -349,29 +349,10 @@ function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string
   );
 }
 
-const usd = (n: number) => `$${n.toFixed(n % 1 ? 2 : 0)}`;
-const CAP_KEYS = ["run_usd", "task_usd", "day_usd"] as const;
-const CAP_NAMES = { run_usd: "a run", task_usd: "a task", day_usd: "an agent-day" };
-
-function SpendPage({ data }: { data: SettingsData }) {
-  const d = data.spend.defaults;
+function SpendPage({ rows }: { rows: SettingRow[] }) {
   return (
-    <Page
-      title="Spend caps"
-      sub="The model gateway refuses a call that would pass a cap and files a Raise card; approving it doubles that cap once."
-    >
-      <div className="st-figures">
-        {CAP_KEYS.map((k) => (
-          <div key={k} className="st-figure">
-            <span className="st-figure-n">{usd(d[k] ?? 0)}</span>
-            <span className="st-figure-l">{CAP_NAMES[k]}</span>
-          </div>
-        ))}
-      </div>
-      <p className="st-note">
-        Fleet defaults, in USD (agent-days in UTC). {data.spend.pendingRaises ? <a href="#/approvals">{data.spend.pendingRaises} Raise card{data.spend.pendingRaises === 1 ? "" : "s"} waiting.</a> : "No Raise card is waiting."}
-      </p>
-      <p className="st-note">Each agent's own caps live on its page, under Settings, Limits.</p>
+    <Page title="Spend limits" sub="The model gateway refuses a call that would take the whole install past either install limit (a UTC day or a UTC calendar month), and a task that would pass its own limit; all in USD.">
+      <Group>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>
     </Page>
   );
 }

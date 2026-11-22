@@ -16,7 +16,7 @@ import { pickService, scriptCommand } from "./run.js";
 import { posix } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { EDGE_CONTAINER, edgeTarget, exposes, tailnetNode, writeServeConfig, type EdgeTarget } from "./tailnet.js";
-import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "./identity.js";
+import { agentSigner, forgedIdentity, IDENTITY_HEADER, memberScope } from "./identity.js";
 import { readonlyPool, type WarehouseDeps } from "./sources.js";
 import { parseChecks, probeFailure, PROBE, withoutSamples, type Quality } from "./quality.js";
 import { previewApp } from "./previews.js";
@@ -267,7 +267,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a graded commit hasn't scrolled out.
       deploys: store.recentDeploys(app.name, 20).map(({ sha, at, by, status }) => ({ sha, at, by, status })),
       // Its open PRs' previews (previews.ts): reviewers may open them; nothing depends on them.
-      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)) })),
+      previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)), ...(r.reason ? { reason: r.reason } : {}) })),
       ...(inc ? { incident: { opened_at: inc.opened_at, kind: inc.kind, detail: inc.detail } } : {}),
       ...(stats ? { stats } : {}),
     };
@@ -275,7 +275,11 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
 
   // Before the first health tick the row is still identified (repo and auto_deploy), so a reader can match it to its app.
   const cached = (app: App) => cache.get(app.name) ?? { name: app.name, repo: app.repo, auto_deploy: app.auto_deploy, healthy: false, state: "unknown" };
-  const refresh = async (app: App) => void cache.set(app.name, await status(app));
+  // The cache feeds /internal/status, which has no per-caller app check: a PR's failure text stays out of it.
+  const refresh = async (app: App) => {
+    const row = await status(app);
+    cache.set(app.name, { ...row, previews: row.previews.map(({ reason: _reason, ...p }) => p) });
+  };
 
   /** Registry plus (cached) status, for the catalog. */
   async function listing() {
@@ -327,10 +331,10 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   }
   /** app_api's transport: a one-shot container on the app's network (like the probe); the request, bearer included, goes on stdin, never argv. */
   /** status 0: the request got no answer (body: why). Throws only when the container couldn't run. */
-  const sendRaw = async (req: ApiRequest, container: string): Promise<{ status: number; body: string }> => {
+  const sendRaw = async (req: ApiRequest, container: string): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
     if (!/^[0-9a-f]{64}$/.test(container)) throw new Error("bad container id");
     const out = await exec(["run", "--rm", "-i", "--pull", "never", "--network", `container:${container}`, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "128m", cfg.healthImage, "node", "-e", SEND_SCRIPT], { input: JSON.stringify(req), timeout: (req.timeout ?? TIMEOUT_MS) + 15_000 });
-    return JSON.parse(out) as { status: number; body: string };
+    return JSON.parse(out) as { status: number; headers: Record<string, string>; body: string };
   };
   const sendApi: Send = async (_app, req, container) => {
     const r = await sendRaw(req, container);
@@ -393,7 +397,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const browser = p.render.length ? await haveImage() : false;
     if (p.render.length && !browser) out.push(...p.render.map((x) => probeResult("render", x.path, [{ hard: false, what: `not checked: ${NO_IMAGE}` }])));
     if (p.render.length && browser) {
-      const secret = sign(app.name, "deploy-check", { role: "member", methods: ["GET", "HEAD"] });
+      const secret = sign(app.name, "deploy-check", memberScope());
       const headers = { [IDENTITY_HEADER]: secret };
       let facts: { pages: PageFacts[]; error?: string } = { pages: [] };
       try {
@@ -420,7 +424,7 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
         continue;
       }
       const req: ApiRequest = { url: base + x.path, method: "GET", headers: { [IDENTITY_HEADER]: token, accept: "application/json" }, timeout: AGENT_TIMEOUT_MS };
-      const r = await sendRaw(req, container).catch(() => ({ status: -1, body: "" }));
+      const r = await sendRaw(req, container).catch(() => ({ status: -1, headers: {}, body: "" }));
       out.push(probeResult("agent", x.path, r.status < 0 ? [{ hard: false, what: "not checked: the probe container didn't run" }] : judgeAgent(r, x.declared)));
     }
     return out;

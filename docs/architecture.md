@@ -63,7 +63,8 @@ gets one comment with the URL ([previews.ts](../modules/apps-platform/apps-mcp/s
 and production deploys are unchanged, and previews run in their own loop. PR heads are unmerged code, so a preview gets its
 own empty warehouse schema and login (never the live schema; the app's migrations run there), a random placeholder for
 every other secret, and no connections but the warehouse. It is removed with everything it had (containers, volumes,
-images, schema, secrets) when the PR closes or merges. A shared app's preview is at `https://pr-<n>.<share.host>` through
+images, schema, secrets) when the PR closes or merges. One that can't stay up records why, and `app_status` shows that
+reason on its previews entry. A shared app's preview is at `https://pr-<n>.<share.host>` through
 the gate, with the app's own Access audience and roles, once `settings.edge.previews` is on ([access](design/access.md)).
 
 **Warehouse.** A shared Postgres app (`modules/warehouse`) that sources and apps ingest into, with a read-only role for

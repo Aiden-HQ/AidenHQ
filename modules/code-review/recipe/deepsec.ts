@@ -16,8 +16,8 @@
 // scan data. Model: deepsec's pi backend through our gateway's OpenAI-compatible route (a pi models.json in the run's own
 // PI_CODING_AGENT_DIR), the run's capped token in OPENROUTER_API_KEY, the only variable it names. The `local` route configures no
 // credential (every other route links a Vercel project first), and pi reads its provider from that models.json. Spend: the token is
-// capped at the check's budget_usd by the kernel, the hard stop across every step; `init` also gets --max-cost-usd = budget_usd
-// (`process` and `revalidate` have no such flag). A run that hits the cap reports the budget ran out, and what was analysed so far.
+// counted against the install's spend limit; `init` also gets --max-cost-usd = budget_usd
+// (`process` and `revalidate` have no such flag). A run that hits the limit reports it, and what was analysed so far.
 // Install scripts never run (npm_config_ignore_scripts).
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { plain, readSmall, run, stopped } from "./proc.ts";
 
 /** A finding in the finder JSON the recipe takes (the recipe adds each finding's option and lens). */
-export interface DeepsecFinding { severity: "important" | "nit"; path: string; line: number; title: string; why: string; evidence: string; fix_brief: string }
+export interface DeepsecFinding { severity: "important" | "nit"; path: string; line: number; title: string; failure_scenario: string; why: string; evidence: string; fix_brief: string }
 export interface DeepsecInput {
   /** base: what a change is diffed from (the last reviewed head on an incremental review); trusted: the merge base, where its
    * summary (INFO.md) is read from. */
@@ -72,7 +72,9 @@ export function readRecords(dir: string) {
     (r.status === "analyzed" ? covered : pending).push(r.filePath);
     for (const f of r.findings ?? []) {
       if (RESOLVED.includes(String(f.revalidation?.verdict))) continue;
-      findings.push({ severity: deepsecSeverity(f.severity), path: r.filePath, line: Number.isInteger(f.lineNumbers?.[0]) ? f.lineNumbers![0]! : 1, title: String(f.title ?? ""), why: String(f.description ?? ""), evidence: "", fix_brief: String(f.recommendation ?? "") });
+      findings.push({ severity: deepsecSeverity(f.severity), path: r.filePath, line: Number.isInteger(f.lineNumbers?.[0]) ? f.lineNumbers![0]! : 1, title: String(f.title ?? ""),
+        // Its description is the exploit it revalidated: the failure scenario an important finding needs (review.ts).
+        failure_scenario: String(f.description ?? ""), why: "", evidence: "", fix_brief: String(f.recommendation ?? "") });
     }
   }
   return { findings, covered, pending };

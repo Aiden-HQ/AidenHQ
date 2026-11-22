@@ -50,8 +50,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 
 - Pick by what the work needs, using `task_team`: it lists each agent's description and roles. Product-repo code goes to the holder of the
   `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR, and once
-  the checks are green its merge is filed for its task at that head, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
-  tools or models). Several product tasks may go to it at once.
+  the checks are green its merge is filed for its task at that head, each a card the AI reviewer decides. Several product tasks may go to it at once.
 - Every Engineer has the repository, its tests and toolchains, package installs into the workspace, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
   changed pages at 1440 and 390, light and dark, and the changed flow) and attaches the screenshots (rubric: "screenshots
@@ -120,9 +119,10 @@ task done with an "ungraded: <reason>" note, and you hear it as done. Reopen it 
   commit's own changes are outside the PR's diff, a merged commit has no checks when the workflow runs only on
   `pull_request`, and a file in another repository can't be read: name the in-scope equivalent (the PR merged into its
   base; "deployed at the merged commit"), or ask the owner for that evidence.
-- **Pages.** The capture is a page's text from its top, cut at 8,000 characters: an item in a list, board or feed needs
-  the path that isolates it (`/slipped?q=CMBT`, not `/slipped`), or a page that shows that item alone. Write the path
-  itself: a URL's host is not read and an anchor is dropped.
+- **Pages.** The capture is a page's text from its top, bounded (up to 120,000 characters a page, 300,000 across the
+  pages a criterion names): an item in a list, board or feed still needs the path that isolates it
+  (`/slipped?q=CMBT`, not `/slipped`), or a page that shows that item alone. Write the path itself: a URL's host is not
+  read and an anchor is dropped.
 - **Merge jobs:** criteria on what the merge shows (the PR merged into its base, its head and merge commit, the gate's
   reply on the task), never a card or merge-request id: a Tier 0 merge answers "No card is needed.", and a card filed
   while the PR is a draft can be spent without a merge.

@@ -9,7 +9,7 @@
 // channel token or the kernel's page). Approved: claimed once → revalidated (a module kind: the same executor and policy,
 // and plan again: the same digest, else stale and refiled) → executed. Before the tier, the modules' write.filed checks on the
 // kind run (config/kernel/checks.json, in process: filedRaises): each raises or refuses the write, never lowers it. A conn.tool record is executed by the proxy itself;
-// kernel.raise_cap and kernel.apply by the kernel.
+// kernel.apply by the kernel.
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { neutral } from "./channels.ts";
@@ -23,20 +23,17 @@ import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
-import { OWNER_AFTER_TRIES, ownerAfterFailure, retryWait, afterReview, requestHash, capText, codeVerdict, computeTier, heldInput, requestTargets, shadowed, splitToOwner, type Autonomy, type Raise, type ReviewFirst, type ReviewInput, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
-export type Kind = { module: string; floor: Tier; panel?: boolean; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
-/**
- * A plan (executor@1's, or the kernel's own planner's). `review_first` with a Tier 2 raise: how the reviewer's verdict on it
- * stands ("final": its reject is final, its approve goes on to the owner; "owner", the default: both go on to the owner).
- */
-type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; review_first?: ReviewFirst; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string }; review?: ReviewContext };
+export type Kind = { module: string; floor: Tier; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
+/** A plan (executor@1's, or the kernel's own planner's). */
+type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string }; review?: ReviewContext };
 /** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
 export type FiledCheck = { module: string; at: string; kinds?: string[]; mode?: unknown };
-/** A write.filed check's code, run in process on a filing: its verdict (`ok`, `raise` tier 1 or 2 with `panel`, or `deny`) raises or refuses, never lowers. */
-export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown; facts: { productRepo?: string } }) => { verdict: string; tier?: number; panel?: boolean; rule?: string; reason?: string };
+/** A write.filed check's code, run in process on a filing: its verdict (`ok`, `raise` tier 1 or 2, or `deny`) raises or refuses, never lowers. */
+export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown; facts: { productRepo?: string } }) => { verdict: string; tier?: number; rule?: string; reason?: string };
 /** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
 export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 export const CONN_TOOL = "conn.tool";
@@ -90,7 +87,6 @@ const literal = (c: Partial<Card>) => Object.fromEntries(Object.keys(c).filter((
 /** Text a module wrote, inside a fence it can't close, for a notice posted on a task. */
 export const fenced = (text: string) => { const f = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${text}\n${f}`; };
 export const MARKER = "<!-- aidenhq-approval -->";
-const UNSURE = "reviewer_unsure";
 const MODEL = /^~?[\w.-]+\/[\w.:-]+$/;
 
 /** The setting ai_review_code (the ai-reviewer module's) and the repos code review gates (a mandatory combo), as compiled. */
@@ -98,10 +94,10 @@ export type ReviewCode = { mode?: string; mandatory?: string[] };
 /**
  * Whether code review owns a write instead of the AI reviewer (ai_review_code): only a code host's push or PR, and only when
  * every repo it names is skipped, `none` for every repo, `unless_code_review_mandatory` for those whose code review is
- * mandatory. An authority-expanding (panel) record is never skipped: two models decide it. Everything else (merges, closes, create_repo, sends, settings, deploys, tool calls) is always reviewed.
+ * mandatory. Everything else (merges, closes, create_repo, sends, settings, deploys, tool calls) is always reviewed.
  */
-export function codeReviewOwns(r: Pick<Rec, "kind" | "targets" | "panel">, { mode = "all", mandatory = [] }: ReviewCode) {
-  if (r.panel || !/^(github|codehost-local)\.(push|pr)$/.test(r.kind) || mode === "all") return false;
+export function codeReviewOwns(r: Pick<Rec, "kind" | "targets">, { mode = "all", mandatory = [] }: ReviewCode) {
+  if (!/^(github|codehost-local)\.(push|pr)$/.test(r.kind) || mode === "all") return false;
   const repos = Object.values(r.targets ?? {}).map((t) => String((t as { repo?: unknown })?.repo ?? "").toLowerCase());
   return repos.length > 0 && repos.every((repo) => repo && (mode === "none" || (mode === "unless_code_review_mandatory" && mandatory.includes(repo))));
 }
@@ -130,7 +126,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
-  /** The kernel's own executors, by kind (kernel.raise_cap). */
+  /** The kernel's own executors, by kind (kernel.apply). */
   native?: { [kind: string]: (r: Rec) => Promise<{ ok: boolean; text: string }> };
   /** The kernel's planners for its own kinds (kernel.apply): filed through request() like a module kind, planned here. */
   planners?: { [kind: string]: Planner };
@@ -233,7 +229,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       try { v = run({ kind, args: plan.args, paths: plan.paths, facts: { ...(repos().product ? { productRepo: repos().product } : {}) } }); } catch (e) { throw unavailable(`${id} failed: ${String((e as Error).message).slice(0, 200)}`); }
       const reason = String(v?.reason ?? "").slice(0, 500);
       if (v?.verdict === "deny") throw fail(422, "refused", `refused by ${c.module}'s ${id.slice(c.module.length + 1)} check (${v.rule ?? "deny"}): ${reason}`);
-      if (v?.verdict === "raise" && (v.tier === 1 || v.tier === 2)) out.push({ tier: v.tier, ...(v.panel ? { panel: true } : {}), rule: String(v.rule ?? id), reason });
+      if (v?.verdict === "raise" && (v.tier === 1 || v.tier === 2)) out.push({ tier: v.tier, rule: String(v.rule ?? id), reason });
       else if (v?.verdict !== "ok") throw unavailable(`${id} answered no verdict`);
     }
     return out;
@@ -257,32 +253,30 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
     const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];
-    const reviewFirst: ReviewFirst = plan.review_first === "final" ? "final" : "owner";
-    const t = computeTier({ floor: k.floor, raise, reviewFirst, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), panel: k.panel === true, uncapped: isUpdater(requester), ownerSave });
+    const t = computeTier({ floor: k.floor, raise, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), uncapped: isUpdater(requester), ownerSave });
     // The reason and rule shown: the strictest raise, the plan's on a tie.
-    const weight = (r: Raise | undefined) => (r ? r.tier * 4 + (r.ownerOnly ? 2 : 0) + (r.panel ? 1 : 0) : 0);
-    const top = checkRaises.reduce<Raise | undefined>((a, b) => (weight(b) > weight(a) ? b : a), raise);
+    const top = checkRaises.reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
-    return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, panel: t.panel, review_first: t.reviewFirst, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
+    return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
   async function file(kind: string, k: Kind, requester: Requester, args: unknown, task: string, evidence?: unknown, workspace?: string, ownerSave = false): Promise<Rec> {
     const { base, satisfied, filed } = await prepare(kind, k, requester, args, task, evidence, workspace, ownerSave);
     if (satisfied !== undefined) {
-      const r = records.file({ ...base, tier: 0, panel: false, state: "claimed" });
+      const r = records.file({ ...base, tier: 0, state: "claimed" });
       records.finish(r.id, true, `Nothing to do: ${satisfied.slice(0, 1000)}`);
       return records.get(r.id)!;
     }
     const t = filed!;
     if (t.tier > 0 && !task) throw fail(400, "no_task", `${kind} needs approval: pass your current task`);
     // The same requester's same request still open on the task is that record, never a second card that would run twice,
-    // while it is at least as strict (tier and panel). A stricter one replaces it only while it waits for the reviewer; a
+    // while it is at least as strict. A stricter one replaces it only while it waits for the reviewer; a
     // record with the owner or approved stays as it is. Another requester's record is never touched: this one is its own.
     const who = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
-    if (same && same.tier >= t.tier && (same.panel || !t.panel)) return same;
+    if (same && same.tier >= t.tier) return same;
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
     return records.file(t);
   }
@@ -342,7 +336,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * An approved record: revalidated, its task still open and (a module kind) planned again, then claimed once and executed.
    * Everything before the claim that fails transiently (the routine trace, the task read, the executor's plan) leaves the
    * record approved, to be run again with backoff capped at 15 minutes (retryApproved), for as long as its task is open: only a real
-   * 4xx, a stale record or a closed task ends it.
+   * 4xx, a stale record or a closed task (an agent's request; a module's write of its own kind runs regardless) ends it.
    * Never throws.
    */
   async function run(id: string): Promise<void> {
@@ -361,7 +355,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const k = pre.kind !== CONN_TOOL && !native[pre.kind] ? registry()[pre.kind] : undefined;
     try {
       if (!(await revalidate(pre))) return void runRetries.delete(id);
-      open = !pre.task || (await onTask.open(pre.task));
+      // A closed task ends an agent's leftover request; a module's write of its own kind (code review's post, filed on a task that
+      // only holds its approvals) is no leftover: it runs whatever became of that task.
+      open = !pre.task || (pre.requester?.kind === "module" && pre.requester.module === pre.module) || (await onTask.open(pre.task));
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
         // The same executor (module, address and code revision) and policy, or the record is stale (A9). An executor that
         // refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.
@@ -415,28 +411,22 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (!stale) await onTask.notify(r.task, `**Rejected** on ${r.identifier ?? r.task} (approval ${r.id}, ${action}).\n\n${MARKER}`, { parent: true });
   }
 
-  // Reviews in progress (one per record at a time) and failed tries waiting out their backoff: record id → { n, next }.
+  // Reviews in progress (one per record at a time) and a failed review waiting out its one retry: record id → { n, next }.
   const reviewing = new Set<string>();
   const retries = new Map<string, { n: number; next: number }>();
 
   /**
-   * The bound reviewer's verdict on one request; a review that couldn't finish is reviewer_failed (tried again later). A push
-   * or PR the owner leaves to code review (ai_review_code, codeReviewOwns) is code's approval instead, held like any verdict to
-   * the record's review-first.
+   * The bound reviewer's verdict on one request; a review that couldn't finish is reviewer_failed. A push or PR the owner leaves
+   * to code review (ai_review_code, codeReviewOwns) is code's approval instead.
    */
-  async function ask(r: Rec, request: Record<string, unknown>, model: string): Promise<Verdict> {
+  async function ask(r: Rec, request: Record<string, unknown>): Promise<Verdict> {
     if (codeReviewOwns(r, reviewCode())) return { decision: "approve", code: "code_review_owns", reason: "Not reviewed by the AI reviewer: the owner's ai_review_code setting leaves pushes and PRs on this repo to code review.", model: "kernel/code" };
-    let v: Verdict & { panel_marked?: boolean };
     try {
       if (!reviews) throw new Error("reviews are off");
-      v = (await reviews.request({ ...request, panel: Boolean(request.panel || r.panel) })) as Verdict & { panel_marked?: boolean };
+      return (await reviews.request(request)) as Verdict;
     } catch (e) {
-      return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String((e as Error).message).slice(0, 160)})`, model };
+      return { decision: "escalate", code: "reviewer_failed", reason: `the reviewer failed (${String((e as Error).message).slice(0, 160)})`, model: "kernel/code" };
     }
-    const { panel_marked: marked, ...verdict } = v;
-    // The first reviewer called it authority-expanding: recorded on the record before the verdict counts, so a retry can't drop it.
-    if (marked && !records.markPanel(r.id, r.digest)) return { ...verdict, decision: "escalate", code: "reviewer_failed", reason: "couldn't record that it needs a second reviewer (it changed meanwhile)" };
-    return verdict;
   }
 
   /** Who may ask for `asked` and on which task: the routed kind, its definition, the record's task and the args a job's own workspace is forced into. */
@@ -560,16 +550,6 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (r.state === "claimed") await execute(r, k);
       return { filed: r };
     },
-    /** kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it raises would refuse one). */
-    fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
-      const k = kindOf_(kind)!;
-      if (k.args) validate(k.args, b.args);
-      const base = { kind, module: k.module, args: b.args, targets: {}, executor: { module: k.module }, policy: policy(k), card: { ...b.card, reason: b.reason }, requester: { agent: "", key: "", name: "the kernel", roles: [], kind: "kernel" }, task: b.task };
-      const open = records.open(b.task, kind, digestOf(base))[0];
-      if (open) return open;
-      const t = computeTier({ floor: k.floor, reviewFirst: null });
-      return records.file({ ...base, tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: t.state });
-    },
     /**
      * The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`.
      * `task` is the job's run task; `named` the task the call says it is for (MCP `params._meta.task`). A named task must be
@@ -593,7 +573,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       const shown = JSON.stringify(args ?? {});
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
-      const target = requestTargets(CONN_TOOL, { connection, tool, arguments: args ?? {} })?.label;
+      // Where the call is aimed: its tool and the arguments that name an issue, a PR, a channel or a thread (never its text).
+      const aim = ["repo", "number", "issue_number", "pull_number", "channel", "thread_ts", "id"].filter((k) => ["string", "number"].includes(typeof (args as Record<string, unknown> | undefined)?.[k])).map((k) => `${k}=${String((args as Record<string, unknown>)[k]).toLowerCase()}`);
+      const target = `${connection}.${tool}${aim.length ? ` (${aim.join(", ")})` : ""}`;
       const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${t.tier > 0 ? shown : shown.slice(0, 4000)}`;
       const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details, ...(target ? { target } : {}) };
       // The requester keeps the job's own task (the run's): it is the job's credential's reach, and replay signs the caller
@@ -608,7 +590,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const prior = [...records.open(record, CONN_TOOL, digest), ...records.ran(record, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => r.tier >= t.tier && by(r.requester) === by(requester));
         if (prior) return prior;
       }
-      return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task: record, ...(identifier ? { identifier } : {}), tier: t.tier, merit: t.merit, panel: false, review_first: t.reviewFirst, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task: record, ...(identifier ? { identifier } : {}), tier: t.tier, merit: t.merit, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
     },
     outcome: outcomeOf,
     /** Resolves once the record has an outcome, or with it as it is after `ms`. */
@@ -635,13 +617,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     /** Which records wait out a failed review's backoff (the requester skips them until then). */
     retryAt: (id: string) => retries.get(id)?.next,
     /**
-     * One record's review (the kernel's review loop, review-loop.ts): the requester's tier input now and what the reviewer
-     * reads. Code decides first (the input couldn't be computed, code refuses it, it is the owner's now); else the bound
-     * reviewer is asked, and its verdict is held to the record's review-first (tier.ts afterReview), a failed review waits
-     * out its backoff (capped at 15 minutes, never rejected for it), and autonomy tier0 makes any verdict a note for the owner.
-     * The record moves once; the verdict as posted comes back, so the requester can follow it up (its notes, the breaker).
+     * One record's review (the kernel's review loop, review-loop.ts): code's verdict when it has one (the owner's veto, malice
+     * resent), else the bound reviewer's. The reviewer blocks only malice and fails open (owner, 2026-11-22): a failed review
+     * (the reviewer unreachable, failing, slow, refusing or stopped at a limit) is tried once more after RETRY_MS, then approved.
+     * The owner's autonomy below full (the instance's, or a routine's cap on the record) makes the verdict a note for him.
+     * The record moves once; the verdict as posted comes back, so the review loop can post a reject's note.
      */
-    async review(id: string, b: { input: ReviewInput & { model?: string }; request: Record<string, unknown> }): Promise<{ record: Rec; posted?: Verdict; deferred?: number; refused?: string }> {
+    async review(id: string, b: { verdict?: Verdict; request: Record<string, unknown> }): Promise<{ record: Rec; posted?: Verdict; deferred?: number; refused?: string }> {
       const r = records.get(id);
       if (!r || records.shownState(r) !== "review") throw fail(409, "conflict", `this record is ${r ? records.shownState(r) : "gone"}`);
       const wait = retries.get(id);
@@ -649,36 +631,25 @@ export function createWrites({ records, registry, connections, secret, resolver,
       if (reviewing.has(id)) throw fail(409, "conflict", "this record is being reviewed");
       reviewing.add(id);
       try {
-        const model = typeof b.input?.model === "string" && MODEL.test(b.input.model) ? b.input.model : "kernel/code";
-        // The cap is the record's, as it was tiered at filing: the label of a capped approve never depends on a second trace.
-        const input = heldInput({ ...(b.input ?? { tier: 1 }), cap: r.cap ?? null }, r.review_first);
-        let v = codeVerdict(input, model) ?? afterReview(input, splitToOwner(input, await ask(r, b.request ?? {}, model)));
-        if (v.code === "reviewer_failed") {
-          const n = (wait?.n ?? 0) + 1;
-          // Tier 2 on its merits: the owner's card still reaches them after bounded tries, with the failure on it.
-          if (input.byMerit && n >= OWNER_AFTER_TRIES) v = ownerAfterFailure(input, v, n);
-          else {
-            retries.set(id, { n, next: Date.now() + retryWait(n) });
-            log("review deferred", { record: id, tries: n, reason: v.reason.slice(0, 200) });
+        let v = b.verdict ?? (await ask(r, b.request ?? {}));
+        // A review that didn't finish: once more, then fail open.
+        if (v.decision === "escalate" && v.code === "reviewer_failed") {
+          if (!wait) {
+            retries.set(id, { n: 1, next: Date.now() + RETRY_MS });
+            log("review deferred", { record: id, reason: v.reason.slice(0, 200) });
             return { record: r, deferred: retries.get(id)!.next };
           }
+          v = { decision: "approve", code: "fail_open", reason: `Approved without a finished review (fail open): ${v.reason}`.slice(0, 1990), model: "kernel/code" };
         }
         retries.delete(id);
         // The autonomy cap holds every requester but the release updater (computeTier `uncapped`), whose record takes the verdict as given.
-        const shown = shadowed(v, isUpdater(r.requester) ? "full" : autonomy());
-        // An unsure second reviewer is the approval's own record: a verdict that ends as anything else (shadowed, the owner's on
-        // its merits) carries it in its reason only.
-        const post: Verdict = shown.decision === "approve" ? shown : { ...shown, second_unsure: undefined, whole: undefined };
+        const mode = isUpdater(r.requester) ? "full" : [autonomy(), r.cap?.value ?? "full"].filter((c) => AUTONOMY.includes(c as Autonomy)).reduce((a, c) => (AUTONOMY.indexOf(c as Autonomy) < AUTONOMY.indexOf(a) ? c as Autonomy : a), "full" as Autonomy);
+        // Code's own refusals (a diff mismatch, instance details, malice resent) are never shadowed into an owner card.
+        const post = v.model === "kernel/code" && v.decision === "reject" ? v : shadowed(v, mode);
         if (!MODEL.test(post.model) && post.model !== "kernel/code") return { record: r, refused: "the verdict names no model" };
-        if (post.second !== undefined && (!MODEL.test(post.second) || post.second === post.model)) return { record: r, refused: "the second reviewer must be another model" };
-        if (post.second_unsure !== undefined && (post.second !== undefined || post.whole !== true || !MODEL.test(post.second_unsure) || post.second_unsure === post.model)) return { record: r, refused: "an approval with an unsure second reviewer names another model and attests the input was verified whole" };
-        // The request an unsure or a panel split was about (the chain and the task's comments): once it changes, that rejection of the same content lifts (tier.ts priorDecisions).
-        const chain = post.decision === "reject" && (post.code === UNSURE || post.code === "panel_split") && typeof b.request?.chain === "string" && b.request.chain ? requestHash(b.request.chain, typeof b.request.comments === "string" ? b.request.comments : "") : undefined;
-        // `+`: two approvals (the panel); `;unsure:`: one approval and the other reviewer unsure (owner, 2026-11-20).
-        const by = `reviewer:${post.model}${post.decision === "approve" && post.second ? `+${post.second}` : post.decision === "approve" && post.second_unsure ? `;unsure:${post.second_unsure}` : ""}`;
-        const out = records.review(id, r.digest, { decision: post.decision, by, note: post.reason, code: post.code, chain });
+        const out = records.review(id, r.digest, { decision: post.decision, by: `reviewer:${post.model}`, note: post.reason, code: post.code });
         if (typeof out === "string") return { record: records.get(id)!, posted: post, refused: out };
-        log("reviewed", { record: id, kind: r.kind, decision: post.decision, code: post.code, model: post.model, second: post.second, second_unsure: post.second_unsure });
+        log("reviewed", { record: id, kind: r.kind, decision: post.decision, code: post.code, model: post.model });
         if (out.state === "approved") void run(id);
         return { record: out, posted: post };
       } finally {

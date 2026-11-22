@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -100,6 +101,53 @@ describe("PR previews", () => {
     await previewTick(s.d);
     expect(s.comments.map((c) => c.pr)).toEqual([6]);
     expect(s.calls.filter((c) => c.includes("up")).length).toBe(ups);
+  });
+
+  it("a preview that doesn't come up keeps the engine's why on its row, and the comment says it", async () => {
+    const s = setup();
+    s.d.engine = { ...s.engine, preview: async () => ({ sha: sha("4"), ok: false, why: "its build failed: exit 1" }) };
+    s.setOpen([pr(4)]);
+    await previewTick(s.d);
+    expect(s.store.previews()).toEqual([expect.objectContaining({ pr: 4, status: "failed", reason: "its build failed: exit 1" })]);
+    expect(s.comments.find((c) => c.pr === 4)?.body).toContain("its build failed: exit 1");
+    // The reason survives the tick's own rewrites (a retried comment) and teardown's `removing` row.
+    const comment = s.d.github.comment;
+    s.d.github.comment = async () => { throw new Error("502"); };
+    s.store.putPreview({ ...s.store.previews()[0]!, comment_id: null });
+    await previewTick(s.d);
+    expect(s.store.previews()[0]!.reason).toBe("its build failed: exit 1");
+    // A retry that goes through posts the stored reason, not the generic message, and keeps it on the row.
+    s.d.github.comment = comment;
+    s.comments.length = 0;
+    await previewTick(s.d);
+    expect(s.comments.map((c) => c.body)).toEqual([expect.stringContaining("its build failed: exit 1")]);
+    expect(s.store.previews()[0]).toMatchObject({ comment_id: 104, reason: "its build failed: exit 1" });
+    // Teardown's `removing` row keeps it too, so a reader sees why until the row is dropped.
+    const written: { status: string; reason: string | null }[] = [];
+    const put = s.store.putPreview;
+    s.store.putPreview = (row) => (written.push({ status: row.status, reason: row.reason }), put(row));
+    s.setOpen([]);
+    await previewTick(s.d);
+    expect(written).toEqual([{ status: "removing", reason: "its build failed: exit 1" }]);
+    expect(s.store.previews()).toEqual([]);
+  });
+
+  it("a healthy preview carries no reason, and a row written before the reason column still reads and is updated", async () => {
+    const s = setup();
+    s.setOpen([pr(6)]);
+    await previewTick(s.d);
+    expect(s.store.previews()[0]).toMatchObject({ pr: 6, status: "healthy", reason: null });
+
+    // A database from before the column: its preview row still reads, and writing it again adds the reason.
+    const file = `${s.appsData}/old.sqlite`;
+    const old = new Database(file);
+    old.exec(`CREATE TABLE previews (name TEXT PRIMARY KEY, app TEXT NOT NULL, pr INTEGER NOT NULL, port INTEGER NOT NULL UNIQUE, sha TEXT NOT NULL, status TEXT NOT NULL, at INTEGER NOT NULL, comment_id INTEGER);
+      INSERT INTO previews (name, app, pr, port, sha, status, at, comment_id) VALUES ('demo-pr-2', 'demo', 2, 39100, '${sha("2")}', 'failed', 1, NULL);`);
+    old.close();
+    const migrated = openStore(file);
+    expect(migrated.previews()).toEqual([{ name: "demo-pr-2", app: "demo", pr: 2, port: 39100, sha: sha("2"), status: "failed", at: 1, comment_id: null, reason: null }]);
+    migrated.putPreview({ ...migrated.previews()[0]!, reason: "its build failed: exit 1" });
+    expect(openStore(file).previews()[0]!.reason).toBe("its build failed: exit 1");
   });
 
   it("the deploy loop's reap leaves previews alone", async () => {

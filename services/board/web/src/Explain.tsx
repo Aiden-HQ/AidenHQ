@@ -11,13 +11,11 @@ import "./explain.css";
 const WHO: Record<DeciderKind, { label: string; tone: TagTone }> = {
   code: { label: "Code rule", tone: "neutral" },
   reviewer: { label: "AI reviewer", tone: "accent" },
-  panel: { label: "Review panel", tone: "accent" },
   owner: { label: "You", tone: "ok" },
   "pending-reviewer": { label: "AI reviewer (deciding)", tone: "needs" },
   "pending-owner": { label: "You (waiting)", tone: "needs" },
   none: { label: "Nobody", tone: "neutral" },
 };
-const CHECK_TONE = { holds: "ok", fails: "failed", "not reported": "needs" } as const;
 
 export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void }) {
   const [x, setX] = useState<Explanation | null>(null);
@@ -39,7 +37,7 @@ export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void })
         <span className="xp-k">Decided by</span>
         <Tag tone={who.tone}>{who.label}</Tag>
         {x.decider.models.map((m) => <code key={m} className="xp-model" title={m}>{m.split("/").pop()}</code>)}
-        {!["reviewer", "panel", "owner"].includes(x.decider.kind) && <span className="xp-words">{x.decider.words}</span>}
+        {!["reviewer", "owner"].includes(x.decider.kind) && <span className="xp-words">{x.decider.words}</span>}
       </div>
       <ol className="xp-path" aria-label="What happened">
         {x.path.map((p, i) => <li key={i}>{p}</li>)}
@@ -50,7 +48,6 @@ export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void })
           <p>
             <b>Tier {x.tier.tier}</b>
             {x.tier.merit != null && x.tier.merit !== x.tier.tier && <span className="muted"> (Tier {x.tier.merit} on its merits)</span>}
-            {x.tier.panel && <span className="muted"> · two reviewers must agree</span>}
           </p>
           {x.tier.rule && (
             <p>
@@ -70,13 +67,6 @@ export function Explain({ id, onSignIn }: { id: string; onSignIn?: () => void })
               </p>
             )}
             {x.review.note && <pre className="xp-fence" data-label="The reviewer's words">{x.review.note}</pre>}
-            {x.checklist.length > 0 && (
-              <ul className="xp-checks" aria-label="Reliability checklist">
-                {x.checklist.map((c) => (
-                  <li key={c.id}><Tag tone={CHECK_TONE[c.result]}>{c.result}</Tag><code>{c.id}</code></li>
-                ))}
-              </ul>
-            )}
           </section>
         )}
         {x.ownerReason && (

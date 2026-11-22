@@ -61,5 +61,5 @@ themselves; the Librarian's lint covers them.
 - Approvals as generic records, and execution-policy review stages
 - The Tools & Access gateway (profiles, grants, audit)
 - The activity log and timeline, and the fleet console UI
-- Skills, budgets (kept informational), and revisioned agent config
+- Skills, budgets (always 0: spend is limited in the kernel's gateway), and revisioned agent config
 - Experimental Agent Chat and chat connectors

@@ -184,7 +184,7 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Agent-day spend vs cap",
+      "title": "Install spend vs its limits (day, month)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -209,15 +209,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aidenhq_gateway_agent_day_spend_usd / aidenhq_gateway_agent_day_cap_usd",
-          "legendFormat": "{{agent}}"
+          "expr": "aidenhq_gateway_install_spend_usd / aidenhq_gateway_install_limit_usd",
+          "legendFormat": "{{period}}"
         }
       ]
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "CI review spend today vs cap (USD)",
+      "title": "CI review spend today (USD)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -244,15 +244,6 @@
           },
           "expr": "aidenhq_gateway_ci_spend_usd_today",
           "legendFormat": "spent"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "aidenhq_gateway_ci_day_cap_usd",
-          "legendFormat": "cap"
         }
       ]
     },
