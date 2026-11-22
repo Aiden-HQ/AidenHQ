@@ -200,7 +200,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const tab = "tab" in route ? route.tab : "reviews";
 
   if ("create" in route) {
-    if (repos && engines) return <RepoReviewPage config={config} engines={engines} />;
+    if (engines) return <RepoReviewPage config={config} engines={engines} />;
     const retry = () => { setError(""); void loadSetup(); if (ready) { void loadRuns(); void loadRepos(); void loadEngines(); } };
     return (
       <Page className="rv-page" label="New repo review">

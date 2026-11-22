@@ -1755,7 +1755,7 @@ export function createEngine(d: EngineDeps) {
 
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   /**
-   * A repo's snapshot listing, read once and kept for two minutes. A cold read of a big repo can outlast the board's deadline: the
+   * A repo's snapshot listing, read once and kept for two minutes (under its commit; the default branch's head is read afresh for each new ask). A cold read of a big repo can outlast the board's deadline: the
    * request then says so and the read goes on, so asking again a moment later finds it ready (nothing is queued before it is).
    */
   const treeReads = new Map<string, { p: Promise<{ sha: string; paths: string[] }>; at: number }>();
@@ -1772,6 +1772,8 @@ export function createEngine(d: EngineDeps) {
     const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
     const t = await Promise.race([e.p, slow]).finally(() => clearTimeout(timer));
     if (t === "slow") throw new Error("it is still being read: ask again in a minute");
+    // A default-branch read answers one request, then is kept under the commit it resolved: the next ask for the head reads it afresh.
+    if (ref === "HEAD" && treeReads.get(key) === e) { treeReads.delete(key); treeReads.set(`${repo}@${t.sha.toLowerCase()}`, e); }
     return t;
   }
   async function readTree(repoIn: unknown, commit: unknown) {
