@@ -212,9 +212,9 @@ const TRANSIENT_ERRORS = new Set(["server_error", "api_error", "overloaded_error
 export function streamError(data: string): { reason: string; transient: boolean } | undefined {
   if (!data.includes('"error"') && !data.includes("response.failed")) return undefined;
   try {
-    const j = JSON.parse(data) as { error?: { code?: unknown; type?: unknown }; type?: unknown; response?: { error?: { code?: unknown; type?: unknown } } } | null;
+    const j = JSON.parse(data) as { error?: { code?: unknown; type?: unknown }; type?: unknown; code?: unknown; response?: { error?: { code?: unknown; type?: unknown } } } | null;
     if (!j || typeof j !== "object" || !(j.error || j.type === "error" || j.type === "response.failed")) return undefined;
-    const e = (typeof j.error === "object" && j.error) || j.response?.error || {};
+    const e = (typeof j.error === "object" && j.error) || j.response?.error || { code: j.code }; // a Responses `error` event carries its code at the top
     const raw = String(e.code ?? e.type ?? "");
     const reason = /^[\w.-]{1,60}$/.test(raw) ? raw : "unknown";
     return { reason, transient: RETRY_STATUS.has(Number(raw)) || TRANSIENT_ERRORS.has(raw) };

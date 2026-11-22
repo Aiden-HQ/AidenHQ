@@ -406,6 +406,12 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.equal(rig.posts, 2);
   assert.deepEqual(rig.rows().map((x) => x.status), ["stream_error", "stream_error"]);
 
+  // A Responses `error` event, its code at the top: read as transient too.
+  rig.fresh();
+  rig.answers = [streamed(sse([...opened("gen-e"), { type: "error", code: "server_error", message: "secret provider text" }])), streamed(completed)];
+  assert.match((await rig.call()).text, /response\.completed/);
+  assert.equal(rig.posts, 2);
+
   // A permanent error before any output: not re-run.
   rig.fresh();
   rig.answers = [streamed(sse([...opened("gen-p"), failed("gen-p", "invalid_prompt")])), streamed(completed)];
