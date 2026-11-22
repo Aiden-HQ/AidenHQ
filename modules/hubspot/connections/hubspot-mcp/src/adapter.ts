@@ -6,11 +6,12 @@
 
 export type CallHubSpot = (tool: string, args: Record<string, unknown>) => Promise<{ content?: unknown; structuredContent?: unknown; isError?: boolean }>;
 
-/** One CRM record as the sync uses it. `associations` is absent when the tool didn't return them. */
+/** One CRM record as the sync uses it. */
 export interface CrmRecord {
   id: string;
   properties: Record<string, any>;
-  associations?: Record<string, string[]>;
+  /** The record's page in HubSpot (the answer's urlTemplate, which carries the portal id, without its tracking query). */
+  url?: string;
 }
 
 /** What to read for one HubSpot object type. */
@@ -47,6 +48,8 @@ export const ACTIVITY_TYPES = ["emails", "calls", "meetings", "notes", "tasks"] 
 export const SETTING_OBJECTS = ["contacts", "companies", "deals", "activities"] as const;
 
 export const SEARCH_LIMIT = 200; // documented maximum per page
+/** Owners per page: small, so the owner scan checkpoints often and a spent budget replays little. */
+const OWNERS_PAGE = 25;
 
 /** The text blocks of a tool result. */
 export const textsOf = (r: Awaited<ReturnType<CallHubSpot>>): string[] => (Array.isArray(r.content) ? r.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text));
@@ -63,7 +66,8 @@ export function toolJson(r: Awaited<ReturnType<CallHubSpot>>, tool: string): any
 export function parseRecords(o: any): CrmRecord[] {
   const list = o?.results;
   if (!Array.isArray(list)) throw new Error(`unexpected CRM answer: ${JSON.stringify(o).slice(0, 200)}`);
-  return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {} }));
+  const template = typeof o.urlTemplate === "string" ? o.urlTemplate.split("?")[0] : undefined;
+  return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {}, ...(template ? { url: template.replace("{id}", String(r.id)) } : {}) }));
 }
 
 /** One page of records modified at or after `sinceMs`, oldest first. */
@@ -107,19 +111,16 @@ export function isoOf(v: unknown): string | null {
 }
 
 /**
- * Owners, active or not (records keep pointing at people who left), a page of 100 at a time from `from` until `deadline`;
- * `next` is where to resume when the deadline stopped the scan short. HubSpot gives no email.
+ * One page of owners from `offset`, active or not (records keep pointing at people who left); `next` is where the next
+ * page starts, absent on the last. HubSpot gives no email.
  */
-export async function listOwners(call: CallHubSpot, deadline = Infinity, from?: number): Promise<{ owners: { id: string; name: string | null }[]; next?: number }> {
-  const owners: { id: string; name: string | null }[] = [];
-  for (let offset = from; ; ) {
-    const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
-    if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
-    for (const x of o.owners) if (x?.ownerId != null) owners.push({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null });
-    if (!o.hasMore || o.offset == null || o.offset === offset) return { owners };
-    offset = Number(o.offset);
-    if (Date.now() >= deadline) return { owners, next: offset };
-  }
+export async function ownersPage(call: CallHubSpot, offset?: number): Promise<{ owners: { id: string; name: string | null }[]; next?: number }> {
+  const o = toolJson(await call("search_owners", { limit: OWNERS_PAGE, ...(offset != null ? { offset } : {}) }), "search_owners");
+  if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
+  const owners = o.owners.filter((x: any) => x?.ownerId != null).map((x: any) => ({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null }));
+  if (!o.hasMore || o.offset == null || Number(o.offset) === offset) return { owners };
+  if (!Number.isInteger(Number(o.offset))) throw new Error(`unexpected search_owners offset: ${JSON.stringify(o.offset)}`);
+  return { owners, next: Number(o.offset) };
 }
 
 /** Deal stage ids to labels, from the dealstage property's options. */
