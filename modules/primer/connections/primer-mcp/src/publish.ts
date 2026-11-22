@@ -87,6 +87,7 @@ export async function ownerOnly(call: Call, documentId: string): Promise<boolean
   if (typeof visibility !== "string") throw new Error(`primer_get_document didn't say the visibility of ${documentId}`);
   if (visibility !== "private") return false;
   const who = await json("primer_list_collaborators");
+  if (who === null) return false; // deleted between the two reads: gone, a new document takes its place
   const list = Array.isArray(who) ? who : Array.isArray(who?.collaborators) ? who.collaborators : undefined;
   if (!list) throw new Error(`primer_list_collaborators didn't list the collaborators of ${documentId}`);
   return list.length === 0;
