@@ -38,16 +38,23 @@ export interface Pin { kind: string; name: string; package: string; version?: st
 // the stage has added any repository at all — a Deb822 `.sources` file adds one without a parseable `deb` line. A file
 // APT loads is `files` or `entries`' key, so a file written empty is neither. A stage extending another inherits the
 // files it still has, never one the parent rewrote or removed.
-interface State { files: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+// `empty` are the source files this stage wrote and left holding nothing: they exist, so a `cp -n` onto one is skipped
+// (`files` holds the ones that hold a repository, or content we can't read). `maybe` are the names a guarded write may
+// have created and may not have: a `cp -n` onto one may replace, so it is neither certainly skipped nor certainly applied.
+// A name in none of them is one the scanner can't see (an image file), which `-n` treats like `maybe` but a replace
+// overwrites.
+interface State { files: Set<string>; empty: Set<string>; maybe: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
 // Each repository once, in the order its file first held it: two source files naming the same repository (a `mv -n`
 // that keeps both) are one place to date a pin from.
 const sources = (s: State) => [...new Set([...s.entries.values()].flat())];
 // A fresh filesystem: no source files, no repository.
-const emptyState = (): State => ({ files: new Set(), entries: new Map(), added: false, releases: new Set() });
+const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), entries: new Map(), added: false, releases: new Set() });
 // A deep copy, so one stage's later writes never reach another's (a stage inherits a snapshot, not a live view).
-const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
-// Whether a stage holds any repository a later install would see: an entry, or a file whose content we can't read.
-const hasRepo = (s: State) => s.entries.has(undefined) || s.files.size > 0;
+const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+// Whether a stage holds any repository a later install would see: any entry (a `deb` line or a Deb822 stanza, filed under
+// its file or the `undefined` bucket), or a file whose content we can't read. Content, not existence: a repository a
+// guarded write may have left still counts, since an install after it may well see it.
+const hasRepo = (s: State) => [...s.entries.values()].some((v) => v.length > 0) || s.files.size > 0;
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
@@ -485,21 +492,24 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     const taken = new Map([...state.entries].map(([f, v]) => [f, [...v]] as const));
     const held = new Set(state.files);
     const removed = named.filter((f) => /\.(list|sources)$/.test(f));
+    const blank = new Set(state.empty), unsure = new Set(state.maybe);
     // A skipped removal leaves the file it would have dropped, so its entries are back even when the line also
     // rewrote that name (`test -f m && rm x && printf … > x || true` leaves the old repository when the test fails):
     // both possible sources are kept (the safe direction).
     const undo = () => {
       for (const [f, v] of taken) state.entries.set(f, [...new Set([...(state.entries.get(f) ?? []), ...v])]);
       held.forEach((f) => state.files.add(f));
+      blank.forEach((f) => state.empty.add(f));
+      unsure.forEach((f) => state.maybe.add(f));
       state.added = hasRepo(state);
     };
     if (removed.length) {
-      removed.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
+      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.maybe.delete(f); state.entries.delete(f); });
       state.added = hasRepo(state);
       return undo;
     }
     if (!named.length) {
-      state.entries.clear(); state.files.clear();
+      state.entries.clear(); state.files.clear(); state.empty.clear(); state.maybe.clear();
       state.added = false;
       return undo;
     }
@@ -534,11 +544,13 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // The repositories a file holds now, to put them back when a guarded change is undone (merged with whatever a later
   // command on the line wrote, so neither is lost).
   const snapshot = (...names: (string | undefined)[]) => {
-    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n)] as const);
+    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n), n === undefined ? false : state.maybe.has(n)] as const);
     return () => {
-      for (const [n, entries, held] of before) {
+      for (const [n, entries, held, blank, unsure] of before) {
         if (entries) state.entries.set(n, [...new Set([...(state.entries.get(n) ?? []), ...entries])]);
         if (held && n !== undefined) state.files.add(n);
+        if (blank && n !== undefined) state.empty.add(n);
+        if (unsure && n !== undefined) state.maybe.add(n);
       }
       state.added = hasRepo(state);
     };
@@ -584,7 +596,9 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // file written empty (`< /dev/null`, a producer whose `>` bypassed the pipe) adds none and dates none.
       // A guarded write (`test -f m && : > f || true`) is put back at the line's end like a removal, so a later line still
       // sees what the file held.
-      if (loaded.some((w) => w.content !== "none")) change(i, snapshot(...loaded.map((w) => w.file)));
+      // A write that certainly runs can't be skipped, so it needs no undo (and its file's existence must stand); a
+      // guarded one is put back if a later command skips it.
+      if (loaded.some((w) => w.content !== "none") && !alwaysRuns(i)) change(i, snapshot(...loaded.map((w) => w.file)));
       for (const w of loaded) {
         if (w.content === "none") continue;
         // A here-document's body is what it writes: its `deb` lines and its Deb822 stanzas.
@@ -593,8 +607,14 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
         if (w.append && w.content === "empty") continue;
         state.entries.set(w.file!, w.append ? [...(state.entries.get(w.file!) ?? []), ...written] : written);
-        if (w.content === "empty") state.files.delete(w.file!);
-        else state.files.add(w.file!);
+        // A write behind a condition may have been skipped, so it leaves the file as it was (the undo puts back what it
+        // held) — or it ran, and the file is as the write left it. Either way a `-n` copy onto it is neither certainly
+        // skipped nor certainly applied, so the name is only `maybe` known while a later command may skip it.
+        if (alwaysRuns(i)) {
+          if (w.content === "empty") { state.files.delete(w.file!); state.empty.add(w.file!); }
+          else { state.files.add(w.file!); state.empty.delete(w.file!); }
+          state.maybe.delete(w.file!);
+        } else state.maybe.add(w.file!);
       }
       state.added = hasRepo(state);
     } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
@@ -614,27 +634,37 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       }
       // `mv` renames the file away, so the source name it no longer holds stops being loaded (a move onto a name APT
       // ignores still drops the original): `mv vendor.list vendor.list.disabled` leaves no repository behind.
-      // `mv -n` (or `cp -n`) never replaces an existing target, and whether one exists is past what the scanner can
-      // see: the source may still be there or the destination may hold its content. Both repositories are therefore
-      // kept — the source keeps its own, and the destination gains the source's beside whatever it already held.
-      // The mode is the one the parsed flags leave in force (`mv -n -f` forces, `mv -f -n` does not).
+      // `-n` (`cp` or `mv`) never replaces an existing target, and `-i` replaces it only if the answer says so. A target
+      // this stage wrote is known to exist: `cp -n` leaves it exactly as it was (a file it wrote empty stays empty), and
+      // `mv -n` leaves the source in place too. A target from the image is past what the scanner can see — and so is an
+      // interactive answer — so both repositories are kept: the source keeps its own and the destination gains the
+      // source's beside whatever it already held.
       const read = (src: string) => (held.has(src) ? { entries: held.get(src)! } : "unknown");
+      // `copyTargets` names a target by the file APT loads (`vendor.list`, not the path): the state knows files by that name.
+      // `exists` is a file certainly there, so `-n` certainly skips it. Any other target may already exist (a path from
+      // the image) or may not (a name no write certainly created), so `-n` may keep what it held or put the source there.
+      const exists = (name: string) => state.files.has(name) || state.empty.has(name);
       // A guarded move (`test -f m && mv x x.disabled`) may be skipped, so it is undone at the end of its chain like a
       // guarded truncation: a later line may still see the repository it would have disabled.
       const move = () => {
-        if (op!.noClobber) {
-          for (const t of copyTargets(op!, read)) {
-            state.files.add(t.name);
-            state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
-          }
-          state.added = hasRepo(state);
-        } else {
-          if (verb === "mv") for (const src of op!.srcs) {
-            const name = sourceName(src);
-            if (name && !(op!.srcs.length === 1 && !op!.dest.endsWith("/") && sourceName(op!.dest) === name)) { state.files.delete(name); state.entries.delete(name); }
-          }
-          applyCopy(state, copyTargets(op!, read));
+        const mode = op!.overwrite ?? "replace";
+        const targets = copyTargets(op!, read);
+        if (verb === "mv" && mode === "replace") for (const src of op!.srcs) {
+          const name = sourceName(src);
+          if (name && !(op!.srcs.length === 1 && !op!.dest.endsWith("/") && sourceName(op!.dest) === name)) { state.files.delete(name); state.empty.delete(name); state.entries.delete(name); }
         }
+        // Each destination is decided on its own: `cp -n a b dir/` may skip a `b` the stage wrote while `a` lands.
+        for (const t of targets) {
+          // `-n` onto a file that certainly exists leaves it exactly as it was (one the stage wrote empty stays empty).
+          if (mode === "keep" && exists(t.name)) continue;
+          // A replacing copy puts the source's content in place of whatever the file held; so does one that may replace
+          // (an interactive answer, or a `-n` whose target may already exist) — except that the file keeps what it
+          // certainly held beside the source's, since the copy may also have been skipped.
+          if (mode === "replace") state.entries.set(t.name, t.unknown ? [] : t.entries);
+          else state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
+          state.files.add(t.name); state.empty.delete(t.name);
+        }
+        state.added = hasRepo(state);
       };
       const touched = [...op.srcs.map(sourceName), ...(/sources\.list\.d\//.test(op.dest) ? [sourceName(op.dest)] : [])].filter(Boolean);
       const before = snapshot(...(touched.length ? touched : [undefined]));
@@ -697,68 +727,91 @@ const sourceName = (p: string) => /^\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.
  * The operands of a `COPY` (Dockerfile), `cp` or `mv` (a RUN line): its paths and any `--from` stage. Dockerfile COPY's
  * JSON form (`["/a", "/b/"]`) is read as the same paths, and flags (`--chown=…`, `-r`, `-f`) are dropped.
  */
-function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string; parents?: boolean; targetDir?: string; noClobber?: boolean } | undefined {
+function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string; parents?: boolean; targetDir?: string; overwrite?: "replace" | "keep" | "ask" } | undefined {
   let rest = l.replace(new RegExp(`^\\s*${verb}\\s+`, "i"), "").trim();
   let from: string | undefined, parents = false, targetDir: string | undefined;
-  // `-n`/`-f` (and `--no-clobber`/`--force`) decide whether an existing target is replaced, and the last one wins:
-  // `mv -n -f a b` forces, `mv -f -n a b` does not. The mode is read as the flags are consumed, not searched later.
-  let noClobber = false;
-  // Every leading flag is consumed before the operands are read, whichever form they take: `--from=<stage>`, a valued
-  // `--flag=value`/`--flag value` (`--chmod`, `--chown`, `--exclude`) and a valueless `--flag` (`--link`, `--parents`,
-  // `--follow-link`), plus `cp`/`mv` short flags (`-r`, `-t dir`). A flag never takes the JSON array or the first source
-  // path as its value.
-  // Each pass consumes exactly one leading flag — the first rule that matches wins, so a later rule never edits the tail
-  // of a flag an earlier one already recognised.
-  const rules: [RegExp, (m: RegExpMatchArray) => void][] = verb === "COPY"
-    ? [
-        [/^--from=(\S+)\s*/i, (m) => { from = m[1]; }],
-        [/^--(?:chmod|chown|exclude)=\S+\s*/i, () => {}],
-        [/^--(?:chmod|chown|exclude)\s+\S+\s*/i, () => {}],
-        [/^--(parents|follow-link|link)(?=\s|$)\s*/i, (m) => { if (m[1]!.toLowerCase() === "parents") parents = true; }],
-        [/^-[a-zA-Z]+(?=\s|$)\s*/, () => {}],
-        [/^--[\w-]+(?=\s|$)\s*/, () => {}],
-      ]
-    : [
-        [/^--from=(\S+)\s*/i, (m) => { from = m[1]; }],
-        // Only `-t`/`-S` (and their long forms) take an operand: `-f`, `-i`, `-n`, `-v`, `-T` and the rest are valueless,
-        // so `mv -f src dest` keeps both paths rather than reading dest as `-f`'s argument.
-        [/^--target-directory=("[^"]*"|'[^']*'|\S+)\s*/i, (m) => { targetDir = strip(m[1]!); }],
-        [/^--target-directory\s+("[^"]*"|'[^']*'|\S+)\s*/i, (m) => { targetDir = strip(m[1]!); }],
-        [/^--suffix=("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
-        [/^--suffix\s+("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
-        [/^--no-clobber\s*/i, () => { noClobber = true; }],
-        [/^--force\s*/i, () => { noClobber = false; }],
-        // `-t` may be glued to its directory (`cp -t/etc/apt/sources.list.d/ f`) or followed by it (`cp -rt dir f`).
-        [/^-[a-zA-Z]*t(=?\S+)\s*/, (m) => { targetDir = strip(m[1]!.replace(/^=/, "")); }],
-        [/^-[a-zA-Z]*t\s+("[^"]*"|'[^']*'|\S+)\s*/, (m) => { targetDir = strip(m[1]!); }],
-        // `-S` also takes its suffix glued (`-S.bak`), and it is one flag in a cluster: `cp -fS.bak -t dir f` → dir f,
-        // so its cluster stops there and the next word is an operand, not another flag.
-        [/^-[a-zA-Z]*S("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
-        [/^-[a-zA-Z]*S\s+("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
-        // A valueless cluster is read one character at a time, so `-fn` and `-nf` differ the way they do to the shell.
-        [/^-[a-zA-Z]+(?=\s|$)\s*/, (m) => { for (const c of m[0].replace(/^-|\s+$/g, "")) if (c === "n") noClobber = true; else if (c === "f") noClobber = false; }],
-        [/^--[\w-]+(?=\s|$)\s*/, () => {}],
-      ];
-  for (;;) {
-    const hit = rules.find(([re]) => re.test(rest));
-    if (!hit) break;
-    rest = rest.replace(hit[0], (m: string, ...g: string[]) => { hit[1]([m, ...g] as unknown as RegExpMatchArray); return ""; });
+  // Whether an existing target is replaced: `replace` certainly replaces it, `keep` (`-n`) certainly does not, and `ask`
+  // (`-i`) does only if the shell answer says so. For `mv` the last of `-n`/`-f`/`-i` wins (`mv -n -f a b` forces,
+  // `mv -f -n a b` does not); GNU `cp`'s `-f` only retries an unopenable destination, so it never cancels `-n` or `-i`,
+  // and `-i` after `-n` still asks.
+  let overwrite: "replace" | "keep" | "ask" = "replace";
+  const setOverwrite = (m: "replace" | "keep" | "ask") => {
+    if (verb === "mv" || m !== "replace" || overwrite === "replace") overwrite = m;
+  };
+  if (verb === "COPY") {
+    // Every leading flag is consumed before the operands are read, whichever form they take: `--from=<stage>`, a valued
+    // `--flag=value`/`--flag value` (`--chmod`, `--chown`, `--exclude`) and a valueless `--flag` (`--link`, `--parents`,
+    // `--follow-link`). A flag never takes the JSON array or the first source path as its value.
+    const rules: [RegExp, (m: RegExpMatchArray) => void][] = [
+      [/^--from=(\S+)\s*/i, (m) => { from = m[1]; }],
+      [/^--(?:chmod|chown|exclude)=\S+\s*/i, () => {}],
+      [/^--(?:chmod|chown|exclude)\s+\S+\s*/i, () => {}],
+      [/^--(parents|follow-link|link)(?=\s|$)\s*/i, (m) => { if (m[1]!.toLowerCase() === "parents") parents = true; }],
+      [/^-[a-zA-Z]+(?=\s|$)\s*/, () => {}],
+      [/^--[\w-]+(?=\s|$)\s*/, () => {}],
+    ];
+    for (;;) {
+      const hit = rules.find(([re]) => re.test(rest));
+      if (!hit) break;
+      rest = rest.replace(hit[0], (m: string, ...g: string[]) => { hit[1]([m, ...g] as unknown as RegExpMatchArray); return ""; });
+    }
+    // Dockerfile COPY's JSON form: paths as an array, one per operand (the same paths as the shell form).
+    if (rest.startsWith("[")) {
+      try {
+        const j = JSON.parse(rest);
+        if (!Array.isArray(j) || !j.every((x) => typeof x === "string") || j.length < 2) return undefined;
+        return { srcs: j.slice(0, -1) as string[], dest: j.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), overwrite };
+      } catch { return undefined; }
+    }
+    const args = [...rest.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]!);
+    if (args.length < 2) return undefined;
+    return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), overwrite };
   }
-  // Dockerfile COPY's JSON form: paths as an array, one per operand (the same paths as the shell form).
-  if (rest.startsWith("[")) {
-    try {
-      const j = JSON.parse(rest);
-      if (!Array.isArray(j) || !j.every((x) => typeof x === "string") || j.length < 2) return undefined;
-      return { srcs: j.slice(0, -1) as string[], dest: j.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}), noClobber };
-    } catch { return undefined; }
+  // `cp`/`mv`: GNU getopt permutes, so a flag may sit before, between or after the operands (`mv a b -n`), and a
+  // cluster may carry its value (`-nt dir`, `-nS.bak`, `-t=/dir`). Every word is read in order: a flag sets the mode as
+  // it is seen, `-t`/`-S` take the rest of their cluster or the next word as their value, everything else is a path.
+  const toks = [...rest.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]!);
+  const args: string[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]!;
+    if (t === "--") { args.push(...toks.slice(i + 1)); break; }
+    if (t.startsWith("--")) {
+      const eq = t.indexOf("=");
+      const name = (eq < 0 ? t.slice(2) : t.slice(2, eq)).toLowerCase(), value = eq < 0 ? undefined : t.slice(eq + 1);
+      if (name === "no-clobber") setOverwrite("keep");
+      else if (name === "force") setOverwrite("replace");
+      else if (name === "interactive") setOverwrite("ask");
+      else if (name === "target-directory" || name === "suffix") {
+        // Without `=`, the value is the next word (`--target-directory dir f`).
+        const v = value ?? toks[i + 1];
+        if (eq < 0) i++;
+        if (name === "target-directory" && v !== undefined) targetDir = strip(v);
+      }
+      continue;
+    }
+    if (t.startsWith("-") && t.length > 1) {
+      for (let k = 1; k < t.length; k++) {
+        const c = t[k]!;
+        if (c === "n") setOverwrite("keep");
+        else if (c === "f") setOverwrite("replace");
+        else if (c === "i") setOverwrite("ask");
+        else if (c === "t" || c === "S") {
+          // The rest of the cluster is this flag's value (`-t/dir`, `-t=/dir`, `-S.bak`); otherwise the next word is.
+          const glued = t.slice(k + 1), v = glued || toks[++i];
+          if (c === "t" && v !== undefined) targetDir = strip(v.replace(/^=/, ""));
+          break;
+        }
+        // Every other short flag (`-r`, `-v`, `-T`, `-b`) takes no operand.
+      }
+      continue;
+    }
+    args.push(t);
   }
-  // Quoted operands are single paths: `"my file.list"` is one, not two.
-  const args = [...rest.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]!);
   // `cp`/`mv -t dir` (or `--target-directory dir`) names the destination as an option: every operand is a source, even
   // a lone one, and the directory is taken as ending with a slash.
-  if (targetDir && args.length >= 1) return { srcs: args, dest: targetDir.endsWith("/") ? targetDir : `${targetDir}/`, ...(targetDir ? { targetDir } : {}), noClobber };
+  if (targetDir && args.length >= 1) return { srcs: args, dest: targetDir.endsWith("/") ? targetDir : `${targetDir}/`, ...(from ? { from } : {}), overwrite };
   if (args.length < 2) return undefined;
-  return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}), noClobber };
+  return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}), overwrite };
 }
 /**
  * The path `COPY --parents` keeps for a source: its parents relative to the last `./` pivot (`./x/a.txt` keeps `x/a.txt`,
@@ -815,7 +868,7 @@ function copyTargets(op: { srcs: string[]; dest: string; parents?: boolean }, re
 }
 // A copy replaces the file it names (Docker's, cp's and mv's semantics), keeping the directory's other source files.
 function applyCopy(state: State, targets: { name: string; entries: string[]; unknown: boolean }[]): void {
-  for (const t of targets) { state.files.add(t.name); state.entries.set(t.name, t.unknown ? [] : t.entries); }
+  for (const t of targets) { state.files.add(t.name); state.empty.delete(t.name); state.entries.set(t.name, t.unknown ? [] : t.entries); }
   state.added = hasRepo(state);
 }
 
