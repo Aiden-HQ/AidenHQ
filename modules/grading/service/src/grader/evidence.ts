@@ -556,8 +556,8 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   // No branch row names one: the runner's own records for the task (its merge queue and the merge cards it filed) still say
   // which PR delivered it, so they are read rather than reporting "no pull request yet" for a merge whose row a cleanup, a
   // prune or a state reset took away. Never a comment: its runner marker is text any writer can copy, so it proves nothing.
-  const byRecord = !prs.length && Boolean(deps.taskMerged);
-  if (byRecord) {
+  const lookup = !prs.length && Boolean(deps.taskMerged);
+  if (lookup) {
     // A records read that failed is evidence that could not be read, not "no pull request yet": the latter is a missing
     // deliverable that closes the task after MISSING_WAIT_MS, so a 502 on the kernel's own records would close a task whose
     // merge is exactly what those records hold.
@@ -565,6 +565,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     if (!records) return { awaiting: "the runner's own merge records for this task could not be read just now" };
     prs = byRef(records.rows, ref);
   }
+  const byRecord = lookup && prs.length > 0;
   // Neither a branch row nor a merge record of this task holds the PR the ref names (another task opened or merged it): the
   // ref is that PR's identity, so it is read directly, graded by the same criteria as the task's own, and waits while unmerged.
   const byName = !prs.length && findPrs(ref).length > 0;
