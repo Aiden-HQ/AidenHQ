@@ -28,6 +28,12 @@ export const SETTINGS: Requester = { agent: "", key: "", name: "the owner's sett
 export const isUpdater = (q: Requester | undefined) => q?.kind === UPDATER.kind && q.name === UPDATER.name;
 /** `target`: what it acts on, in a line. */
 export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string };
+/**
+ * How much of an outcome the kernel keeps: a code host's merge result carries its machine-readable evidence on the first line
+ * (the grading module reads it: a full 30-PR batch is about 4,300 characters), so the cap holds that whole and the human summary
+ * after it is what gets cut. A caller waiting inline gets the whole text either way.
+ */
+export const OUTCOME_MAX = 6_000;
 export type Rec = {
   id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string; rev?: string }; policy: string;
   digest: string; tier: 0 | 1 | 2; card: Card;
@@ -271,11 +277,11 @@ export function openRecords(file: string, now = () => new Date()) {
     objectOf: (ref: string) => objectOf(db, ref),
     objectsSince: (since: string) => objectsSince(db, since),
     finish(id: string, ok: boolean, text: string): boolean {
-      return moved(() => move(id, ["claimed"], ok ? "done" : "failed", { outcome: { ok, text: text.slice(0, 4000) } }),
+      return moved(() => move(id, ["claimed"], ok ? "done" : "failed", { outcome: { ok, text: text.slice(0, OUTCOME_MAX) } }),
         () => fact(id, ok ? "record.landed" : "record.failed", ok ? "done" : "failed", "kernel", (r) => (ok ? { kind: r.kind } : { kind: r.kind, text: text.slice(0, 500) })));
     },
     /** cancelled from an open state; stale (revalidate) and unknown (no outcome came back) from claimed. */
-    close: (id: string, to: "stale" | "cancelled" | "unknown", text: string) => moved(() => move(id, to === "cancelled" ? OPEN : ["claimed"], to, { outcome: { ok: false, text: text.slice(0, 4000) } }),
+    close: (id: string, to: "stale" | "cancelled" | "unknown", text: string) => moved(() => move(id, to === "cancelled" ? OPEN : ["claimed"], to, { outcome: { ok: false, text: text.slice(0, OUTCOME_MAX) } }),
       () => fact(id, "record.decided", `code:${to}`, "kernel", () => ({ decision: to, decider: "code", via: "closed" }))),
   };
 }

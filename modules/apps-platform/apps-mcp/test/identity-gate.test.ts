@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityPorts, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityPorts, identityProbes, judgeIdentity, NO_SIGN_IN, noHttpSurface, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -55,14 +55,14 @@ async function gate(app: typeof tailnet, base: string, node = true) {
 function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], tls: true, ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
-      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? []));
+      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, ...(k.tls ? { tls: k.tls } : {}), answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? [], [], noHttpSurface(app)));
     });
     c.stdin!.end(JSON.stringify(input));
   });
@@ -80,6 +80,15 @@ async function tcp(code: string, host = "127.0.0.1"): Promise<number> {
   await new Promise((r) => setTimeout(r, 300));
   return port;
 }
+/**
+ * A TLS listener's answers, without needing a certificate: a ClientHello gets the opening of a real handshake record
+ * (`16 03 03`, as Node's own TLS server answers one) and the plaintext GET gets a TLS alert (`15 03 03 00 02 02 28`).
+ * That pair is exactly what a real HTTPS listener produced when checked offline against `tls.createServer`; the gate reads
+ * only the record opening, so no key material belongs in the repo.
+ */
+const tlsResponder = (): Promise<number> => tcp(`(s) => s.on("data", (d) => {
+  s.end(d[0] === 0x16 ? Buffer.from([0x16, 0x03, 0x03, 0, 4, 2, 0, 0, 0]) : Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
+})`);
 // This host's own non-loopback IPv4 address: an app container's eth0.
 const eth0 = Object.values(networkInterfaces()).flat().find((n) => n && n.family === "IPv4" && !n.internal)?.address;
 // hello2: no registry port, no health.url, a compose that publishes nothing; its image EXPOSEs 8080.

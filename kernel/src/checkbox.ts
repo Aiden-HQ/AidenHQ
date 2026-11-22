@@ -143,7 +143,7 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
 type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<Answer>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
-export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, log, spawnRun, pollMs }: {
+export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, refused, log, spawnRun, pollMs }: {
   db: DatabaseSync; secret: (name: string) => string;
   /** The computer pool's fair share (pool.ts): a check takes its slot before it asks the launcher for a box. */
   pool: Pool;
@@ -157,6 +157,8 @@ export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, g
   spent?: (runKey: string) => number;
   /** A model token's tokens so far (the same ledger). */
   tokens?: (runKey: string) => { input: number; cached: number; output: number };
+  /** The caps a model token was refused at (the same ledger). */
+  refused?: (runKey: string) => string[];
   log: (msg: string, f?: Record<string, unknown>) => void;
   /** Tests: how a box's `docker exec` starts (detached), and how often its follower looks. */
   spawnRun?: Spawn; pollMs?: number;
@@ -168,5 +170,6 @@ export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, g
     modelToken: (component, { ttlMs }) => mintToken(secret("gateway_job_secret"), { kind: "check", component, ttlMs }),
     ...(spent ? { spent } : {}),
     ...(tokens ? { tokens } : {}),
+    ...(refused ? { refused } : {}),
   });
 }
