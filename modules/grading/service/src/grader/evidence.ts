@@ -139,6 +139,13 @@ async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]>
     if (j.state !== "completed" || j.conclusion !== "success") return undefined;
     const u: any = await read(`run/${run}`, () => deps.run(repo, run));
     if (!u || u.workflow_path !== CI_WORKFLOW || u.workflow_state !== "active" || u.event !== "pull_request" || u.head_sha !== head) return undefined;
+    // A shard that passed and then failed a re-run keeps its old passing check on the head (`post-checks` never deletes one),
+    // so a check naming an instance the run has since replaced would grade on a result the shard no longer reports. The job
+    // the check names must be that shard's latest instance in the run: the same id the newest attempt left behind, and that
+    // attempt itself completed and green. A run read that answers no latest map is no evidence, never a pass.
+    const latest: any = u.latest_shard_jobs?.[String(j.name)];
+    if (!latest || String(latest.id ?? "") !== jobId) return undefined;
+    if (latest.state !== "completed" || latest.conclusion !== "success") return undefined;
     // CI's own poster: a run with no completed `success` `post-checks` job mints nothing, whatever checks name it. The poster
     // is what turns a green shard into a per-suite record. It must not predate the shard, but it may come later: a failed-job
     // re-run keeps an earlier attempt's passing shard and posts its checks in the new attempt, so the shard's own attempt can

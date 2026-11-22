@@ -139,11 +139,26 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     // of that evidence a poster cannot invent). Across every attempt: a re-run keeps an earlier attempt's passing shard, and
     // the poster must have run in that same attempt. An unreadable list is no jobs at all, never a guess.
     const post: { run_attempt: number | null; state: string | null; conclusion: string | null }[] = [];
+    // Each shard job's latest instance: `filter=latest` answers the newest attempt of every job name, so a shard that passed,
+    // published and was then re-run keeps only the re-run here. A suite check naming the superseded instance is stale (the
+    // shard's latest run did not pass), and one naming the latest is the shard's own current record. `latest` is a map of
+    // `packages (N)`/`modules (N)` to that instance; a name with no entry is a shard this run has no job for.
+    const latest: Record<string, { id: number | null; run_attempt: number | null; state: string | null; conclusion: string | null }> = {};
     for (let page = 1; page <= 10; page++) {
       const jr = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}/jobs?filter=all&per_page=100&page=${page}`);
       if (jr.status >= 300) break;
       const jobs: any[] = Array.isArray(jr.body?.jobs) ? jr.body.jobs : [];
       for (const j of jobs) if (j?.name === "post-checks") post.push({ run_attempt: j.run_attempt ?? null, state: j.status ?? null, conclusion: j.conclusion ?? null });
+      if (jobs.length < 100) break;
+    }
+    for (let page = 1; page <= 10; page++) {
+      const lr = await ctx.access.rest("GET", `/repos/${s.slug}/actions/runs/${b.id}/jobs?filter=latest&per_page=100&page=${page}`);
+      if (lr.status >= 300) break;
+      const jobs: any[] = Array.isArray(lr.body?.jobs) ? lr.body.jobs : [];
+      for (const j of jobs) {
+        if (typeof j?.name !== "string" || !/^(packages|modules) \(\d{1,6}\)$/.test(j.name)) continue;
+        latest[j.name] = { id: j.id ?? null, run_attempt: j.run_attempt ?? null, state: j.status ?? null, conclusion: j.conclusion ?? null };
+      }
       if (jobs.length < 100) break;
     }
     // The run's own base: main as it was when this run started, as this run recorded it. One value only — two PRs on one run,
@@ -152,7 +167,7 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     const bases = new Set((u?.pull_requests ?? []).filter((p: any) => p?.head?.sha === u?.head_sha && p?.base?.sha).map((p: any) => String(p.base.sha)));
     return { status: 200, json: { id: u.id, run_attempt: u.run_attempt ?? null, event: u.event ?? null, head_sha: u.head_sha ?? null, status: u.status ?? null,
       workflow_id: u.workflow_id ?? null, workflow_path: w?.path ?? null, workflow_state: w?.state ?? null, base_sha: bases.size === 1 ? String([...bases][0]) : null,
-      post_checks: post } };
+      post_checks: post, latest_shard_jobs: latest } };
   }
   // prs: every open PR, newest page first up to 500.
   const prs: { number: number; sha: string; base: string; head_repo: string | null }[] = [];

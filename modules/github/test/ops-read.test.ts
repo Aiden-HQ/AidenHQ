@@ -26,6 +26,32 @@ test("a file at an exact commit is its text — a parsed JSON body goes back out
   assert.equal((await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: sha }, c)).status, 404);
 });
 
+test("the run's latest shard jobs come from the filter=latest query, one instance per shard name", async () => {
+  const c = ctx();
+  const asked: string[] = [];
+  const rest = async (_m: string, path: string) => {
+    asked.push(path);
+    if (path.includes("filter=latest")) return ok({ total_count: 3, jobs: [
+      { name: "packages (1)", id: 601, run_attempt: 2, status: "completed", conclusion: "failure" },
+      { name: "modules (1)", id: 602, run_attempt: 1, status: "completed", conclusion: "success" },
+      { name: "post-checks", id: 603, run_attempt: 2, status: "completed", conclusion: "success" },
+    ] });
+    if (path.includes("/jobs")) return ok({ total_count: 0, jobs: [] });
+    if (path.includes("/actions/workflows/")) return ok({ path: ".github/workflows/ci.yml", state: "active" });
+    return ok({ id: 900, run_attempt: 2, event: "pull_request", head_sha: "h", status: "completed", workflow_id: 9, pull_requests: [] });
+  };
+  const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "run", id: 900 }, withRest(c, rest));
+  assert.ok(asked.some((p) => p.includes("filter=latest")), "the latest instance of each shard needs its own query");
+  assert.deepEqual(a.json.latest_shard_jobs, {
+    "packages (1)": { id: 601, run_attempt: 2, state: "completed", conclusion: "failure" },
+    "modules (1)": { id: 602, run_attempt: 1, state: "completed", conclusion: "success" },
+  }, "only shard jobs, one per name, with the newest attempt each: a shard re-run to failure keeps only the failure");
+  // An unreadable latest query is no map at all, and the fact refuses on it (evidence.ts requires the entry).
+  const unreadable = await answerOp("read", { module: "grading", repo: "acme/app", kind: "run", id: 900 },
+    withRest(c, async (_m, path) => path.includes("filter=latest") ? { status: 502, body: {}, headers: new Headers() } : rest(_m, path)));
+  assert.deepEqual(unreadable.json.latest_shard_jobs, {});
+});
+
 test("an exists read answers only whether a path is a directory at a commit: 404 is not there, a listing is, a file is not", async () => {
   const c = ctx();
   const ref = "a".repeat(40);
@@ -41,13 +67,15 @@ test("an exists read answers only whether a path is a directory at a commit: 404
 test("a workflow run's identity is its workflow, event, head, attempt and its own base", async () => {
   const c = ctx();
   const rest = async (_m: string, path: string) => path.includes("/jobs") ?
-    ok({ total_count: 2, jobs: [{ name: "modules (3)", run_attempt: 2, status: "completed", conclusion: "success" }, { name: "post-checks", run_attempt: 2, status: "completed", conclusion: "success" }] }) :
+    ok({ total_count: 2, jobs: [{ name: "modules (3)", id: 500, run_attempt: 2, status: "completed", conclusion: "success" }, { name: "post-checks", run_attempt: 2, status: "completed", conclusion: "success" }] }) :
     path.includes("/actions/workflows/") ? ok({ path: ".github/workflows/ci.yml", state: "active" }) :
     ok({ id: 900, run_attempt: 2, event: "pull_request", head_sha: "h", status: "completed", workflow_id: 9, pull_requests: [{ head: { sha: "h" }, base: { sha: "base" } }] });
   const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "run", id: 900 }, withRest(c, rest));
   assert.deepEqual(a.json, { id: 900, run_attempt: 2, event: "pull_request", head_sha: "h", status: "completed", workflow_id: 9,
     workflow_path: ".github/workflows/ci.yml", workflow_state: "active", base_sha: "base",
-    post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }] }, "the run carries its post-checks instances, so a fact can require CI's own poster");
+    post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }],
+    latest_shard_jobs: { "modules (3)": { id: 500, run_attempt: 2, state: "completed", conclusion: "success" } } },
+    "the run carries its post-checks instances and each shard's latest instance, so a fact can require CI's own poster and refuse a superseded pass");
   assert.equal((await answerOp("read", { module: "grading", repo: "acme/app", kind: "run", id: 901 }, withRest(c, async () => ({ status: 404, body: {}, headers: new Headers() })))).json, null, "a run GitHub has no answer for is null");
   // Two PRs on one head, two bases: ambiguous, no base at all (never one of them picked).
   const two = await answerOp("read", { module: "grading", repo: "acme/app", kind: "run", id: 900 }, withRest(c, async (_m, path) => path.includes("/jobs") ? ok({ total_count: 0, jobs: [] }) : path.includes("/actions/workflows/") ? ok({ path: ".github/workflows/ci.yml", state: "active" }) :

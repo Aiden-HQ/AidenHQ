@@ -58,7 +58,8 @@ codehost:
 `evidence` is narrower than `read` and lists its paths exactly: a `file` read (`{path, ref}`, a listed path at a commit
 sha) and nothing else, so a module reads only the files its grant names. `run`
 answers a workflow run's identity (`workflow_path`, `workflow_state`, `event`, `head_sha`, `run_attempt`, the run's
-own `base_sha`, and the `post_checks` instances of its `post-checks` job: `run_attempt`, `state`, `conclusion`), which
+own `base_sha`, the `post_checks` instances of its `post-checks` job: `run_attempt`, `state`, `conclusion`, and
+`latest_shard_jobs`: each `packages (N)`/`modules (N)` job's newest instance, by name), which
 a `job` read does not: a graded job names the workflow it belongs to, and its run says whether that workflow is the
 repository's CI on the head being graded and whether CI's own poster ran. `commit` (`{ref}`) answers a commit's
 parents in the API's order, first parent first: a merged PR's run no longer records its own base, and its merge
@@ -74,6 +75,10 @@ API answers any App token, and a same-repo PR that reaches a workflow token with
 the fact also needs, from the code host, the `<job id>` as a real Actions job of that run and shard
 (`packages (<shard>)`/`modules (<shard>)`, conclusion `success`) and a completed `success`
 `post-checks` job in that run at or after the shard's own `run_attempt` (never before it): the poster CI itself ran.
+The job the check names must also be its shard's **latest** instance in the run: a shard that passed and was then re-run
+to failure leaves the old passing check on the head (`post-checks` never deletes one), and grading on it would report a
+result the shard no longer stands behind. A re-run of a different shard does not displace this one — the latest
+instance is per job name.
 A failed-job re-run keeps an earlier attempt's passing shard and posts its checks in the newer attempt, so the poster's
 attempt may be the higher one. The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
 whose `head_sha` is the graded head. The fact names the suite's `run` and directory from `areas.json` at the run's own

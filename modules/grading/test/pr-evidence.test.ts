@@ -198,7 +198,16 @@ const factDeps = (prs, { areas = AREAS, jobs = {}, runs = {}, base = SHA("d"), b
     exists: async (_repo, path, ref) => ref === head && here.includes(path),
     job: async (_repo, id) => jobs[id] === null ? null : { id: Number(id), name: "packages (1)", state: "completed", conclusion: "success", run_id: 7, run_attempt: 1, ...(jobs[id] ?? {}) },
     run: async (_repo, id) => runs[id] === null ? null : { id: Number(id), event: "pull_request", head_sha: head, workflow_path: ".github/workflows/ci.yml",
-      workflow_state: "active", run_attempt: 1, base_sha: base, post_checks: [{ run_attempt: 1, state: "completed", conclusion: "success" }], ...(runs[id] ?? {}) },
+      workflow_state: "active", run_attempt: 1, base_sha: base, post_checks: [{ run_attempt: 1, state: "completed", conclusion: "success" }],
+      // The run's shard jobs, latest instance per name (`filter=latest`): the job each passing check must be, so a pass a re-run
+      // replaced cannot mint. Built from the checks' own `<run>/<job id>/<shard>`, through the same `jobs` records the job read
+      // answers, so the two cannot disagree; a test overrides it to stand in for a shard that was re-run.
+      latest_shard_jobs: Object.fromEntries((prs[0].commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).flatMap((c) => {
+        const m = /^(\d+)\/(\d+)\/(\d+)$/.exec(String(c?.externalId ?? ""));
+        if (!m || jobs[m[2]] === null) return [];
+        const job = { id: Number(m[2]), name: "packages (1)", state: "completed", conclusion: "success", run_attempt: 1, ...(jobs[m[2]] ?? {}) };
+        return [[job.name, { id: job.id, run_attempt: job.run_attempt, state: job.state, conclusion: job.conclusion }]];
+      })), ...(runs[id] ?? {}) },
   };
 };
 const fact = (name, run, dir) => `${name} green on head ${SHA("a")}: ran "${run}" in ${dir}/ — passed`;
@@ -209,6 +218,35 @@ test("a suite's check with its shard job and run behind it mints the fact naming
   const ev = await prEvidence([{ repo: REPO, number: 300, url: url(300), heads: ["branch-a"] }], "", factDeps(prs, { jobs: { 112: { name: "modules (3)" } } }));
   assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
   assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+});
+
+test("a shard that passed and was then re-run and failed mints nothing: the old passing check is superseded", async () => {
+  // Attempt 1's `packages (1)` passed and post-checks published kernel#1's check naming job 111. Then the shard was re-run as
+  // attempt 2 and failed. post-checks never deletes the old check, so it is still a completed success on the head — but the
+  // run's latest `packages (1)` is now job 121, which did not pass, so nothing is a fact.
+  const prs = [withChecks(320, "a", "b", [PASS("kernel#1", "7/111/1")])];
+  const rerun = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", factDeps(prs, {
+    runs: { 7: { run_attempt: 2, post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }],
+      latest_shard_jobs: { "packages (1)": { id: 121, run_attempt: 2, state: "completed", conclusion: "failure" } } } },
+  }));
+  assert.ok(noCommand(rerun), rerun.facts.join("\n"));
+  // The same holds when the re-run is still going: an unfinished latest instance is no pass either.
+  const running = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", factDeps(prs, {
+    runs: { 7: { latest_shard_jobs: { "packages (1)": { id: 121, run_attempt: 2, state: "in_progress", conclusion: null } } } },
+  }));
+  assert.ok(noCommand(running), running.facts.join("\n"));
+});
+
+test("a shard whose latest instance is the check's own job still mints, even after another shard was re-run", async () => {
+  // `filter=latest` answers one instance per job name: re-running `packages (2)` does not replace `packages (1)`. A suite check
+  // naming packages (1)'s only job is that shard's current record, so it still counts.
+  const prs = [withChecks(321, "a", "b", [PASS("kernel#1", "7/131/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "", factDeps(prs, {
+    runs: { 7: { run_attempt: 2, post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }],
+      latest_shard_jobs: { "packages (1)": { id: 131, run_attempt: 1, state: "completed", conclusion: "success" },
+        "packages (2)": { id: 132, run_attempt: 2, state: "completed", conclusion: "failure" } } } },
+  }));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
 });
 
 test("a check whose external_id has no job behind it mints nothing", async () => {
