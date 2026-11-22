@@ -955,7 +955,13 @@ const TOOLS: Record<string, Tool> = {
         const p = new URLSearchParams(q);
         p.set("limit", String(PAGE));
         p.set("offset", String(offset));
-        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`).catch((err) => { if (Date.now() > deadline) return null; throw err; });
+        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`).catch((err) => {
+          if (Date.now() > deadline) {
+            stopped = true;
+            return null;
+          }
+          throw err;
+        });
         if (!Array.isArray(page) || !page.length) break;
         // Every candidate is tracked, whether or not it matches: that catches a repeat even when none of the page matched.
         const fresh = page.filter((i: Json) => !seen.has(i.id));
@@ -1014,11 +1020,11 @@ const TOOLS: Record<string, Tool> = {
       let complete = true;
       // Reads at the budget's edge are abandoned, not failed: a slow page or kernel read leaves the matches collected so far
       // with `incomplete`, and anything that fails before the deadline still surfaces.
-      const atEdge = async <T>(fn: () => Promise<T>, onEdge: () => T): Promise<T> => {
+      const atEdge = async <T>(fn: () => Promise<T>, onEdge: () => T, until = deadline): Promise<T> => {
         try {
           return await fn();
         } catch (err) {
-          if (Date.now() < deadline) throw err;
+          if (Date.now() < until) throw err;
           complete = false;
           return onEdge();
         }
@@ -1031,10 +1037,10 @@ const TOOLS: Record<string, Tool> = {
             complete = false;
             return kept;
           }
-          const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }));
+          const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
           if (step.done) return kept;
-          const ready = (await atEdge(() => Promise.all(step.value.map(prepare)), () => [])).filter(Boolean) as Json[];
-          const matches = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[]);
+          const ready = (await atEdge(() => Promise.all(step.value.map(prepare)), () => [], until)).filter(Boolean) as Json[];
+          const matches = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > until) {
             complete = false;
