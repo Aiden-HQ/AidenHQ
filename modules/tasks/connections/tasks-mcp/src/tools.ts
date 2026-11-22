@@ -519,6 +519,47 @@ const NO_FACT: [RegExp, string][] = [
 const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
 /** Why the grader can't check this criterion from any fact it is given, or undefined. */
 const noFact = (c: string) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];
+// An absence anywhere in a repository file ("both handbooks contain no Linus", "docs/a.md has no old token") cannot be
+// shown from the evidence a code deliverable is graded on: the grader sees the diff, not the resulting tree. The claim is
+// refused wherever a rubric is written. A claim about an attached file (its contents are evidence), a rendered page path, or
+// what a PR's diff does not add is decidable and stays allowed; a `file` deliverable is the attachment itself.
+const ABSENT = /\b(?:contains?|containing|includes?|including|holds?|holding)\s+no\b|\b(?:does|do|did)(?:n't| not)\s+(?:contain|include|hold|mention|name|reference|list)\b|\b(?:has|have)\s+no\b|\b(?:is|are|was|were)\s+absent\s+from\b/i;
+const REPO_FILE = /\b(?:files?|handbooks?|docs?|documents?|trees?|repos?(?:itories)?|sources?|modules?|readme|codebase)\b|[\w./-]+\.[a-z]{1,5}\b/i;
+const ATTACHED = /\battach(?:ed|ment|ments)\b/i;
+const DIFF_SUBJECT = /\b(?:pr|pull requests?|diff|patch|changes?|commits?|merge[ds]?)\b/i;
+// A clause ends at punctuation or a contrast, never at a coordination: "docs/a.md and the attached report contain no X" is one
+// claim about both, so its subject is split on the coordination and each part judged on its own. A coordination after the
+// claim's object ("... contains no X and docs/a.md has Y") starts a new claim and is not part of this one's subject.
+const CLAUSE_BREAK = /[.;:,]\s+|\b(?:but|while|whereas)\s+/gi;
+const COORDINATION = /\s*(?:[,;]|\band\b|\bor\b|&|\bplus\b)\s*/gi;
+/**
+ * The subject an absence claim is about: the coordinated parts of its own clause before the claim, plus the claim and its
+ * object. Another clause is left out, so "the /slipped page has no `Linus` row and docs/a.md has the heading" is a claim
+ * about the page; "docs/a.md and the attached report contain no X" is a claim about both.
+ */
+function absenceSubject(c: string, at: number, length: number): string[] {
+  const breaks = [...c.slice(0, at).matchAll(CLAUSE_BREAK)].map((m) => (m.index ?? 0) + m[0].length);
+  const head = c.slice(breaks.length ? breaks[breaks.length - 1]! : 0, at);
+  const after = c.slice(at + length);
+  const next = after.search(CLAUSE_BREAK);
+  // The object is "no X": a coordination after it starts something else, so it ends the claim rather than joining it.
+  const tail = (next < 0 ? after : after.slice(0, next)).split(COORDINATION)[0] ?? "";
+  return [...head.split(COORDINATION), c.slice(at, at + length) + tail].map((p) => p.trim()).filter(Boolean);
+}
+/** Whether any part of a claim's subject names a repository file its evidence can't show. */
+const absenceRefuses = (parts: string[]) =>
+  parts.some((part) => REPO_FILE.test(part) && !ATTACHED.test(part) && !PAGE_PATH.test(part) && !DIFF_SUBJECT.test(part));
+/** Whether a criterion claims a repository file's contents lack something (see ABSENT), which a diff cannot show. */
+const absentFromFile = (c: Json, kind?: Json) => {
+  const text = String(c);
+  if (kind === "file") return false;
+  // "the diff removes X and docs/a.md contains no Y": each claim is judged on its own subject, never on another clause,
+  // and an exemption for one coordinated part ("the attached report") never covers another ("docs/a.md").
+  for (const claim of text.matchAll(new RegExp(ABSENT.source, "gi"))) {
+    if (absenceRefuses(absenceSubject(text, claim.index, claim[0].length))) return true;
+  }
+  return false;
+};
 // A brief that claims part of the tree is untouched while its own tests or requirements change that part reads as a
 // contradiction: the reviewer takes the claim literally and rejects the extra change as out of scope. Flagged where it is
 // filed, while the delegator can still reword it; the handbook rule is the judgment.
@@ -556,17 +597,28 @@ function metricWarning(description: Json, ...at: Json[]) {
   if (!stale.length) return undefined;
   return `This brief states a host or fleet metric with no time it was measured within 15 minutes of the brief (${stale.map((c: Json) => `"${c.slice(0, 90)}"`).join(", ")}). ${MEASURED_FIX}`;
 }
+/**
+ * The rubric's criteria as filed or amended, validated once so both routes apply the same rules: 3-8, each at most 200
+ * characters, no unprovable negative, no criterion naming a fact the grader isn't given, and no claim that a file's
+ * contents lack something (a diff can't show it). Throws on the first criterion that breaks a rule.
+ */
+function rubricCriteria(rubric: Json, kind?: Json) {
+  const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
+  if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
+  const negative = list.find(unprovable);
+  if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
+  const absent = list.find((c) => absentFromFile(c, kind));
+  if (absent) throw new Error(`rubric: "${absent.slice(0, 120)}" claims file contents are absent, which the grader can't see: it is given the diff, not the resulting files, so no diff can show a token is gone from a whole file. Name a diff-decidable alternative instead (e.g. "the diff removes every \`Linus\` line from docs/a.md").`);
+  const blind = list.find(noFact);
+  if (blind) throw new Error(`rubric: "${blind.slice(0, 120)}" names nothing the grader can see: ${noFact(blind)}. Each criterion names one of the facts the grader is given: ${FACTS}.`);
+  return list;
+}
 /** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
 function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Json) {
   const kind = deliverable?.kind;
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
-  const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
+  const list = rubricCriteria(rubric, kind);
   refuseRetiredRepo(deliverable, list, description);
-  if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
-  const negative = list.find(unprovable);
-  if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
-  const blind = list.find(noFact);
-  if (blind) throw new Error(`rubric: "${blind.slice(0, 120)}" names nothing the grader can see: ${noFact(blind)}. Each criterion names one of the facts the grader is given: ${FACTS}.`);
   // Read-only work (a report, a question) ships nothing to check: its answer is the deliverable, and the delegator reads it.
   if (kind === "none" || kind === "report") return undefined;
   if (!kind) {
@@ -594,14 +646,33 @@ async function fileGrade(issueId: string, grade: Json) {
     return { graded: false, grade_error: String((err as Error).message ?? err).slice(0, 200) };
   }
 }
-/** A task's filed grade (the grading module's GET /grades/<task>), or undefined when it can't be read. */
-async function readGrade(issueId: string) {
+/**
+ * Replaces a task's filed rubric in place, as the caller (the same assertion a filing uses): the grading module decides who
+ * may do it (the task's delegator, or the row's recorded filer) and refuses a settled row. Unlike a filing this is not
+ * fire-and-forget: the agent asked for it, so a refusal is reported as the error it is.
+ */
+async function amendGrade(issueId: string, rubric: string[]) {
+  const res = await fetch(`${GRADING}/grades/amend`, { method: "POST", headers: { "x-aidenhq-caller": cx().assertion, "content-type": "application/json" }, body: JSON.stringify({ issue: issueId, rubric }), signal: AbortSignal.timeout(20_000) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`the rubric was not amended: ${body.error ?? `grading answered ${res.status}`}`);
+  return { amended: true, state: body.state, rubric: body.rubric };
+}
+/**
+ * A task's filed grade (the grading module's GET /grades/<task>), or undefined when it can't be read. `strict` makes a refused
+ * or failed read an error instead: a caller that is not allowed to see the row must be told so, never told there is no rubric.
+ */
+async function readGrade(issueId: string, strict = false) {
   try {
     const res = await fetch(`${GRADING}/grades/${encodeURIComponent(issueId)}`, { headers: { "x-aidenhq-caller": cx().assertion }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return undefined;
+    if (!res.ok) {
+      if (!strict) return undefined;
+      const body = await res.json().catch(() => ({}));
+      throw new Error(`the task's filed rubric could not be read (grading answered ${res.status}${body.error ? `: ${body.error}` : ""})`);
+    }
     return (await res.json()).grade;
-  } catch {
-    return undefined;
+  } catch (err) {
+    if (!strict) return undefined;
+    throw err;
   }
 }
 /** Whether a filed grade is exactly what this delegation would file. */
@@ -1231,6 +1302,33 @@ const TOOLS: Record<string, Tool> = {
       // A brief refreshed on the day it was created: its numbers are measured then too.
       const warning = description !== undefined && isBrief(current?.description, []) ? metricWarning(description, Date.parse(current.createdAt) || Date.now(), Date.now()) : undefined;
       return warning ? { ...i, warning } : i;
+    },
+  },
+  task_amend_rubric: {
+    description:
+      "Replace a graded task's filed rubric in place, for a delegator whose criteria turned out unsatisfiable (a later comment can amend the ask, never a criterion). Takes the full new rubric (3-8 criteria, the same checks a delegation applies) and keeps the deliverable as filed: the grader reads this list from then on, and the row restarts (open, no attempts, no verdicts). Only the task's delegator or the rubric's recorded filer may do it, and only while its grade is unsettled; a settled row is refused. The task's description stays as it is.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue: { type: "string", description: "the graded task, e.g. WOR-12" },
+        rubric: RUBRIC_INPUT,
+      },
+      required: ["issue", "rubric"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: async ({ issue, rubric }: Args) => {
+      await refuseMemoryInbox(issue);
+      // An amendment always names its criteria: there is no template to fall back to when a delegator is correcting a list.
+      if (!Array.isArray(rubric) || !rubric.filter((c) => String(c).trim()).length) throw new Error("rubric: an amendment replaces the whole list, 3-8 checkable criteria");
+      const i = await api("GET", `/api/issues/${issueRef(issue)}`);
+      // The deliverable stays as filed, so the same checks a filing applies are applied against it: an absence claim a diff
+      // can't show, a retired repo, and a criterion the grader isn't given the facts for.
+      const filed = await readGrade(i.id, true);
+      if (!filed?.deliverable?.kind) throw new Error(`the rubric was not amended: ${i.identifier ?? i.id} has no filed rubric to amend (its rubric is filed with its delegation)`);
+      const list = rubricCriteria(rubric, filed.deliverable.kind);
+      refuseRetiredRepo(filed.deliverable, list, "");
+      return amendGrade(i.id, list);
     },
   },
   task_comments: {

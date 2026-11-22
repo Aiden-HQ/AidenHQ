@@ -6,7 +6,7 @@
 import { openCard } from "./grader/cards.ts";
 
 type Json = any;
-export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, emit = () => {} }: {
+export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, rubricHash, emit = () => {} }: {
   api: Json;
   pc: Json;
   log: (...a: unknown[]) => void;
@@ -22,6 +22,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   graderAsk: Json;
   stripHidden: Json;
   graderSpeaks: Json;
+  /** The hash a pass's verdict names (grades.ts rubricHash): the store drops a verdict from a rubric since amended. */
+  rubricHash: (rubric: string[]) => string;
   emit?: (e: Json) => void;
 }) {
   const grading = new Set<string>();
@@ -48,7 +50,22 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     while (steps.length) {
       const s = steps[0]!;
       try {
-        if (s.do === "reopen") await pc.setStatus(task, "todo", s.note);
+        if (s.do === "reopen") {
+          // A revision move queued by a verdict on a rubric since amended is stale: the amendment restarted the row (open or
+          // pending), so the task is graded against the new list rather than sent back for a criterion that no longer exists.
+          // The row's state is read here because the store and this queue are separate: the amendment cannot drop this step.
+          // A read that fails is not "no longer needs_revision": the step stays queued and the next pass asks again, so a
+          // blip never reopens a task whose row was amended (and never drops a move that is still owed).
+          let state: string | null;
+          try {
+            state = (await api.get(`/internal/grades/${encodeURIComponent(task)}`))?.state ?? null;
+          } catch (err: Json) {
+            log("a revision move waits: the grade state could not be read", { issue: task, err: String(err?.message ?? err).slice(0, 200) });
+            return;
+          }
+          if (state === "needs_revision") await pc.setStatus(task, "todo", s.note);
+          else log("a revision move is stale: the rubric was amended", { issue: task, state });
+        }
         else if (s.do === "done") {
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.
@@ -195,7 +212,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       asked = true;
       v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, images: ev.images, authorModel, ask });
     }
-    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    // The row's rubric this pass graded, by hash: the store drops the verdict if it was amended while the pass ran. The row's
+    // own list (g.rubric), not the template the pass falls back to, is what the store compares against.
+    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: rubricHash(g.rubric ?? []), reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
