@@ -79,16 +79,20 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
   its citation in `note` (posted on the issue as part of the close): for `completed`, the fix's PR and its merge commit,
   plus the generation that carries it for `product-pin`; for `not_planned`, the line or path that disproves it. One call,
   so the close and its evidence are reviewed together. **A close carries its citation only on an issue that was open.** An
-  issue already closed (by the operator, a member, or a merged PR's `Fixes #N`) is not patched: a close with a `note` there
-  posts a comment and the issue keeps its earlier close, whose comment may cite the fix in a form the parser cannot read.
-  When that earlier close cites nothing readable, reopen the issue once — its `note` saying plainly that the issue is
-  reopened to replace an uncited close — then close it `completed` with the citation in the close's `note`. When the
-  earlier close is readable (a merged PR's `Fixes #N`, or a comment already naming `owner/name#number`), report that close
-  as it stands and leave the state alone. Report a closing citation only when the tool's result shows a close this call
-  made. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
-  or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
-  does not read, so the close will look uncited.** A fix PR whose body says "Fixes #N" closes the issue itself when it
-  merges, and that close counts as the cited close: verify it, comment the evidence, and leave the issue closed.
+  issue already closed (by the operator, a member, or a merged PR's `Fixes #N`) is not closed again: a close with a `note`
+  there only posts the comment and leaves the earlier close as GitHub recorded it, and a `reason` it already records
+  differently is the one thing PATCHed — a reason change, not a new close. That earlier close's own comment may cite
+  the fix in a form the parser cannot read. When it cites nothing readable, reopen the issue once and then close it
+  `completed` with the citation in the new close's `note`. A reopen refuses a `note`, so the reopen call carries none;
+  the close's `note` says it replaces the earlier uncited close. When the earlier close is readable — a merged PR's
+  `Fixes #N`, or the newest comment its closer posted before the close naming `owner/name#number` — report that close as
+  it stands and leave the state alone. When nothing ties a readable PR to that close, its citation is unverified: say so
+  instead of reporting the issue cited. Report a closing citation only for an issue you saw open when you sent the close:
+  on one already closed, a `note` is a comment and any PATCH is a reason change, not the close. **Write each PR as
+  `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`) or its full `https://github.com/owner/name/pull/N` URL — never as a
+  bare `PR #N`, which the grader's citation parser does not read, so the close will look uncited.** A fix PR whose body
+  says "Fixes #N" closes the issue itself when it merges, and that close counts as the cited close: verify it, comment the
+  evidence, and leave the issue closed.
 
 **Product bugs** — `github_product_issue`: a product-bug report on the product repo, for a task the Fleet Steward assigned
 you (skill `report-product-bug`).
