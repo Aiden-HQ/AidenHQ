@@ -883,7 +883,7 @@ const PREPARE_AT_ONCE = 8;
  */
 async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {}, ms?: () => number) {
   const seen = new Set<string>();
-  let repeats = 0, last = "", asked: Json[] = [];
+  let repeats = 0, last = "", asked: Json[] = [], previousStep = 0;
   for (let offset = 0; ; ) {
     // A page that adds nothing new does not yield, so the caller cannot check the clock: check it here too.
     if (ms && ms() <= 0) {
@@ -903,7 +903,8 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; ex
       return;
     }
     // Advance by half of what came back, not by what was asked: a server capping its page size would otherwise leave a gap.
-    offset += Math.max(1, Math.floor(page.length / 2));
+    const step = Math.max(1, Math.floor(page.length / 2));
+    offset += step;
     // A page whose ids are exactly the previous page's is a repeated page: the end, or a server ignoring `offset`. Overlapping
     // tail pages share rows but never all of them, so they are not mistaken for it.
     const ids = page.map((i: Json) => i.id).join(",");
@@ -916,16 +917,22 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; ex
       }
     } else repeats = 0;
     last = ids;
-    // The next page starts inside this one, half a page back, so its first rows must be this page's tail. If they are not (an
-    // unseen first row, or a shared prefix that disagrees) the list was reordered between the reads: a row may have slipped
-    // past the overlap, so say so instead of claiming a complete scan.
+    // The next page starts inside this one, exactly `step` rows in. If it starts anywhere else — a row the scan has never
+    // seen, or the tail at a different position — the list moved between the reads: a task can have been inserted above the
+    // offset (or pulled up into the rows already passed), so a matching row may have slipped by. Say so rather than claim a
+    // complete scan; rows merely inserted above the offset are new and unread too.
     const previous = asked;
     asked = page;
     if (previous.length) {
       const j = previous.findIndex((i: Json) => i.id === page[0].id);
-      const shared = j < 0 ? 0 : Math.min(previous.length - j, page.length);
-      if (j < 0 || page.slice(0, shared).some((i: Json, n: number) => i.id !== previous[j + n].id)) progress.moved = true;
+      if (j !== previousStep) progress.moved = true;
+      else {
+        const shared = Math.min(previous.length - j, page.length);
+        if (page.slice(0, shared).some((i: Json, n: number) => i.id !== previous[j + n].id)) progress.moved = true;
+      }
     }
+    // The step this page itself will advance by, used by the next page's overlap check.
+    previousStep = step;
     const fresh = page.filter((i: Json) => !seen.has(i.id));
     // A short page with nothing new is the list's tail read again: the endpoint returned fewer rows than it was asked for, so
     // there is nothing behind it. Reading on would only repeat the last rows, one round trip at a time. A page identical to
@@ -1113,12 +1120,16 @@ const TOOLS: Record<string, Tool> = {
         const n = PRIORITIES.indexOf(String(i?.priority ?? ""));
         return n < 0 ? PRIORITIES.length : n;
       };
-      const stamp = (v: Json) => Date.parse(String(v ?? "")) || 0;
+      // Timestamps are compared as the raw strings Paperclip served, not as millisecond values: two rows inside one
+      // millisecond differ in the database and the list is ordered on that, so rounding them to a tie would decide by UUID.
+      const stamp = (v: Json) => String(v ?? "");
       const activity = (i: Json) => stamp(i?.lastActivityAt ?? i?.updatedAt);
       function cmp(a: Json, b: Json) {
         if (rank(a) !== rank(b)) return rank(a) - rank(b);
-        if (activity(a) !== activity(b)) return activity(b) - activity(a);
-        if (stamp(a?.updatedAt) !== stamp(b?.updatedAt)) return stamp(b?.updatedAt) - stamp(a?.updatedAt);
+        const act = activity(b).localeCompare(activity(a));
+        if (act) return act;
+        const upd = stamp(b?.updatedAt).localeCompare(stamp(a?.updatedAt));
+        if (upd) return upd;
         return String(b?.id ?? "").localeCompare(String(a?.id ?? ""));
       }
       const at = (row: readonly [Json, Json]) => row[0];
@@ -1235,8 +1246,10 @@ const TOOLS: Record<string, Tool> = {
           const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
           isChat = async ([row], rest) => {
             if (row.assigneeAgentId) return false;
-            // A detail read must not start past the chat scan's budget: leave it unproven and let the answer say it is partial.
-            if (Date.now() > chatUntil) {
+            // Only a detail read is bounded by the chat budget: a description the list already returned is in hand, so it is
+            // still checked (and can still match) after the cutoff.
+            const needsRead = Boolean(row.descriptionTruncated);
+            if (needsRead && Date.now() > chatUntil) {
               complete = false;
               return false;
             }

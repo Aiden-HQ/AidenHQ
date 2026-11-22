@@ -234,6 +234,25 @@ test("task_list says it is incomplete when the list shifts further than the over
   assert.match(String(out.out?.incomplete ?? ""), /shifted further/);
 });
 
+test("task_list says it is incomplete when a task jumps above the offset between reads", async () => {
+  // The only waiting task sits past the first page; between reads it is moved to the front (its activity rose). The next page
+  // then starts one row earlier than the overlap expects, which is exactly when an unread task may have been passed over.
+  const rows = Array.from({ length: 400 }, (_, n) => ({ ...row(`t-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (400 - n) * 60_000).toISOString() }));
+  const board = issueBoard({ rows });
+  let reads = 0;
+  const handler = (req, res) => {
+    if ((req.url ?? "").includes("/issues?") && reads++ === 1) {
+      const moved = rows.splice(250, 1)[0];
+      rows.unshift({ ...moved, updatedAt: "2026-12-01T00:00:00Z" });
+    }
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "t-250" ? "waiting" : "working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
+  assert.match(String(out.out?.incomplete ?? ""), /shifted further/);
+});
+
 test("task_list stops when the issues endpoint ignores offset and repeats a page", async () => {
   const rows = Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo"));
   let reads = 0;
