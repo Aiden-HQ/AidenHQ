@@ -61,8 +61,9 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
   const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
   const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
-  if (gaps.length) return { out: [`self-review: ${at}: incomplete`, detail(`generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}`)], code: 2 };
+  const gapNote = gaps.length ? `generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}` : "";
   if (!reviewed.length) {
+    if (gapNote) return { out: [`self-review: ${at}: incomplete`, detail(gapNote)], code: 2 };
     if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review")], code: 2 };
     remember(0);
     return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles, binary or generated files changed; no model ran)`], code: 0 };
@@ -94,7 +95,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
       ...(n ? [`(${n} important finding${n === 1 ? "" : "s"} without a failure scenario counted as a nit)`] : []),
     ];
     // Some of the patch was not reviewed (a part that failed, a hunk too big to send): nothing counts as clean.
-    if (r.incomplete) return { out: [`self-review: ${at}: incomplete`, detail(r.incomplete), ...lines], code: 2 };
+    if (r.incomplete || gapNote) return { out: [`self-review: ${at}: incomplete`, detail([r.incomplete, gapNote].filter(Boolean).join("; ")), ...lines], code: 2 };
     if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review"), ...lines], code: 2 };
     remember(important.length); // a finished review
     return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`, ...lines], code: important.length ? 1 : 0 };

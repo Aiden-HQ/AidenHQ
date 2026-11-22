@@ -363,3 +363,24 @@ test("a bare carriage return or a line separator in a changed line is not a reco
   assert.deepEqual(tight.groups, []);
   assert.match(tight.oversize[0]!, /^c\.txt \(a hunk of \d+ characters\)$/);
 });
+
+test("self-review reviews the eligible files even when a generated file leaves a gap, then exits 2 with the gap named", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n`, "dist/out.js": (v) => `x${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const model = await endpoint();
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    assert.equal(out.status, 2, out.stdout);
+    assert.equal(model.requests.length, 1, "the eligible file was sent");
+    assert.match(JSON.stringify(model.requests[0]), /a\.txt/);
+    assert.match(out.stdout, /generated files this change adds are not reviewed: dist\/out\.js/);
+  } finally { model.close(); }
+});
