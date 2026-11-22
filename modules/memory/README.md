@@ -2,8 +2,8 @@
 
 ## What it does
 
-Agent memory. Facts an agent noted (`memory_note`) are curated by the Fleet Steward into the instance's
-`agents/<key>/memory.md`, which is compiled into that agent's handbook and its fast chat lane (at most 4 KB).
+Agent memory. The Fleet Steward curates lessons and facts from an agent's notes (`memory_note`) and recent work into the
+instance's `agents/<key>/memory.md`, which is compiled into that agent's handbook and its fast chat lane (at most 4 KB).
 
 ## Connect
 
@@ -17,4 +17,4 @@ crew agents when this module is on.
 
 ## New installs
 
-In the default bundle. No agent has memory until it notes something and the Steward curates it.
+In the default bundle. No agent has memory until the Steward has learned something from its work.

@@ -115,7 +115,7 @@ routines:
     agent: fleet-steward
     description: |
       Today is {{date}}. Follow your knowledge-daily skill: review what is new since yesterday in the notes vault, the
-      people proposals and the agents' memory inboxes, fix what the tools allow, note the rest for the weekly report, then
+      people proposals and the agents' memory (their inboxes and recent finished work), fix what the tools allow, note the rest for the weekly report, then
       close this task with a short count summary.
     concurrency: coalesce_if_active
     schedules:

@@ -1847,7 +1847,7 @@ const NOTES_PER_RUN = 10;
 Object.assign(TOOLS, {
   memory_note: {
     description:
-      `Note one fact worth remembering for your future runs (a correction the owner made, how a tool or person really behaves, a stale rule you found), for the Fleet Steward to check against your run history and fold into your memory. \`fact\`: one plain statement, at most 400 characters; \`source\`: a link or task id that shows it (required). No secrets, no instructions to yourself, no guesses. At most ${NOTES_PER_RUN} per run. A note is not memory yet: the Fleet Steward curates it, usually within a day.`,
+      `Note one lesson or fact that would help your future runs (a correction the owner made, a way that worked, how a tool or person really behaves, a memory line that has gone stale), for the Fleet Steward to check against your work and fold into your memory. \`fact\`: one plain statement, at most 400 characters; \`source\`: a link or task id that shows it (required). Keep secrets out. At most ${NOTES_PER_RUN} per run. A note is not memory yet: the Fleet Steward curates it, usually within a day.`,
     inputSchema: {
       type: "object",
       properties: { fact: { type: "string" }, source: { type: "string", description: "link or task id that shows the fact" } },
