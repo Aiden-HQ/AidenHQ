@@ -237,10 +237,12 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply
   still works. Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
-  the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
-  and a finding answered and reported again stays answered. A reopened finding goes in that run's post, titled as reopened,
-  its row linking its earlier thread. Answers are rechecked at every new head, one that changes only lockfiles or ignored
-  files included. There is no judge.
+  the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one). Each `unsafe` entry carries the finding's id, the
+  reason the answer is unsafe and the defect still present at the head (and, when given, its line there); an id alone or an entry
+  without a reason is silence, so unsure, still present or silent never reopens one, and a finding answered and reported again stays
+  answered. A reopened finding's `why` leads with that reason (the original note after it), and the same reason at the same evidence
+  never reopens it twice. It goes in that run's post, titled as reopened, its row linking its earlier thread. Answers are rechecked
+  at every new head, one that changes only lockfiles or ignored files included. There is no judge.
 - **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's
   `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer that reviewed the head has a run there that is done
   (whole, partial or carried) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks

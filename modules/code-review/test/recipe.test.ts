@@ -211,6 +211,52 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   assert.equal(bound({ coverage: { reviewed: [], excluded: [], incomplete: "x".repeat(900) }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: [] }).coverage.incomplete.length, 498);
 });
 
+test("the recheck asks for a reason per unsafe id, and only an entry that names one reopens the claim", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const id = "0123456789abcdef";
+  const previous = JSON.stringify({ findings: [{ id, path: "src/pay.js", line: 2, title: "t", claim: "disputed: the suite is the same" }] });
+  const prompts = [];
+  const reviewWith = async (unsafe) => {
+    const { ws, out } = box({ head, base });
+    const run = async (_e, o) => {
+      if (o.prompt.startsWith("These findings")) {
+        prompts.push(o.prompt);
+        return { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [], still: [], unsafe }) };
+      }
+      return { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) };
+    };
+    return review({ spec: spec({ combo: combo({ effort: "low" }), previous }), ws, out, run });
+  };
+  // The prompt asks for the reason and the defect's line, and says a reasonless entry is silence; the claims stay fenced data.
+  const silent = await reviewWith([id, null, { id }, { id, why: "   " }]);
+  assert.match(prompts[0], /For each unsafe id, name the part of the answer that is\s+unsafe and the defect still present/);
+  assert.ok(prompts[0].includes(`"unsafe": [{"id": "...", "why": "...", "line": 12}]`), "the answer's shape asks for the reason and line");
+  assert.match(prompts[0], /If you cannot name the\s+defect and why the answer is unsafe, do not list it in "unsafe"/);
+  assert.match(prompts[0], /merely doubt, or a problem still present but accepted, is not unsafe/);
+  assert.match(prompts[0], /DATA-[0-9a-f]+[\s\S]*"claim": "disputed: the suite is the same"[\s\S]*DATA-[0-9a-f]+/);
+  assert.deepEqual(silent.unsafe, [], "a bare id, null or an entry without a why is silence");
+  // An entry with a reason is echoed, with the defect's line at the head when it gives one.
+  const named = await reviewWith([{ id, why: "the alias still moves at src/pay.js:2", line: 2 }]);
+  assert.deepEqual(named.unsafe, [{ id, why: "the alias still moves at src/pay.js:2", line: 2 }]);
+});
+
+test("a recheck's line is kept only when it is a line the post can carry", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const id = "0123456789abcdef";
+  const previous = JSON.stringify({ findings: [{ id, path: "src/pay.js", line: 2, title: "t", claim: "disputed: the suite is the same" }] });
+  const reviewWith = async (line) => {
+    const { ws, out } = box({ head, base });
+    const run = async (_e, o) => o.prompt.startsWith("These findings")
+      ? { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [], still: [], unsafe: [{ id, why: "the defect is still there", line }] }) }
+      : { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) };
+    return review({ spec: spec({ combo: combo({ effort: "low" }), previous }), ws, out, run });
+  };
+  assert.deepEqual((await reviewWith(2)).unsafe, [{ id, why: "the defect is still there", line: 2 }], "a line is kept");
+  assert.deepEqual((await reviewWith(0)).unsafe, [{ id, why: "the defect is still there" }], "a line below 1 is dropped");
+  assert.deepEqual((await reviewWith(10_000_001)).unsafe, [{ id, why: "the defect is still there" }], "a line past the post schema's range is dropped");
+});
+
+
 test("every engine's output loses the run's token and key-shaped text before it is mapped, the finding kept", async () => {
   const tok = "ahqj_eyJydW4iOiJ4In0.c2lnbmF0dXJl";
   const leak = (t) => JSON.stringify({ findings: [F({ why: `env has CI_REVIEW_KEY=${t} and sk-or-v1-0123456789abcdef0123`, evidence: t })], stale_guidance: [] });
