@@ -193,8 +193,8 @@ test("a check-profile job is exempt: its authority has no tools by design", asyn
 test("a job resumes only a session its engine ran in: never one from before the kernel admitted jobs, never one whose resume died at start", async (t) => {
   const h = await host(t);
   const session = (job) => JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8")).session;
-  // `box` is set: these rows are jobs that reached an engine (a row without one never got a box, so it never ran).
-  const row = (id, at, sessionId, offset, authority) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', ?, '[]', 0, 0, ?, ?, ?, ?, 1, '{\"container\":\"c\"}')").run(id, at, authority ? "failed" : "done", authority, sessionId, offset);
+  // `pid > 0`: these rows are jobs whose engine was spawned (a row with pid 0 never reached one).
+  const row = (id, at, sessionId, offset, authority) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, ?, ?, ?, ?, 1, '{\"container\":\"c\"}')").run(id, at, authority ? "failed" : "done", authority, sessionId, offset);
   row("j-old", 1, "s-old", 500, null); // the old executor's job: its session is in another engine home
   const first = await h.admit("task-1");
   assert.equal(session(first), undefined);
@@ -219,9 +219,11 @@ test("an MCP preflight refusal does not erase the session a real run left behind
   h.db.prepare("UPDATE jobs SET session = 's-real', offset = 900 WHERE id = ?").run(first.id);
   h.declared["agent-1"] = ["slack", "github", "tasks"];
   await assert.rejects(h.admit("task-1"), (e) => e.status === 500 && /github/.test(e.message));
-  const refused = h.db.prepare("SELECT state, box FROM jobs ORDER BY rowid DESC LIMIT 1").get();
+  const refused = h.db.prepare("SELECT state, pid FROM jobs ORDER BY rowid DESC LIMIT 1").get();
   assert.equal(refused.state, "failed");
-  assert.equal(refused.box, null); // it never got a box: no engine saw it
+  assert.equal(refused.pid, 0); // no engine was spawned, so it never ran
+  // A job that got a box but failed before its engine was spawned (pid 0) is no more a session's newest word than a refusal.
+  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES ('j-boxed', 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(Date.now() + 5000);
   // With the configuration repaired, the next run resumes the session the real run left.
   h.declared["agent-1"] = ["slack", "tasks"];
   const next = await h.admit("task-1");
