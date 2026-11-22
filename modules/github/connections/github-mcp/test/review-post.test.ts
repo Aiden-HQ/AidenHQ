@@ -174,6 +174,11 @@ describe("the refused-post notice", () => {
     // The kernel's or a reviewer's text never reaches the notice: fixed words only.
     expect(text).not.toMatch(/write k-|not posted: /);
   });
+  it("names the post's own fate, never the approval's, when a post fails in the executor", () => {
+    const text = renderNotice({ ...notice, reason: "post_refused" });
+    expect(text).not.toMatch(/approval|approve/i);
+    expect(text).toContain("was not posted");
+  });
   it("keeps the failed-run notice as it was when the run itself failed", () => {
     const text = renderNotice({ ...notice, reason: undefined });
     expect(text).toContain("failed (run cr-1)");
@@ -298,13 +303,18 @@ describe("posting", () => {
     // GitHub makes the review, then its comment list keeps failing (a 502 every time). The threads it made still carry its run's
     // marker and each finding's, so the ids are read from there: the service's record of its own threads is never lost, which is
     // what lets a later run answer or resolve them.
-    const args = postArgs(review([finding("f_lost_1", "src/pay.ts", 2)]));
+    const r1 = review([finding("f_lost_1", "src/pay.ts", 2)]);
+    const args = postArgs(r1);
     const w = world({ threads: [thread("T_lost", "f_lost_1", "owner1", 701)] });
     const broken = (async (u: URL | string, i?: RequestInit) => {
       if ((i?.method ?? "GET") === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(new URL(String(u)).pathname)) return new Response("boom", { status: 502 });
       return w.impl(u, i);
     }) as typeof fetch;
-    w.state.threads = [{ ...thread("T_lost", "f_lost_1", "owner1", 701), comments: { nodes: [{ databaseId: 701, url: "u", body: `<!-- aidenhq-review-run: ${args.run} -->\n<!-- aidenhq-finding: f_lost_1 -->\nbody`, author: { login: "owner1" } }] } }];
+    // The thread's first comment is exactly what the post renders for the finding (never a body written for the test): if the
+    // rendered comment lacks the run's marker, this fallback cannot name it and the ids are lost.
+    const body = renderReview(r1, args.run).comments[0]!.body;
+    expect(body).toContain(`<!-- aidenhq-review-run: ${args.run} -->`);
+    w.state.threads = [{ ...thread("T_lost", "f_lost_1", "owner1", 701), comments: { nodes: [{ databaseId: 701, url: "u", body, author: { login: "owner1" } }] } }];
     const p = new ReviewPoster(new GitHub(accessFor((u, i) => broken(u, i)), broken), accessFor((u, i) => broken(u, i)));
     const out = JSON.parse((await p.execute("post", args)).text);
     expect(out.comments).toEqual([701]);
@@ -334,6 +344,16 @@ describe("posting", () => {
     expect(w.state.reviews).toHaveLength(1);
   });
 
+  it("each inline comment carries its run's marker, so a review whose comment list fails is still named by its threads", async () => {
+    // The run's marker is what a later read uses when GitHub can't list the review's comments: without it on the inline comments
+    // themselves, the fallback finds nothing and those threads are never recorded as Aiden's own.
+    const w = world();
+    await poster(w).execute("post", postArgs(review([finding("f_marked_1", "src/pay.ts", 2)],)));
+    const created = w.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))!;
+    expect(created.body.comments[0].body).toContain("<!-- aidenhq-review-run: run-1 -->");
+    expect(created.body.comments[0].body).toContain("<!-- aidenhq-finding: f_marked_1 -->");
+  });
+
   it("resolves only the threads code review recorded as its own posts (its database), for findings no longer reported", async () => {
     // T_owner carries the marker as the owner's login too (any fleet write does): only the service's record tells them apart.
     const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41), thread("T_owner", "f_owner_1", "owner1", 42), thread("T_person", null, "alice", 43), thread("T_forged", "f_forged_1", "alice", 44)] });
@@ -350,6 +370,30 @@ describe("posting", () => {
     t.comments.nodes.push({ databaseId: 42, url: "u2", body: "Disputed, deliberate: the caller holds the lock.", author: { login: "owner1" } });
     const [got] = await poster(world({ threads: [t] })).threads({ owner: "acme", repo: "payments", number: 12 });
     expect(got).toMatchObject({ ours: true, finding: "f_disputed", comment: 41, replies: [{ id: 42, author: "owner1" }] });
+  });
+
+  it("reconciles an acknowledgement create whose answer was lost: the comment it made is edited, never made again", async () => {
+    // The notice is filed with no comment id recorded yet; GitHub makes the comment but the answer is lost (a timeout, a gateway
+    // that dropped the reply). The retry has no id, so it reads the pull request's comments: the one carrying the acknowledgement
+    // marker (a stable delivery identifier, written by the one sign-in) is that comment, and it is edited in place.
+    const w = world();
+    let creates = 0;
+    const flaky = (async (u: URL | string, i?: RequestInit) => {
+      const path = new URL(String(u)).pathname;
+      if ((i?.method ?? "GET") === "POST" && path.endsWith("/issues/12/comments")) {
+        creates++;
+        await w.impl(u, i); // GitHub does make it
+        throw new Error("github-mcp: 502 the connection dropped after the comment was made");
+      }
+      return w.impl(u, i);
+    }) as typeof fetch;
+    const p = new ReviewPoster(new GitHub(accessFor((u, i) => flaky(u, i)), flaky), accessFor((u, i) => flaky(u, i)));
+    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "failed" as const, reason: "post_refused" as const, run: "cr-1" };
+    await expect(p.execute("notice", n)).rejects.toThrow(/502/);
+    const out = JSON.parse((await p.execute("notice", n)).text);
+    expect(creates).toBe(1);
+    expect(out.ack_id).toBe(7);
+    expect(w.state.ack?.body).toMatch(/was not posted/);
   });
 
   it("a notice is the acknowledgement alone, from fixed words", async () => {

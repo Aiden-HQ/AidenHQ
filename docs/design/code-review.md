@@ -163,7 +163,10 @@ changed; the acknowledgement is left to the newer head), while a run whose PR mo
 - **A post is bound to its head alone**: the kind declares `binds` (`repo`, `ref`, `commit`), so redeploying this module or the
   pull request's base moving never stales a review of a head that still stands. Every other write keeps the full revalidation.
 
-Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
+Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them: each inline
+comment carries its run's and its finding's, which is how a review whose comment list GitHub can't answer is still recorded as
+Aiden's own from its threads. A notice carries the acknowledgement marker, so a create whose answer was lost is found and edited
+rather than made again. Threads whose
 finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
 several combos it shows the latest run to finish (each review names its own combo). An automatic review makes none (its summary
 says the same); a command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or

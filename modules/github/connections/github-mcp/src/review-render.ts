@@ -80,7 +80,7 @@ export const SKIP_REASONS = {
  * executor). Fixed words, so a notice carries no text a model or an author wrote.
  */
 export const REFUSED_REASONS = {
-  post_refused: "its approval was refused or went stale",
+  post_refused: "its post was refused or did not go through",
 } as const;
 /** Every reason a notice may carry: a skip's, or a refusal's. */
 const NOTICE_REASONS = { ...SKIP_REASONS, ...REFUSED_REASONS };
@@ -171,6 +171,9 @@ export const MARK = { review: "aidenhq-review", finding: "aidenhq-finding", run:
 export const FINDING_MARK = /<!-- aidenhq-finding: ([A-Za-z0-9_-]{6,64}) -->/;
 export const RUN_MARK = (run: string) => `<!-- ${MARK.run}: ${run} -->`;
 export const ACK_MARK = `<!-- ${MARK.ack} -->`;
+/** A notice's generated header, exactly as `renderNotice` writes it at the start of a comment: the marker, then the bold title on
+ * the next line. A comment that merely quotes a notice carries the marker further down, so it never matches. */
+export const ACK_HEAD = new RegExp(`^\\s*${ACK_MARK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n\\*\\*Aiden review\\*\\*`);
 const ICON = { important: "\u{1F534}", nit: "\u{1F7E1}", pre_existing: "\u{1F7E3}" } as const;
 const LABEL = { important: "Important", nit: "Nit", pre_existing: "Pre-existing" } as const;
 const ORDER = ["important", "nit", "pre_existing"] as const;
@@ -246,11 +249,12 @@ export function modelName(model: string): string {
   return name || model;
 }
 
-/** One finding as an inline comment: marker, severity and title; the reasoning and a fix brief collapsed. `at`: where the
- * comment sits when that isn't the finding's own line (the nearest diff line, or the file). */
-export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file", scale = 1): string {
+/** One finding as an inline comment: its run's and its finding's markers (the run's is what names the comment again when GitHub
+ * can't list the review's comments), severity and title; the reasoning and a fix brief collapsed. `at`: where the comment sits
+ * when that isn't the finding's own line (the nearest diff line, or the file). `run`: the review's run, whose marker it carries. */
+export function renderFinding(f: Finding, r: Pick<Review, "repo" | "pr" | "head">, at?: number | "file", scale = 1, run?: string): string {
   const where = `${f.path}:${f.line}${f.end_line && f.end_line > f.line ? `-${f.end_line}` : ""}`;
-  const head = [`<!-- ${MARK.finding}: ${f.id} -->`, `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, scale ? 200 : 100)}`, ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : [])];
+  const head = [...(run ? [RUN_MARK(run)] : []), `<!-- ${MARK.finding}: ${f.id} -->`, `${ICON[f.severity]} **${LABEL[f.severity]}:** ${plain(f.title, scale ? 200 : 100)}`, ...(at !== undefined && at !== f.line ? ["", `_At ${code(where)}, outside the diff._`] : [])];
   // A review too large for the AI reviewer's card keeps every finding and its thread, with shorter texts (scale), at the least
   // its title alone.
   if (!scale) return head.join("\n");
@@ -314,7 +318,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
-    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale) };
+    return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale, run) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale, run) };
   });
   const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
   const listed = ranked.filter((f) => f.severity !== "nit" && !threaded(f));

@@ -12,7 +12,7 @@ import type { GitHubAccess } from "./client.js";
 import type { GitHubApp } from "./github-app.js";
 import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, ReplyArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
+  ACK_HEAD, FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, ReplyArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
   renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type ReplyArgs, type StatusArgs,
 } from "./review-render.js";
 
@@ -211,9 +211,10 @@ export class ReviewPoster {
   }
 
   /**
-   * The acknowledgement comment: the one the code-review service recorded from an earlier outcome (`id`, its database, never a
-   * marker read back: every fleet write posts as the same login), edited in place by its own author; else (none yet, deleted, or
-   * the other identity's from before the App) a new one.
+   * The acknowledgement comment: the one the code-review service recorded from an earlier outcome (`id`, its database), edited
+   * in place by its own author; with no id recorded (a create whose answer was lost) the pull request's comments are read for the
+   * one that is a notice of this writer's, so an uncertain create is reconciled with the comment it made instead of a second one
+   * being created; else (none yet, deleted, or the other identity's from before the App) a new one.
    */
   private async ack(ref: Ref, text: string, w: Writer, recorded?: number): Promise<{ id: number; url: string; object: string }> {
     // One at a time per pull request: two notices filed before the first new ack's id is recorded both carry the owner's old one,
@@ -231,6 +232,9 @@ export class ReviewPoster {
 
   private async ackOnce(ref: Ref, text: string, w: Writer, id?: number): Promise<{ id: number; url: string; object: string }> {
     const signed = withFooter(text, AGENT);
+    // With no id recorded, the comment an uncertain create made is found by its notice header (see `ackComment`): one
+    // acknowledgement comment per pull request per writer, edited in place, never a second one.
+    id ??= await this.ackComment(ref, w);
     if (id) {
       // Read it first: a notice whose words are already there writes nothing.
       const have = await this.gh.request<{ html_url: string; body?: string; user?: Author }>("GET", `${api(ref)}/issues/comments/${id}`, {}).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
@@ -241,6 +245,22 @@ export class ReviewPoster {
     }
     const made = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/issues/${ref.number}/comments`, { body: { body: signed } });
     return { id: made.id, url: made.html_url, object: `${objectRef(ref)}/comment/${made.id}` };
+  }
+
+  /** The pull request's acknowledgement comment, for a notice whose comment id isn't known: a create whose answer was lost is
+   * found here rather than made again. Only a comment that *is* a notice counts — the generated header (`ACK_HEAD`: the marker
+   * and the bold title on its own first line, which `renderNotice` always writes) by this writer. The marker alone is not enough:
+   * a person using the same login can quote a notice's raw Markdown in an ordinary comment, and that comment must never be taken
+   * for one code review may edit. Undefined when there is none (or it can't be read). */
+  private async ackComment(ref: Ref, w: Writer): Promise<number | undefined> {
+    let last: number | undefined;
+    for (let page = 1; page <= 10; page++) {
+      const cs = await this.gh.request<{ id: number; body?: string; user?: Author }[]>("GET", `${api(ref)}/issues/${ref.number}/comments`, { query: { per_page: 100, page } }).catch(() => undefined);
+      if (!cs) return last;
+      for (const c of cs) if (isWho(w.who, c.user) && ACK_HEAD.test(c.body ?? "")) last = c.id;
+      if (cs.length < 100) break;
+    }
+    return last;
   }
 
   /** What the card shows and the record binds to, from the args alone (no GitHub call: the plan must come out the same each time). */
