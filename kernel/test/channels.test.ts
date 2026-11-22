@@ -193,6 +193,120 @@ test("the kernel holds a channel to its own decide setting: none mints nothing; 
   assert.equal(k.records.get(rec.id).state, "owner");
 });
 
+test("cp-read: an attachment's bytes come only for one listed on the named task, and never past 25 MB", async (t) => {
+  const { k } = await setup(t, { onControl: async (req) => {
+    if (req.url === "/api/issues/WOR-1/attachments") return { body: [{ id: "att-1" }, { id: "att-big" }] };
+    if (req.url === "/api/attachments/att-1/content") return { body: { hello: "bytes" } };
+    if (req.url === "/api/attachments/att-big/content") return { body: "x".repeat(26 * 1024 * 1024) };
+    if (req.url === "/api/attachments/att-other/content") return { body: "secret" };
+  } });
+  const get = (path, token = LANE) => fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  const ok = await get("/v1/cp/read/attachments/att-1/content?task=WOR-1");
+  assert.deepEqual([ok.status, ok.headers.get("content-type"), await ok.text()], [200, "application/json", '{"hello":"bytes"}']);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content?task=WOR-1", PLAIN)).status, 403);
+  assert.equal((await get("/v1/cp/read/attachments/att-1/content")).status, 400);
+  assert.equal((await get("/v1/cp/read/attachments/att-other/content?task=WOR-1")).status, 404);
+  assert.equal((await get("/v1/cp/read/attachments/att-big/content?task=WOR-1")).status, 413);
+});
+
+test("a wake notice to the asker goes on the task's open parent, its fenced data intact; with no open parent, on the task", async (t) => {
+  const issues = { "WOR-2": { id: "i-2", identifier: "WOR-2", status: "in_progress", parentId: "i-1" }, "i-1": { id: "i-1", identifier: "WOR-1", status: "in_progress" }, "WOR-3": { id: "i-3", identifier: "WOR-3", status: "in_progress", parentId: "i-9" }, "i-9": { id: "i-9", status: "done" } };
+  const { k } = await setup(t, { onControl: async (req) => {
+    const m = /^\/api\/issues\/([^/?]+)$/.exec(req.url);
+    if (req.method === "GET" && m) return issues[m[1]] ? { body: issues[m[1]] } : { status: 404, body: {} };
+    if (req.method === "POST" && /comments$/.test(req.url)) return { body: { id: "c-1" } };
+    return undefined;
+  } });
+  const text = "**CI breaker on WOR-2:** stopped.\n```text\ntest\n\nexpected 2\n```";
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-2", text, to: "asker" }, LANE)).json, { posted: true, to: "parent" });
+  const posted = k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments"));
+  assert.equal(posted.at(-1).url, "/api/issues/i-1/comments");
+  assert.match(JSON.parse(posted.at(-1).body).body, /```text\ntest\n\nexpected 2\n```/);
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-3", text, to: "asker" }, LANE)).json, { posted: true }, "a closed parent hears nothing");
+  assert.equal(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).at(-1).url, "/api/issues/i-3/comments");
+});
+
+test("a wake notice to the asker whose parent can't be read or written is retried, never posted on the task instead", async (t) => {
+  let parentRead: number | null = null, parentWrite: number | null = null;
+  const wrote = [];
+  const { k } = await setup(t, { onControl: async (req, body) => {
+    const m = /^\/api\/issues\/([^/?]+)/.exec(req.url);
+    if (req.method === "GET" && /\/comments$/.test(req.url)) return { body: wrote.filter((c) => c.url === req.url).map((c, i) => ({ id: `c-${i + 1}`, body: JSON.parse(c.body).body })) };
+    if (req.method === "GET" && m) {
+      if (m[1] === "WOR-6") return { body: { id: "i-6", identifier: "WOR-6", status: "in_progress", parentId: "i-5" } };
+      if (m[1] === "i-5") return parentRead ? { status: parentRead, body: {} } : { body: { id: "i-5", identifier: "WOR-5", status: "in_progress" } };
+    }
+    if (req.method === "POST" && /comments$/.test(req.url)) {
+      if (req.url === "/api/issues/i-5/comments" && parentWrite) return { status: parentWrite, body: {} };
+      wrote.push({ url: req.url, body });
+      return { body: { id: `c-${wrote.length}` } };
+    }
+    return undefined;
+  } });
+  const ask = { task: "WOR-6", text: "**CI breaker on WOR-6:** stopped.", to: "asker", id: "k9" };
+  // The parent read failed: the producer retries, and nothing is posted on the child in its place.
+  parentRead = 502;
+  assert.equal((await k.v1("POST", "/v1/wakes", ask, LANE)).status, 502);
+  assert.deepEqual(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")), []);
+  // The parent read now, but the notice on it failed: same answer — the asker would otherwise hear it on the wrong task.
+  parentRead = null; parentWrite = 502;
+  assert.equal((await k.v1("POST", "/v1/wakes", ask, LANE)).status, 502);
+  assert.deepEqual(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).map((c) => c.url), ["/api/issues/i-5/comments"], "tried on the parent, never on the task");
+  // With the parent reachable it goes there, once (the retry reads its own marker back).
+  parentWrite = null;
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", ask, LANE)).json, { posted: true, to: "parent" });
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", ask, LANE)).json, { posted: true, to: "parent" });
+  assert.deepEqual(k.control.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).map((c) => c.url), ["/api/issues/i-5/comments", "/api/issues/i-5/comments"], "one notice: the retry read its own marker back");
+});
+
+
+test("a wake notice filed again with the same id posts once: its marker is read back from the task's thread", async (t) => {
+  const wrote = [];
+  const { k } = await setup(t, { onControl: async (req, body) => {
+    const m = /^\/api\/issues\/([^/?]+)/.exec(req.url);
+    if (req.method === "GET" && /\/comments$/.test(req.url)) return { body: wrote };
+    if (req.method === "GET" && m) return { body: { id: m[1], identifier: m[1], status: "todo" } };
+    if (req.method === "POST" && /comments$/.test(req.url)) { wrote.push({ id: `c-${wrote.length + 1}`, body: JSON.parse(body).body }); return { body: { id: `c-${wrote.length}` } }; }
+    return undefined;
+  } });
+  const key = { task: "WOR-4", text: "**One-off review settled:** 1 posted", id: "abc123" };
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true });
+  assert.equal(wrote.length, 1);
+  assert.match(wrote[0].body, /<!-- aidenhq-wake -->\n<!-- aidenhq-wake-id:abc123@WOR-4 -->$/, "the notice keeps the wake tag whole and carries its producer's key beside it");
+  // A retry whose first answer was lost: the same id reads its own marker back and posts nothing, so the agent wakes once.
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true, duplicate: true });
+  assert.equal(wrote.length, 1, "one comment for the one notice");
+  // Another summary is another id and posts; so does one with no id at all (the kernel's own notices keep their behaviour).
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { ...key, id: "def456", text: "**One-off review settled:** 2 posted" }, LANE)).json, { posted: true });
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", { task: "WOR-4", text: "no key" }, LANE)).json, { posted: true });
+  assert.equal(wrote.length, 3);
+  assert.equal((await k.v1("POST", "/v1/wakes", { ...key, id: "not a key!" }, LANE)).status, 400);
+});
+
+test("a wake notice already posted on a task that has since closed is a duplicate, not a closed; a failed thread read is retried", async (t) => {
+  let closed = false, readFails = false, writes = 0;
+  const { k } = await setup(t, { onControl: async (req, body) => {
+    const m = /^\/api\/issues\/([^/?]+)/.exec(req.url);
+    if (req.method === "GET" && /\/comments$/.test(req.url)) return readFails ? { status: 502, body: {} } : { body: writes ? [{ id: "c-1", body: "<!-- aidenhq-wake -->\n<!-- aidenhq-wake-id:k1@WOR-5 -->" }] : [] };
+    if (req.method === "GET" && m) return { body: { id: m[1], identifier: m[1], status: closed ? "done" : "todo" } };
+    if (req.method === "POST" && /comments$/.test(req.url)) { writes++; return { body: { id: "c-1" } }; }
+    return undefined;
+  } });
+  const key = { task: "WOR-5", text: "**One-off review settled:** 1 posted", id: "k1" };
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true });
+  assert.equal(writes, 1);
+  // Its task closed since, and the same notice comes again: it is already on the task, so it is a duplicate rather than "closed"
+  // (which would send the producer to the owner over a message the task did get).
+  closed = true;
+  assert.deepEqual((await k.v1("POST", "/v1/wakes", key, LANE)).json, { posted: true, duplicate: true });
+  assert.equal(writes, 1);
+  // A thread read that failed can't say either way: the send is retried, never posted blind (which would wake the agent twice).
+  closed = false;
+  readFails = true;
+  assert.equal((await k.v1("POST", "/v1/wakes", { ...key, id: "k2" }, LANE)).status, 502);
+  assert.equal(writes, 1);
+});
+
 test("POST /v1/routines/pause: a module with role kernel.routines pauses a routine as the owner; no other module does", async (t) => {
   const patched = [];
   const { k } = await setup(t, { onControl: async (req, body) => (req.method === "PATCH" ? (patched.push([req.url, body]), { body: { id: "r-1", status: "paused" } }) : undefined) });

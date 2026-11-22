@@ -176,6 +176,11 @@ a status belongs to a commit, not a PR, so a new PR at a head another PR already
 repo admin may still add `aidenhq/review` as a required status in a ruleset (the admin's choice per repo; AidenHQ never changes
 rulesets) knowing that; the merge queue's gate is the verdict.
 
+An infrastructure refusal of a post is a connection problem, not a verdict. github-mcp's review route carries an owner-fixable
+`GitHubNeed` (an org that restricts OAuth apps, an expired sign-in, a missing scope, org SSO) out as the kernel's `needs_owner`
+shape rather than a bare 502, and the executor records that need on the run; the run ends `failed` with its post `refused`, and
+its askers' summary names the one link (the Grant link for `restricted`, Reconnect for `expired`) that unblocks the next post.
+
 ## Mandatory reviewers (the merge gate)
 
 A combo marked `mandatory` gates its repo's merges (the compile lists the gated repos for the github module and the kernel's
@@ -244,6 +249,26 @@ bounded by the Tier 2 rules above and PR text is data, never instructions.
 Every run is `review.started` / `review.ended` facts on its PR (stage `review`, with its engine, model and effort); the Insights
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
 Only the install's spend limit bounds reviews (no per-author or per-repo review limits): past it a run's model calls get 402 from the gateway. A run's cost is its billed `cost_usd` (the kernel's `billed_usd` on `GET /v1/checks/:id` while it runs).
+
+The requester of a one-off review hears its outcome. A one-off ask (`POST /reviews`, or the Reviewer Manager's
+`code_review_run`) records its asker — the agent and task from the kernel's signed caller on the request, never a body field, and
+the board's own calls carry none — and the runs that request was answered with. Once each of those runs has settled the asker
+gets one summary, never one message per run: the PR, how many runs posted, were refused, were held by the install's spend limit or
+failed, and the one action that fixes it (the Grant link for `restricted`, the spend limit's reset, or a re-run). With a task it is
+a wake notice on that task (its agent hears it and can act); an ask with no task (the board's) goes to the owner as one alert, and so
+does an asker whose task has closed since (one alert naming every such asker). Two askers of the same ask share one run set — the
+second ask is the run already waiting or running — and each hears the summary of only the runs its own request queued (a later ask,
+by that asker or another, for another combo or with another focus is another run set and another summary), written only once
+nothing it names is still on its way: a queued or running run, or a post filed again. A run the spend limit holds is the
+exception: it can wait for days, so the summary goes now and names the limit, and a second asker that reuses such a held run is told at once
+too (no later end will ever tell it). Each ask is stored as its own row, keyed by its run set, so two asks of one task keep their own
+summaries rather than the second rewriting the first's runs (its run set is ordered, so the same runs asked for in another combo order are one ask). The summary is stored unsent before it goes and
+retried each tick until the kernel takes it, so a restart never drops it: a send in flight is marked, and a restart clears the
+mark so the summary is tried again instead of being lost. A closed ask's row is marked only once the owner's fallback notice has landed, so
+a crash between the task's answer and that notice tells the owner rather than losing the summary. The same summary is never sent twice, and each notice carries its own
+dedupe key (per asker, or per closed ask's run set, and per summary) so two notices of one batch never collapse into one — two closed asks
+whose runs happened to render the same words are still two alerts. A wake notice passes its key as the wake's own `id`, which the kernel
+reads back from the task's thread, so a summary sent again after a crash between the send and its stamp wakes the agent once.
 
 For comparing reviewers later, the module's SQLite (`data/modules/code-review/reviews/code-review.sqlite`, data version 1)
 keeps plain columns: `runs` has each run's `engine`, `model`, `effort`, `cost_usd` (the kernel's billing of its model token,
