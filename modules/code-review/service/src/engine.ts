@@ -355,9 +355,11 @@ export function createEngine(d: EngineDeps) {
     }
     if (res.state === "failed") {
       // Again, unless it never started or the result was a wrong one; its why is kept for the verdict while it waits.
-      if (r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS) && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
+      // A mandatory run the install's spend limit refused waits queued, its retries as far apart as the last one's, until the limit allows it.
+      const limited = r.mandatory && SPEND_LIMIT.test(res.why);
+      if ((limited || r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS)) && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying again", { run: r.id, attempt: r.attempts, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = ?, bills = ?, why = ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", charge(r, res.billed_usd), JSON.stringify(bills(r, res.billed_usd)), res.why.slice(0, 500), now() + RUN_RETRY * 4 ** (r.attempts - 1), r.id);
+        run("UPDATE runs SET billed_prior = ?, bills = ?, why = ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", charge(r, res.billed_usd), JSON.stringify(bills(r, res.billed_usd)), res.why.slice(0, 500), now() + RUN_RETRY * 4 ** Math.min(r.attempts - 1, MANDATORY_ATTEMPTS - 1), r.id);
         return;
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
