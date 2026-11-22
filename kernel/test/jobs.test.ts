@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs } from "../src/jobs.ts";
+import { createJobs, writeLastMessage } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 
@@ -237,3 +237,14 @@ test("the owner stops a running job from the board; a module or agent token cann
 // Two openers setup at once on one jobs database (a body and its map, a test and the service): the schema is one
 // BEGIN IMMEDIATE behind a busy timeout, each column read inside it, so the second opener sees the first's ALTERs instead of
 // trying them again. Both start while a third connection holds the write lock, so neither can win it before the other.
+
+test("a job's last message is written even when its logs folder was deleted, and a failed write never throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "lastmsg-"));
+  const logPath = join(root, "logs", "WOR-1-1.log");
+  writeLastMessage(logPath, "done", () => {});
+  assert.equal(readFileSync(`${logPath}.last.md`, "utf8"), "done");
+  const logged: string[] = [];
+  writeFileSync(join(root, "file"), "");
+  writeLastMessage(join(root, "file", "logs", "x.log"), "done", (msg) => logged.push(msg));
+  assert.deepEqual(logged, ["couldn't write the job's last message"]);
+});
