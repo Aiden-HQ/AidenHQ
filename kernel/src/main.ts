@@ -439,7 +439,8 @@ const wakes = createWakes({
   knownRepo: (repo) => (repo.startsWith(`${LOCAL_ORG}/`) ? localHost() && localRepoExists(repo) : covers(repo, KNOWN_REPOS, codehostRepos())),
   // No member can take it: an open parent hears it as a wake notice (as asker.tell does), else the owner.
   tellBlocked: async (task, text) => {
-    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text)) === "posted") return;
+    // A parent that can't be read now is not a reason to lose the message: it goes to the owner, as with no parent at all.
+    if (task.parentId && (await wakeNotice(ownerApi, task.parentId, text).catch(() => "retry")) === "posted") return;
     notify.queue({ kind: "alert", text });
   },
 });
@@ -702,7 +703,7 @@ const gw = createGateway({
   notifyOwner: (text) => toOwner("alert")(text),
   tellDelegator: async (task, text) => {
     const issue = await issueOf(task);
-    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`)) === "posted") return;
+    if (issue?.parentId && (await wakeNotice(ownerApi, issue.parentId, `**${issue.identifier ?? task}:** ${text}`).catch(() => "retry")) === "posted") return;
     toOwner("alert")(`${issue?.identifier ?? task}: ${text}`);
   },
   jobLive: (id) => ["admitted", "running"].includes(String(admittedJob(records.db, id)?.state)),

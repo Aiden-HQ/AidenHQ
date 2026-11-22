@@ -12,7 +12,7 @@ export interface Tool {
   inputSchema: object;
   /** Roles of which the caller must hold one. */
   roles?: string[];
-  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string }) => Promise<unknown>;
+  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string; task?: string }) => Promise<unknown>;
 }
 
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
@@ -107,8 +107,8 @@ export function configTools(d: {
   repos: () => unknown;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
-  /** The service's own one-off review (POST /reviews) and its runs (GET /reviews). */
-  oneoff: (body: Dict) => Promise<unknown>;
+  /** The service's own one-off review (POST /reviews), with the calling agent and its task (verified by the service) so its batch's one summary reaches them. */
+  oneoff: (body: Dict, asker: { requester: string; task?: string }) => Promise<unknown>;
   runs: (q: { repo?: string; limit?: number }) => unknown[];
 }): Tool[] {
   return [
@@ -117,7 +117,8 @@ export function configTools(d: {
       roles: ["reviewer-manager"],
       description: "Review one pull request now, posted to it like a watched repo's review, one run and post per combo: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }. Each combo is an engine's offered model or a combo a watched repo already runs; any other model is the owner's to start from the board. Any PR the owner's GitHub sign-in can read; it posts as the owner, signed by AidenHQ.",
       inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" } }, required: ["pr_url"], additionalProperties: false },
-      run: async (a) => { agentCombos(a.combos, d.repos); return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) }); },
+      run: async (a, caller) => { agentCombos(a.combos, d.repos); return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) },
+        { requester: caller.agent, ...(caller.task ? { task: caller.task } : {}) }); },
     },
     {
       name: "code_review_runs",

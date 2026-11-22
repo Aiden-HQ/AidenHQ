@@ -6,6 +6,7 @@
 // - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post (Tier 1, the AI reviewer
 //   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
 //   /internal/review routes.
+import { createHash } from "node:crypto";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
 import type { Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
@@ -17,6 +18,8 @@ export const ACK_KIND = "code-review.notice";
 export const STATUS_KIND = "code-review.status";
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
+/** A dedupe key as a wake's `id`: the kernel takes `[\w.-]{1,80}` and keys the row by it, so a resend is the same wake. */
+const wakeId = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 40);
 
 export function githubSource(base: string, token: () => string, fetcher: typeof fetch = fetch): PrSource {
   const get = async (path: string, q: Record<string, string | number>) => {
@@ -89,10 +92,21 @@ export function reasonOf(why: string | undefined): string | undefined {
  * decides, so it is filed on the PR's task, one per PR for the Reviewer Manager) and `code-review.notice` (Tier 0, fixed words).
  * The target (repo, pr, head) is always the run's, never the review body's.
  */
+/** The need a refused post's outcome named, when github-mcp carried one (needs_owner: restricted, expired, sso, scope). */
+function needOf(text: string): Posted["need"] {
+  const j = (() => { try { return JSON.parse(text); } catch { return undefined; } })() as { error?: unknown; need?: Record<string, unknown> } | undefined;
+  if (!j || j.error !== "needs_owner" || !j.need || typeof j.need !== "object" || typeof j.need.cause !== "string") return undefined;
+  const n = j.need;
+  return { cause: n.cause as string, ...(typeof n.org === "string" ? { org: n.org } : {}), ...(typeof n.url === "string" ? { url: n.url } : {}), ...(typeof n.scope === "string" ? { scope: n.scope } : {}) };
+}
+
 /** A write record's state as a post's: done with an ok outcome is posted; failed, rejected, stale or cancelled is refused. */
 function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: string } | null }): Posted {
   if (r.state === "done") {
-    if (r.outcome && !r.outcome.ok) return { state: "refused", why: `write ${r.id}: ${r.outcome.text.slice(0, 200)}`, retry: true };
+    if (r.outcome && !r.outcome.ok) {
+      const need = needOf(r.outcome.text);
+      return { state: "refused", why: `write ${r.id}: ${r.outcome.text.slice(0, 200)}`, retry: true, ...(need ? { need } : {}) };
+    }
     // The executor's outcome (github-mcp review-post.ts): the review's link, the threads it resolved, the identity it posted as.
     let o: { review?: unknown; resolved?: unknown; identity?: unknown; comments?: unknown; ack_id?: unknown } = {};
     try { o = JSON.parse(r.outcome?.text ?? "{}"); } catch {}
@@ -100,7 +114,10 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
   }
   // Failed or stale (what it acted on changed, e.g. a restart between its approval and its run) may post when filed again; a
   // rejection is the AI reviewer's or the owner's answer, and a cancel is someone's decision.
-  if (["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) return { state: "refused", why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}`, ...(["failed", "stale", "unknown"].includes(r.state) ? { retry: true } : {}) };
+  if (["failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) {
+    const need = r.outcome?.text ? needOf(r.outcome.text) : undefined;
+    return { state: "refused", why: `write ${r.id} ${r.state}${r.outcome?.text ? `: ${r.outcome.text.slice(0, 200)}` : ""}`, ...(["failed", "stale", "unknown"].includes(r.state) ? { retry: true } : {}), ...(need ? { need } : {}) };
+  }
   return { state: "pending" };
 }
 
@@ -146,6 +163,24 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const r = (await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { ...(a.ack ? { ack: a.ack } : {}), repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.review ? { review: a.review } : {}), ...(a.counts ?? {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
+    async notify(n) {
+      // A notice on the requester's own task wakes its agent (role kernel.wake); with no task, the one notify reaches the owner.
+      // Both carry the key: the owner alert dedupes by it, and the wake passes it as the wake notice's `id`, which the kernel reads
+      // back from the task's thread — so a summary sent again after a crash between the send and its `sent` stamp wakes the agent
+      // once, never twice.
+      if (n.task) {
+        // A task that is gone, done or cancelled hears nothing (a comment would reopen it): the summary goes to the owner instead.
+        try {
+          const r = (await kernel.call("POST", "/v1/wakes", { task: n.task, text: n.text, id: wakeId(n.dedupe_key) })) as { posted?: boolean; closed?: boolean };
+          return r.closed ? "closed" : "sent";
+        } catch (e) {
+          if ((e as { status?: number }).status === 404) return "closed";
+          throw e;
+        }
+      }
+      await kernel.call("POST", "/v1/notify", { kind: "alert", text: n.text, dedupe_key: n.dedupe_key });
+      return "sent";
+    },
     async close(repo, n, why, run) {
       // The engine closes only a PR that had a post, so its task exists: filing the same source again finds it after a restart.
       const id = await taskOf(repo, n, run);
@@ -178,13 +213,22 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
       if (!kind) return { ok: false, text: `not a code-review kind: ${rec.kind}` };
       // Aiden's own threads are told apart by their marker and author (github-mcp review-post.ts), never by the kernel's records,
       // which keep only a code host's objects.
-      const v = (await github("execute", { kind, args: rec.args })) as { ok?: boolean; text?: string };
+      let v: { ok?: boolean; text?: string };
+      try {
+        v = (await github("execute", { kind, args: rec.args })) as { ok?: boolean; text?: string };
+      } catch (e) {
+        // github-mcp's review route answers a need only the owner can fix as needs_owner (review-need.ts): its JSON goes to the
+        // kernel's record as the failure's text, so the engine (and the requester's summary) knows the one action that unblocks it.
+        const need = (e as { need?: unknown }).need;
+        if (need && typeof need === "object") return { ok: false, text: JSON.stringify({ error: "needs_owner", need, detail: String((e as Error).message).slice(0, 300) }) };
+        throw e;
+      }
       return { ok: v.ok === true, text: String(v.text ?? "") };
     },
   };
 }
 
-/** github-mcp's internal review routes, as this module. */
+/** github-mcp's internal review routes, as this module. A needs_owner answer rides on the thrown error as `need`. */
 export function githubReview(base: string, token: () => string, fetcher: typeof fetch = fetch) {
   return async (op: "preview" | "execute", body: unknown) => {
     // An execute answers when the post is done, however long github-mcp's write queue and GitHub's rate limits take: it sends a
@@ -194,7 +238,13 @@ export function githubReview(base: string, token: () => string, fetcher: typeof 
     // A body that can't be read (the connection dropped after the headers) rejects here: the outcome is unknown, never an empty one.
     const text = await r.text();
     const j = (() => { try { return JSON.parse(text); } catch { if (r.ok) throw new Error(`github-mcp review ${op}: an unreadable answer (${text.slice(0, 100)})`); return {}; } })();
-    if (!r.ok || (j as { error?: string }).error) throw new Error(`github-mcp review ${op}: ${r.status} ${String((j as { detail?: string }).detail ?? "").slice(0, 300)}`);
+    const e = j as { error?: string; detail?: unknown; need?: { detail?: unknown } };
+    if (!r.ok || e.error) {
+      // A need only the owner can fix rides on the thrown error, so the engine records it on the run and its summary names the fix.
+      const need = e.need && typeof e.need === "object" ? e.need : undefined;
+      const detail = String(e.detail ?? need?.detail ?? "").slice(0, 300);
+      throw Object.assign(new Error(`github-mcp review ${op}: ${r.status} ${detail}`.trim()), need ? { need } : {});
+    }
     return j;
   };
 }

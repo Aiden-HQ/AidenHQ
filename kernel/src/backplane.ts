@@ -676,14 +676,31 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             if (!owner) throw fail(503, "unavailable", "the control plane is off");
             const task = typeof b.task === "string" ? b.task.slice(0, 100) : "", text = neutral(b.text).trim().slice(0, 2000);
             if (!task || !text) throw fail(400, "bad_request", "send {task, text}");
+            // `id`: the producer's own key for this notice. Filed again with the same one, it posts nothing: the comment already
+            // carries that key, so a producer's retry (its answer was lost) never wakes the task's agent twice.
+            const id = typeof b.id === "string" && /^[\w.-]{1,80}$/.test(b.id) ? b.id : undefined;
+            if (b.id !== undefined && !id) throw fail(400, "bad_request", "id is [A-Za-z0-9_.-]{1,80}");
             // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
+            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (b.to === "asker") {
-              const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => (i.status === 200 ? i.json?.parentId : undefined), () => undefined);
-              if (parent && (await wakeNotice(owner, String(parent), text).catch(() => "missing")) === "posted") return log("wake notice", { module: w.module, task: parent }), send(res, 200, { posted: true, to: "parent" });
+              // A read that failed says nothing about the parent: retried (502), never read as "no parent" and posted on the task.
+              const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => {
+                if (i.status === 200) return i.json?.parentId as string | undefined;
+                if (i.status === 404) return undefined;
+                throw fail(502, "upstream", `the control plane answered ${i.status} reading the task`);
+              }, (e: Error) => { throw fail(502, "upstream", e.message); });
+              if (parent) {
+                // The parent is only fallen through from when it cannot hear a notice: gone, or closed since. A send that failed (a
+                // 502, a thread that could not be read) is the producer's to retry, never the task's to take in the parent's place —
+                // the asker would hear it on the wrong task, and the retry would find nothing to do.
+                const p = await said(String(parent));
+                if (p === "posted" || p === "duplicate") return log("wake notice", { module: w.module, task: parent }), send(res, 200, { posted: true, to: "parent" });
+              }
             }
-            const r = await wakeNotice(owner, task, text).catch((e: Error) => { throw fail(502, "upstream", e.message); });
+            const r = await said(task);
             if (r === "missing") throw fail(404, "not_found", `no task ${task}`);
             if (r === "closed") return send(res, 200, { posted: false, closed: true });
+            if (r === "duplicate") return send(res, 200, { posted: true, duplicate: true });
             log("wake notice", { module: w.module, task });
             return send(res, 200, { posted: true });
           }

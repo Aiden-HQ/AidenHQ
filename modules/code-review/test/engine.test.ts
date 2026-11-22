@@ -17,8 +17,10 @@ function world(settings = {}) {
   const started = [], posted = [], acks = [], facts = [], statuses = [];
   const results = new Map();
   const outcomes = new Map();
-  const rewritten = new Set(), closed = [], fails = [];
+  const rewritten = new Set(), closed = [], fails = [], notes = [];
   const posts = { pending: false };
+  // A post this fake refuses directly (the executor's answer), by the run it is for: { state: "refused", why, need }.
+  const refusals = new Map();
   const threads = new Map(), commits = new Map(), patches = new Map(), bases = new Map();
   const { db: _db, ...rest } = settings;
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
@@ -46,7 +48,9 @@ function world(settings = {}) {
       result: async (c) => results.get(c) ?? { state: "running" },
     },
     // A post lands at once unless the test makes it wait (`posts.pending`): only a posted finding gates.
-    poster: { post: async (p) => (posted.push(p), { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }) },
+    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
+      notify: async (n) => { if (perms.notifyDown) throw new Error("kernel 502"); notes.push(n); return n.task && perms.taskClosed ? "closed" : "sent"; },
+    },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
     emit: (f) => facts.push(f),
   });
@@ -56,7 +60,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
+  return { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, acks, facts, notes, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
@@ -275,6 +279,492 @@ test("a run that can't start because GitHub or the kernel can't answer now waits
   w.fails.push(404);
   await w.tick();
   assert.match(w.engine.run(b.id).run.why, /^couldn't start: github-mcp merge-base: 404/);
+});
+
+test("a one-off batch sends its requester one summary once every run settles: posted, refused (with the Grant link), held by the spend limit and failed", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const runs = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX, CLAUDE, { ...CODEX, effort: "low" }, { ...CLAUDE, effort: "low" }] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); w.posts.pending = true; await w.tick();
+  assert.equal(w.started.length, 4);
+
+  // Run 0 posts; run 1's post is refused by the executor for the org's restriction, carrying the Grant link; run 2 fails; run 3
+  // the install's spend limit holds (it waits for the limit, and the summary still names it).
+  const grant = "https://github.com/settings/connections/applications/cid";
+  w.finish(0, {}, 0.2);
+  w.finish(1, {}, 0.2);
+  w.refusals.set(runs[1].id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: grant } });
+  // A result for another head fails its run outright (never retried), so the batch settles.
+  w.finish(2, { head: sha("9") }, 0.2);
+  w.results.set("c-4", { state: "failed", why: "the gateway refused: spend limit reached for this install" });
+  await w.tick();
+  assert.equal(w.notes.length, 0, "nothing is sent while the posted run's write is still pending");
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  w.posts.pending = false;
+  await w.tick();
+
+  assert.equal(w.notes.length, 1, "one summary for the batch, not one per run");
+  const [note] = w.notes;
+  assert.equal(note.task, "WOR-42");
+  assert.match(note.dedupe_key, new RegExp(`^code-review:ask:${runs[0].batch}:WOR-42:[0-9a-f]{16}$`), "the key follows the asker and the summary it is for");
+  assert.match(note.text, /One-off review settled:\*\* acme\/payments#7 at 7{7}: 4 runs/);
+  assert.match(note.text, /1 posted/);
+  assert.match(note.text, /1 refused/);
+  assert.match(note.text, /1 skipped for the spend limit/);
+  assert.match(note.text, /1 failed/);
+  assert.match(note.text, /Grant link: https:\/\/github\.com\/settings\/connections\/applications\/cid/);
+  assert.match(note.text, /press Grant next to acme/);
+
+  // It is sent once: no second look sends it again.
+  w.later(60_000); await w.tick();
+  assert.equal(w.notes.length, 1);
+});
+
+test("the same ask by two askers is one run set, and each hears the batch's one summary; a body's requester and task are ignored", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  // The body's own requester/task are not an identity: only the service's verified second argument is.
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX], requester: "someone else", task: "WOR-1" } as never);
+  const [b] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  assert.equal(a.batch, b.batch, "the second ask is the run already waiting");
+  w.later(1000); await w.tick();
+  assert.equal(w.started.length, 1);
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  await w.tick();
+  await w.tick();
+  assert.deepEqual(w.notes.map((n) => n.task), [undefined, "WOR-42"], "the board's ask (no identity) and the agent's, each one summary");
+  assert.match(w.notes[0].text, /1 posted/);
+  assert.equal(w.notes[1].text, w.notes[0].text);
+  assert.deepEqual(w.db.prepare("SELECT task, sent = pending AS done FROM askers WHERE batch = ? ORDER BY rowid").all(a.batch).map((r) => [r.task, r.done]), [["", 1], ["WOR-42", 1]]);
+  w.later(60_000); await w.tick();
+  assert.equal(w.notes.length, 2, "each asker hears it once, never twice");
+});
+
+test("a one-off with a focus is its own run: it never reuses another ask's queued run and drops that ask's focus", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  // Two asks for the same combo before either starts: one with a focus, one without.
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  const [b] = await w.engine.oneoff({ pr_url: url, combos: [CODEX], focus: "the retry path" }, { requester: "Reviewer Manager", task: "WOR-43" });
+  assert.notEqual(a.id, b.id, "a different question is a different run");
+  w.later(1000); await w.tick();
+  assert.deepEqual(w.started.map((s) => s.focus), [null, "the retry path"]);
+});
+
+test("the same asker asking again hears each ask's own summary, never one of both", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const me = { requester: "Reviewer Manager", task: "WOR-42" };
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, me);
+  w.later(1000); await w.tick();
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  await w.tick();
+  await w.tick();
+  assert.equal(w.notes.length, 1);
+  assert.match(w.notes[0].text, /at 7{7}: 1 run\b/);
+  // A second ask for another combo, after the first settled: it is a request of its own, so its summary is of its run alone.
+  const [b] = await w.engine.oneoff({ pr_url: url, combos: [CLAUDE] }, me);
+  assert.notEqual(a.batch, b.batch);
+  w.later(1000); await w.tick();
+  assert.equal(w.started.length, 2);
+  w.finish(1, {}, 0.3);
+  w.outcomes.set("k-2", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-2" });
+  await w.tick();
+  await w.tick();
+  assert.equal(w.notes.length, 2);
+  assert.match(w.notes[1].text, /at 7{7}: 1 run\b/);
+  assert.match(w.notes[1].text, /1 posted/);
+});
+
+test("one task's two asks of one batch keep their own summaries: the second widens the first's run set, never rewrites it", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const me = { requester: "Reviewer Manager", task: "WOR-42" };
+  // The first ask queues CODEX; the second, before it ran, reuses that run and adds CLAUDE — the same batch, another run set.
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, me);
+  const [b1, b2] = await w.engine.oneoff({ pr_url: url, combos: [CODEX, CLAUDE] }, me);
+  assert.equal(a.id, b1.id, "the second ask's CODEX is the run already queued");
+  assert.notEqual(b1.id, b2.id);
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND task = 'WOR-42'").get(a.batch).n, 2, "both asks sit in the batch their first run is in");
+  w.later(1000); await w.tick();
+  assert.equal(w.started.length, 2);
+  w.finish(0, {}, 0.2);
+  w.finish(1, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: `${url}#pullrequestreview-1` });
+  w.outcomes.set("k-2", { state: "posted", url: `${url}#pullrequestreview-2` });
+  await w.tick({ github: false });
+  await w.tick({ github: false });
+  const told = w.notes.filter((n) => n.task === "WOR-42");
+  assert.equal(told.length, 2, "each ask hears its own summary");
+  assert.match(told[0].text, /: 1 run, 1 posted/, "the first ask is of its own run alone");
+  assert.match(told[1].text, /: 2 runs, 2 posted/, "the second ask is of both");
+  assert.notEqual(told[0].dedupe_key, told[1].dedupe_key);
+});
+
+test("a second asker of a run the spend limit already holds hears its summary now, not never", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const [r] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, { requester: "Engineer", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  // The gateway refuses it: the limit holds the run, so its own end never comes, and the first asker hears the limit at once.
+  w.results.set("c-1", { state: "failed", why: "the gateway refused: spend limit reached for this install" });
+  await w.tick();
+  assert.deepEqual(w.notes.map((n) => n.task), ["WOR-42"]);
+  // A second agent asks for the same run, which is still held: it reuses the held run, and no run end will ever tell it.
+  const [same] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-43" });
+  assert.equal(same.id, r.id, "the second ask is the run already held");
+  await w.tick({ github: false });
+  assert.deepEqual(w.notes.map((n) => n.task), ["WOR-42", "WOR-43"], "the second asker is told, though its run never ends again");
+  assert.match(w.notes[1].text, /skipped for the spend limit/);
+  assert.notEqual(w.notes[0].dedupe_key, w.notes[1].dedupe_key);
+});
+
+test("a summary waits for a post filed again: a retry that lands is told as posted, not as unfinished", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  // The post is refused by a restart between its approval and its run: filed once more, and the summary waits for that.
+  w.refusals.set(r.id, { state: "refused", why: "the write went stale", retry: true });
+  w.finish(0, {}, 0.2);
+  w.later(1000); await w.tick();
+  assert.equal(w.engine.run(r.id).run.posted, "retry");
+  assert.equal(w.notes.length, 0, "nothing is said while its post is on its way");
+  // The retry lands: the one summary is of the finished post.
+  w.refusals.delete(r.id);
+  w.posts.pending = true;
+  w.outcomes.set("k-2", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-2" });
+  w.later(120_000); await w.tick();
+  assert.equal(w.engine.run(r.id).run.posted, "pending", "filed again: its new write is on its way");
+  assert.equal(w.notes.length, 0);
+  w.posts.pending = false;
+  await w.tick();
+  assert.equal(w.engine.run(r.id).run.posted, "posted");
+  assert.equal(w.notes.length, 1);
+  assert.match(w.notes[0].text, /1 posted/);
+  assert.doesNotMatch(w.notes[0].text, /refused|failed/);
+});
+
+test("each request's summary is of the runs it asked for: a second ask for another combo is told its own run", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  // Another combo is its own run set: a summary of it never counts the first ask's run.
+  const [b] = await w.engine.oneoff({ pr_url: url, combos: [CLAUDE] }, { requester: "Reviewer Manager", task: "WOR-43" });
+  assert.notEqual(a.batch, b.batch);
+  w.later(1000); await w.tick();
+  assert.equal(w.started.length, 2);
+  // The second ask's run finishes first: its summary names one run, and only its task hears it.
+  w.finish(1, {}, 0.3);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  w.outcomes.set("k-2", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-2" });
+  await w.tick();
+  await w.tick();
+  assert.deepEqual(w.notes.map((n) => [n.task, /at 7{7}: 1 run\b/.test(n.text)]), [["WOR-43", true]]);
+  w.finish(0, {}, 0.2);
+  await w.tick();
+  await w.tick();
+  assert.deepEqual(w.notes.map((n) => n.task), ["WOR-43", "WOR-42"]);
+  assert.match(w.notes[1].text, /at 7{7}: 1 run\b/);
+});
+
+test("a summary is not sent twice by two ticks or a repeated deliver", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  await w.tick();
+  await w.tick();
+  await w.tick();
+  assert.equal(w.notes.length, 1, "one notice per settlement");
+});
+
+test("a refusal with no owner-fixable need says to re-run, and the batch is summarised only once", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  // The reviewer turned the write down: refused with no typed need.
+  w.refusals.set(r.id, { state: "refused", why: "the review names a file the diff doesn't" });
+  w.finish(0, {}, 0.2);
+  await w.tick();
+  assert.equal(w.notes.length, 1);
+  assert.match(w.notes[0].text, /1 refused/);
+  assert.match(w.notes[0].text, /To fix it: re-run it with code_review_run/);
+  // The same settled batch never sends a second summary.
+  w.later(60_000); await w.tick();
+  assert.equal(w.notes.length, 1);
+});
+
+test("a one-off batch whose run the install's spend limit holds is told now, with the limit as its one fix; a board ask names no task", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CODEX] }] });
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  // No requester and no task: the owner's board asked. The summary still goes, without a task (one alert to the owner).
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] });
+  w.later(1000); await w.tick();
+  assert.equal(w.started.length, 1);
+  // The gateway refused it: the install's spend limit. The run waits for the limit; the asker hears it now, not never.
+  w.results.set("c-1", { state: "failed", why: "the gateway refused: spend limit reached for this install" });
+  await w.tick();
+  assert.match(w.engine.run(r.id).run.why, /spend limit/);
+  assert.equal(w.notes.length, 1, "a run held by the limit does not hold its batch's summary forever");
+  assert.equal(w.notes[0].task, undefined);
+  assert.match(w.notes[0].text, /skipped for the spend limit/);
+  assert.match(w.notes[0].text, /spend_day_usd or spend_month_usd/);
+});
+
+test("a summary the kernel can't take now isn't lost: a later tick sends it once, and never again", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  w.perms.notifyDown = true;
+  await w.tick(); // the post is filed, still pending
+  await w.tick(); // the post settles, but the kernel is down for the summary
+  assert.equal(w.notes.length, 0);
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n, 0, "nothing is marked sent");
+  w.perms.notifyDown = false;
+  w.later(60_000); await w.tick();
+  assert.equal(w.notes.length, 1);
+  assert.equal(w.notes[0].task, "WOR-42");
+  assert.match(w.notes[0].text, /1 posted/);
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n, 1);
+  w.later(60_000); await w.tick();
+  assert.equal(w.notes.length, 1, "a sent summary is never repeated");
+});
+
+test("a send a restart cut off is tried again: the claim is cleared at start, so the summary is never lost", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  await w.tick();
+  await w.tick();
+  assert.equal(w.notes.length, 1);
+  // A restart between the claim and the send leaves the claim set and nothing sent: a fresh engine over the same database
+  // clears it and sends the summary.
+  w.db.prepare("UPDATE askers SET claim = pending, sent = NULL WHERE batch = ?").run(r.batch);
+  const fresh = createEngine({
+    db: w.db, config: () => readConfig(JSON.stringify({ repos: [{ repo: REPO }] })), now: () => Date.parse("2026-11-19T10:05:00Z"),
+    source: {} as never, runner: {} as never,
+    poster: { post: async () => ({ state: "pending" }), ack: async () => undefined, outcome: async () => ({ state: "pending" }), close: async () => undefined,
+      status: async () => ({ state: "pending" }), notify: async (n) => (w.notes.push(n), "sent") },
+    agents: async () => [], emit: () => {},
+  } as never);
+  await fresh.tick({ github: false });
+  assert.equal(w.notes.length, 2, "the summary claimed by the crashed tick is sent again");
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND claim IS NOT NULL").get(r.batch).n, 0);
+});
+
+test("a summary for a requester's task that is already closed goes to the owner instead", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  w.perms.taskClosed = true;
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  await w.tick();
+  await w.tick();
+  assert.deepEqual(w.notes.map((n) => n.task), ["WOR-42", undefined], "the closed task first, then the owner");
+  assert.ok(w.notes[1].text.startsWith(w.notes[0].text));
+  assert.match(w.notes[1].text, /\(asked by Reviewer Manager\)/);
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n, 1);
+});
+
+test("a closed asker's row is still unsent while the owner's notice is in flight, so a crash there loses nothing", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  // The post settles and the summary is written, but no notice can go yet: the row is unsent, waiting.
+  w.perms.notifyDown = true;
+  await w.tick();
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND text IS NOT NULL AND sent IS NULL").get(r.batch).n, 1);
+  w.perms.notifyDown = false;
+  // The task answers "closed", then the owner's notice is sent. Read the row exactly then: marked sent before that send, a crash in
+  // the send would leave it looking told and the owner would never hear. It is marked only after.
+  const state = [];
+  const fresh = (notify) => createEngine({
+    db: w.db, config: () => readConfig(JSON.stringify({ repos: [{ repo: REPO }] })), now: () => Date.parse("2026-11-19T10:05:00Z"),
+    source: { open: async () => [], get: async () => undefined, comments: async () => ({ comments: [], cursor: new Date().toISOString() }), permission: async () => "write",
+      compare: async (_r, _b, head) => ({ merge_base: sha("m"), status: "ahead", head }), patchId: async (_r, _b, head) => ({ id: head }), mergeBase: async () => ({ merge_base: sha("m") }),
+      repos: async () => [], threads: async () => [], postable: async () => null } as never,
+    runner: { start: async () => ({ check: "c-x" }), result: async () => ({ state: "running" }) },
+    poster: { post: async () => ({ state: "pending" }), ack: async () => undefined, outcome: async () => ({ state: "pending" }), close: async () => undefined,
+      status: async () => ({ state: "pending" }), notify },
+    agents: async () => [], emit: () => {},
+  } as never);
+  await fresh(async (n) => {
+    if (n.task) return "closed";
+    // In flight: the ask must not already read as sent.
+    state.push(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n);
+    return "sent";
+  }).tick({ github: false });
+  assert.deepEqual(state, [0], "unsent while the owner's notice is being sent");
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n, 1, "marked once it landed");
+  // A restart finds nothing left to send: the owner heard it once.
+  const after = [];
+  await fresh(async (n) => (after.push(n), "sent")).tick({ github: false });
+  assert.deepEqual(after, [], "nothing is sent again after the restart");
+});
+
+test("the same run set asked for in another combo order is one ask, not two", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const me = { requester: "Reviewer Manager", task: "WOR-42" };
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX, CLAUDE] }, me);
+  // The same two runs, asked for in the other order: each is already queued, so this ask is answered with the same set.
+  const [b] = await w.engine.oneoff({ pr_url: url, combos: [CLAUDE, CODEX] }, me);
+  assert.deepEqual([a.batch, b.batch], [a.batch, a.batch], "both asks are the batch already waiting");
+  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND task = 'WOR-42'").get(a.batch).n, 1, "one ask, told once");
+  w.later(1000); await w.tick();
+  w.finish(0, {}, 0.2);
+  w.finish(1, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: `${url}#pullrequestreview-1` });
+  w.outcomes.set("k-2", { state: "posted", url: `${url}#pullrequestreview-2` });
+  await w.tick({ github: false });
+  await w.tick({ github: false });
+  const told = w.notes.filter((n) => n.task === "WOR-42");
+  assert.equal(told.length, 1, "one summary, never a second for the same runs in another order");
+  assert.match(told[0].text, /: 2 runs, 2 posted/);
+});
+
+test("two owner notices of one batch carry different keys, so the second isn't dropped", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  // One batch, two askers: the board's ask (no task), and an agent's whose task closes before the summary goes.
+  const [a] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] });
+  const [b] = await w.engine.oneoff({ pr_url: url, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  assert.equal(a.batch, b.batch);
+  w.later(1000); await w.tick();
+  w.perms.taskClosed = true;
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  await w.tick();
+  await w.tick();
+  const owner = w.notes.filter((n) => !n.task);
+  assert.equal(owner.length, 2, "the board's ask and the closed task's, each to the owner");
+  assert.notEqual(owner[0].dedupe_key, owner[1].dedupe_key, "one key per notice, so both reach the owner");
+  assert.match(owner[1].text, /\(asked by Reviewer Manager\)/);
+});
+
+test("two closed asks of one batch whose text reads alike still reach the owner twice: the key is the run set", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const [r1, r2] = await w.engine.oneoff({ pr_url: url, combos: [CODEX, CLAUDE] }, { requester: "Engineer", task: "WOR-42" });
+  await w.engine.oneoff({ pr_url: url, combos: [CODEX, CLAUDE] }, { requester: "Reviewer Manager", task: "WOR-43" });
+  // Each asker's own request was answered with one of the batch's runs (a split that a run reused by a later ask can leave):
+  // both render the same words — one run, one posted — while being different runs.
+  w.db.prepare("UPDATE askers SET runs = ? WHERE batch = ? AND task = 'WOR-42'").run(JSON.stringify([r1.id]), r1.batch);
+  w.db.prepare("UPDATE askers SET runs = ? WHERE batch = ? AND task = 'WOR-43'").run(JSON.stringify([r2.id]), r1.batch);
+  w.later(1000); await w.tick();
+  w.perms.taskClosed = true;
+  w.finish(0, {}, 0.2);
+  w.finish(1, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: `${url}#pullrequestreview-1` });
+  w.outcomes.set("k-2", { state: "posted", url: `${url}#pullrequestreview-2` });
+  await w.tick({ github: false });
+  await w.tick({ github: false });
+  const owner = w.notes.filter((n) => !n.task);
+  assert.equal(owner.length, 2, "both closed asks reach the owner, though their text is the same");
+  assert.notEqual(owner[0].dedupe_key, owner[1].dedupe_key, "the key follows the run set, not the rendered text");
+  assert.match(owner.map((n) => n.text).join("\n"), /asked by Engineer/);
+  assert.match(owner.map((n) => n.text).join("\n"), /asked by Reviewer Manager/);
+});
+
+test("a retry that lands clears the need an earlier attempt left, so the summary never names a stale Grant link", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+  w.later(1000); await w.tick();
+  // The first post's write is on its way; its outcome is a refusal for the org's restriction, filed again because the write went stale.
+  w.posts.pending = true;
+  w.finish(0, {}, 0.2); await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "needs_owner restricted", retry: true, need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
+  await w.tick();
+  const need = () => w.db.prepare("SELECT need FROM runs WHERE id = ?").get(r.id).need;
+  assert.equal(w.engine.run(r.id).run.posted, "retry");
+  // The refused attempt's need is on the run now: that is what a stale one would be carried from.
+  assert.match(String(need() ?? ""), /restricted/);
+  // The retry lands, its own outcome carrying no need: the attempt before must not leave its Grant link on the run.
+  w.outcomes.set("k-2", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-2" });
+  w.posts.pending = false;
+  w.later(120_000); await w.tick();
+  await w.tick();
+  assert.equal(need(), null, "the settled outcome's need replaces the earlier attempt's");
+  assert.equal(w.notes.length, 1);
+  assert.match(w.notes[0].text, /1 posted/);
+  assert.doesNotMatch(w.notes[0].text, /Grant link/, "the summary names no Grant link for a post that landed");
+  assert.doesNotMatch(w.notes[0].text, /To fix it/);
+});
+
+test("two closed askers of one run set whose tasks were already closed are two owner alerts, one naming each", async () => {
+  const w = world();
+  await w.tick();
+  w.pr(7, sha("7"), { open: false, merged: true });
+  const url = `https://github.com/${REPO}/pull/7`;
+  const [r1, r2] = await w.engine.oneoff({ pr_url: url, combos: [CODEX, CLAUDE] }, { requester: "Engineer", task: "WOR-42" });
+  // The same run set, asked for by a second agent: the batch already waiting, so it is the same set but another asker.
+  await w.engine.oneoff({ pr_url: url, combos: [CODEX, CLAUDE] }, { requester: "Reviewer Manager", task: "WOR-43" });
+  w.db.prepare("UPDATE askers SET runs = ? WHERE batch = ? AND task = 'WOR-42'").run(JSON.stringify([r1.id]), r1.batch);
+  w.db.prepare("UPDATE askers SET runs = ? WHERE batch = ? AND task = 'WOR-43'").run(JSON.stringify([r1.id]), r1.batch);
+  w.later(1000); await w.tick();
+  w.perms.taskClosed = true;
+  w.finish(0, {}, 0.2);
+  w.outcomes.set("k-1", { state: "posted", url: `${url}#pullrequestreview-1` });
+  await w.tick({ github: false });
+  await w.tick({ github: false });
+  const owner = w.notes.filter((n) => !n.task);
+  assert.equal(owner.length, 1, "one run set, one owner alert naming both closed askers");
+  assert.match(owner[0].text, /asked by Engineer, Reviewer Manager/);
+  // A third asker joining the same runs later is not dropped for being the same set: its own key, its own alert.
+  const pending = JSON.stringify({ [r1.id]: "done|posted||" });
+  w.db.prepare("INSERT OR REPLACE INTO askers (batch, task, setkey, requester, runs, text, pending) VALUES (?, 'WOR-44', 'later', 'Checker', ?, ?, ?)")
+    .run(r1.batch, JSON.stringify([r1.id]), "**One-off review settled:** acme/payments#7 at 7777777: 1 run, 1 posted.", pending);
+  await w.tick({ github: false });
+  const more = w.notes.filter((n) => !n.task);
+  assert.equal(more.length, 2, "the later asker's alert is its own");
+  assert.notEqual(more[0].dedupe_key, more[1].dedupe_key, "its key covers the askers it names, not just the run set");
+  assert.match(more[1].text, /asked by Checker/);
 });
 
 test("a run whose check job has no computer yet shows as waiting, not running", async () => {
