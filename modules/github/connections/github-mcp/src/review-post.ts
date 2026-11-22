@@ -212,7 +212,7 @@ export class ReviewPoster {
       facts: {
         target: `${r.repo}#${r.pr} @ ${r.head.slice(0, 7)}`,
         sentence: `Post Aiden's review of ${r.repo}#${r.pr} (${comboText(r)}: ${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing).`,
-        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per finding, on its line, the nearest diff line or its file) and the pull request's acknowledgement comment, as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
+        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per important finding, on its line, the nearest diff line or its file; nits only as lines of the summary) and the pull request's acknowledgement comment, as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
         details,
       },
       targets: { [`${r.repo}#${r.pr}`]: { repo: r.repo, ref: `pull/${r.pr}`, commit: r.head, base_sha: r.base } },
