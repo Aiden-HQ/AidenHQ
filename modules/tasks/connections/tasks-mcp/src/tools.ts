@@ -127,7 +127,7 @@ async function kernelWait(body: Json) {
 async function stateRows(ids: string[], ms = 20_000) {
   const rows = new Map<string, Json>();
   for (let n = 0; n < ids.length; n += 200) {
-    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(Math.max(1_000, ms)) });
+    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(Math.max(1_000, Math.min(20_000, ms))) });
     const text = await res.text();
     if (!res.ok) throw new Error(`the kernel refused the task state read (${res.status}): ${text.slice(0, 300)}`);
     for (const r of JSON.parse(text).tasks) rows.set(r.task, r);
