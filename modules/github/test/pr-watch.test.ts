@@ -249,7 +249,8 @@ test("a green agent PR has its merge filed by the kernel for its task, once per 
   notePrTask(two.cacheDir, "https://github.com/acme/app/pull/8", { task: "ACME-7", branch: "b8" });
   two.set([two.agentPr(7), pr(8, { author: { __typename: "Bot", login: "aidenhq" }, checks: "PENDING" })]);
   await two.watch.tick();
-  assert.deepEqual([two.merges.length, two.woke.length], [0, 1], "a task with two open PRs merges them in its own order: woken");
+  assert.ok(two.gh.includes("PATCH /repos/acme/app/pulls/7") && two.gh.includes("DELETE /repos/acme/app/git/refs/heads/b7"), "the task's older PR is closed once it publishes a newer one");
+  assert.deepEqual([two.merges.length, two.woke.length], [0, 0], "the superseded PR files and wakes nothing");
 });
 
 test("a wake the kernel doesn't take (a restart) is sent again on the next tick", async (t) => {
