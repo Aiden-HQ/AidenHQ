@@ -17,7 +17,8 @@ const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", 
 const boxBundle = (ws, branch) => {
   const sha = sh(ws, "rev-parse", `refs/heads/${branch}`);
   mkdirSync(join(dirname(ws), ".aidenhq", "bundles"), { recursive: true });
-  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`);
+  sh(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha);
+  sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`);
   return sha;
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });

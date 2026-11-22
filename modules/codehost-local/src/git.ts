@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { copyBoxBundle } from "../../../kernel/sdk/src/box-bundle.ts";
+import { copyBoxBundle, publishRef } from "../../../kernel/sdk/src/box-bundle.ts";
 
 const run = promisify(execFile);
 export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.ext.allow=never", "-c", "safe.bareRepository=explicit"];
@@ -47,7 +47,7 @@ export async function ingest(tasksDir: string, scratchDir: string, bare: string,
   try {
     const copy = copyBoxBundle(tasksDir, scratch, ident, b.sha, `${b.repo} \`${b.branch}\``);
     await git(["--git-dir", bare, "bundle", "verify", "--quiet", copy]).catch(() => { throw fail(400, `the bundle of ${b.repo} \`${b.branch}\` isn't a valid git bundle for it`); });
-    await git(["--git-dir", bare, "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", copy, `+refs/heads/${b.branch}:${`refs/ws/${ident}/${b.branch}`}`]);
+    await git(["--git-dir", bare, "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", copy, `+${publishRef(b.sha)}:refs/ws/${ident}/${b.branch}`]);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
