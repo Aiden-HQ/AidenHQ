@@ -117,6 +117,12 @@ test("a need hit again more than 10 minutes after it began, with no success betw
   assert.equal(w.queued[0].kind, "digest");
 });
 
+test("a partial need is no blip: it reaches the digest on its first hit", async () => {
+  const w = world({});
+  await w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" });
+  assert.equal(w.queued.length, 1);
+});
+
 test("a routine's run and its delegated child are background", async () => {
   // r1 is a routine run (no chat marker, no owner comment); c1 was created by a job on r1 (provenance, no parent link).
   const w = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync", createdByUserId: "u1" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail" } });
@@ -286,8 +292,6 @@ test("a module's own restricted need is recorded for its org and goes to the dig
 
 test("a digest notice and its reported_day marker commit together: a failed notice leaves the need reportable", async () => {
   const w = world({}); // no task chain: background work
-  await w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" });
-  w.tick(LASTED);
   w.state.failQueue = true;
   await assert.rejects(w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" }), /owner_notify is locked/);
   assert.equal((w.db.prepare("SELECT reported_day FROM connection_state").get() as { reported_day: string | null }).reported_day, null, "the marker rolled back with the notice");

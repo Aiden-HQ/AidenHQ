@@ -34,8 +34,9 @@ const FULL = new Set<string>(["not_connected", "expired"]);
 const DAY = 864e5;
 /** A full cause waits until Connect wakes it (idle.ts takes at most 7 days ahead). */
 const FULL_WAIT = 7 * DAY - 60_000;
-/** A background need reaches the digest only when hit again this long after it began, with no success in between (a success deletes the row). */
+/** A background full need (a restart's blip) reaches the digest only when hit again this long after it began, with no success in between (a success deletes the row). A partial cause is no blip: it reports at once. */
 const LASTING = 10 * 60_000;
+const LASTED = "(cause NOT IN ('not_connected', 'expired') OR since <= ?)";
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
 const NAME = /^[\w.:/@-]{1,100}$/;
 const day = (ms: number) => iso(ms).slice(0, 10);
@@ -141,7 +142,7 @@ export function createConnectionState(o: {
       const t = now(), today = day(t), full = FULL.has(n.cause), label = o.label(module);
       q("INSERT INTO connection_state (key, module, cause, account, detail, url, since) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET detail = excluded.detail, url = excluded.url").run(key, connection, n.cause, n.account ?? "", n.detail, n.url ?? null, t);
       const row = q("SELECT * FROM connection_state WHERE key = ?").get(key) as Row;
-      const background = `${label} isn't connected (${agentWords[n.cause]}): it is in the owner's digest. Skip this source for now and carry on.`;
+      const background = `${label} isn't connected (${agentWords[n.cause]}): the owner is told if it lasts. Skip this source for now and carry on.`;
       let c: Awaited<ReturnType<typeof chain>>;
       try {
         c = who.kind === "run" && who.task && who.agent ? await chain(who.task) : undefined;
@@ -153,7 +154,7 @@ export function createConnectionState(o: {
         // Background: one digest line a day per need, whoever hits it, once the need has lasted. The marker and the notice commit together, so a notice
         // `queue` failed to write leaves the need reportable on the next attempt instead of being marked reported without it.
         inTx(db, "connection_digest", () => {
-          if (q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND since <= ? AND (reported_day IS NULL OR reported_day != ?)").run(today, key, t - LASTING, today).changes)
+          if (q(`UPDATE connection_state SET reported_day = ? WHERE key = ? AND ${LASTED} AND (reported_day IS NULL OR reported_day != ?)`).run(today, key, t - LASTING, today).changes)
             o.queue({ kind: "digest", batch: true, text: `${label} isn't connected (${ownerWords(n)}): ${link(module, row.url)}`, dedupe_key: `connect:${key}` });
         });
         log("connection need", { connection, cause: n.cause, to: "digest" });
@@ -243,7 +244,7 @@ export function createConnectionState(o: {
     tick(): void {
       const t = now(), today = day(t);
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
-      const rows = q("SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))").all(today) as Row[];
+      const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND ${LASTED} AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))`).all(today, t - LASTING) as Row[];
       for (const r of rows) {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
