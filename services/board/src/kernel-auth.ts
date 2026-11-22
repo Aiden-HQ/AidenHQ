@@ -81,16 +81,16 @@ export function createKernelAuth(o: KernelAuthOptions) {
   }
   const origin = (req: Pick<IncomingMessage, "headers">) => `${forwardedProto(req)}://${String(req.headers.host ?? "").toLowerCase()}`;
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) => void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
+  /** A failure's page: text, never cached, no type sniffing, and the state cookie cleared. */
+  const text = (res: ServerResponse, status: number, said: string, cookies: string[] = []) =>
+    void res
+      .writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(cookies.length ? { "set-cookie": cookies } : {}) })
+      .end(said);
   /** The browser's answer when the kernel can't be reached: a page that says so, not a redirect into the sign-in loop. */
   const unreachable = (res: ServerResponse, cookies: string[] = []) =>
-    void res
-      .writeHead(502, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(cookies.length ? { "set-cookie": cookies } : {}) })
-      .end("The board can't reach the AidenHQ kernel, so sign-in didn't finish.\n\nCheck the host firewall: it must allow this container to reach the kernel's host listener (10.231.0.1:3130). Setup adds that rule when ufw is active and warns when it can't.\n");
+    text(res, 502, "The board can't reach the AidenHQ kernel, so sign-in didn't finish.\n\nCheck the host firewall: it must allow this container to reach the kernel's backplane at " + o.kernel.url + " (the default is 10.231.0.1:3130). Setup adds that rule when ufw is active and warns when it can't. The kernel or its address may also be down; check the board's log for the error.\n", cookies);
   /** The browser's answer when the kernel answered but failed the exchange: what it said, and nothing secret. */
-  const refused = (res: ServerResponse, said: string, cookies: string[] = []) =>
-    void res
-      .writeHead(502, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(cookies.length ? { "set-cookie": cookies } : {}) })
-      .end(`${said}\n`);
+  const refused = (res: ServerResponse, said: string, cookies: string[] = []) => text(res, 502, `${said}\n`, cookies);
 
   const auth = {
     /** The signed-in admin behind the request's board cookie, or null (none, ended, or not a ready admin any more). */
@@ -131,10 +131,17 @@ export function createKernelAuth(o: KernelAuthOptions) {
         const err = String((e as Error)?.message ?? e).slice(0, 300);
         if (e instanceof AccountError) {
           o.log?.error({ err, status: e.status, kernel: o.kernel.url }, "sign-in: the kernel refused the exchange");
-          const said = e.status === 401 || e.status === 403
+          const said = e.status === 401
             ? "The AidenHQ kernel refused the board's key, so sign-in can't finish. Signing in again won't help; check the board's key on the kernel."
-            : "The AidenHQ kernel failed the sign-in exchange, so it didn't finish. Try again; if it keeps failing, check the kernel's log.";
+            : e.status === 403
+              ? "The AidenHQ kernel refused this sign-in exchange, so it didn't finish. Check the kernel's policy for this board's origin; signing in again won't help."
+              : "The AidenHQ kernel failed the sign-in exchange, so it didn't finish. Try again; if it keeps failing, check the kernel's log.";
           return refused(res, said, [clear]);
+        }
+        // A timeout is the kernel being slow, not the firewall dropping it; say which, so the operator checks the right thing.
+        if ((e as Error)?.name === "TimeoutError") {
+          o.log?.error({ err, kernel: o.kernel.url }, "sign-in: the kernel didn't answer the exchange in time");
+          return refused(res, "The AidenHQ kernel didn't answer the sign-in exchange in time, so sign-in didn't finish. Try again; if it keeps timing out, check the kernel's load and log.", [clear]);
         }
         o.log?.error({ err, kernel: o.kernel.url }, "sign-in: the board can't reach the kernel");
         return unreachable(res, [clear]);

@@ -8,8 +8,10 @@
 #   10.231.0.1:8199 tcp  the computer launcher
 #   10.231.0.1:8201 tcp  the model gateway
 #   10.231.2.1:8200 tcp  the model gateway from the computers' bridge
-# Nothing on the public interface opens: the rules match the Docker bridges and those addresses only. Idempotent: a rule
-# is skipped when ufw already lists an allow for it. An inactive or absent ufw changes nothing.
+# Nothing on the public interface opens: the rules match the Docker bridges and those addresses only. Idempotent: an
+# allow ufw already lists for the same interface, address and port, from Anywhere, is skipped. An explicit DENY, LIMIT or
+# REJECT for the same rule is left in place (ufw allow would replace it) and warns that sign-in may fail. An inactive or
+# absent ufw changes nothing.
 #   ops/vm/ufw-rules.sh public     apply for the public exposure
 #   ops/vm/ufw-rules.sh tailscale  apply for any other mode (cloudflare and local too)
 # A rule it can't add (no sudo, ufw's own error) warns loudly that the containers can't reach the kernel and sign-in will
@@ -17,36 +19,71 @@
 set -uo pipefail
 mode="${1:-tailscale}"
 command -v ufw >/dev/null || exit 0
-# ufw's own output is localized, so read it in the C locale. Read it once: piping it into `grep -q` ends ufw early, and
-# pipefail would then report a match as a failed pipeline.
-if ! status="$(LC_ALL=C ufw status 2>/dev/null)"; then
+# ufw's own output is localized, so read it in the C locale. `status verbose` (not plain `status`) prints "ALLOW IN" for
+# incoming rules and the interface and source, which is what this script matches. Read it once: piping it into `grep -q`
+# ends ufw early, and pipefail would then report a match as a failed pipeline.
+if ! status="$(LC_ALL=C ufw status verbose 2>/dev/null)"; then
   echo "WARNING: ufw is installed but its status could not be read (run setup as root): AidenHQ's containers may not reach the kernel, and sign-in may fail" >&2
   exit 0
 fi
 case "$status" in *"Status: active"*) ;; *) exit 0 ;; esac
 
-failed= front_failed=
-# <comment> <extended regex matching an allow rule in ufw status> <ufw allow arguments...>
-add() {
-  local comment="$1" match="$2"; shift 2
-  grep -Eq "$match" <<<"$status" && return 0
-  ufw allow "$@" comment "$comment" || failed=1
+failed= conflict= front_failed= front_conflict=
+# The state ufw already lists for one rule's address, port and interface: allow (it permits the traffic from Anywhere),
+# deny (an explicit DENY/LIMIT/REJECT, which must not be replaced), or none.
+state_of() {
+  local where="$1" line after
+  while IFS= read -r line; do
+    case "$line" in "$where"*) ;; *) continue ;; esac
+    after="${line#"$where"}"
+    case "$after" in
+      *"ALLOW IN"*"Anywhere"*) echo allow; return 0 ;;
+      *"DENY IN"*|*"LIMIT IN"*|*"REJECT IN"*) echo deny; return 0 ;;
+    esac
+  done <<<"$status"
+  echo none
 }
+# <where> <ufw allow arguments> <comment or ""> <front|host>
+apply() {
+  local where="$1" args="$2" comment="$3" bucket="$4" state
+  state="$(state_of "$where")"
+  case "$state" in
+    allow) return 0 ;;
+    deny)
+      if [ "$bucket" = front ]; then front_conflict=1; else conflict=1; fi
+      echo "WARNING: ufw already has a DENY/LIMIT/REJECT rule for $where; leaving it in place: AidenHQ's containers may not reach the kernel, and sign-in may fail" >&2
+      return 0 ;;
+  esac
+  read -r -a argv <<<"$args"
+  if [ -n "$comment" ]; then
+    ufw allow "${argv[@]}" comment "$comment" || { if [ "$bucket" = front ]; then front_failed=1; else failed=1; fi; }
+  else
+    ufw allow "${argv[@]}" || { if [ "$bucket" = front ]; then front_failed=1; else failed=1; fi; }
+  fi
+}
+# comment | destination | port | interface | ufw allow arguments — the one table both the apply and the warning use.
+rules=(
+  "AidenHQ containers to host services|10.231.0.1|3130|br+|in on br+ to 10.231.0.1 port 3130 proto tcp"
+  "AidenHQ containers to host services|10.231.0.1|8199|br+|in on br+ to 10.231.0.1 port 8199 proto tcp"
+  "AidenHQ containers to host services|10.231.0.1|8201|br+|in on br+ to 10.231.0.1 port 8201 proto tcp"
+  "AidenHQ computers to host|10.231.2.1|8200|ahq-computers|in on ahq-computers to 10.231.2.1 port 8200 proto tcp"
+)
 if [ "$mode" = public ]; then
-  for port in 443 8446 8447; do ufw allow "$port/tcp" || front_failed=1; done
+  for port in 443 8446 8447; do apply "$port/tcp" "$port/tcp" "" front; done
 fi
-add 'AidenHQ containers to host services' '10\.231\.0\.1 +3130/tcp +on br\+ +ALLOW IN' in on 'br+' to 10.231.0.1 port 3130 proto tcp
-add 'AidenHQ containers to host services' '10\.231\.0\.1 +8199/tcp +on br\+ +ALLOW IN' in on 'br+' to 10.231.0.1 port 8199 proto tcp
-add 'AidenHQ containers to host services' '10\.231\.0\.1 +8201/tcp +on br\+ +ALLOW IN' in on 'br+' to 10.231.0.1 port 8201 proto tcp
-add 'AidenHQ computers to host' '10\.231\.2\.1 +8200/tcp +on ahq-computers +ALLOW IN' in on ahq-computers to 10.231.2.1 port 8200 proto tcp
-if [ -n "$failed" ] || [ -n "$front_failed" ]; then
+for rule in "${rules[@]}"; do
+  IFS='|' read -r comment dest port iface args <<<"$rule"
+  apply "$dest $port/tcp on $iface" "$args" "$comment" host
+done
+if [ -n "$front_failed" ] || [ -n "$front_conflict" ]; then
+  echo "WARNING: ufw is active but the HTTPS front door's ports could not be opened (443, 8446, 8447): the board and sign-in may not be reachable. Add them by hand:" >&2
+  for port in 443 8446 8447; do echo "  sudo ufw allow $port/tcp" >&2; done
+fi
+if [ -n "$failed" ] || [ -n "$conflict" ]; then
   echo "WARNING: ufw is active but AidenHQ's rules could not be added: AidenHQ's containers cannot reach the kernel, and sign-in will fail. Add them by hand:" >&2
-  [ -z "$front_failed" ] || for port in 443 8446 8447; do echo "  sudo ufw allow $port/tcp" >&2; done
-  [ -z "$failed" ] || {
-    echo "  sudo ufw allow in on br+ to 10.231.0.1 port 3130 proto tcp comment 'AidenHQ containers to host services'" >&2
-    echo "  sudo ufw allow in on br+ to 10.231.0.1 port 8199 proto tcp comment 'AidenHQ containers to host services'" >&2
-    echo "  sudo ufw allow in on br+ to 10.231.0.1 port 8201 proto tcp comment 'AidenHQ containers to host services'" >&2
-    echo "  sudo ufw allow in on ahq-computers to 10.231.2.1 port 8200 proto tcp comment 'AidenHQ computers to host'" >&2
-  }
+  for rule in "${rules[@]}"; do
+    IFS='|' read -r comment _dest _port _iface args <<<"$rule"
+    echo "  sudo ufw allow $args comment '$comment'" >&2
+  done
 fi
 exit 0
