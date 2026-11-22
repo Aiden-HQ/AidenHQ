@@ -27,21 +27,20 @@ function addressShaped(text: string, at: number, length: number): boolean {
   return /(?:\/\/|@)$/.test(before) || /^:\d/.test(after);
 }
 
-/** The keys whose string values a review or reply publishes as comment text: what a model or run wrote, never the PR's own names. */
-const TEXT_KEYS = new Set(["title", "why", "evidence", "fix_brief", "option", "incomplete", "body", "stale_guidance"]);
-/** What the filing check reads: the comment text and a finding's path, which the summary prints (and the inline comment anchors by). */
-const PUBLISHED_KEYS = new Set([...TEXT_KEYS, "path"]);
-/** The text in a write's args that reaches a comment: each string under a published key (and each one of a text list). */
+/** The keys whose string values a review or reply publishes as comment text or prints (a finding's path): what a model or run wrote. */
+const TEXT_KEYS = new Set(["title", "why", "evidence", "fix_brief", "option", "incomplete", "body", "stale_guidance", "path"]);
+/** The text in a write's args that reaches a comment: each string under a text key (and each one of a text list). */
 export function publishedText(args: unknown): string[] {
   const out: string[] = [];
   const read = (x: unknown) => { if (typeof x === "string") out.push(x); else if (Array.isArray(x)) x.forEach(read); };
-  JSON.parse(JSON.stringify(args ?? null), (k, x) => { if (PUBLISHED_KEYS.has(k)) read(x); return x; });
+  JSON.parse(JSON.stringify(args ?? null), (k, x) => { if (TEXT_KEYS.has(k)) read(x); return x; });
   return out;
 }
 /**
  * The args with the instance's details removed from their comment text, in one pass (the longest match first, so a path that holds
- * a host goes whole) and by a marker shorter than any match, so no field outgrows its schema limit. The repo and a finding's path are left as they
- * are: they are the target and the anchor of the comments (the filing check still reads a path).
+ * a host goes whole) and by a marker shorter than any match, so no field outgrows its schema limit. The repo is left as it is, the target of the post;
+ * a finding's path is cleaned too, so one that names an instance detail loses its inline anchor (its finding stays in the summary)
+ * instead of the post being refused.
  */
 export function withoutInstanceDetails<T>(args: T): T {
   const clean = (t: string) => {

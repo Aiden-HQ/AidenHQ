@@ -161,7 +161,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     return tasks.get(key)!;
   };
   // A GitHub thread is outside the instance, and a review quotes the PR's own text (a fixture's address, a CI path): the instance's
-  // hosts, home paths and addresses are removed from the comment text it files (not the PR's own names), so a quoted one never blocks the post. The kernel's
+  // hosts, home paths and addresses are removed from the comment text and finding paths it files (not the repo), so a quoted one never blocks the post. The kernel's
   // instance-details check refuses whatever this missed.
   return {
     async post(p) {
