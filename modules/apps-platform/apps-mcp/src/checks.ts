@@ -48,13 +48,14 @@ export const postgresOnly = (app: App) => app.protocol === "postgres";
 /**
  * The compose service and container port the app's published port maps to: the one socket a `protocol: postgres`
  * declaration covers. A published port can be remapped (5433 → 5432), and a multi-service app can listen on several
- * ports, so the declaration never covers a socket it doesn't name. Undefined when the compose publishes no such port: the
- * declaration then exempts nothing and the gate stays closed.
+ * ports, so the declaration never covers a socket it doesn't name. Only a TCP mapping counts: a UDP publication to the
+ * same number is a different socket and must not exempt a TCP listener on it. Undefined when the compose publishes no
+ * such TCP port: the declaration then exempts nothing and the gate stays closed.
  */
 export function declaredPort(app: App, compose: { services?: Record<string, any> }): Door | undefined {
   if (!postgresOnly(app) || !app.port) return undefined;
   for (const [service, s] of Object.entries<any>(compose.services ?? {}))
-    for (const p of s.ports ?? []) if (Number(p.published) === app.port) return { service, port: String(p.target) };
+    for (const p of s.ports ?? []) if (Number(p.published) === app.port && (p.protocol === undefined || p.protocol === "tcp")) return { service, port: String(p.target) };
   return undefined;
 }
 
@@ -295,24 +296,26 @@ const v6 = (h) => {
 };
 // A TLS listener may answer the plaintext GET with a TLS alert (record type 0x15 on TLS 0x03) instead of a protocol
 // banner. Those bytes are not a non-HTTP greeting: they are a TLS server refusing the plaintext request, so the port speaks
-// TLS and could be HTTP. The first TLS byte can arrive alone, so a 0x15/0x16 opening is only decided once its second byte
-// arrives (or the connection ends): "https" then, "banner" otherwise. "http" is an HTTP reply, "banner" other non-HTTP
-// bytes, "refused" nothing listens, "closed" a hang-up with nothing said, "silent" a timeout with nothing said.
-const TLS_OPEN = (b) => b.length >= 1 && (b[0] === 0x15 || b[0] === 0x16) && (b.length < 2 || b[1] === 0x03);
-const rawLook = (b) => !b.length ? "silent" : b.startsWith("HTTP/") ? "http" : TLS_OPEN(b) ? "https" : "banner";
+// TLS and could be HTTP. The reply is kept as bytes (not a string) so a TLS byte compares as its number. A lone 0x15/0x16
+// opening is not yet TLS: the next byte decides, and a greeting that starts with either byte but is not 0x03 is a banner.
+// "http" is an HTTP reply, "https" TLS, "banner" other non-HTTP bytes, "refused" nothing listens, "closed" a hang-up with
+// nothing said, "silent" a timeout with nothing said.
+const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
+const rawLook = (b) => !b.length ? "silent" : b.subarray(0, 5).toString("latin1") === "HTTP/" ? "http" : TLS_PREFIX(b) ? "https" : "banner";
 const raw = (host, port) => new Promise((done) => {
-  let got = "";
+  let got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
   s.on("connect", () => s.write("GET / HTTP/1.0\r\n\r\n"));
   s.on("data", (d) => {
-    got += d;
+    got = Buffer.concat([got, d]);
     const r = rawLook(got);
+    // A lone TLS opening byte waits for the next byte (or the end of the connection) before it is judged.
     if (r === "http" || r === "https" || (r === "banner" && got.length >= 5)) end(r);
   });
-  s.on("timeout", () => end(got ? rawLook(got) : "silent"));
-  s.on("end", () => end(got ? rawLook(got) : "closed"));
-  s.on("error", (e) => end(e.code === "ECONNREFUSED" ? "refused" : got ? rawLook(got) : "silent"));
+  s.on("timeout", () => end(got.length ? rawLook(got) : "silent"));
+  s.on("end", () => end(got.length ? rawLook(got) : "closed"));
+  s.on("error", (e) => end(e.code === "ECONNREFUSED" ? "refused" : got.length ? rawLook(got) : "silent"));
 });
 // A PostgreSQL server waits for the client, so an HTTP GET makes it hang up (raw: closed) and says nothing about what it is.
 // An SSLRequest's reply alone is not identification either: a TLS listener offers SSL too. So the server must decline SSL
@@ -444,9 +447,10 @@ const hello = (name) => {
   const exts = [];
   if (name) {
     // One server_name list holding one host_name (RFC 6066 allows one): the name type (0), its two-byte length and the name.
+    // The list length is the entry's length alone; adding the length field's own two bytes would overstate every list.
     const n = Buffer.from(name, "ascii");
     const entry = Buffer.concat([Buffer.from([0]), Buffer.from([n.length >> 8, n.length & 255]), n]);
-    exts.push(tlsExt(0, Buffer.concat([Buffer.from([(entry.length + 2) >> 8, (entry.length + 2) & 255]), entry])));
+    exts.push(tlsExt(0, Buffer.concat([Buffer.from([entry.length >> 8, entry.length & 255]), entry])));
   }
   // Named groups are their two-byte code: x25519 0x001d, secp256r1 0x0017. The list length covers both entries.
   exts.push(tlsExt(10, Buffer.from([0, 4, 0x00, 0x1d, 0x00, 0x17]))); // supported_groups: x25519, secp256r1
@@ -478,8 +482,7 @@ const hello = (name) => {
 // The record header can arrive in pieces: hold what came until the five-byte header is complete, then a handshake (0x16) or
 // alert (0x15) on TLS 0x03 says the port speaks TLS too. A connection that ends or stalls mid-header after a TLS opening byte
 // still counts: the port began a TLS record, so it could serve HTTPS. Anything short of that is not TLS, and Postgres alone
-// gets no such bytes back from a hello it does not understand.
-const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
+// gets no such bytes back from a hello it does not understand. TLS_PREFIX above is the one predicate for both probes.
 const tls = (host, port, name) => new Promise((done) => {
   let got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
