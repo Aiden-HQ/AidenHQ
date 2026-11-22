@@ -1,6 +1,7 @@
 // Graded done (wave 1): a delegated task's rubric and grading state, kept here in the grading module's own storage (never
 // the task's editable description), and the completion gate its finish check answers for a task with a row. Moved from the
 // board unchanged (lean-core 3h); the runner still claims pending rows, gathers evidence and asks the grader.
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 /**
@@ -23,6 +24,8 @@ export interface Verdict {
   model: string;
   verdict: "satisfied" | "needs_revision" | "cannot_judge";
   criteria: { id: string; met: "yes" | "no" | "unknown"; evidence: string }[];
+  /** The rubric this pass graded (rubricHash), so a verdict from a rubric since amended is never applied to the new one. */
+  rubric?: string;
 }
 export interface Grade {
   issueId: string;
@@ -78,27 +81,85 @@ const oneOf = <T extends string>(v: unknown, values: readonly T[], at: string): 
 
 export const ISSUE_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
 export const KINDS = ["pr", "app", "apply", "file", "report", "issue"] as const;
+/** A rubric's criteria as filed or amended: 3-8, each 3-200 characters, or none where a filing allows the kind's template. */
+export function parseRubric(v: unknown, { allowEmpty = true }: { allowEmpty?: boolean } = {}): string[] {
+  const rubric = (Array.isArray(v) ? v : bad("rubric: a list")).map((c, i) => str(typeof c === "string" ? c.trim() : c, 200, `rubric.${i}`, 3));
+  if (rubric.length > 8 || (!allowEmpty && rubric.length < 3) || (allowEmpty && rubric.length > 0 && rubric.length < 3)) bad(`rubric: 3-8 criteria${allowEmpty ? ", or none for the template" : ""}`);
+  return rubric;
+}
 /** A delegation's rubric: 3-8 checkable criteria, or none (the grader then uses modules/grading/rubrics/<kind>.md). */
 export function parseFiling(b: unknown): { issue: string; rubric: string[]; deliverable: Deliverable } {
   if (!isMap(b)) return bad("send {issue, rubric, deliverable}");
   only(b, ["issue", "rubric", "deliverable"], "");
-  const rubric = (Array.isArray(b.rubric) ? b.rubric : bad("rubric: a list")).map((c, i) => str(typeof c === "string" ? c.trim() : c, 200, `rubric.${i}`, 3));
-  if (rubric.length > 8 || (rubric.length > 0 && rubric.length < 3)) bad("rubric: 3-8 criteria, or none for the template");
+  const rubric = parseRubric(b.rubric);
   const d = isMap(b.deliverable) ? b.deliverable : bad("deliverable: {kind, ref}");
   only(d, ["kind", "ref"], "deliverable.");
   const deliverable = { kind: oneOf(d.kind, KINDS, "deliverable.kind"), ref: d.ref === undefined ? "" : str(d.ref, 500, "deliverable.ref") };
   if (deliverable.kind === "issue" && !ISSUE_REF.test(deliverable.ref)) bad("deliverable.ref: owner/name#number for an issue");
   return { issue: str(b.issue, 100, "issue", 1), rubric, deliverable };
 }
+/** A rubric amendment: the task, and its full replacement rubric (the deliverable is left as filed). */
+export function parseAmendment(b: unknown): { issue: string; rubric: string[] } {
+  if (!isMap(b)) return bad("send {issue, rubric}");
+  only(b, ["issue", "rubric"], "");
+  return { issue: str(b.issue, 100, "issue", 1), rubric: parseRubric(b.rubric, { allowEmpty: false }) };
+}
+/** A rubric's identity for a grading pass: a verdict names it, and a row amended since discards the stale verdict. */
+export const rubricHash = (rubric: string[]) => createHash("sha256").update(JSON.stringify(rubric)).digest("hex").slice(0, 16);
+// An absence anywhere in a repository file ("both handbooks contain no Linus", "docs/a.md has no old token") cannot be shown
+// from the evidence a code deliverable is graded on: the grader sees the diff, not the resulting tree. The claim is refused
+// wherever a rubric is written, agent filing, module filing or amendment alike, so no route stores one. A claim about an
+// attached file (its contents are evidence) or a rendered page path, or about what a PR's diff does not add, is decidable and
+// stays allowed; a `file` deliverable is the attachment itself, so nothing is refused for it.
+const ABSENT = /\b(?:contains?|containing|includes?|including|holds?|holding)\s+no\b|\b(?:does|do|did)(?:n't| not)\s+(?:contain|include|hold|mention|name|reference|list)\b|\b(?:has|have)\s+no\b|\b(?:is|are|was|were)\s+absent\s+from\b/i;
+const REPO_FILE = /\b(?:files?|handbooks?|docs?|documents?|trees?|repos?(?:itories)?|sources?|modules?|readme|codebase)\b|[\w./-]+\.[a-z]{1,5}\b/i;
+const ATTACHED = /\battach(?:ed|ment|ments)\b/i;
+const DIFF_SUBJECT = /\b(?:pr|pull requests?|diff|patch|changes?|commits?|merge[ds]?)\b/i;
+const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
+// A clause ends at punctuation or a contrast, never at a coordination: "docs/a.md and the attached report contain no X" is one
+// claim about both, so its subject is split on the coordination and each part judged on its own. A coordination after the
+// claim's object ("... contains no X and docs/a.md has Y") starts a new claim and is not part of this one's subject.
+const CLAUSE_BREAK = /[.;:,]\s+|\b(?:but|while|whereas)\s+/gi;
+const COORDINATION = /\s*(?:[,;]|\band\b|\bor\b|&|\bplus\b)\s*/gi;
+/**
+ * The subject an absence claim is about: the coordinated parts of its own clause before the claim, plus the claim and its
+ * object. Another clause is left out, so "the /slipped page has no `Linus` row and docs/a.md has the heading" is a claim
+ * about the page; "docs/a.md and the attached report contain no X" is a claim about both.
+ */
+function absenceSubject(c: string, at: number, length: number): string[] {
+  const breaks = [...c.slice(0, at).matchAll(CLAUSE_BREAK)].map((m) => (m.index ?? 0) + m[0].length);
+  const head = c.slice(breaks.length ? breaks[breaks.length - 1]! : 0, at);
+  const after = c.slice(at + length);
+  const next = after.search(CLAUSE_BREAK);
+  // The object is "no X": a coordination after it starts something else, so it ends the claim rather than joining it.
+  const tail = (next < 0 ? after : after.slice(0, next)).split(COORDINATION)[0] ?? "";
+  return [...head.split(COORDINATION), c.slice(at, at + length) + tail].map((p) => p.trim()).filter(Boolean);
+}
+/** Whether any part of a claim's subject names a repository file its evidence can't show. */
+const absenceRefuses = (parts: string[]) =>
+  parts.some((part) => REPO_FILE.test(part) && !ATTACHED.test(part) && !PAGE_PATH.test(part) && !DIFF_SUBJECT.test(part));
+/** The first criterion claiming a repository file's contents lack something, or undefined (see ABSENT). */
+export function uncheckableAbsence(rubric: string[], kind?: string): string | undefined {
+  if (kind === "file") return undefined;
+  return rubric.find((c) => {
+    // "the diff removes X and docs/a.md contains no Y": each claim is judged on its own subject, never on another clause,
+    // and an exemption for one coordinated part ("the attached report") never covers another ("docs/a.md").
+    for (const claim of c.matchAll(new RegExp(ABSENT.source, "gi"))) {
+      if (absenceRefuses(absenceSubject(c, claim.index, claim[0].length))) return true;
+    }
+    return false;
+  });
+}
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
-export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string };
+export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string };
 /** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
 export function parseVerdict(b: unknown): VerdictInput {
   if (!isMap(b)) return bad("send {version, outcome}");
-  only(b, ["version", "outcome", "model", "criteria", "reason"], "");
+  only(b, ["version", "outcome", "model", "criteria", "reason", "rubric"], "");
   const criteria = b.criteria === undefined ? [] : Array.isArray(b.criteria) && b.criteria.length <= 8 ? b.criteria : bad("criteria: at most 8");
   return {
     reason: typeof b.reason === "string" ? b.reason.slice(0, 300) : undefined,
+    rubric: b.rubric === undefined ? undefined : str(b.rubric, 32, "rubric"),
     version: str(b.version, 200, "version"), outcome: oneOf(b.outcome, OUTCOMES, "outcome"), model: b.model === undefined ? "" : str(b.model, 100, "model"),
     criteria: criteria.map((c, i) => { const m = isMap(c) ? c : bad(`criteria.${i}`); only(m, ["id", "met", "evidence"], `criteria.${i}.`); return { id: str(m.id, 20, `criteria.${i}.id`), met: oneOf(m.met, ["yes", "no", "unknown"] as const, `criteria.${i}.met`), evidence: str(m.evidence, 1000, `criteria.${i}.evidence`) }; }),
   };
@@ -184,6 +245,10 @@ export class Grades {
    * work the owner has already closed or cancelled. A byte-identical filing is still a retry that touches nothing.
    */
   file(issueId: string, rubric: string[], deliverable: Deliverable, filer?: string, { closed = false }: { closed?: boolean } = {}): { created: boolean; grade: Grade } {
+    // An absence claim a diff can't show is refused on every write path, the kernel's module route included (fileForModule
+    // lands here): one rule for what a rubric may say, wherever it is filed.
+    const absent = uncheckableAbsence(rubric, deliverable.kind);
+    if (absent) throw new Invalid(`rubric: "${absent.slice(0, 120)}" claims repository file contents are absent, which the grader can't see: it is given the diff, not the resulting files, so no diff can show a token is gone from a whole file. Name a diff-decidable alternative instead (e.g. "the diff removes every \`Linus\` line from docs/a.md").`);
     // One transaction over the read and the write: two filings of one task can't both see no row and both insert, and a
     // check that refuses rolls back without touching anything.
     this.db.exec("BEGIN IMMEDIATE");
@@ -198,13 +263,10 @@ export class Grades {
         if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
         // Between a task closing and the sweep settling its row, the row still reads open: the task's own status decides.
         if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
-        const recorded = (this.db.prepare("SELECT filer FROM grade_filers WHERE issue_id = ?").get(issueId) as { filer: string } | undefined)?.filer;
+        const recorded = this.filer(issueId);
         if (!recorded) throw new Conflict("this task's rubric was filed before filers were recorded, so its deliverable cannot be re-bound: file the work as a new task");
         if (!filer || recorded !== filer) throw new Conflict(`only ${recorded}, which filed this task's rubric, may replace it`);
-        this.db.prepare("UPDATE grades SET rubric = ?, deliverable = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
-          .run(wantRubric, want, new Date().toISOString(), issueId);
-        // A restarted row has no failure worth carrying: it describes the version it replaced.
-        this.db.prepare("DELETE FROM grade_failures WHERE issue_id = ?").run(issueId);
+        this.restart(issueId, wantRubric, want);
       } else {
         const now = new Date().toISOString();
         this.db.prepare("INSERT INTO grades (issue_id, rubric, deliverable, attempts, state, verdicts, created_at, updated_at) VALUES (?, ?, ?, 0, 'open', '[]', ?, ?)")
@@ -214,6 +276,66 @@ export class Grades {
       this.db.exec("COMMIT");
       this.events?.emit("grades", issueId);
       return { created: !have, grade: this.get(issueId)! };
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  /** Who filed this task's rubric (`agent:<id>` or `module:<name>`), or undefined for a row filed before filers were recorded. */
+  filer(issueId: string): string | undefined {
+    return (this.db.prepare("SELECT filer FROM grade_filers WHERE issue_id = ?").get(issueId) as { filer: string } | undefined)?.filer;
+  }
+
+  /**
+   * A row restarted at a rubric (and, when re-bound, a deliverable): open, no attempts, no verdicts, no failures, no close
+   * reason. The grader then checks the next finish against this list, which is the only one it reads.
+   */
+  private restart(issueId: string, rubric: string, deliverable?: string): void {
+    const now = new Date().toISOString();
+    const reset = "rubric = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, updated_at = ?";
+    // The deliverable is written only when it is re-bound (a differing re-file); an amendment leaves it as filed.
+    if (deliverable === undefined) this.db.prepare(`UPDATE grades SET ${reset} WHERE issue_id = ?`).run(rubric, now, issueId);
+    else this.db.prepare(`UPDATE grades SET deliverable = ?, ${reset} WHERE issue_id = ?`).run(deliverable, rubric, now, issueId);
+    // A restarted row has no failure worth carrying: it describes the version it replaced.
+    this.db.prepare("DELETE FROM grade_failures WHERE issue_id = ?").run(issueId);
+  }
+
+  /**
+   * Replaces a filed task's rubric in place while its grade is unsettled, leaving the deliverable as filed. A delegator whose
+   * criterion cannot be met corrects the list the grader reads, without a new task and without the description becoming
+   * writable. Only `by` may do it, and only when it is the task's delegator or the row's recorded filer (`agent:<id>` or
+   * `module:<name>`). A settled row, a closed task, a row with no filer record and any other caller are refused; the row then
+   * restarts exactly as a differing re-file does (attempts 0, verdicts cleared, open). A byte-identical rubric is not an
+   * amendment: the row comes back untouched.
+   */
+  amend(issueId: string, rubric: string[], { by, delegator, closed = false, held = false }: { by: string; delegator?: string; closed?: boolean; held?: boolean }): Grade {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const have = this.get(issueId);
+      if (!have) throw new Conflict("this task has no filed rubric to amend: its rubric is filed with its delegation");
+      // Who may amend is checked before the no-op: an identical list is no change, but only a caller with a claim on the row
+      // may ask for it, so a refusal never depends on whether the caller guessed the rubric already filed. The task's
+      // delegator is enough on its own: a row filed before filers were recorded is still the delegator's to correct, and the
+      // recorded filer (an agent, or the module that filed it) is the other route.
+      const recorded = this.filer(issueId);
+      if (!by || (by !== delegator && by !== recorded)) throw new Conflict(`only ${delegator ? `${delegator}, the task's delegator, or ` : ""}${recorded ?? "the filer recorded on this rubric"} may amend this task's rubric`);
+      const absent = uncheckableAbsence(rubric, have.deliverable.kind);
+      if (absent) throw new Invalid(`rubric: "${absent.slice(0, 120)}" claims repository file contents are absent, which the grader can't see: it is given the diff, not the resulting files, so no diff can show a token is gone from a whole file. Name a diff-decidable alternative instead (e.g. "the diff removes every \`Linus\` line from docs/a.md").`);
+      const wantRubric = JSON.stringify(rubric);
+      if (JSON.stringify(have.rubric) === wantRubric) {
+        this.db.exec("COMMIT");
+        return have;
+      }
+      if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
+      if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
+      this.restart(issueId, wantRubric);
+      // Work already finished and waiting for a grade (the task is in review) is graded against the new list at once: `open`
+      // is a row nobody has finished yet, and the runner would skip it until another finish, which the task no longer needs.
+      if (held) this.db.prepare("UPDATE grades SET state = 'pending', updated_at = ? WHERE issue_id = ?").run(new Date().toISOString(), issueId);
+      this.db.exec("COMMIT");
+      this.events?.emit("grades", issueId);
+      return this.get(issueId)!;
     } catch (err) {
       this.db.exec("ROLLBACK");
       throw err;
@@ -287,8 +409,13 @@ export class Grades {
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
+    // A verdict computed on a rubric since amended is stale: applying it would grade the new list by the old, or spend an
+    // attempt on it. Drop it and leave the row as it is (open), so the next pass grades the list the row now holds. A verdict
+    // with no rubric (an older runner) is kept as it was.
+    const current = rubricHash(g.rubric);
+    if (v.rubric && v.rubric !== current) return g;
     const unmet = v.criteria.some((c) => c.met === "no");
-    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : v.outcome === "satisfied" ? "satisfied" : "cannot_judge", criteria: v.criteria };
+    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : v.outcome === "satisfied" ? "satisfied" : "cannot_judge", criteria: v.criteria, rubric: current };
     const verdicts = [...g.verdicts, verdict].slice(-20);
     if (v.outcome === "grading_failed" && !unmet) {
       const failures = g.failures + 1;

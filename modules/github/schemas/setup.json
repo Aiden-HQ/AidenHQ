@@ -6,6 +6,7 @@
   "properties": {
     "repo": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
     "base": { "type": "string", "pattern": "^[\\w./-]{1,255}$", "description": "The default branch the setup was reviewed against (the plan binds it)." },
+    "supersede": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["number", "head"], "properties": { "number": { "type": "integer", "minimum": 1 }, "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" } } }, "description": "The earlier setup PRs (and their head commits) the reviewer saw; only these are closed." },
     "base_head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "files": {
       "type": "object",

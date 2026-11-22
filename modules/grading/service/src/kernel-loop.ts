@@ -12,6 +12,7 @@ import { MAX_OTHER_FILES, taskPrRows } from "./grader/evidence.ts";
 import { createGithub } from "./github.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
+import { rubricHash } from "./grades.ts";
 
 type Json = any;
 /** The kernel as the grading loop needs it: its calls with this module's token (kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake). */
@@ -176,7 +177,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   const loop = createGradeLoop({
     api: { get: async (path: string) => (path === "/internal/grades" ? due() : runner("GET", path, undefined)), post: (path: string, body: unknown) => runner("POST", path, body) },
     pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn,
-    graderAsk, emit,
+    graderAsk, emit, rubricHash,
     stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)),
   });
   return { ...loop, runGrades: async () => { workCache.clear(); return loop.runGrades(); } };
