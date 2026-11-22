@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { flushDigest, queueDigest } from "../src/attention.js";
+import { flushDigest, queueBatch, queueDigest, retractBatch } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
@@ -67,4 +67,16 @@ it("a long digest goes as several messages under the transport limit, each told 
   expect(await flushDigest(store, cfg, async (t) => (sent.push(t), true), Date.UTC(2026, 10, 17, 9, 5))).toBe(true);
   expect(sent.every((t) => t.length <= 3100)).toBe(true);
   expect(store.recentTold(3, 50, Date.UTC(2026, 10, 17, 9, 5))).toHaveLength(20);
+});
+
+it("a retracted kernel batch line leaves the digest, and its need can report again the same day", () => {
+  const store = openStore(":memory:");
+  const cfg = { digestHours: [9], timezone: "UTC" };
+  const now = Date.UTC(2026, 10, 17, 8);
+  queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, now);
+  queueDigest(store, { agent: "Worker", text: "other" }, now);
+  retractBatch(store, "connect:github:not_connected");
+  expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other"]);
+  queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, now);
+  expect(JSON.parse(store.getKv("digest:queue")!)).toHaveLength(2);
 });

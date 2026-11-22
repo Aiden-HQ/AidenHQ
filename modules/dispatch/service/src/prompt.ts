@@ -84,9 +84,9 @@ function requestSection(user: string, task: Issue, w: Words) {
 const DOWN_WORDS: Record<string, string> = { not_connected: "not connected", expired: "sign-in expired" };
 
 /** The agent's granted connections that are down now, so it skips their tools instead of finding out by failure. */
-function downSection(down: Down[]) {
+export function downSection(down: Down[]) {
   if (!down.length) return "";
-  return `## Connections down\n\n${down.map((d) => `- ${d.connection}: ${DOWN_WORDS[d.cause] ?? "not connected"} since ${String(d.since).slice(0, 10)} (the owner was told; skip its tools)`).join("\n")}\n\n`;
+  return `## Connections down\n\n${down.map((d) => `- ${d.connection}${d.account ? ` (account ${d.account})` : ""}: ${DOWN_WORDS[d.cause] ?? "not connected"} since ${String(d.since).slice(0, 10)} (the owner was told; ${d.account ? "skip that account, the others work" : "skip its tools"})`).join("\n")}\n\n`;
 }
 
 export interface PromptArgs {

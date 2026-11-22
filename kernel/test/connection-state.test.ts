@@ -15,12 +15,13 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
   const queued: any[] = [], waits: any[] = [], opened: any[] = [];
   const state = {
     failQueue: false,
+    onWait: undefined as undefined | (() => void),
     // A queue that can fail the way a failed owner_notify insert does: after the caller's marker, before its notice lands.
     queue: (n: any) => { if (state.failQueue) throw new Error("owner_notify is locked"); queued.push(n); },
   };
   const s = createConnectionState({
     db,
-    idle: { wait: async (caller: unknown, b: unknown) => (waits.push({ caller, b }), {}) as never },
+    idle: { wait: async (caller: unknown, b: unknown) => (state.onWait?.(), waits.push({ caller, b }), {}) as never },
     wakes: { open: (b: unknown) => void opened.push(b) },
     queue: state.queue,
     issue: async (id) => issues[id] as never,
@@ -85,6 +86,8 @@ test("a background hit only records; tick queues one batched digest line a day o
   assert.equal(w.queued[0].dedupe_key, "connect:google:expired");
   assert.match(text, /Skip this source/i);
   w.tick(DAY);
+  await w.s.hit(w.who("r1"), "google", { cause: "expired", detail: "refused" });
+  w.tick(LASTED);
   w.s.tick();
   assert.equal(w.queued.length, 2);
   assert.equal(w.waits.length, 0);
@@ -102,6 +105,63 @@ test("a removed connection's need is dropped by tick, never reported", async () 
   w.s.tick();
   assert.deepEqual(w.queued.map((n) => n.dedupe_key), ["connect:github:not_connected"]);
   assert.deepEqual((w.db.prepare("SELECT module FROM connection_state").all() as { module: string }[]).map((r) => r.module), ["github"]);
+});
+
+test("a stale row expires, so its old since never makes a new blip count as lasting (48d61d26)", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.tick(25 * 60_000);
+  w.s.tick(); // nobody hit it for 25 minutes: expired before it is judged
+  assert.deepEqual(w.queued, []);
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.s.tick();
+  assert.deepEqual(w.queued, [], "the new blip starts its own clock");
+  w.tick(LASTED);
+  w.s.tick();
+  assert.equal(w.queued.length, 1);
+});
+
+test("a success retracts the digest line already queued for the cleared need (921d7114)", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.s.ok("github", { fullOnly: true });
+  assert.deepEqual(w.queued, [], "nothing was reported, nothing to retract");
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.tick(LASTED);
+  w.s.tick();
+  assert.equal(w.queued.length, 1);
+  w.s.ok("github", { fullOnly: true });
+  assert.equal(w.queued.length, 2);
+  assert.equal(w.queued[1].retract, "connect:github:not_connected");
+  assert.equal(w.queued[1].batch, true);
+});
+
+test("Connect that lands while a wait is being armed still wakes the task (7bcb9ba7)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  w.state.onWait = () => void w.s.ok("google");
+  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  assert.deepEqual(w.opened.map((o) => o.task), ["w3"]);
+});
+
+test("downFor names the account an expired need is about (dfeba64b)", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "a@x.com", detail: "" });
+  w.tick(LASTED);
+  w.s.tick();
+  assert.deepEqual(w.s.downFor("a1").map((d) => [d.connection, d.account]), [["google", "a@x.com"]]);
+  await w.s.hit(w.who("r1"), "google", { cause: "not_connected", detail: "" });
+  w.tick(LASTED);
+  w.s.tick();
+  assert.equal(w.s.downFor("a1")[0]!.account, undefined, "a need on the whole connection is listed first");
+});
+
+test("an owner-asked need is not reminded once its waits are gone (34e4dd09)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  w.tick(8 * DAY);
+  w.s.tick(); // the 7-day wait is dropped; the decision message already went
+  w.s.tick();
+  assert.deepEqual(w.queued.map((n) => n.kind), ["decision"]);
 });
 
 test("a blip never reaches the digest: a need that a success clears before it has lasted queues nothing", async () => {
@@ -272,7 +332,7 @@ test("tick lists a still-waiting connection once a day", async () => {
   w.s.ok("google");
   w.tick(DAY);
   w.s.tick();
-  assert.equal(w.queued.length, 2, "nothing once connected");
+  assert.equal(w.queued.filter((n) => !n.retract).length, 2, "nothing once connected");
 });
 
 test("a down user sign-in does not mark a sibling connection of the same module down", async () => {

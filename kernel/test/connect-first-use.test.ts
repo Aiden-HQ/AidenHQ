@@ -2,12 +2,12 @@
 // owner's own request gets one message and its task resumes once connected; background work gets one digest line.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { needsOwner } from "../sdk/src/vendor/needs.ts";
+import { needsOwner, signedIn } from "../sdk/src/vendor/needs.ts";
 import { openFacts } from "../src/facts.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
 const AGENT = "ag-cos";
-const conn = (url, returns = "untrusted") => ({ url: `${url}/mcp`, auth_secret: "google_service_key", module: "google", returns, tools: { read: ["gmail_search"], write: [], destructive: [] } });
+const conn = (url, returns = "untrusted") => ({ url: `${url}/mcp`, auth_secret: "google_service_key", module: "google", returns, tools: { read: ["gmail_search"], write: [], destructive: [] }, health_probes: { gmail: { tool: "gmail_search", args: { query: "in:inbox" } } } });
 const modules = { modules: { "owner-channel": { roles: ["kernel.notify"], token: "router_token" }, dispatch: { roles: ["kernel.jobs"], token: "dispatch_token" } } };
 const secrets = { google_service_key: "google-key", router_token: "router-key", dispatch_token: "dispatch-key" };
 const grants = { [AGENT]: { key: "cos", tools: { google_workspace: ["gmail_search"] } } };
@@ -62,4 +62,16 @@ test("owner-asked: Gmail missing → one message → connect → the task resume
   assert.ok(rows.some((x) => x.key.startsWith("connect:google_workspace:w2:") && x.cause === "connected"), JSON.stringify(rows));
   assert.ok(!rows.some((x) => x.key.startsWith("wait:")), JSON.stringify(rows));
   assert.deepEqual((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down, []);
+});
+
+test("a health probe feeds the connection state like a live call: a need is recorded, a signed-in success clears it (0e4e0ed2)", async (t) => {
+  let answer = () => needsOwner({ cause: "not_connected", detail: "no account" });
+  const w = await setup(t, { answer: () => answer() });
+  const probe = async () => (await fetch(`${w.k.url}/v1/health/probe`, { method: "POST", headers: { "x-health-key": "the-health-key", "content-type": "application/json" }, body: JSON.stringify({ probe: "gmail" }) })).json();
+  const rows = () => w.k.records.db.prepare("SELECT key FROM connection_state").all().map((r) => r.key);
+  assert.equal((await probe()).ok, false);
+  assert.deepEqual(rows(), ["google_workspace:not_connected"]);
+  answer = () => signedIn({ content: [{ type: "text", text: "ok" }] });
+  assert.equal((await probe()).ok, true);
+  assert.deepEqual(rows(), []);
 });

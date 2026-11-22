@@ -21,7 +21,9 @@ export type Notice = { kind: (typeof KINDS)[number]; text: string; task?: string
   /** The agent whose question `head` carries: the owner channel applies its mutes and the task's loop brake. */
   asker?: { id: string; key: string; roles: string[] };
   /** Kernel-set only (never from a producer's body via `notice()`): the owner channel adds it to the next digest instead of sending it at once. */
-  batch?: true };
+  batch?: true;
+  /** Kernel-set only: the owner channel drops the queued digest line with this dedupe key (its need cleared before the digest went). */
+  retract?: string };
 type Resolver = { resolve: (url: string) => Promise<Target>; forget: (url: string) => void };
 
 /** A notice from a producer's body: kind, text, and optionally the task it is about and its dedupe key. */

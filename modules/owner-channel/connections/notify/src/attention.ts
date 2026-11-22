@@ -16,7 +16,7 @@ export interface AttentionConfig {
 }
 export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | { do: "digest" };
 /** A digest line, with what the ledger records once it goes out: `source` is the agent key ("kernel" for the kernel's), `at` when it was queued. */
-type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
+type Item = { id?: string; key?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
 
 const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
@@ -45,7 +45,7 @@ export function attend(store: Store, cfg: AttentionConfig, who: { id: string; ke
 export function queueDigest(store: Store, item: Item, now = Date.now()): void {
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   // One line per item: agent-supplied whitespace and newlines collapse so an item can't forge another agent's line.
-  q.push({ id: randomUUID(), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now, ...(item.told ? { told: true as const } : {}) });
+  q.push({ id: randomUUID(), ...(item.key ? { key: item.key } : {}), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now, ...(item.told ? { told: true as const } : {}) });
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
 }
 
@@ -58,9 +58,16 @@ export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours
   const day = new Date(now).toISOString().slice(0, 10);
   const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
   if (key && store.getKv(key) === day) return true;
-  queueDigest(store, { agent: "AidenHQ", text: m.text, source: "kernel", kind: "fyi" }, now);
+  queueDigest(store, { agent: "AidenHQ", text: m.text, source: "kernel", kind: "fyi", ...(key ? { key } : {}) }, now);
   if (key) store.setKv(key, day);
   return true;
+}
+
+/** The kernel took back a batch line (its need cleared before the digest went): it leaves the queue, and its day marker, so a new need can report. */
+export function retractBatch(store: Store, dedupe_key: string): void {
+  const key = `batch:${dedupe_key}`;
+  store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => i.key !== key)));
+  store.setKv(key, "");
 }
 
 /** The owner-local slot now: its date plus the latest digest hour already reached (none before the first one). */
