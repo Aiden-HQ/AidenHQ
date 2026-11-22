@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parseTargets, RETIRED_TARGETS, scanPass, type Batch } from "../src/scan.js";
+import { DDL, parseTargets, RETIRED_TARGETS, scanPass, type Batch } from "../src/scan.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
@@ -260,4 +260,46 @@ it("src_security: a retired row the warehouse could not take settles nothing, so
   // the target reads as absent (visible, retried next pass) instead of retired.
   expect(failing.rows.get(key)).toMatchObject({ present: true, resolved_at: null });
   expect(failing.runs.filter((x) => x.scope === retired)).toMatchObject([{ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) }]);
+});
+
+it("src_security: DDL single-quoted literals stay closed (a bare apostrophe in the findings COMMENT breaks migrate())", () => {
+  // A static check: is the text balanced as SQL? It has to read -- comments (which contain apostrophes) and '' escapes, and
+  // must not split on ';' because the findings COMMENT contains one. An unterminated literal is reported at its opening
+  // quote, so a newly added apostrophe (like the one in target's) names a line and offset in DDL.
+  function assertLiteralsClosed(ddl: string): void {
+    let i = 0;
+    let line = 1;
+    let column = 1;
+    let open: { line: number; column: number; offset: number } | null = null;
+    while (i < ddl.length) {
+      const c = ddl[i]!;
+      if (open === null && c === "-" && ddl[i + 1] === "-") {
+        const newline = ddl.indexOf("\n", i);
+        if (newline === -1) break;
+        i = newline + 1;
+        line++;
+        column = 1;
+        continue;
+      }
+      if (c === "'") {
+        if (open === null) open = { line, column, offset: i + 1 };
+        else if (ddl[i + 1] === "'") {
+          i++;
+          column++;
+        } else open = null;
+      }
+      if (c === "\n") {
+        line++;
+        column = 1;
+      } else column++;
+      i++;
+    }
+    if (open) throw new Error(`unterminated single-quoted literal at line ${open.line}, offset ${open.offset} (column ${open.column})`);
+  }
+
+  expect(() => assertLiteralsClosed(DDL)).not.toThrow();
+  // The regression: the generated literal with the bare apostrophe ends a literal early and leaves a later one unterminated.
+  const broken = DDL.replace("target''s replacement", "target's replacement");
+  expect(broken).not.toBe(DDL);
+  expect(() => assertLiteralsClosed(broken)).toThrow(/unterminated single-quoted literal at line \d+, offset \d+/);
 });
