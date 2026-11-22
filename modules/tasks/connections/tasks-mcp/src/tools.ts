@@ -479,18 +479,27 @@ function refuseRetiredRepo(deliverable: Json, list: string[], description: Json)
   const named = [deliverable.ref ?? "", ...list, description].flatMap(reposIn);
   if (RETIRED_REPOS.some((r) => named.includes(r.toLowerCase()))) throw new Error(RETIRED_REPO_ERROR);
 }
-// The instance repo takes no PRs by design: the code host refuses every branch push and PR to it, and kernel.apply lands the
-// commit straight on main. A `pr` brief or a copied `Graded before done (pr: …)` rubric naming it can never pass, so it is
-// refused where the brief is filed. The repo is the one the kernel's directory names, so this works for any instance.
+// The instance repo takes no PRs by design: the code host refuses every branch push and PR to it and kernel.apply lands the
+// commit straight on main. A PR aimed at it can never pass, so it is refused where the brief is filed. Judged per PR target,
+// never the whole brief: a product PR whose description notes a follow-up pin bump on the instance, or an apply task quoting
+// a product PR rubric, still files. The repo is the one the kernel's directory names, so this works for any instance.
 const INSTANCE_REPO_ERROR = "the instance repo changes only through apply — file this as `deliverable: apply` with a rubric on the apply card and the commit on `main`, not a PR.";
-/** Refuses a `pr` deliverable or `Graded before done (pr:` rubric that names the instance repo. */
+const PR_HEADER = /Graded before done \(pr:([^)]*)\)/gi;
+/** A sentence that opens a PR: the only statement of a ref-less `pr` brief's target. */
+const PR_TARGET = /\b(?:open|file|raise|submit|create|land|merge)\b[^.;\n]{0,60}?\b(?:PR|pull request)\b/i;
+/** Refuses a PR aimed at the instance repo: a `pr` deliverable's ref or rubric, a copied `Graded before done (pr:` header's
+ * ref, or — when the ref is omitted — a description that opens a PR in the instance repo. */
 function refuseInstanceRepoPr(deliverable: Json, list: string[], description: Json) {
   const instance = cx().dir.repos?.instance?.toLowerCase();
   if (!instance) return;
-  const prRubric = /Graded before done \(pr:/i.test(String(description ?? ""));
-  if (deliverable?.kind !== "pr" && !prRubric) return;
-  const named = [deliverable?.ref ?? "", ...list, description].flatMap(reposIn);
-  if (named.includes(instance)) throw new Error(INSTANCE_REPO_ERROR);
+  const text = String(description ?? "");
+  const targets: string[] = [];
+  if (deliverable?.kind === "pr") {
+    targets.push(deliverable.ref ?? "", ...list);
+    if (!String(deliverable.ref ?? "").trim()) targets.push(...text.split(/\n+|(?<=[.;])\s+/).filter((s) => PR_TARGET.test(s) && reposIn(s).includes(instance)));
+  }
+  for (const m of text.matchAll(PR_HEADER)) targets.push(m[1] ?? "");
+  if (targets.flatMap(reposIn).includes(instance)) throw new Error(INSTANCE_REPO_ERROR);
 }
 // A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
 // so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
@@ -553,7 +562,6 @@ function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Js
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
   refuseRetiredRepo(deliverable, list, description);
-  refuseInstanceRepoPr(deliverable, list, description);
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
   const negative = list.find(unprovable);
   if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
@@ -696,6 +704,8 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
       return { identifier: existing.identifier, created: false, ...refiled };
     }
   }
+  // A new filing only: an existing task returned above is a retry, not a new PR, so the instance-repo refusal never blocks it.
+  refuseInstanceRepoPr(deliverable, (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean), description);
   const body = {
     title: String(title).slice(0, 200),
     description: `${feedbackMark()}${origin}\n\n${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\nWhen done: comment your result, then call task_finish.${src ? `\n\n<!-- source:${src} -->` : ""}`,
@@ -954,6 +964,8 @@ const TOOLS: Record<string, Tool> = {
         if (existing && start && parked(existing, { id: g.id }, grade)) return { ...(await brief(existing)), deduplicated: true, ...(await startGraded(existing, grade)) };
         if (existing) return { ...(await brief(existing)), deduplicated: true };
       }
+      // A new filing only: an existing task returned above is a retry, not a new PR, so the instance-repo refusal never blocks it.
+      refuseInstanceRepoPr(deliverable, (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean), description);
       const body: Args = {
         title: String(title).slice(0, 200),
         description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
