@@ -127,9 +127,10 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    its approved card. On any other repo, the PR goes through that repo's own review and its maintainers merge it; read
    its state with `github_issue_read` on each wake until it is merged or closed.
 6. The merge closes the issue through the PR's `Fixes` line. Read the issue and the PR (`github_issue_read`): the issue
-   counts as closed by that PR when its closed-by event or the PR's closing issue references name each other. Then
-   comment the PR and its merge commit on the issue (`github_issue_comment`) and finish. An issue still open after its PR
-   merged, or closed by something else, means the PR lacked the line: close it `completed` with a `note` naming the PR
+   counts as closed by that PR when the PR is merged (`pull_request.merged_at`), its body carries the `Fixes` line for
+   the issue, and the issue's `closed_at` is that merge's time. Then
+   comment the PR and its merge commit (`pull_request.merge_commit_sha`) on the issue (`github_issue_comment`) and finish. An issue still open after its PR
+   merged, or closed at another time, means the PR lacked the line: close it `completed` with a `note` naming the PR
    and the merge commit.
 7. `not-real` closes `not_planned` with a `note` quoting the log line or path that disproves it. `already-fixed` closes
    `completed` with a `note` citing the fix's PR and merge commit.

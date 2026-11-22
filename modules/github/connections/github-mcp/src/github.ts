@@ -341,6 +341,7 @@ export class GitHub {
         draft: pr.draft,
         merged: pr.merged,
         merged_at: pr.merged_at ?? undefined,
+        merge_commit_sha: pr.merge_commit_sha ?? undefined,
         base: pr.base?.ref,
         head: pr.head?.ref,
         head_sha: pr.head?.sha,
@@ -670,6 +671,7 @@ interface GhPull {
   draft?: boolean;
   merged?: boolean;
   merged_at?: string | null;
+  merge_commit_sha?: string | null;
   base?: { ref: string };
   head?: { ref: string; sha?: string };
   additions?: number;
