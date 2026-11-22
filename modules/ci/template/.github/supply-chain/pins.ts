@@ -147,7 +147,7 @@ const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 // two stdout redirects), and `none` when it adds no bytes without truncating (`tee -a … < /dev/null`), which leaves the
 // file as it was. `text` is the content when we can read it (a here-document's body). A file that ends up empty adds no
 // repository.
-interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string; retain?: boolean; entries?: string[] }
+interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string; retain?: boolean; entries?: string[]; raced?: string[] }
 // `>|` is bash's noclobber override: still a truncating write to the file it names.
 const REDIRECT = /(?<!>)(\d*)(>>?\|?)\s*("[^"]+"|'[^']+'|[^\s;|&)<>]+)/g;
 // A command's stdout as the shell leaves it, walked in order: fd 1 starts on the pipe, a file redirect moves it to
@@ -486,6 +486,20 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
   // Marked on the write itself: only a racing write may have left the file's earlier repository in place, so only its
   // entries are kept beside what it brought. Any other `unknown` replaces the file for certain (`cat /tmp/x > f`).
   for (const w of out) if (racy.has(w.path) && w.content !== "deb" && w.content !== "none") { w.content = "unknown"; w.retain = true; }
+  // Two racing commands may each write a repository and either can be the one bash leaves last (`echo a > f | echo b > f`
+  // kept a in 5 of 40 runs and b in the rest), so the file can end holding whichever ran last: every repository written to
+  // it by a racing command is a possible survivor, and all of them are kept. The file stays present and known, so a pin
+  // can still be dated — dropping one of them would let a version from that repository go unchecked.
+  const racedRepos = new Map<string, string[]>();
+  for (const w of out) {
+    const repos = w.entries ?? (w.content === "deb" ? repoEntries(w.text ?? "").repos : []);
+    if (!racy.has(w.path) || !repos.length) continue;
+    racedRepos.set(w.path, [...new Set([...(racedRepos.get(w.path) ?? []), ...repos])]);
+  }
+  for (const w of out) {
+    const repos = racedRepos.get(w.path);
+    if (repos) { w.entries = repos; w.text = undefined; w.content = "deb"; }
+  }
   return out;
 }
 
@@ -667,7 +681,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         // racing stage's write (`retain`) is the exception: its output we can't read may have left the earlier
         // repository in place, so those entries are kept beside whatever this write brought rather than cleared.
         const prior = w.append || w.retain ? (state.entries.get(w.file!) ?? []) : [];
-        state.entries.set(w.file!, [...prior, ...written]);
+        state.entries.set(w.file!, [...new Set([...prior, ...written])]);
         if (w.content === "empty") state.files.delete(w.file!);
         else state.files.add(w.file!);
       }
