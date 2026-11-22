@@ -1,9 +1,14 @@
 // best-version.ts (which version to pin) and pins.ts (everything pinned, nothing new under 7 days), offline.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { checkAges, dateApt, scanFile } from "../supply-chain/pins.ts";
 
+// Debian publishes its -updates/-security indexes as Packages.xz only, decoded by the system `xz` (no dependency). The
+// decoder check skips where it isn't installed, so the suite still runs on a bare Node.
+const hasXz = (() => { try { execFileSync("xz", ["--version"], { stdio: "ignore" }); return true; } catch { return false; } })();
 const now = Date.parse("2026-11-13T00:00:00Z");
 const day = (n) => new Date(now - n * 86400000).toISOString();
 
@@ -1175,4 +1180,71 @@ test("pins: a known empty target, clustered -t/-S flags and flags after the path
   const enabled = `FROM debian:bookworm${d}\nRUN test -f /tmp/enable && echo 'deb https://vendor.example/apt stable main' > ${vendor}`;
   assert.equal(scanFile("Dockerfile", `${enabled} && apt-get update && apt-get install -y foo\n`).problems.length, 1);
   assert.equal(scanFile("Dockerfile", `${enabled}\n${unpinned}\n`).problems.length, 1);
+});
+
+test("pins: the four parser cases the WOR-10451 follow-up names, end to end", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const dir = "/etc/apt/sources.list.d";
+  // (a) `COPY --from=<stage>` of a sources.list.d file carries the builder's repository into the destination stage: an
+  // install there is unpinned, and the exact pin is dated from that repository.
+  const carried = `FROM debian:bookworm${d} AS builder\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${dir}/vendor.list\nFROM debian:bookworm${d}\nCOPY --from=builder ${dir}/vendor.list ${dir}/\nRUN apt-get install -y foo`;
+  const carriedResult = scanFile("Dockerfile", carried);
+  assert.equal(carriedResult.problems.length, 1);
+  assert.match(carriedResult.problems[0], /apt install foo after an apt repository is added: pin it/);
+  const carriedPin = scanFile("Dockerfile", carried.replace("install -y foo", "install -y foo=1.0")).pins.filter((p) => p.kind === "apt")[0]!;
+  assert.deepEqual(carriedPin.sources, ["https://vendor.example/apt bookworm main"]);
+  const carriedTried: string[] = [];
+  await dateApt(carriedPin, async (_k, _n, { source }) => { carriedTried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(carriedTried, ["https://vendor.example/apt bookworm main"]);
+
+  // (b) A Deb822 `.sources` written by a heredoc dates a pin from its Types/URIs/Suites/Components: the URI, suite and
+  // component are exactly the source tried (Components defaults to `main`).
+  const deb822 = `FROM debian:bookworm${d}\nRUN tee ${dir}/vendor.sources <<'EOF'\nTypes: deb\nURIs: https://vendor.example/apt\nSuites: bookworm\nComponents: main\nEOF\nRUN apt-get install -y foo=1.0\n`;
+  const deb822Pin = scanFile("Dockerfile", deb822).pins.filter((p) => p.kind === "apt")[0]!;
+  const deb822Tried: string[] = [];
+  await dateApt(deb822Pin, async (_k, _n, { source }) => { deb822Tried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(deb822Tried, ["https://vendor.example/apt bookworm main"]);
+  // Several components and suites spell out every combination (a deb-src-only or `Enabled: no` stanza is not one; each
+  // is covered in the Deb822 tests above).
+  const multi = `FROM debian:bookworm${d}\nRUN tee ${dir}/m.sources <<'EOF'\nTypes: deb\nURIs: https://a.example/apt\nSuites: bookworm bookworm-backports\nComponents: main contrib\nEOF\nRUN apt-get install -y foo=1.0\n`;
+  const multiPin = scanFile("Dockerfile", multi).pins.filter((p) => p.kind === "apt")[0]!;
+  assert.deepEqual(multiPin.sources, [
+    "https://a.example/apt bookworm main", "https://a.example/apt bookworm contrib",
+    "https://a.example/apt bookworm-backports main", "https://a.example/apt bookworm-backports contrib",
+  ]);
+
+  // (c) A Debian base dates from its release, then -updates, then -security; the security index arrives as Packages.xz
+  // only and is decoded by the system `xz` (no package.json dependency), with a pinned exact version landing on it.
+  const [debPin] = scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN apt-get install -y curl=7.88.1-10+deb12u12\n`).pins.filter((p) => p.kind === "apt");
+  const pockets: string[] = [];
+  await dateApt(debPin, async (_k, _n, { source }) => {
+    pockets.push(source);
+    if (!source.includes("bookworm-security")) throw Object.assign(new Error(`not in ${source}`), { notListed: true });
+    return { published: day(30), via: "test" };
+  });
+  assert.deepEqual(pockets, ["http://deb.debian.org/debian bookworm main", "http://deb.debian.org/debian bookworm-updates main", "http://deb.debian.org/debian bookworm-security main"]);
+  // The xz decoding itself is its own test below, so these cases run on a machine with no `xz`.
+  const deps = Object.keys(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).dependencies ?? {});
+  assert.deepEqual(deps, ["yaml"]);
+
+  // (d) `tee`'s stdin filename ends at an unquoted shell operator: `tee f < /tmp/x</dev/null` is two redirects, and the
+  // shell applies the last one, so the file is written empty and its repository is gone.
+  const written = `RUN echo 'deb https://vendor.example/apt bookworm main' > ${dir}/vendor.list`;
+  for (const line of [`tee ${dir}/vendor.list < /tmp/x</dev/null`, `tee ${dir}/vendor.list </tmp/x</dev/null`, `tee ${dir}/vendor.list < /tmp/x < /dev/null`, `cat </tmp/x</dev/null > ${dir}/vendor.list`]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${written}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems, [], line);
+  }
+});
+
+test("pins: Packages.xz decodes with the system xz, without a package.json dependency", { skip: hasXz ? false : "no system xz on PATH" }, async () => {
+  const { readAptIndex } = await import("../supply-chain/best-version.ts");
+  // A real xz archive built with the system binary: the security index decodes to the package it holds.
+  const archive = execFileSync("xz", ["-c"], { input: "Package: curl\nVersion: 7.88.1-10+deb12u12\nFilename: pool/c.deb\n\n" });
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (url: string) => String(url).endsWith("Packages.xz") ? new Response(archive, { status: 200 }) : new Response("not found", { status: 404 })) as typeof fetch;
+    const pkgs = await readAptIndex("https://deb.debian.org/debian bookworm-security main");
+    assert.deepEqual(pkgs.filter((p) => p.Package).map((p) => `${p.Package} ${p.Version}`), ["curl 7.88.1-10+deb12u12"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
