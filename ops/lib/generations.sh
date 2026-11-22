@@ -34,6 +34,7 @@ const out = (v) => v !== undefined && v !== null && v !== "" && process.stdout.w
 const set = (n, fields) => { const r = rows.find((x) => x.n === Number(n)); if (!r) { console.error(`generation: no generation ${n}`); process.exit(1); } Object.assign(r, fields); write(rows); };
 switch (op) {
   case "next": out(next); break;
+  case "last": out(rows.at(-1)?.n); break; // the newest generation number
   case "append": { // product instance health [reason] [revert_of] [lkg]
     const [product, instance, health, reason, revertOf, lkg] = a;
     if (!/^[0-9a-f]{40}$/.test(product) || !/^[0-9a-f]{40}$/.test(instance)) { console.error("generation: product and instance must be full shas"); process.exit(1); }

@@ -11,7 +11,7 @@ import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,18 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
+/** A product tree from before this change also has no restoreRunnerTemplate: drop the function and both calls, as the real
+ * historical script has neither. */
+const withoutRunnerRestore = (text) => {
+  const start = text.indexOf("restoreRunnerTemplate() {");
+  const end = text.indexOf("# Generation n failed (marked so already)", start);
+  assert.ok(start > 0 && end > start, "the function is found");
+  return text.slice(0, start) + text.slice(end)
+    .replace(/^  restoreRunnerTemplate .*\n(?:    .*\n)?/gm, "")
+    // The generation path sources the helper before its checkout; a tree without the helper has neither.
+    .replace(/^  \. ops\/lib\/ci-runner-enabled\.sh\n/gm, "");
+};
+
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
 
 // The product's fakes. compile writes what the instance and the product's VERSION say (staged or not) and fails on
@@ -115,7 +127,8 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   // an install link in a target's .wants dir (the tests write it) and only `is-enabled` names it. ctrl/runners lists the
   // instance names is-enabled reports enabled; ctrl/masked the ones it reports masked. `show` is what health() reads on a
   // /healthz timeout; journalctl tails the journal.
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*aidenhq-apply-recover*) exit 0 ;;\n  *is-enabled*) exit 1 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi
+    if [ -f "$CTRL/masked-runtime" ] && grep -qxF -- "$unit" "$CTRL/masked-runtime"; then echo masked-runtime; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*aidenhq-apply-recover*) exit 0 ;;\n  *is-enabled*) exit 1 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    [ -f "$CTRL/runner-reload-fails-desc" ] && grep -qF -- "$(cat "$CTRL/runner-reload-fails-desc")" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    [ -f "$CTRL/runner-reload-fails-once-desc" ] && grep -qF -- "$(cat "$CTRL/runner-reload-fails-once-desc")" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { rm -f "$CTRL/runner-reload-fails-once-desc"; echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
   // The user unit dir systemd loads, where enablement links live: HOME is the world's temporary home.\n  "systemd-analyze": `#!/usr/bin/env bash\nprintf 'systemd-analyze %s\\n' "$*" >> "$CALLS"\ncase "$*" in *--user*unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
@@ -195,6 +208,10 @@ function world() {
   const p1 = commitProduct("1");
   git(root, "clone", "-q", d("p.git"), "prod");
   mkdirSync(d("prod", "scripts/node_modules"), { recursive: true });
+  // The user unit dir the fake systemd-analyze names, with the default target the runner tests' `.wants` dir belongs to: a
+  // dependency dir of a target that has no unit file is not loaded, so every target they use must exist.
+  mkdirSync(d("home", ".config/systemd/user"), { recursive: true });
+  for (const t of ["default.target", "timers.target"]) writeFileSync(d("home", ".config/systemd/user", t), `[Unit]\nDescription=${t}\n`);
   // A host that has applied P1 before (a first install has no applied-product: see the fresh-install test).
   mkdirSync(d("prod", "data"), { recursive: true });
   writeFileSync(d("prod", "data/applied-product"), `${p1}\n`);
@@ -238,7 +255,7 @@ function world() {
     assert.equal(gens().at(-1).instance, head("inst"));
     assert.throws(() => git(d("inst"), "symbolic-ref", "-q", "HEAD"), "detached");
   };
-  return { d, p1, i1, commitProduct, commitInstance, run, start, sh, gens, head, revertedTo, calls: () => readFileSync(d("calls"), "utf8") };
+  return { d, p1, i1, commitProduct, commitInstance, run, start, sh, gens, head, revertedTo, env, calls: () => readFileSync(d("calls"), "utf8") };
 }
 
 // Each test builds its own world (temp repos, HOME, state dir, apply lock and env), so they run side by side.
@@ -350,12 +367,18 @@ test("the CI runner unit template follows the applied checkout, only while runne
   assert.equal(template(), "[Unit]\nDescription=old\n", "a plain file under .wants is not an enablement link");
   rmSync(join(wants, "aidenhq-ci-runner@3.service"));
 
-  // Dangling: the link's target is gone, so systemd reads the instance as not-found.
+  // Dangling: systemd resolves the dependency by name, so with the template still in a unit dir the link declares the
+  // instance even though its destination is gone (is-enabled reads `enabled` on systemd 262 with --root). It installs.
   symlinkSync(join(units, "gone@.service"), join(wants, "aidenhq-ci-runner@4.service"));
   writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@4.service\n");
-  old();
+  const dangling = await again();
+  assert.match(dangling.out, /ci runner unit template installed\/updated/, "a link whose name resolves still enables the unit");
+  // ...and with no template left in any unit dir, the name resolves nowhere: systemd reads the instance not-found, it
+  // declares nothing, and no template is installed.
+  rmSync(join(units, "aidenhq-ci-runner@.service"));
   await again();
-  assert.equal(template(), "[Unit]\nDescription=old\n", "a dangling install link installs nothing");
+  assert.ok(!existsSync(join(units, "aidenhq-ci-runner@.service")), "with the template gone the instance's name resolves nowhere");
+  old();
 
   // A disabled instance (its link removed) leaves the template as the operator has it.
   rmSync(join(wants, "aidenhq-ci-runner@4.service"));
@@ -370,18 +393,6 @@ test("the CI runner unit template follows the applied checkout, only while runne
 // shell, so the helper must already be loaded: sourcing it after the checkout would abort on a missing file (a failed
 // source under errexit) and the rollback would never land. That ordering is what this pins; it cannot be observed end to
 // end without building a pre-change product, which would itself need the old script.
-// A pin rollback ("revert the pin and apply") also reaches the hand-over: an older product that predates the helper but
-// supports AIDENHQ_APPLY_BEFORE would be re-exec'd, and its list-unit-files gate never fires, so the newer template would
-// stay installed and the next runner start would name an ExecStartPre script that product removed. The helper is
-// therefore not in the hand-over list; the change to this script is what triggers it.
-test("the runner helper is not in the apply hand-over list", () => {
-  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
-  const line = text.split("\n").find((l) => l.includes("git diff --quiet \"$before\" \"$product\" -- ops/apply-config.sh"));
-  assert.ok(line, "the hand-over list is found");
-  assert.ok(!line.includes("ops/lib/ci-runner-enabled.sh"), `the helper does not re-exec an older worker: ${line}`);
-  assert.ok(line.includes("ops/apply-config-work.sh"), "this script is still in it, so its own change hands over");
-});
-
 test("the runner helper is loaded before any checkout, so a rollback to a product without it still applies", () => {
   const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
   const main = text.slice(text.indexOf("\nmain() {"), text.indexOf("\n# Step 3:", text.indexOf("\nmain() {")));
@@ -390,6 +401,288 @@ test("the runner helper is loaded before any checkout, so a rollback to a produc
   assert.ok(source > 0, "main() loads the runner helper");
   assert.ok(checkout > 0, "main() checks out the product");
   assert.ok(source < checkout, "and does so before the checkout");
+});
+
+// A pin rollback ("revert the pin and apply") also reaches the hand-over: an older product that predates the helper but
+// supports AIDENHQ_APPLY_BEFORE would be re-exec'd, and its list-unit-files gate never fires, so the newer template would
+// stay installed and the next runner start would name an ExecStartPre script that product removed. The hand-over is
+// therefore guarded on the target carrying the helper.
+test("the apply hand-over requires the target to carry the runner helper", () => {
+  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const line = text.split("\n").find((l) => l.includes("git diff --quiet \"$before\" \"$product\" -- ops/apply-config.sh"));
+  assert.ok(line, "the hand-over list is found");
+  assert.ok(line.includes("ops/lib/ci-runner-enabled.sh"), "the helper is in it, so a change to it alone hands over");
+  assert.ok(line.includes("ops/apply-config-work.sh"), "this script is still in it, so its own change hands over");
+  const guard = text.split("\n").find((l) => l.includes("git cat-file -e \"$product:ops/lib/ci-runner-enabled.sh\""));
+  assert.ok(guard, "and the hand-over is guarded on the target having the helper");
+});
+
+// A pin rollback ("revert the pin and apply") reaches the hand-over with this script still running: the product checked
+// out is the older one, whose own apply-config-work.sh differs, so without a guard it would be re-exec'd — and a product
+// from before the helper gates with list-unit-files, which never fires, leaving the newer runner template installed and
+// the next start naming an ExecStartPre script that product may not have. The hand-over therefore requires the target to
+// carry the helper; an older product stays in this apply, which installs its own template.
+test("a pin rollback to a product without the runner helper runs this apply, not the older worker", async () => {
+  const w = world();
+  const script = w.d("pw/ops/apply-config-work.sh");
+  const current = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const templateFile = w.d("pw/ops/units/aidenhq-ci-runner@.service");
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  // An enabled runner instance, as `systemctl --user enable` leaves one.
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+
+  // P2: the product from before the helper, with its own template.
+  const old = withoutRunnerRestore(current
+    .replace("  . ops/lib/ci-runner-enabled.sh\n", "")
+    .replace('  if [ -n "$(ci_runner_enabled_units)" ]; then', "  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then"));
+  assert.ok(!old.includes(". ops/lib/ci-runner-enabled.sh"), "the old product does not source the helper");
+  assert.ok(old.includes("list-unit-files --state=enabled"), "and gates with the dead list-unit-files form");
+  assert.notEqual(old, current, "and its script differs from this product's");
+  writeFileSync(script, old);
+  rmSync(w.d("pw/ops/lib/ci-runner-enabled.sh"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p2\n");
+  const p2 = w.commitProduct("2");
+  w.commitInstance(p2);
+  // P3: this change, with a newer template.
+  writeFileSync(script, current);
+  writeFileSync(w.d("pw/ops/lib/ci-runner-enabled.sh"), readFileSync(join(repo, "ops/lib/ci-runner-enabled.sh"), "utf8"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p3\n");
+  const p3 = w.commitProduct("3");
+  w.commitInstance(p3);
+  // The host runs P3 with its template installed.
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=p3\n");
+  assert.equal((await w.run("--force")).status, 0);
+
+  // The pin rollback: the instance's main goes back to P2, and an apply runs from the P3 checkout.
+  w.commitInstance(p2);
+  const rolled = await w.run();
+  assert.equal(rolled.status, 0, rolled.out);
+  assert.equal(git(w.d("prod"), "rev-parse", "HEAD"), p2, "P2 is what runs");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=p2\n", "P2's own template is installed, not left at P3's");
+});
+
+// A pin rollback that fails its health check is re-applied by the generation's own product, and that product may predate
+// the runner helper: its gate then reads list-unit-files (never true on a live host) and leaves the failed generation's
+// template installed, on the units it is bringing back and whose ExecStartPre may name a script it doesn't have. The auto-
+// revert puts the template of the generation it returns to back before that child runs, so a rollback that fails ends up
+// with the template of the product the host actually stays on.
+test("a failed pin rollback to a product without the runner helper puts that product's template back", async () => {
+  const w = world();
+  const script = w.d("pw/ops/apply-config-work.sh");
+  const current = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const templateFile = w.d("pw/ops/units/aidenhq-ci-runner@.service");
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+
+  // P2: the product from before the helper, with its own template, and a health check that fails.
+  const old = withoutRunnerRestore(current
+    .replace("  . ops/lib/ci-runner-enabled.sh\n", "")
+    .replace('  if [ -n "$(ci_runner_enabled_units)" ]; then', "  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then"));
+  assert.ok(!old.includes(". ops/lib/ci-runner-enabled.sh"), "the old product does not source the helper");
+  assert.ok(old.includes("list-unit-files --state=enabled"), "and gates with the dead list-unit-files form");
+  writeFileSync(script, old);
+  rmSync(w.d("pw/ops/lib/ci-runner-enabled.sh"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  w.commitInstance(p2);
+  // P3: this change, healthy, with a newer template.
+  writeFileSync(script, current);
+  writeFileSync(w.d("pw/ops/lib/ci-runner-enabled.sh"), readFileSync(join(repo, "ops/lib/ci-runner-enabled.sh"), "utf8"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p3\n");
+  const p3 = w.commitProduct("3", {}, ["BAD_HEALTH"]);
+  w.commitInstance(p3);
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=p3\n");
+  assert.equal((await w.run("--force")).status, 0);
+
+  // The pin goes back to P2 and that apply fails its health check, so the auto-revert returns to the P3 generation.
+  writeFileSync(w.d("ctrl/break"), "");
+  w.commitInstance(p2);
+  const rolled = await w.run();
+  assert.equal(rolled.status, 1, rolled.out);
+  const g = w.gens();
+  assert.equal(g[2].health, "failed");
+  assert.match(g[2].reason, /checks that passed before the apply fail now/);
+  assert.equal(g[3].revert_of, 3, "the failed pin rollback was reverted");
+  assert.equal(w.head("prod"), g[3].product, "the product is back at the last known good");
+  // The failing worker put P3's template back before starting the revert, because the re-applied generation's own script
+  // predates the restore: P2's ExecStartPre is not left on units that P3's scripts don't serve. A revert whose template
+  // cannot be put back (a failed reload here) is not reported as a good revert.
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=p3\n", "the template is the one the hosted product carries, not P2's");
+});
+
+// A revert's own line is recorded good only by the parent, after it has seen the template systemd ends with: the child that
+// re-applies the last known good leaves the line pending when the parent asked it to verify (AIDENHQ_REVERT_VERIFY), so an
+// apply that dies between the two is found unsettled by the next one rather than read as a good revert.
+test("a revert whose parent asked to verify leaves its generation pending", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  const shipped = readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8");
+  mkdirSync(wants, { recursive: true });
+  // The install link points at the unit-dir template, which must exist for the name to resolve (an enabled instance).
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  // The world starts with P1 already applied (data/applied-product), so apply it again: the template is what this switch installs.
+  const first = await w.run("--force");
+  assert.equal(first.status, 0, first.out);
+  const good = w.gens().at(-1);
+  assert.equal(good.health, "good");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), shipped, "the switch installed P1's template");
+  // The parent's child: the same re-apply, told to leave the verdict to the parent.
+  // The work script is the locked entry point's body: hand it fd 9 on data/apply.lock as ops/apply-config.sh does.
+  const child = await new Promise<{ status: number; out: string }>((resolve) => {
+    execFile("bash", ["-c", `exec 9>>data/apply.lock; flock 9; exec bash ops/apply-config-work.sh --generation ${good.n}`],
+      { cwd: w.d("prod"), env: { ...w.env(), AIDENHQ_APPLY_LOCKED: "1", AIDENHQ_REVERT_VERIFY: "1", AIDENHQ_REVERT_OF: String(good.n) } },
+      (error, stdout, stderr) => resolve({ status: error ? (error.code as number) : 0, out: `${stdout}${stderr}` }));
+  });
+  assert.equal(child.status, 0, child.out);
+  const revert = w.gens().at(-1);
+  assert.notEqual(revert.n, good.n, "the child recorded its own generation");
+  assert.equal(revert.health, "pending", "not good until the parent checks the template");
+  assert.equal(revert.revert_of, good.n);
+  assert.match(child.out, /the revert's template check decides it/);
+  // The template is that generation's, so the parent's check would have passed it: nothing here rewrote it.
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), shipped);
+});
+
+// The revert's restore follows the same decision as a normal install: a host that has disabled every runner instance
+// keeps its template as it is. Without that gate the revert would rewrite a template no enablement points at (one the
+// operator customized, say) on an apply that failed for an unrelated reason.
+test("a failed apply on a host with no enabled runner instance does not rewrite the template", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(units, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=custom\n");
+  writeFileSync(w.d("ctrl/break"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  w.commitInstance(p2);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens();
+  assert.equal(g[1].health, "failed", "the generation failed");
+  assert.equal(g[2].revert_of, 2, "and was reverted to the last known good");
+  assert.equal(w.head("prod"), g[2].product, "the product is back at the last known good");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=custom\n", "the operator's template is untouched by the failed apply and its revert");
+});
+
+// A masked instance keeps its install link (that is what `systemctl --user mask` leaves) but will not start. The revert's
+// restore must read that mask like the normal install does, or it would write a plain file over the operator's /dev/null
+// mask and silently unmask the runner.
+test("a failed revert does not unmask a masked runner instance", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  writeFileSync(w.d("ctrl/masked"), "aidenhq-ci-runner@3.service\n");
+  writeFileSync(w.d("ctrl/break"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "" });
+  w.commitInstance(p2);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  assert.equal(w.gens()[1].health, "failed");
+  // The instance is masked: nothing counts as enabled, so the template is exactly as the host had it (absent here).
+  assert.ok(!existsSync(join(units, "aidenhq-ci-runner@.service")), "a masked runner never makes the revert write a template");
+});
+
+// A host whose installed template is a symlink to a file since removed: `cp` refuses to write through a dangling link, so
+// the install removes it first rather than failing an apply that only means to put its own template in place. The runner
+// resolves here through its own instance unit file, so the gate is on and the copy runs.
+test("a dangling template symlink in the unit dir does not fail the install", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  symlinkSync(join(units, "gone@.service"), join(units, "aidenhq-ci-runner@.service"));
+  writeFileSync(join(units, "aidenhq-ci-runner@3.service"), "[Unit]\nDescription=instance\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@3.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /ci runner unit template installed\/updated/);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the dangling symlink is replaced by the product's template");
+  assert.ok(!existsSync(join(units, ".aidenhq-ci-runner@.service.tmp")), "the replacement left no temp file");
+});
+
+// `mv` treats a directory destination as "move inside": a template path that is a directory would take the temp file and
+// report success, and the switch would reload systemd and record a template that was never installed. The rename is exact
+// (-T), so the install fails the switch instead. The runner is enabled through its own instance unit file (a directory named
+// after the template resolves nothing), which is the only way this path is reached.
+test("a template path that is a directory fails the install instead of swallowing the copy", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@3.service"), "[Unit]\nDescription=instance\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@3.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  mkdirSync(join(units, "aidenhq-ci-runner@.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /ci runner unit template: could not be written to/, "the install reported the failed write");
+  assert.deepEqual(readdirSync(join(units, "aidenhq-ci-runner@.service")), [], "nothing was moved into the directory");
+  assert.ok(!readdirSync(units).some((n) => n.startsWith(".aidenhq-ci-runner@.service.")), "the staging file is cleaned up");
+  assert.ok(!existsSync(w.d("state/ci-runner-template.reloaded")), "and no loaded template was recorded");
+});
+
+// The operator masks the template itself (`systemctl --user mask aidenhq-ci-runner@`, a /dev/null link on the template) while
+// an instance has a unit file of its own: that instance is enabled, so the gate is on, but the mask is still their decision.
+// Writing the template over /dev/null would let every retained install link start again.
+test("an apply never writes over a masked runner template", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@3.service"), "[Unit]\nDescription=instance\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@3.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  symlinkSync("/dev/null", join(units, "aidenhq-ci-runner@.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /ci runner unit template is masked: left as it is/);
+  assert.equal(readlinkSync(join(units, "aidenhq-ci-runner@.service")), "/dev/null", "the mask is kept");
+});
+
+// systemd reads a zero-length unit file as masked too, not only a /dev/null link. The installer must keep that mask: writing
+// over it would let every retained install link start again.
+test("an empty-file mask on the runner template is kept", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@3.service"), "[Unit]\nDescription=instance\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@3.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "");
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /ci runner unit template is masked: left as it is/);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "", "the empty mask is kept");
+});
+
+// A runtime mask (`systemctl --user mask --runtime`) lives outside the install dir and hides the template there after a
+// reload: writing our file into this dir would shadow it, so the template is left alone while that mask is in effect.
+test("a runtime-masked runner template is left alone", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=operator\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  writeFileSync(w.d("ctrl/masked-runtime"), "aidenhq-ci-runner@.service\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /ci runner unit template is masked: left as it is/);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=operator\n", "the runtime mask is not shadowed");
 });
 
 // A copied runner template systemd never reloaded is not what runs: a failed daemon-reload fails the switch, so the
@@ -407,7 +700,7 @@ test("a failed runner daemon-reload fails the switch instead of marking the gene
   writeFileSync(w.d("ctrl/runner-reload-fails"), "");
   const r = await w.run();
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /ci runner unit template: daemon-reload failed/);
+  assert.match(r.out, /ci runner unit template: daemon-reload or its reload stamp failed/);
   assert.match(r.out, /generation 2 failed: the switch failed \(exit 1\)/, "the switch reported the reload failure");
   assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template was copied");
   assert.ok(!existsSync(w.d("state/ci-runner-template.reloaded")), "a failed reload leaves no stamp");
@@ -417,6 +710,154 @@ test("a failed runner daemon-reload fails the switch instead of marking the gene
   assert.equal(retry.status, 0, retry.out);
   assert.match(retry.out, /ci runner unit template installed\/updated/, "the retry reloads the copied template");
   assert.match(readFileSync(w.d("state/ci-runner-template.reloaded"), "utf8").trim(), /^[0-9a-f]{40}$/, "and then records it");
+});
+
+// The stamp can be stale while systemd has the right template: the failed generation's switch reloads for a unit of its own,
+// which loads the restored runner template too, then fails. The child's health check passes. The parent must redo the checked
+// reload (file already in place) rather than mark a good revert failed.
+test("a revert whose stamp is stale but whose template systemd loaded is recorded as good", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  const templateFile = w.d("pw/ops/units/aidenhq-ci-runner@.service");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  writeFileSync(templateFile, "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  const p2 = w.commitProduct("2");
+  w.commitInstance(p2);
+  assert.equal((await w.run()).status, 0);
+  writeFileSync(templateFile, "[Unit]\nDescription=p3\nExecStartPre=/bin/false\n");
+  const p3 = w.commitProduct("3", { BAD_HEALTH: "" });
+  w.commitInstance(p3);
+  writeFileSync(w.d("ctrl/break"), "");
+  writeFileSync(w.d("ctrl/runner-reload-fails-once-desc"), "Description=p2");
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const revert = w.gens().at(-1);
+  assert.equal(revert.revert_of, 3);
+  assert.equal(revert.health, "good", "the template is the returning generation's");
+  assert.match(readFileSync(w.d("state/ci-runner-template.reloaded"), "utf8").trim(), /^[0-9a-f]{40}$/, "a stamp is recorded");
+});
+
+// The revert is judged by what systemd has at the end, not by one attempt: a parent restore whose reload failed, retried by
+// the returning tree's own switch, is a good revert (no false alarm, and no checkpoint restore the operator does not need).
+test("a revert whose template reload is retried by its own switch is recorded as good", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  const templateFile = w.d("pw/ops/units/aidenhq-ci-runner@.service");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  writeFileSync(templateFile, "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  const p2 = w.commitProduct("2");
+  w.commitInstance(p2);
+  assert.equal((await w.run()).status, 0);
+  writeFileSync(templateFile, "[Unit]\nDescription=p3\nExecStartPre=/bin/false\n");
+  const p3 = w.commitProduct("3", { BAD_HEALTH: "" });
+  w.commitInstance(p3);
+  writeFileSync(w.d("ctrl/break"), "");
+  // The apply's own reload of P3's template is fine; putting P2's back fails once, and the revert's switch retries it.
+  writeFileSync(w.d("ctrl/runner-reload-fails-once-desc"), "Description=p2");
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const revert = w.gens().at(-1);
+  assert.equal(revert.revert_of, 3);
+  assert.equal(revert.health, "good", "the returning tree reloaded the template itself, so the revert is good");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n", "and the template is the last known good's");
+  assert.doesNotMatch(r.out, /the runner template is still not generation/, "no false alarm");
+});
+
+// The last known good predates the helper, so the worker that re-applies it cannot gate or reload the runner template: only
+// the parent's restore can put that template back, and if it cannot, the child's switch (that old tree's own) fails the
+// revert. The parent must not let it read as good on a health check alone.
+test("a revert whose runner template is still not back is not recorded as good", async () => {
+  const w = world();
+  const script = w.d("pw/ops/apply-config-work.sh");
+  const current = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const templateFile = w.d("pw/ops/units/aidenhq-ci-runner@.service");
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  // P2: the last known good, from before the helper, with its own runner template.
+  const old = withoutRunnerRestore(current
+    .replace("  . ops/lib/ci-runner-enabled.sh\n", "")
+    .replace('  if [ -n "$(ci_runner_enabled_units)" ]; then', "  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then"));
+  writeFileSync(script, old);
+  rmSync(w.d("pw/ops/lib/ci-runner-enabled.sh"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  const p2 = w.commitProduct("2");
+  w.commitInstance(p2);
+  // The host runs P2, with P2's template installed.
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=p2\nExecStartPre=/bin/true\n");
+  assert.equal((await w.run("--force")).status, 0);
+  // P3: this change, with a newer template and a failing health check.
+  writeFileSync(script, current);
+  writeFileSync(w.d("pw/ops/lib/ci-runner-enabled.sh"), readFileSync(join(repo, "ops/lib/ci-runner-enabled.sh"), "utf8"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p3\nExecStartPre=/bin/false\n");
+  const p3 = w.commitProduct("3", { BAD_HEALTH: "" });
+  w.commitInstance(p3);
+
+  writeFileSync(w.d("ctrl/break"), "");
+  // The runner is enabled through an instance file of its own, and the template path is a directory: the parent's restore
+  // (with -T) cannot put P2's template back, and P2's worker never tries. The revert must not read as good then.
+  writeFileSync(join(units, "aidenhq-ci-runner@3.service"), "[Unit]\nDescription=instance\n");
+  rmSync(join(units, "aidenhq-ci-runner@.service"));
+  rmSync(join(wants, "aidenhq-ci-runner@3.service"));
+  symlinkSync(join(units, "aidenhq-ci-runner@3.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  mkdirSync(join(units, "aidenhq-ci-runner@.service"));
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens();
+  assert.equal(g.at(-2).health, "failed", "the failed generation is recorded");
+  const revert = g.at(-1);
+  assert.equal(revert.revert_of, g.at(-2).n, "the failed apply was reverted");
+  assert.equal(revert.health, "failed", "the revert is not recorded as good with no template put back");
+  assert.match(r.out, /the revert to generation .* failed too/, "the alert says the revert failed");
+});
+
+// A reload whose stamp cannot be written leaves no record of what systemd loaded: the switch fails rather than report the
+// template installed, so the next apply reloads again (and a revert is judged by the stamp that exists).
+// A template replaced but not yet reloaded is not what systemd has: the stamp from the previous one is dropped before the
+// rename, so a kill in between cannot leave a stamp claiming systemd loaded the new file. A later apply reloads it.
+test("a replaced template drops the previous reload stamp", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  // A stamp from some other template the host once loaded.
+  mkdirSync(w.d("state"), { recursive: true });
+  writeFileSync(w.d("state/ci-runner-template.reloaded"), "0000000000000000000000000000000000000000\n");
+  const calls = w.calls().length;
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(w.calls().slice(calls), /daemon-reload/, "the reload happened");
+  assert.match(readFileSync(w.d("state/ci-runner-template.reloaded"), "utf8").trim(), /^[0-9a-f]{40}$/);
+  assert.notEqual(readFileSync(w.d("state/ci-runner-template.reloaded"), "utf8").trim(), "0000000000000000000000000000000000000000", "the stale stamp was replaced");
+});
+
+test("a reload stamp that cannot be written fails the switch", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+  // The stamp cannot be written: a directory sits where its temporary file goes.
+  mkdirSync(join(w.d("state/ci-runner-template.reloaded.tmp")), { recursive: true });
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /ci runner unit template: daemon-reload or its reload stamp failed/);
+  assert.match(r.out, /generation 2 failed: the switch failed \(exit 1\)/, "the switch reported it");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {
@@ -613,7 +1054,9 @@ const reverted = (w) => {
   w.revertedTo(w.p1);
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
-  assert.match(readFileSync(w.d("state/apply-4.log"), "utf8"), /generation 4: re-applying generation 2[\s\S]*compose: recreated what moved[\s\S]*generation 4 is good/);
+  // The revert's own line is finalized by the parent, after it checks the template systemd ends with: an apply killed
+  // between the child's health check and that check leaves it pending, so the next recovery reverts again.
+  assert.match(readFileSync(w.d("state/apply-4.log"), "utf8"), /generation 4: re-applying generation 2[\s\S]*compose: recreated what moved[\s\S]*generation 4 passed its health check; the revert's template check decides it/);
 };
 
 test("an apply SIGKILLed mid-compose is reverted to the last known good by the next apply, which then holds the dead pair", async () => {
