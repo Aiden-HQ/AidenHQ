@@ -34,8 +34,8 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, r
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
-import { brief, fence, SCENARIO } from "./brief.ts";
-import type { Excluded } from "./brief.ts";
+import { brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
+import type { Cleaned, Excluded, Severity } from "./brief.ts";
 import { checklistText, globRe, matchChecklist } from "./review-checklist.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
@@ -43,7 +43,6 @@ import { plain, readSmall } from "./proc.ts";
 import { page, tools } from "./review-tools.ts";
 import type { Combo, EngineResult } from "./engines.ts";
 
-type Severity = "important" | "nit" | "pre_existing";
 type Git = (args: string[]) => string;
 /** The review job's spec ($AIDENHQ_SPEC): the PR and the heads to review; combo and previous are JSON text. */
 export interface Spec {
@@ -58,7 +57,6 @@ export interface Spec {
   budget_usd?: number | string; setup_files?: string;
 }
 interface Changed { path: string; added: number; removed: number; binary: boolean }
-interface Cleaned { severity: Severity; path: string; line: number; end_line?: number; title: string; why: string; evidence: string; fix_brief: string }
 type Placed = Cleaned & { id: string; option?: string; lens?: string };
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -74,7 +72,6 @@ interface Result {
   /** A note on coverage that isn't a gap (an engine that doesn't report what it read); never posted, never incomplete. */
   coverage_note?: string;
 }
-const SEVERITIES = ["important", "nit", "pre_existing"];
 const RANK: Record<Severity, number> = { important: 0, nit: 1, pre_existing: 2 };
 const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"];
 // Excluded unless the reviewer's own globs say otherwise: lockfiles, generated code, build output, minified bundles (made, not
@@ -91,7 +88,6 @@ const LENSES = [
   "contracts: callers, APIs, types, schemas and migrations the change breaks, and tests that no longer prove the behaviour",
 ];
 
-const cap = (s: unknown, n: number) => String(s ?? "").replace(/\u0000/g, "").slice(0, n);
 
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. */
 export function history(ws: string, out: string, spec: Spec) {
@@ -270,46 +266,11 @@ ${fence(JSON.stringify(previous, null, 1), marker)}
 When you are done, your final message is only this JSON: {"fixed": ["<id>", ...], "still": ["<id>", ...], "unsafe": ["<id>", ...]}`;
 }
 
-// Credential shapes no review may carry out of the box: our tokens (ahqj_, ahqci_, ahqu_) and sk- style keys.
-const KEYS = /\bahq[a-z]{0,3}_[A-Za-z0-9._-]{8,}|\bsk-[A-Za-z0-9_-]{16,}/g;
-/**
- * An engine's result with credentials taken out of everything it hands back (its message, cause, coverage notes and setup files): the run's
- * own token (`secrets`; an engine with a shell could read it from the process tree) and any key-shaped text. The one point every
- * engine's output passes before it is mapped and posted.
- */
-export function scrub(r: EngineResult, secrets: unknown[] = [process.env.OPENROUTER_API_KEY]): EngineResult {
-  const known = secrets.filter((k) => typeof k === "string" && k.length >= 8) as string[];
-  const s = (t: string) => known.reduce((acc, k) => acc.replaceAll(k, "[redacted]"), t).replace(KEYS, "[redacted]");
-  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}),
-    ...(r.setup ? { setup: Object.fromEntries(Object.entries(r.setup).map(([p, t]) => [p, s(String(t))])) } : {}) };
-}
-
 /** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
 export function answer(message: unknown) {
   try { const j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; }
 }
 
-/** A raw finding's failure scenario: its failure_scenario, else a "Failure scenario:" line of its why (an engine with its own
- * answer format); "" when it has none that says something. */
-export const scenarioOf = (f: { failure_scenario?: unknown; why?: unknown }) => {
-  const s = typeof f.failure_scenario === "string" ? f.failure_scenario : /^\W*failure scenario\W*:\**\s*(.+)$/im.exec(String(f.why ?? ""))?.[1] ?? "";
-  return /\p{L}{2,}/u.test(s) ? cap(s, 1000).trim() : "";
-};
-
-/** The finders' raw findings, cleaned: known severity, a path and line, bounded text; paths made relative to the checkout. A
- * finding's failure_scenario leads its why (what the post shows). */
-export function clean(raw: unknown, root: string) {
-  const out: (Cleaned & { same_as?: string })[] = [];
-  for (const f of Array.isArray(raw) ? raw : []) {
-    if (!f || !SEVERITIES.includes(f.severity) || typeof f.path !== "string" || !Number.isInteger(f.line) || f.line < 1 || typeof f.title !== "string" || !f.title.trim()) continue;
-    const path = f.path.startsWith(`${root}/`) ? f.path.slice(root.length + 1) : f.path.replace(/^\.\//, "");
-    if (!path || path.startsWith("/") || path.split("/").some((p: string) => p === ".." || p === "")) continue;
-    const scenario = typeof f.failure_scenario === "string" ? scenarioOf(f) : "";
-    const why = scenario ? `${SCENARIO}${scenario}\n\n${String(f.why ?? "")}` : f.why;
-    out.push({ severity: f.severity, path, line: f.line, ...(Number.isInteger(f.end_line) && f.end_line >= f.line ? { end_line: f.end_line } : {}), title: cap(f.title, 120).trim(), why: cap(why, 2500), evidence: cap(f.evidence, 1500), fix_brief: cap(f.fix_brief, 1000), ...(typeof f.same_as === "string" && /^[0-9a-f]{16}$/.test(f.same_as) ? { same_as: f.same_as } : {}) });
-  }
-  return out;
-}
 
 /** The head file's lines for a tracked regular file the review read (never a link out of the tree), else undefined. */
 function linesOf(root: string, path: string, reviewed: Set<string>) {
@@ -498,7 +459,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const reviewedSet = new Set(reviewed), own = new Set(mine.reviewed), out_ = new Set([...excluded, ...mine.excluded].map((e) => e.path));
   // A finding that restates one already reported (the finder says so, or it has the same id) isn't reported again: it is still there.
   // An important finding without a failure scenario is a nit: code decides, never the model.
-  const cleaned = good.filter(Boolean).flatMap((j) => clean(j.findings, root)).map((f) => (f.severity === "important" && !scenarioOf(f) ? (result.downgraded++, { ...f, severity: "nit" as const }) : f));
+  const down = downgrade(good.filter(Boolean).flatMap((j) => clean(j.findings, root)));
+  result.downgraded += down.n;
+  const cleaned = down.findings;
   const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
   let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
   for (const f of candidates) if (restates(f, f.id)) restated.add(f.id);

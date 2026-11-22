@@ -237,7 +237,7 @@ export const cutShort = (content: unknown) =>
 
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
-type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string } };
+type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string; command?: string } };
 type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
 async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
@@ -435,8 +435,11 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions }));
   const r = await run("codex", ["exec", "review", "--base", base, "--ignore-rules", "--json", "-o", join(tmp, "answer.txt")], { cwd: root, minutes, env: codexEnv(home) });
   const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
-  // It read the change: a command it ran printed a diff. Not its exit code: codex chains commands.
-  const read = events.some((e) => e.type === "item.completed" && e.item?.type === "command_execution" && /^diff --git /m.test(String(e.item.aggregated_output ?? "")));
+  // It read the change: commands that name the requested base printed the diff of every file the change touches (a lockfile or
+  // generated file may be left out). `git show HEAD` or a cut-off output doesn't count: that is a part of the change.
+  const wanted = (() => { try { return execFileSync("git", ["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", base, "HEAD"], { cwd: root, encoding: "utf8" }).split("\n").filter((p) => p && !/(^|\/)(go\.sum|bun\.lockb)$|[-.]lock(\.json|\.yaml)?$|\.snap$|\.map$|\.min\.(js|css)$/.test(p)); } catch { return undefined; } })();
+  const shown = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution" && String(e.item.command ?? "").includes(base.slice(0, 7))).map((e) => String(e.item!.aggregated_output ?? "")).join("\n");
+  const read = /^diff --git /m.test(shown) && (wanted === undefined || wanted.every((p) => shown.includes(`diff --git a/${p} b/`)));
   let rollouts: string[] = [];
   try { rollouts = readdirSync(join(home, "sessions"), { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(home, "sessions", f), "utf8")); } catch {}
   const v = nativeReview(rollouts);
@@ -448,7 +451,7 @@ async function codexNative({ instructions, model, effort, root, base, minutes, s
     // Loud: what its commands said instead (a sandbox that wouldn't start, git refusing), so the cause is visible on the run.
     const cmds = events.filter((e) => e.type === "item.completed" && e.item?.type === "command_execution");
     const last = String(cmds.at(-1)?.item?.aggregated_output ?? "").replace(/\s+/g, " ").trim().slice(-300);
-    return { message: "", read, cause: `it never read the diff: ${cmds.length} command${cmds.length === 1 ? "" : "s"} ran${last ? `; the last printed: ${last}` : ""}` };
+    return { message: "", read, cause: `it never read the whole diff: ${cmds.length} command${cmds.length === 1 ? "" : "s"} ran${last ? `; the last printed: ${last}` : ""}` };
   }
   return { message: JSON.stringify({ findings: nativeFindings(v!, [root.replace(/\/$/, ""), realpathSync(root)]), stale_guidance: [] }), read, untracked: "codex review read the change with git itself, so which parts it read isn't tracked" };
 }
