@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ModulesView } from "../../web/src/Modules";
-import { SetupButton } from "../../web/src/SetupButton";
+import { SetupButton, forgetFlows } from "../../web/src/SetupButton";
 import type { ConnectionsData } from "../../web/src/connections";
 import type { ModuleRow } from "../../web/src/types";
 
@@ -14,6 +14,7 @@ import type { ModuleRow } from "../../web/src/types";
 /** The page's EventSource, so a test can send the server's `setup` event. */
 class FakeEventSource {
   static last: FakeEventSource | undefined;
+  static readonly CLOSED = 2;
   readyState = 0;
   onerror: (() => void) | null = null;
   readonly listeners = new Map<string, Set<(e: { data: string }) => void>>();
@@ -28,6 +29,15 @@ class FakeEventSource {
     for (const h of this.listeners.get(name) ?? []) h({ data });
   }
   close() {}
+  /** Closes the shared stream as the events module sees a browser do it, so a test starts without one. */
+  static reset() {
+    const last = FakeEventSource.last;
+    if (last) {
+      last.readyState = 2;
+      last.onerror?.();
+    }
+    FakeEventSource.last = undefined;
+  }
 }
 
 const mod = (): ModuleRow => ({
@@ -67,6 +77,7 @@ let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
+  FakeEventSource.reset();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -188,9 +199,13 @@ describe("the Modules list's setup state", () => {
     await act(async () => root!.render(createElement(SetupButton, { module: "github" })));
     await settle();
     // The old read lands last, with the state from before the flow completed: it must not stand.
+    // The remount reused the read already out rather than starting a second one beside it.
+    expect(s.reads.setup).toBe(1);
     await act(async () => s.release());
     await settle();
 
+    // Its answer predates the remount, so one follow-up read brings the real state.
+    expect(s.reads.setup).toBe(2);
     expect(again.textContent).toContain("Change setup");
     expect(again.textContent).not.toContain("Set up");
   });
@@ -246,5 +261,45 @@ describe("the Modules list's setup state", () => {
 
     expect(s.reads.setup).toBe(2);
     expect(el.textContent).toContain("Change setup");
+  });
+
+  it("starts no setup read or watcher while no view shows the flows", async () => {
+    const s = server();
+    vi.stubGlobal("fetch", s.fetchMock);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const before = FakeEventSource.last;
+
+    // A pairing on a setup page (SetupFlow's `forgetFlows`) must not create a stream or a read with nothing subscribed.
+    forgetFlows();
+    await settle();
+
+    expect(FakeEventSource.last).toBe(before);
+    expect(s.reads.setup).toBe(0);
+  });
+
+  it("shows a view mounted later the flows already read, without reading them again", async () => {
+    const s = server();
+    vi.stubGlobal("fetch", s.fetchMock);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const first = await renderModules();
+    expect(first.textContent).toContain("Needs setup");
+    expect(s.reads.setup).toBe(1);
+
+    // A second view mounts with the flows already in the store: its first render has them, and no new read starts.
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    const second = createRoot(el);
+    await act(async () => second.render(createElement(SetupButton, { module: "github" })));
+    expect(el.textContent).toContain("Set up");
+    expect(s.reads.setup).toBe(1);
+
+    // The change reaches both views from the one shared subscription.
+    s.state.done = true;
+    act(() => FakeEventSource.last!.emit("setup"));
+    await act(async () => void (await new Promise((r) => setTimeout(r, 350))));
+    await settle();
+    expect(el.textContent).toContain("Change setup");
+    expect(first.textContent).not.toContain("Needs setup");
+    act(() => second.unmount());
   });
 });
