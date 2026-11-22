@@ -294,6 +294,24 @@ describe("posting", () => {
     expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toHaveLength(1);
   });
 
+  it("recovers a review's inline comment ids from its threads when the review's comments can never be listed: no second review, no lost threads", async () => {
+    // GitHub makes the review, then its comment list keeps failing (a 502 every time). The threads it made still carry its run's
+    // marker and each finding's, so the ids are read from there: the service's record of its own threads is never lost, which is
+    // what lets a later run answer or resolve them.
+    const args = postArgs(review([finding("f_lost_1", "src/pay.ts", 2)]));
+    const w = world({ threads: [thread("T_lost", "f_lost_1", "owner1", 701)] });
+    const broken = (async (u: URL | string, i?: RequestInit) => {
+      if ((i?.method ?? "GET") === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(new URL(String(u)).pathname)) return new Response("boom", { status: 502 });
+      return w.impl(u, i);
+    }) as typeof fetch;
+    w.state.threads = [{ ...thread("T_lost", "f_lost_1", "owner1", 701), comments: { nodes: [{ databaseId: 701, url: "u", body: `<!-- aidenhq-review-run: ${args.run} -->\n<!-- aidenhq-finding: f_lost_1 -->\nbody`, author: { login: "owner1" } }] } }];
+    const p = new ReviewPoster(new GitHub(accessFor((u, i) => broken(u, i)), broken), accessFor((u, i) => broken(u, i)));
+    const out = JSON.parse((await p.execute("post", args)).text);
+    expect(out.comments).toEqual([701]);
+    expect(w.state.reviews).toHaveLength(1);
+    expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toHaveLength(1);
+  });
+
   it("a create that failed but made the review is found on the pull request, not reported as not posted and not posted twice", async () => {
     // A timeout or a gateway that lost the reply: the POST fails after GitHub made the review. Reading the PR's reviews again
     // finds it by its run's marker, so the outcome names the review and no second one is created.

@@ -310,6 +310,70 @@ test("a refused post's notice is asked again for as long as its pull request is 
   assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
 });
 
+test("an acknowledgement queued behind a refused post's notice goes when that delivery fails, never parked on an answer that will not come", async () => {
+  // A notice already holds the PR's slot (filed, its comment's id still unknown), so the answer to `aiden review` waits behind it
+  // in the queue. The notice's own write then comes back refused: the delivery gives the slot up, and the queued answer must go
+  // now — never wait for an `acked()` that the failing path will not reach.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // the post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // its notice is filed; the comment's id isn't known yet, so the write holds the PR's slot
+  await w.tick({ github: false });
+  assert.equal(w.acks.length, 1, "the notice's own write");
+  // Someone asks for a review: its answer wants the same acknowledgement comment, so it queues behind the notice.
+  w.db.prepare("UPDATE runs SET notice_due = ? WHERE notice_write = 'k-9'").run(w.now() + 3_600_000);
+  const before = w.acks.length;
+  w.later(1000);
+  w.say(3, "alice", "aiden review");
+  await w.tick();
+  assert.equal(w.acks.length, before, "the answer waits for the notice's slot");
+  // The notice's write is refused (a stale record, which may post when filed again): its delivery gives up and retries later.
+  w.outcomes.set("k-9", { state: "refused", why: "write k-9 stale", retry: true });
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE notice_write = 'k-9'").run();
+  w.later(1000);
+  await w.tick({ github: false });
+  // The queued answer went on the same tick, not on some later answer.
+  assert.equal(w.acks.length, before + 1);
+  assert.equal(w.acks.at(-1).state, "queued");
+});
+
+test("a notice is not marked sent unless its comment's id was recorded with it: the id is never lost, and no second acknowledgement is made", async () => {
+  // The acknowledgement comment is made and its write is read back as done with its id, but writing that id fails (a crash, a
+  // full disk). Marking the notice sent while the id is lost is what would make the next notice file a second comment: the two
+  // land together, and a lost write leaves the notice pending with the write's id so its next tick learns the id instead.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // the notice's write is filed and its comment's id isn't known yet
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.acks.length, 1);
+  // Its write is read back as done with the comment it made, but recording that id fails.
+  w.outcomes.set("k-9", { state: "posted", ack: 424 });
+  w.db.exec("CREATE TRIGGER no_ack BEFORE UPDATE OF ack ON prs BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  w.later(1000);
+  await w.tick({ github: false });
+  // Neither half landed: the notice is still pending and still names the write that made the comment.
+  const row = w.db.prepare("SELECT notice, notice_write FROM runs WHERE id = ?").get(run.id);
+  assert.deepEqual([row.notice, row.notice_write], ["pending", "k-9"]);
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, null);
+  // The write can be recorded again: the notice learns the id and is marked sent, and no second comment is ever made.
+  w.db.exec("DROP TRIGGER no_ack");
+  w.later(20 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, 424);
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
+  assert.equal(w.acks.length, 1);
+});
+
 test("a refusal's retry state and its deadline are written together, and a retry row a restart left without one is filed again, never stranded", async () => {
   const w = world();
   w.posts.pending = true;

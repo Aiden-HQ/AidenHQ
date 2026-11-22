@@ -177,12 +177,33 @@ export function createEngine(d: EngineDeps) {
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
   /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
   const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
-  const acked = (repo: string, n: number, o: Posted | undefined, write?: string) => {
-    // A refused post's waiting notice whose own write the shared queue read as done is told; another notice on the same PR is
-    // not (its delivery reads its own record).
-    if (o?.state === "posted" && write) run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
-    if (o?.state === "pending" && o.write) return void acking.set(o.write, { repo, number: n });
-    if (o?.state === "posted" && o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
+  /** Records an acknowledgement's outcome; false when its comment's id could not be recorded (the notice stays pending). */
+  const acked = (repo: string, n: number, o: Posted | undefined, write?: string): boolean => {
+    if (o?.state === "pending" && o.write) return void acking.set(o.write, { repo, number: n }), true;
+    // The comment's id and the notices it settles are written in one transaction: the run that filed a notice must never be
+    // marked sent while the id of the comment it made is lost, or the next notice would make a second acknowledgement instead of
+    // editing that one.
+    if (o?.state === "posted" && (o.ack || write)) {
+      try {
+        tx(() => {
+          if (o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
+          // A refused post's waiting notice whose own write the shared queue read as done is told; another notice on the same PR
+          // is not (its delivery reads its own record).
+          if (write) run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
+        });
+      } catch (e) {
+        // Neither half landed: the notice is still pending with its write's id, so its next tick reads that record again and
+        // learns the comment's id. One half without the other is what would make a second acknowledgement.
+        log("notice's comment id not recorded; the notice asks again", { repo, pr: n, err: String((e as Error).message).slice(0, 200) });
+        release(repo, n);
+        return false;
+      }
+    }
+    release(repo, n);
+    return true;
+  };
+  /** A notice waiting behind another one on the same PR: the PR's slot is free, so it goes now rather than on some later answer. */
+  const release = (repo: string, n: number) => {
     const next = ackNext.get(`${repo}#${n}`);
     if (next) { ackNext.delete(`${repo}#${n}`); void ack(next); }
   };
@@ -624,6 +645,8 @@ export function createEngine(d: EngineDeps) {
       // A pull request closed before its notice landed: there is no head to ask again on, so that one is the end of it.
       if (await gone(r)) {
         run("UPDATE runs SET notice = 'failed' WHERE id = ?", r.id);
+        // This notice held the PR's slot: whatever was queued behind it goes now, not when some later answer happens to come.
+        release(r.repo, r.number);
         return log("refused post's notice not posted: the pull request closed first", { repo: r.repo, pr: r.number, run: r.id });
       }
       await deliverOnce(r);
@@ -668,12 +691,17 @@ export function createEngine(d: EngineDeps) {
         o = await d.poster.ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: r.why ?? "not posted: refused", ...(ack ? { ack } : {}) });
       } catch (e) {
         acking.delete(slot);
+        // A notice queued behind this one must not wait for an answer that never comes: the delivery gave up its slot.
+        release(r.repo, r.number);
         return noticeFailed(r, e);
       }
       acking.delete(slot);
     }
     if (o?.state === "posted") {
-      acked(r.repo, r.number, o);
+      // The record that made this comment is kept on the row first: if recording its id below is lost (a crash, a full disk), the
+      // next tick reads that same record back and learns the id, instead of filing a second acknowledgement comment.
+      if (o.write && r.notice_write !== o.write) run("UPDATE runs SET notice_write = ? WHERE id = ?", o.write, r.id);
+      if (!acked(r.repo, r.number, o, o.write)) return void run("UPDATE runs SET notice_due = ? WHERE id = ?", now() + NOTICE_RETRY, r.id);
       return void run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
     }
     // Its outcome says whether filing it again could change anything: a rejection or a cancel is final, a stale or failed
@@ -696,6 +724,9 @@ export function createEngine(d: EngineDeps) {
   const PERMANENT_NOTICE_TRIES = 3;
   function noticeFailed(r: RunRow, err: unknown, retry?: boolean) {
     const why = String((err as Error)?.message ?? err).slice(0, 300);
+    // Whatever this delivery did with the PR's slot, it is not holding it any more: an acknowledgement queued behind it goes now
+    // (and finds the comment's id if one was recorded), never waiting for an answer that will not come.
+    release(r.repo, r.number);
     // The executor refuses a notice on a pull request that isn't open or merged: it has nowhere left to go, so asking again can
     // only be refused again. That is the end of it (as for a PR whose close this service saw first), never a retry forever.
     if (/isn't open or merged/.test(why)) {
