@@ -83,7 +83,7 @@ export interface SavedView {
   rev: number;
 }
 
-export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
+export type CrewState = "needs" | "failed" | "working" | "queued" | "waiting" | "done";
 
 export interface CrewMember {
   agent: string;

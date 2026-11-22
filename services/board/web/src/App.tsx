@@ -191,9 +191,11 @@ interface Toast {
   action?: { label: string; run: () => void };
 }
 
+/** A cached board from before Agent work (no `work`) waits for the first read instead of painting. */
+const fresh = (b: Board | undefined) => (b && Array.isArray(b.work) ? b : undefined);
 /** The board this device last saw (cache.ts), with its Slack hosts set for links. */
 function cachedBoard(): Board | undefined {
-  const b = peek<Board>("board")?.data;
+  const b = fresh(peek<Board>("board")?.data);
   if (b) setSlackTeams(b.slackTeams ?? {});
   return b;
 }
@@ -278,7 +280,7 @@ export function App() {
     }, action ? 7000 : 3500);
   }, []);
   // What Tasks shows: the layout, the filters (the search field is their text) and the saved boards (tabs once the session is confirmed).
-  const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "view" && route.view === "board" ? route.saved : undefined, toast, go });
+  const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "view" && route.view === "board" ? route.saved ?? null : undefined, toast, go });
   const query = tb.filters.text ?? "";
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
   const filtering = !isEmpty(tb.filters);
@@ -307,7 +309,7 @@ export function App() {
     if (!session) return;
     const admin = session.account?.role === "admin";
     setAccount(admin ? session.account!.id : null);
-    const cached = admin ? peek<Board>("board")?.data : undefined;
+    const cached = admin ? fresh(peek<Board>("board")?.data) : undefined;
     if (!cached) return;
     setSlackTeams(cached.slackTeams ?? {});
     setBoard((b) => b ?? cached);
@@ -670,8 +672,7 @@ export function App() {
     setSelected(c.id);
     go(`#/t/${c.identifier}`);
   };
-  // A board cached before Agent work existed has no `work` yet: its lanes wait for the first read.
-  const work = tb.layout === "work" && Array.isArray(board.work);
+  const work = tb.layout === "work";
   // The cards the filter menu counts over: the layout's own, unfiltered.
   const filterCards: Card[] = work ? board.work : [...BUCKETS.flatMap((b) => items[b]), ...board.recurring, ...board.done];
   const workCards = applyFilters(board.work, tb.filters);
@@ -805,7 +806,6 @@ export function App() {
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
-      {view === "board" && tb.layout === "work" && !work && <AgentWorkLoading />}
       {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} onClear={() => tb.setFilters({})} />}
       <main className={`columns${showDone || showRecurring ? " extra" : ""}`} hidden={view !== "board" || work}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>

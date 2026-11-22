@@ -671,7 +671,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       bylines(),
       runLinks(issue.id, ctx.agents),
     ]);
-    const kidStates = await statesOf(taskStates, kids.map((k) => k.id));
+    const kidStates = await statesOf(taskStates, [issue.id, ...kids.map((k) => k.id)]);
     const crew = crewOf(issue, kids, { assignees: ctx.assignees, working: busy.map, state: (id) => kidStates.get(id) });
     // Each crew member's latest word, when there's one issue to read it from (a fan-out shows its count instead):
     // what it says while working, else its last comment.
@@ -1349,7 +1349,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const spend = summary?.install ?? null;
         const rows = new Map(inv.read.tasks.map((r) => [r.task, r]));
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map, state: (id) => rows.get(id) } });
-        const cards = [...Object.values(board.buckets).flat(), ...board.recurring];
+        const cards = [...Object.values(board.buckets).flat(), ...board.recurring, ...board.done];
         // One kernel snapshot for both layouts: each row's refs named once (identifiers from the inventory).
         const idents = new Map([...inv.open, ...inv.closed].map((i) => [i.id, i.identifier]));
         const states = new Map((await shownRows(inv.read.tasks, idents)).map((r) => [r.task, r]));

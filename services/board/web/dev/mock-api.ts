@@ -81,6 +81,8 @@ const WORK = () => [
   w(7781, "Rotate the staging database credentials", "platform-engineer", st("done", "closed", { grade: "pass", since: ago(180) }), { status: "done", closedAt: ago(180), age: 180 }),
   w(7776, "Summarise the Monday leads call", "aiden", st("done", "closed", { grade: "pass", since: ago(540) }), { status: "done", closedAt: ago(540), age: 540 }),
   w(7760, "Stale PR cleanup", "engineer", st("done", "cancelled", { since: ago(1440) }), { status: "cancelled", closedAt: ago(1440), age: 1440 }),
+  // A long Idle lane: 25 cards, then "Show N more".
+  ...Array.from({ length: 32 }, (_, i) => w(6900 + i, i === 1 ? "A very long title that should clamp to two lines and never push the card wider, with https://example.com/a/very/long/path/that/keeps/going" : `Archive the Q${(i % 4) + 1} vendor threads`, "aiden", st("waiting", "backlog", { since: ago(9000 + i) }), { age: 9000 + i })),
 ];
 // Saved boards (GET/POST/PUT/DELETE /api/views): in memory, revisioned like the board's.
 let views = [

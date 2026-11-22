@@ -3,7 +3,7 @@
 // `{layout, filters, groupBy}`; a saved board stores it (api.views), the unsaved default ("All tasks") keeps its layout here.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ViewConflict } from "./api";
-import { FILTER_KEYS, FILTER_NAMES, LANES, LANE_NAMES, UPDATED_NAMES, chipCount, compact, sameFilters, type FilterKey } from "./filters";
+import { FILTER_KEYS, FILTER_NAMES, LANES, LANE_NAMES, UPDATED_NAMES, cardMatches, chipCount, compact, sameFilters, type FilterKey } from "./filters";
 import { Banner, Dialog, Monogram, Segmented } from "./ui";
 import type { Board, Card, Filters, Layout, SavedView, ViewSpec } from "./types";
 import { PRIORITIES, PRIORITY_NAMES } from "./util";
@@ -24,10 +24,11 @@ const savedLayout = (): Layout => {
 export type Conflict = { view: SavedView; current: SavedView | null };
 
 /**
- * The page's spec and its saved boards. `ready`: the session is confirmed (tabs render only then); `routed`: the saved board the
- * address names (#/board?view=<id>), applied once the boards have loaded (an unknown one falls back to All tasks).
+ * The page's spec and its saved boards. `ready`: the session is confirmed (tabs render only then); `routed`: the board the
+ * address names, followed once the boards have loaded: an id (#/board?view=<id>; an unknown one falls back to All tasks), null
+ * for #/board (All tasks), undefined for any other address (the selection stays, e.g. while a task's drawer is open).
  */
-export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; routed: string | undefined; toast: (t: string) => void; go: (hash: string) => void }) {
+export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; routed: string | null | undefined; toast: (t: string) => void; go: (hash: string) => void }) {
   const [layout, setLayoutState] = useState<Layout>(savedLayout);
   const [filters, setFilters] = useState<Filters>({});
   const [groupBy, setGroupBy] = useState<"none" | "agent">("none");
@@ -53,14 +54,12 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
     else (setFilters({}), setGroupBy("none"), setLayoutState(savedLayout()));
     go(v ? `#/board?view=${v.id}` : "#/board");
   }, [views, apply, go]);
-  // The address names a board: show it once the boards are known.
-  const routedRef = useRef<string | undefined>(undefined);
+  // The address names a board (a link, Back and Forward): show it once the boards are known.
   useEffect(() => {
-    if (!views || !routed || routedRef.current === routed) return;
-    routedRef.current = routed;
-    if (views.some((v) => v.id === routed)) select(routed, views);
+    if (!views || routed === undefined || routed === selected) return;
+    if (routed === null || views.some((v) => v.id === routed)) select(routed, views);
     else (toast("That saved board no longer exists: showing All tasks"), select(null, views));
-  }, [views, routed, select, toast]);
+  }, [views, routed]);
 
   const spec: ViewSpec = { layout, filters: compact(filters), groupBy: layout === "work" ? groupBy : "none" };
   const dirty = view ? view.spec.layout !== spec.layout || view.spec.groupBy !== spec.groupBy || !sameFilters(view.spec.filters, spec.filters) : chipCount(filters) > 0 || !!filters.text;
@@ -89,6 +88,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
     if (!view) return;
     try {
       replace(await api.updateView({ id: view.id, rev: view.rev, spec }));
+      setConflict(null);
       toast(`Updated “${view.name}”`);
     } catch (e) {
       fail(view, e);
@@ -274,9 +274,9 @@ function valuesOf(key: FilterKey, board: Board, cards: Card[]): Value[] | "unava
   switch (key) {
     case "agent":
       return [
-        ...board.assignees.filter((a) => a.kind !== "me").map((a) => ({ id: a.key, name: a.name, face: a.name, count: count((c) => c.assignee === a.key) })),
-        { id: "me", name: "You", face: "You", count: count((c) => c.assignee === "me") },
-        { id: "none", name: "Unassigned", count: count((c) => c.assignee === null) },
+        ...board.assignees.filter((a) => a.kind !== "me").map((a) => ({ id: a.key, name: a.name, face: a.name, count: count((c) => cardMatches(c, { agent: [a.key] })) })),
+        { id: "me", name: "You", face: "You", count: count((c) => cardMatches(c, { agent: ["me"] })) },
+        { id: "none", name: "Unassigned", count: count((c) => cardMatches(c, { agent: ["none"] })) },
       ];
     case "state":
       return LANES.map((l) => ({ id: l, name: LANE_NAMES[l] }));

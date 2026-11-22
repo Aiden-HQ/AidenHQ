@@ -1,7 +1,7 @@
 // Tasks' Agent work layout: every task the fleet holds, one card each, in the lane the kernel gives it (state.lane), read-only.
 // The board never works a lane out: a card sits where its row says, a task with no row is Idle ("No reported state"). Each
 // card shows the one line its lane needs, linked to what it names (the question, the approval, the run, the blocker).
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { LANES, LANE_NAMES, laneOf } from "./filters";
 import { Bone } from "./Skeleton";
 import { Monogram } from "./ui";
@@ -82,14 +82,17 @@ export function WorkCardView({ c, board }: { c: WorkCard; board: Board }) {
   const project = c.projectId ? board.projects?.find((p) => p.id === c.projectId)?.name : undefined;
   const run = jobOf(s?.ref);
   const age = lane === "working" && s ? elapsed(s.since) : ago(c.closedAt ?? c.activityAt);
+  // The title is the card's link; a click anywhere else on the card opens it too.
   const open = () => (location.hash = `#/t/${c.identifier}`);
   return (
-    <article className={`aw-card p-${c.priority}${lane === "done" ? " done" : ""}`} tabIndex={0} onClick={open} onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && open()} aria-label={`${c.identifier} ${c.title}`}>
+    <article className={`aw-card p-${c.priority}${lane === "done" ? " done" : ""}`} onClick={open}>
       <div className="aw-top">
         <span className="aw-id">{c.identifier}</span>
         {project && <span className={`aw-proj ${hueClass(project)}`}>{project}</span>}
       </div>
-      <div className="aw-title">{c.title}</div>
+      <a className="aw-title" href={`#/t/${c.identifier}`} onClick={stop}>
+        {c.title}
+      </a>
       {c.parent && (
         <a className="aw-parent" href={`#/t/${c.parent}`} onClick={stop}>
           part of {c.parent}
@@ -152,11 +155,9 @@ function byLane(cards: WorkCard[]): Record<Lane, WorkCard[]> {
 export function AgentWork({ board, cards, groupBy, mobile, filtered, onClear }: { board: Board; cards: WorkCard[]; groupBy: "none" | "agent"; mobile: boolean; filtered: boolean; onClear: () => void }) {
   const lanes = useMemo(() => byLane(cards), [cards]);
   const first = LANES.find((l) => lanes[l].length) ?? "needs_you";
+  // A phone shows one lane: the first populated one until the owner picks another (kept, even when it empties).
   const [phoneLane, setPhoneLane] = useState<Lane | null>(null);
   const current = phoneLane ?? first;
-  useEffect(() => {
-    if (phoneLane && !lanes[phoneLane].length && lanes[first].length) setPhoneLane(null);
-  }, [lanes, phoneLane, first]);
 
   if (!board.work.length)
     return (
