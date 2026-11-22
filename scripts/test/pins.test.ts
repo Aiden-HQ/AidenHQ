@@ -366,6 +366,12 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   assert.equal(scanFile("Dockerfile", adjacent).problems.length, 1);
   const glued = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y foo=1.2.3>/tmp/log\n`;
   assert.deepEqual(scanFile("Dockerfile", glued).pins.filter((p) => p.kind === "apt")[0].version, "1.2.3");
+  // Only fd 1 takes a command's stdout, so a later `2>` or `3>` names another descriptor and leaves the write intact.
+  const direct = `echo 'deb https://repo.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list`;
+  for (const fd of ["2>", "3>"])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${direct} ${fd} /tmp/log\nRUN apt-get install -y foo\n`).problems.length, 1, fd);
+  // A later `1>` (the default) does take it: the file is truncated and gets no line.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${direct} 1> /tmp/log\nRUN apt-get install -y foo\n`).problems, []);
   // A redirect on the install line is not a package to pin.
   const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
   assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);

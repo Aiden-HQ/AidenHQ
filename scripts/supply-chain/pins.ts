@@ -133,7 +133,8 @@ function writtenFiles(segment: string): Written[] {
   const pipes = [...clean.matchAll(/\|/g)].map((m) => m.index!);
   const outlived = (i: number) => {
     const end = pipes.find((p) => p > redirects[i]!.index!) ?? clean.length;
-    return redirects.slice(i + 1).some((n) => n[1] !== "2" && n.index! < end);
+    // Only a stdout redirect (no descriptor, or `1>`) takes the output away; `2>` and `3>` name other descriptors.
+    return redirects.slice(i + 1).some((n) => (n[1] === "" || n[1] === "1") && n.index! < end);
   };
   redirects.forEach((m, i) => {
     const append = m[2] === ">>";
