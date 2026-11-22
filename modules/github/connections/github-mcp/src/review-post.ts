@@ -10,7 +10,7 @@ import type { z } from "zod";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import type { GitHubApp } from "./github-app.js";
-import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, type Ref } from "./github.js";
+import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, reviewCommentId, type Ref } from "./github.js";
 import {
   ACK_HEAD, FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, ReplyArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
   renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type ReplyArgs, type StatusArgs,
@@ -52,7 +52,9 @@ export interface Thread {
   /** Replies, oldest first, as data (untrusted text). */
   replies: { id: number; author: string; body: string }[];
 }
-type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; viewerCanResolve: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { __typename: string; login: string } | null }[] } };
+/** A review comment, with its 64-bit id in `fullDatabaseId` (a JSON string; `databaseId` is 32-bit and deprecated). */
+type RawComment = { fullDatabaseId?: string | null; url: string; body: string; author: { __typename: string; login: string } | null };
+type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; viewerCanResolve: boolean; path: string; line: number | null; comments: { nodes: RawComment[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
 type Kind = "post" | "notice" | "status" | "reply";
 
@@ -147,13 +149,16 @@ export class ReviewPoster {
       if (!t) throw new GitHubRefused(`couldn't read ${ref.owner}/${ref.repo}#${ref.number}'s review threads`);
       for (const n of t.nodes) {
         const [first, ...rest] = n.comments.nodes;
-        if (!first) continue;
+        // A thread's first comment is what a reply names and what the service records as its own: without a usable id, skip it
+        // (and its replies, whose thread it can't identify) rather than fail the whole read.
+        const comment = first ? reviewCommentId(first) : null;
+        if (!first || comment === null) continue;
         const finding = FINDING_MARK.exec(first.body)?.[1] ?? null;
         const author = first.author?.login ?? "";
         out.push({
-          id: n.id, comment: first.databaseId, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
+          id: n.id, comment, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
           ours: finding !== null && us.some((w) => isWho(w, first.author)), author, bot: first.author?.__typename === "Bot", can_resolve: n.viewerCanResolve, url: first.url,
-          replies: rest.map((c) => ({ id: c.databaseId, author: c.author?.login ?? "", body: c.body.slice(0, 2000) })),
+          replies: rest.flatMap((c) => { const id = reviewCommentId(c); return id === null ? [] : [{ id, author: c.author?.login ?? "", body: c.body.slice(0, 2000) }]; }),
         });
       }
       if (!t.pageInfo.hasNextPage) break;

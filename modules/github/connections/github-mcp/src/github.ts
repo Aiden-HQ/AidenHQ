@@ -35,6 +35,8 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   // A review's own line comments (review-post.ts records their ids).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}/comments$`) },
+  // One review comment by id: whether it is on this pull request, and (a reply) which comment it answers.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
   // A PR's commits (code-review-read.ts messages: the agents its trailers name).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/commits$`) },
@@ -93,7 +95,8 @@ export const GRAPHQL = {
   setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
-  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 20) { nodes { databaseId url body author { __typename login } } } } } } } }`,
+  // Comment ids are 64-bit: `fullDatabaseId` (a BigInt, a JSON string). `databaseId` is the deprecated 32-bit Int and isn't read.
+  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 100) { pageInfo { hasNextPage } nodes { fullDatabaseId url body author { __typename login } } } } } } } }`,
 } as const;
 /** The most threads one resolve request takes (a post resolves at most 100). */
 export const RESOLVE_MAX = 100;
@@ -102,6 +105,15 @@ const resolveDoc = (n: number) => `mutation(${Array.from({ length: n }, (_, i) =
 const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveDoc(i + 1))]);
 
 export class GitHubRefused extends Error {}
+
+/**
+ * A review comment's id from `fullDatabaseId` (a BigInt, sent as a JSON string; GitHub's `databaseId` is 32-bit and deprecated),
+ * or null when GitHub sent none this can use: one such comment is skipped, never taken for an id of its own.
+ */
+export function reviewCommentId(c: { fullDatabaseId?: string | null }): number | null {
+  const id = Number(c.fullDatabaseId);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
 
 export function guard(method: string, path: string, body?: unknown): void {
   if (!ROUTES.some((r) => r.method === method && r.path.test(path))) throw new GitHubRefused(`refused a GitHub request that isn't allowed: ${method} ${path}`);
@@ -203,6 +215,25 @@ function splitRepo(repo: string): { owner: string; name: string } {
 
 type Fetch = typeof fetch;
 
+/** GitHub's refusal, with the `errors[]` entries that name the rejected field (a 422 otherwise reads only "Validation Failed"). */
+function errorDetail(body: unknown): string {
+  if (typeof body !== "object" || body === null) return JSON.stringify(body ?? "").slice(0, 200);
+  const b = body as { message?: unknown; errors?: unknown };
+  const message = typeof b.message === "string" ? b.message : "";
+  const errors = Array.isArray(b.errors) ? b.errors : [];
+  const parts = errors.slice(0, 10).flatMap((e) => {
+    if (typeof e === "string") return [e];
+    if (typeof e !== "object" || e === null) return [];
+    const o = e as { resource?: unknown; field?: unknown; code?: unknown; message?: unknown };
+    const where = [o.resource, o.field].filter((x): x is string => typeof x === "string" && Boolean(x)).join(".");
+    const code = typeof o.code === "string" ? o.code : "";
+    const text = typeof o.message === "string" ? o.message : "";
+    return [[where, code, text].filter(Boolean).join(": ")];
+  }).filter(Boolean);
+  const detail = [message, ...parts].filter(Boolean).join("; ");
+  return (detail || JSON.stringify(body)).slice(0, 600);
+}
+
 export class GitHub {
   constructor(
     private readonly access: GitHubAccess,
@@ -230,7 +261,7 @@ export class GitHub {
       // Through the owner's client: its rate limiter, and a typed need (client.ts) for what the owner must fix.
       const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body, this.identity ? { as: this.identity } : {});
       // GitHub answers 404 for private repositories the account can't see.
-      if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${JSON.stringify(r.body?.message ?? r.body ?? "").slice(0, 200)}`);
+      if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${errorDetail(r.body)}`);
       // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
       return (r.body ?? {}) as T;
     }
@@ -432,10 +463,42 @@ export class GitHub {
     return { url: r.html_url, id: r.id, state: r.state };
   }
 
-  /** A reply on a pull request's review thread (its first comment's id), signed by the agent. */
+  /**
+   * The first comment of the pull request's review thread that `comment` is in, or a refusal naming why it has none.
+   * GitHub takes a reply only on a thread root: a direct read of the comment says whether it is on this pull request and,
+   * for a reply, which comment it answers, so the top of that chain is the root — no dependence on where a thread is listed.
+   */
+  private async threadRoot(ref: Ref, comment: number): Promise<number> {
+    type Comment = { id: number; pull_request_url: string; in_reply_to_id?: number | null };
+    const base = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`;
+    const read = async (id: number): Promise<Comment> => {
+      try {
+        return await this.request<Comment>("GET", `${base}/${id}`);
+      } catch (e) {
+        throw new GitHubRefused(`comment ${id} isn't a review comment of ${ref.owner}/${ref.repo}#${ref.number} (${(e as Error).message.slice(0, 240)}): there is no thread to reply on`);
+      }
+    };
+    let current = await read(comment);
+    const seen = new Set([comment]);
+    // A reply names the comment it answers; walk to the top-level one GitHub takes replies on. A cycle or a very long chain is
+    // refused rather than looped on.
+    for (let depth = 0; current.in_reply_to_id; depth++) {
+      const parent = current.in_reply_to_id;
+      if (depth >= 20 || seen.has(parent)) throw new GitHubRefused(`comment ${comment} on ${ref.owner}/${ref.repo}#${ref.number} has a broken reply chain (in_reply_to_id ${parent}): there is no thread root to reply on`);
+      seen.add(parent);
+      current = await read(parent);
+    }
+    // The comment's own URL is the pull request it is on: a 404 already covers another pull request or repository.
+    const want = `${API}/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
+    if (current.pull_request_url.toLowerCase() !== want.toLowerCase()) throw new GitHubRefused(`comment ${comment} is on ${current.pull_request_url}, not ${ref.owner}/${ref.repo}#${ref.number}: there is no thread here to reply on`);
+    return current.id;
+  }
+
+  /** A reply on a pull request's review thread (its first comment's id, or any comment in it), signed by the agent. */
   async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
     if (!body.trim()) throw new GitHubRefused("a reply needs text");
-    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${comment}/replies`, { body: { body: withFooter(body, agent) } });
+    const root = await this.threadRoot(ref, comment);
+    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
     return { url: r.html_url, id: r.id };
   }
 
