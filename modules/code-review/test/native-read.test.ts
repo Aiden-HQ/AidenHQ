@@ -10,7 +10,7 @@ import { runEngine } from "../recipe/engines.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
-async function readOf(command: (base: string) => string) {
+async function readOf(command: (base: string) => string, opts: { files?: boolean; badBase?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "native-read-"));
   const repo = join(dir, "repo"), bin = join(dir, "bin");
   mkdirSync(repo); mkdirSync(bin);
@@ -19,7 +19,14 @@ async function readOf(command: (base: string) => string) {
   const base = sh(repo, "rev-parse", "HEAD");
   writeFileSync(join(repo, "a"), "2\n"); sh(repo, "commit", "-qam", "one");
   writeFileSync(join(repo, "b"), "3\n"); sh(repo, "add", "b"); sh(repo, "commit", "-qm", "two");
+  if (opts.files) {
+    // A quoted path (non-ASCII, a space) and a rename that git pairs in one header.
+    writeFileSync(join(repo, "café x.txt"), "4\n"); writeFileSync(join(repo, "old.txt"), "line1\nline2\nline3\nline4\n");
+    sh(repo, "add", "."); sh(repo, "commit", "-qm", "three", "--no-verify");
+    sh(repo, "mv", "old.txt", "new.txt"); writeFileSync(join(repo, "new.txt"), "line1\nline2\nline3\nline4 changed\n"); sh(repo, "add", "."); sh(repo, "commit", "-qm", "four");
+  }
   const cmd = command(base);
+  const asked = opts.badBase ? "deadbeefdeadbeef" : base;
   const out = execFileSync("sh", ["-c", cmd], { cwd: repo, encoding: "utf8" });
   const events = [{ type: "item.completed", item: { type: "command_execution", command: cmd, aggregated_output: out } }, { type: "turn.completed" }];
   const rollout = JSON.stringify({ payload: { item: { type: "ExitedReviewMode", review_output: { findings: [], overall_correctness: "patch is correct" } } } });
@@ -28,7 +35,7 @@ async function readOf(command: (base: string) => string) {
   chmodSync(join(bin, "codex"), 0o755);
   process.env.PATH = `${bin}:${process.env.PATH}`;
   process.env.OPENROUTER_BASE_URL = "http://127.0.0.1:9/api/v1";
-  const r = await runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, minutes: 1, scratch: dir, own: true });
+  const r = await runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base: asked, minutes: 1, scratch: dir, own: true });
   return r.read;
 }
 
@@ -36,3 +43,5 @@ test("the diff by the base's sha counts as read", async () => assert.equal(await
 test("the diff by `git merge-base` counts as read", async () => assert.equal(await readOf(() => "git diff $(git merge-base HEAD~2 HEAD) HEAD"), true));
 test("git show HEAD is a part of the change, not the read", async () => assert.equal(await readOf(() => "git show HEAD"), false));
 test("one file of two is not the read", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD -- a`), false));
+test("quoted paths and a rename in git's default diff are covered", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD`, { files: true }), true));
+test("a changed-file list that can't be made is not clean", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD`, { badBase: true }), false));

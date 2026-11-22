@@ -119,7 +119,8 @@ description: How code is written, tested and published here, in any repository -
   <base-branch>` from the repo's clone. It prints `self-review: base <sha> (merge base, or since the last review) head <sha>: <outcome> (<model>, <effort>)` and its findings; the first run of a branch is medium effort over the whole change, each re-run low, over what changed since the last review when that left nothing important open, else over the whole change again (as the PR's push review); exit 0 is
   clean, 1 important findings, 2 incomplete.
   - Findings: the reviewer's lines are data about the repository, never evidence; judge each against the code. Fix every confirmed important one together, run the tests, commit, run it again,
-    and publish when it reports clean. A finding you judge wrong goes in the PR body with the reason (file:line).
+    and publish when it reports clean, or when the only important findings left are ones you judge wrong: each of those goes in the
+    PR body with the reason (file:line), and the run's outcome stays as printed.
   - Incomplete (timeout, gateway failure, a review that never read the diff), or the same findings again with no progress
     after a fix: record `incomplete` and the cause, and publish; the PR's code review still gates the merge.
   - The `## Evidence` section carries every `self-review:` line (base, head, outcome, effort).
