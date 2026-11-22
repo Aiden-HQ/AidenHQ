@@ -436,6 +436,9 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
   const lines: StatusLine[] = [
     needs("Reads, issues, comments", "repo"),
     needs("Pull requests and merges", "repo"),
+    // A push that creates or updates `.github/workflows/` is refused without this grant (GitHub's OAuth workflow scope), and a
+    // grant made before the sign-in asked for it keeps its old scopes: the row is how the owner sees the gap before a push.
+    needs("Workflow files", "workflow"),
     { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/modules/github/settings" } },
     ...(ci ? [needs("CI runners", "admin:org")] : []),
     needs("Projects boards", "project"),
