@@ -41,6 +41,9 @@ describe("registry: api", () => {
     expect(routed.api!.member_paths).toEqual([]);
     expect(app({ api: { ...api, member_paths: ["/intake", "/intake/feedback"] } }).api!.member_paths).toEqual(["/intake", "/intake/feedback"]);
     expect(() => app({ api: { ...api, member_paths: ["intake"] } })).toThrow();
+    for (const bad of ["/intake//feedback", "/intake?x=1", "/intake/../feedback", "/intake/./feedback", "https://example.com/intake"]) {
+      expect(() => app({ api: { ...api, member_paths: [bad] } }), bad).toThrow();
+    }
     for (const bad of ["GET /api/agent/{a}{b}", "get /api/agent/x", "FETCH /api/agent/x", "GET /api/agent/{a b}", "GET /api/agent/{a/b}", "GET /api/agent//x", "GET /api/agent/x y", "GET/api/agent/x", "GET ", "GET /api/agent/../x"])
       expect(() => app({ api: { ...api, callers: [{ agent: "k", paths: [bad] }] } }), bad).toThrow();
     expect(() => app({ health: {} })).toThrow(/health.url/);
@@ -117,7 +120,11 @@ describe("a caller's exact routes", () => {
   it("extends a member request to api.member_paths, while admin and an object caller's own grant keep their limits", () => {
     const publicGrants = app({
       api: {
-        callers: [{ agent: "red-teamer", paths: ["/intake", "/intake/feedback"] }, { agent: "intake-only", paths: ["/intake/feedback"] }],
+        callers: [
+          { agent: "red-teamer", paths: ["/intake", "/intake/feedback"] },
+          { agent: "intake-only", paths: ["/intake/feedback"] },
+          { agent: "exact", paths: ["POST /intake/{reference}"] },
+        ],
         paths: ["/api/agent/roadmap"],
         member_paths: ["/intake", "/intake/feedback"],
       },
@@ -128,6 +135,10 @@ describe("a caller's exact routes", () => {
     expect(asMember("POST", "/intake/missing_item")).not.toThrow();
     expect(asMember("POST", "/intake/feedback", "intake-only")).not.toThrow();
     expect(asMember("POST", "/intake", "intake-only")).toThrow(/isn't under/);
+    // An exact-route caller keeps its method and segment count under member_paths too.
+    expect(asMember("POST", "/intake/AB12CD34", "exact")).not.toThrow();
+    expect(asMember("GET", "/intake/AB12CD34", "exact")).toThrow(/isn't under/);
+    expect(asMember("POST", "/intake/AB12CD34/extra", "exact")).toThrow(/isn't under/);
     expect(asMember("POST", "/intake/feedback", "intruder")).toThrow(/may not call/);
     expect(asMember("POST", "/admin/intake")).toThrow(/isn't under/);
     // Admin still has the app's own agent API only; member_paths is not a writer path.
@@ -136,6 +147,10 @@ describe("a caller's exact routes", () => {
     // An app without member_paths behaves exactly as before: the same object caller cannot reach the public route.
     const unchanged = app({ api: { callers: [{ agent: "red-teamer", paths: ["/intake", "/intake/feedback"] }], paths: ["/api/agent/roadmap"] } });
     expect(() => authorize(unchanged, "red-teamer", "/intake/feedback", "POST", "member")).toThrow(/isn't under/);
+    // A plain-string caller is already granted the app's whole surface; member_paths does not narrow or widen it.
+    const plain = app({ api: { callers: ["red-teamer"], paths: ["/api/agent/roadmap"], member_paths: ["/intake"] } });
+    expect(() => authorize(plain, "red-teamer", "/intake/feedback", "POST", "member")).not.toThrow();
+    expect(() => authorize(plain, "red-teamer", "/admin/intake", "POST", "member")).not.toThrow();
   });
   it("leaves the app's own agent, and a bare-path {agent, paths} caller, as prefix callers", () => {
     expect(as("GET", "/api/agent/roadmap/items/3", "roadmap-keeper")).not.toThrow();

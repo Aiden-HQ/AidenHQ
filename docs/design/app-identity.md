@@ -89,9 +89,10 @@ agent and is redacted from any response that echoes it.
   `api.callers` and only under `api.paths`, enforced in apps-mcp. `api` is `{ callers, paths, member_paths? }`; there is no
   static `api.token` (the registry refuses one). With `role: "member"` it reuses `app_view`'s signed-in member identity for
   that one method and path: the same `api.callers` gate and the app's read-access policy (`access.roles`), and a caller's
-  own `paths` grant still applies. `member_paths` adds public prefixes outside `api.paths` for member calls only, and is empty
-  by default. A plain-string caller is granted the app's whole surface, so an agent can POST to a public route as a test user
-  and read the app's real status, headers and body (session headers such as `Set-Cookie` are withheld).
+  own `paths` grant still applies. `member_paths` (plain prefixes, empty by default) widens only an object-form caller, and
+  only within that caller's own paths: a member call may reach `api.paths` or a public `member_paths` prefix. Admin calls stay
+  limited to `api.paths`, and a plain-string caller already reaches every route. So an agent can POST to a public route as a
+  test user and read the app's real status, headers and body (session headers such as `Set-Cookie` are withheld).
 - `app_view`: `role: member`, `methods: [GET, HEAD]`.
 
 The key is separate from the gate's because apps-mcp holds the Docker socket and sits on bridge networks the gate's

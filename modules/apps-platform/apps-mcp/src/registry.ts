@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseDocument } from "yaml";
 import { z } from "zod";
-import { parseRoute } from "./api.js";
+import { parseRoute, plainPath } from "./api.js";
 
 /** A preview's name (previews.ts): reserved, so no registry app can share its project, secrets, checkout or database role. */
 export const PREVIEW_NAME = /-pr-\d+$/;
@@ -21,6 +21,15 @@ const PREFIX = /^\/[A-Za-z0-9._~\/-]*$/;
  * everything else). In a flow sequence the route's space makes it ambiguous YAML (`Missing , or : between flow sequence
  * items`), so quote it: `paths: ["GET /api/x", "POST /api/x/{id}/y"]`, or use block style. */
 const callerPath = z.string().refine((p) => PREFIX.test(p) || !!parseRoute(p), "paths are plain absolute path prefixes, or one exact route as 'METHOD /path' with {name} for one segment");
+/** A member path is matched by requests, so it takes exactly plainPath's rules (no //, . or .., or escapes) and no query. */
+const memberPath = z.string().refine((p) => {
+  if (p.includes("?")) return false;
+  try {
+    return plainPath(p) === p;
+  } catch {
+    return false;
+  }
+}, "paths are plain absolute path prefixes, without a query string");
 
 // `paperclip` and `sources` name AidenHQ networks in connects; `<app>-pr-<n>` names a pull request's preview (previews.ts).
 const name = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/).refine((n) => n !== "paperclip" && n !== "sources", "reserved name").refine((n) => !PREVIEW_NAME.test(n), "names ending -pr-<number> are previews'");
@@ -57,9 +66,9 @@ const AppSchema = z
       // the exact routes it names. The app's own paths stay prefixes: where its agent API lives, not which routes it serves.
       callers: z.array(z.union([z.string().min(1), z.object({ agent: z.string().min(1), paths: z.array(callerPath).min(1) }).strict()])).min(1),
       paths: z.array(z.string().regex(PREFIX, "paths are plain absolute path prefixes")).min(1),
-      // Public routes a member-role request may reach even when they are outside api.paths. Additive and off by default:
-      // admin is still held to api.paths, and an object caller's own paths still narrow this grant.
-      member_paths: z.array(z.string().regex(PREFIX, "paths are plain absolute path prefixes")).default([]),
+      // Public routes an object-form caller may reach as member even when they are outside api.paths. Off by default: admin
+      // is still held to api.paths, and the caller's own paths still narrow this grant.
+      member_paths: z.array(memberPath).default([]),
     }).strict().optional(),
     // Shared access (docs/design/access.md): people (not agents) who reach the app through
     // Cloudflare Access and the gate at https://<host>. Instance apps.yaml only (compile refuses it on module apps), sensitive.

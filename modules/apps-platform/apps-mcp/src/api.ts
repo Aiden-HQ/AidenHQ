@@ -45,9 +45,10 @@ export function plainPath(path: string): string {
 }
 
 /** plainPath, under one of these prefixes (on a segment boundary) or on one of these exact routes for this method. A
- * route only reaches where the app allows (api.paths, plus member_paths for a member request). Refuses rather than normalizes. */
-export function checkPath(app: App, path: string, paths = app.api!.paths, method?: string, roots = app.api!.paths): void {
+ * member request may also use the app's member_paths; every other call only reaches its agent API. Refuses rather than normalizes. */
+export function checkPath(app: App, path: string, paths = app.api!.paths, method?: string, member = false): void {
   const p = plainPath(path);
+  const roots = member ? [...app.api!.paths, ...(app.api!.member_paths ?? [])] : app.api!.paths;
   const under = (pre: string) => p === pre || p.startsWith(pre.endsWith("/") ? pre : `${pre}/`);
   const seg = segmentsOf(p);
   const ok = (entry: string) => {
@@ -69,7 +70,7 @@ export function authorize(app: App, callerKey: string, path: string, method?: st
   // listed for one integration never widens to the app's whole public surface. A plain-string caller is granted any route.
   if (role === "member") {
     plainPath(path);
-    if (typeof c !== "string") checkPath(app, path, c.paths, method, [...app.api.paths, ...app.api.member_paths]);
+    if (typeof c !== "string") checkPath(app, path, c.paths, method, true);
     return;
   }
   checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths, method);
