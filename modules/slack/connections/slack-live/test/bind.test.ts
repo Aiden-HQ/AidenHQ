@@ -7,7 +7,7 @@ import { openStore } from "../src/store.js";
 const realFetch = globalThis.fetch;
 afterEach(() => (globalThis.fetch = realFetch));
 const OWNER = "U0OWNER1";
-const agents = async () => ({ a1: { key: "roadmap-keeper" }, a2: { key: "newbie", trial: true } });
+const agents = async () => ({ a1: { key: "roadmap-keeper" }, a2: { key: "newbie" } });
 
 function bound() {
   const store = openStore(":memory:");
@@ -36,11 +36,10 @@ describe("channel binding", () => {
     await expect(ex.execute({ id: "k-1", kind: "slack.bind", args, digest: "", idempotency_key: "" })).rejects.toThrow(/only the owner/);
   });
 
-  it("the owner assigns and unassigns a channel; anyone else, a trial agent or a DM is refused", async () => {
+  it("the owner assigns and unassigns a channel; anyone else or a DM is refused", async () => {
     const { store, file } = bound();
     const run = (user_id: string, text: string, channel_id = "C0BOUND01") => slashCommand({ user_id, text, channel_id }, { store, ownerId: OWNER, file });
     expect(await run("U0COLLEAG", "assign-channel roadmap-keeper")).toMatch(/Only the owner/);
-    expect(await run(OWNER, "assign-channel newbie")).toMatch(/trial/);
     expect(await run(OWNER, "assign-channel roadmap-keeper", "D0DIRECT01")).toMatch(/not a DM|in a channel/);
     expect(await run(OWNER, "assign-channel roadmap-keeper")).toMatch(/^Done/);
     expect(await run(OWNER, "channels")).toBe("<#C0BOUND01> → roadmap-keeper");

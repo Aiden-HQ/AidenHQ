@@ -148,11 +148,13 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
   );
 }
 
-/** A routine: schedule (cron and timezone), status and model in one editor, filed as one `routine` change per field changed. */
+/**
+ * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed. Pause and
+ * resume are the routine's live controls on the Agents page.
+ */
 function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
-  const [status, setStatus] = useState<"active" | "paused">(r.status === "paused" ? "paused" : "active");
   const [model, setModel] = useState(r.model ?? "");
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};
@@ -160,7 +162,6 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const was: unknown[] = [];
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (!same(sched, r.schedules)) (items.push({ kind: "routine", routine: r.key, field: "schedules", value: sched.map((s) => ({ cron: s.cron.trim(), ...(s.timezone.trim() ? { timezone: s.timezone.trim() } : {}), ...(s.label ? { label: s.label } : {}) })) }), was.push(r.schedules.map((s) => ({ cron: s.cron, timezone: s.timezone }))));
-  if (status !== (r.status === "paused" ? "paused" : "active")) (items.push({ kind: "routine", routine: r.key, field: "status", value: status }), was.push(r.status ?? "active"));
   if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
@@ -175,7 +176,6 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
-            {r.status === "paused" && " (paused)"}
           </span>
           {diff.length > 0 && <span className="muted"> · module default differs for {diff.join(", ")}</span>}
         </>
@@ -193,13 +193,6 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
                 </div>
               ))}
               <label className="ui-field">
-                <span className="ui-field-label">Status</span>
-                <select className="ui-select" value={status} onChange={(e) => (setStatus(e.target.value as "active" | "paused"), setReview(false))}>
-                  <option value="active">active</option>
-                  <option value="paused">paused</option>
-                </select>
-              </label>
-              <label className="ui-field">
                 <span className="ui-field-label">Model</span>
                 <input className="ui-input" list={listId} value={model} placeholder="the agent's" onChange={(e) => (setModel(e.target.value), setReview(false))} spellCheck={false} />
                 <datalist id={listId}>
@@ -213,7 +206,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
               ) : (
                 <div className="st-change-actions">
                   {diff.map((f) => (
-                    <ResetRoutine key={f} r={r} field={f as "schedules" | "status" | "model"} value={own[f]} />
+                    <ResetRoutine key={f} r={r} field={f as "schedules" | "model"} value={own[f]} />
                   ))}
                   <button className="btn primary" type="button" disabled={!items.length} onClick={() => setReview(true)}>
                     Review change
@@ -228,7 +221,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   );
 }
 
-function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "status" | "model"; value: unknown }) {
+function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "model"; value: unknown }) {
   const [on, setOn] = useState(false);
   return on ? (
     <ChangePreview items={[{ kind: "routine", routine: r.key, field, value } as SettingChange]} was={[(r as unknown as Record<string, unknown>)[field] ?? null]} onCancel={() => setOn(false)} onDone={() => setOn(false)} note={`Back to the module's ${field}: ${shown(value)}.`} />

@@ -92,13 +92,12 @@ describe("notify", () => {
     expect(sent).toHaveLength(2);
   });
 
-  it("in trial, a message can't be routed into a task's chat", async () => {
+  it("notify's input is strict", async () => {
     const { d, sent } = world();
     const client = new Client({ name: "t", version: "1" });
     const [a, b] = InMemoryTransport.createLinkedPair();
-    await Promise.all([buildServer(d, agent("aria"), true).connect(a), client.connect(b)]);
+    await Promise.all([buildServer(d, agent("aria")).connect(a), client.connect(b)]);
     const call = async (args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name: "notify", arguments: args })).content as { text: string }[])[0]!.text);
-    expect((await call({ kind: "done", text: "x", task: "WOR-1" })).sent).toBe(false);
     expect(await call({ kind: "done", text: "Done: the draft is in." })).toEqual({ sent: true });
     // Strict: a misspelled field is an error the agent sees, not silently dropped.
     expect((await client.callTool({ name: "notify", arguments: { kind: "done", text: "hi", "questions:": [] } })).isError).toBe(true);

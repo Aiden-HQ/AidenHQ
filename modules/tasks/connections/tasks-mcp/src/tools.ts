@@ -405,21 +405,12 @@ async function boardApi(path: string, body?: Json, timeoutMs = 20_000) {
 }
 
 /**
- * The calling agent, as the kernel asserted it (its roles and trial from the grants table setup writes on the host, never
- * Paperclip metadata, which agents can edit).
+ * The calling agent, as the kernel asserted it (its roles from the grants table setup writes on the host, never Paperclip
+ * metadata, which agents can edit).
  */
 function grant() {
-  const { caller, dir } = cx();
-  return { id: caller.agent, key: caller.key, roles: caller.roles.filter((r: Json) => r !== "kernel.trial"), trial: caller.roles.includes("kernel.trial") };
-}
-/** An agent in trial ("draft, don't do") reports only on its own tasks: the current one, or one assigned to it. */
-const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_cancel", "task_finish"];
-/** Tools whose `issue` is optional (default: the current task). */
-const ISSUE_OPTIONAL = ["task_cancel", "task_finish"];
-async function requireOwnTask(g: Json, issue: Json) {
-  if (!issue) return; // task_cancel without `issue` is the current task
-  const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-  if (i.id !== CURRENT() && i.assigneeAgentId !== g.id) throw new Error(`Refused: ${g.key} is in trial and may only write on its own tasks.`);
+  const { caller } = cx();
+  return { id: caller.agent, key: caller.key, roles: caller.roles };
 }
 async function requireRole(role: string, what: string) {
   if (!grant().roles.includes(role)) throw new Error(`only an agent with the ${role} role can ${what}`);
@@ -946,10 +937,6 @@ const TOOLS: Record<string, Tool> = {
       if (!/^[A-Za-z0-9:._\/-]{3,200}$/.test(m)) throw new Error("invalid marker");
       let assigneeAgent, target, origin = "", warning;
       const g = grant();
-      // An agent in trial ("draft, don't do") creates work only for itself: with no assignee the task lands on the owner's
-      // board, and any other assignee is a delegation. Both are refused before anything is created.
-      if (g.trial && !assignee)
-        throw new Error(`Refused: ${g.key} is in trial and may only create tasks assigned to itself; a task with no assignee goes to the owner's board.`);
       if (assignee) {
         // The task says which agent asked (an agent request, not the owner's words), as task_delegate does.
         const want = String(assignee).trim().toLowerCase();
@@ -957,9 +944,6 @@ const TOOLS: Record<string, Tool> = {
         const hits = all.filter((a: Json) => a.status !== "terminated" && [keyOf(a), a.name].some((n) => String(n ?? "").toLowerCase() === want));
         if (hits.length !== 1) throw new Error(hits.length ? `"${assignee}" is ambiguous: use the key from fleet_catalog` : `"${assignee}" is not an agent here (see fleet_catalog)`);
         [target] = hits;
-        // Assigning work to another agent is a delegation: never from an agent on trial.
-        if (g.trial && target.id !== g.id)
-          throw new Error(`Refused: ${g.key} is in trial and may only create tasks assigned to itself; assigning work to ${keyOf(target)} is a delegation, which comes after the trial.`);
         if (isRunner(target)) warning = briefWarning(description);
         assigneeAgent = target.id;
         const me = await api("GET", "/api/agents/me");
@@ -1806,8 +1790,6 @@ export async function callTool(caller: Caller, assertion: string, name: string, 
     try {
       ctx.dir = await directory();
       ctx.company = await companyOf(caller.agent);
-      const g = grant();
-      if (g.trial && TRIAL_OWN_TASK.includes(name)) await requireOwnTask(g, ISSUE_OPTIONAL.includes(name) ? args?.issue : (args?.issue ?? ""));
       const leaked = toolMarkup(args);
       if (leaked) throw new Error(`Refused: \`${leaked}\` holds raw tool-call markup, not words for people. Make that call as a real tool call, and write only the message here.`);
       const result = await tool.run(args ?? {});

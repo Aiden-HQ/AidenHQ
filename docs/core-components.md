@@ -26,8 +26,8 @@ pieces fit together.
 ## How handbooks improve
 
 Every agent runs on its module handbook (`modules/<m>/agents/<key>/AGENTS.md`), the instance's additions
-(`agents/<key>.md`, or an instance agent's own `agents/<key>/AGENTS.md`) and the shared sections setup appends
-(the kernel's Approvals, assembled by `scripts/handbook.ts`, then the modules' `prompts:`, `modules/<m>/prompts/<id>.md`). Its frontmatter `description:` (one line; an instance agent's `description` in `agent.yaml`) is its routing contract: setup
+(`agents/<key>.md`, or a local agent's own `modules/<name>/agents/<key>/AGENTS.md`) and the shared sections setup appends
+(the kernel's Approvals, assembled by `scripts/handbook.ts`, then the modules' `prompts:`, `modules/<m>/prompts/<id>.md`). Its frontmatter `description:` (one line; a local agent's `description` in its `module.yaml`) is its routing contract: setup
 puts it in the agent directory, where `task_team` and `fleet_catalog` return it on demand, and compile fails
 when an agent has none. Agents never edit a handbook; changes flow through one owner, the Agent Architect:
 
@@ -35,13 +35,13 @@ when an agent has none. Agents never edit a handbook; changes flow through one o
    failure, the Knowledge Librarian's weekly lint (handbooks read with `handbook_read`: overlaps, contradictions,
    ungranted tools, unreachable delegations, and the week's corrections), and Fleet Ops' repeated-mistake findings.
 2. **Proposal.** The Librarian files `task_propose_rule`; any other agent with `task_create` files a task assigned to
-   `architect` (shared section "Improving the rules"); an instance agent's "Improve <name>" routine does the same.
+   `architect` (shared section "Improving the rules"); a local agent's "Improve <name>" routine does the same.
    Each names the agent, the current text, the evidence and the exact replacement.
 3. **Decision.** The Architect judges it (general guidance only, never a special case for one incident), places it
-   (instance `agents/<key>.md` for a module agent, the instance agent's own handbook, or a product PR when it is right for
+   (instance `agents/<key>.md` for a module agent, the local agent's own handbook, or a product PR when it is right for
    every AidenHQ) and delegates it to the Engineer, then reviews the diff.
-4. **Approval.** The Engineer's commit becomes a fleet apply card tiered by code: a trial agent's handbook can
-   land without a tap, a graduated agent's goes to the AI reviewer, and a role-holding agent's (Aiden, the Architect, the
+4. **Approval.** The Engineer's commit becomes a fleet apply card tiered by code: an agent's handbook goes to the AI
+   reviewer, and a role-holding agent's (Aiden, the Architect, the
    Engineer, any agent with roles) is the owner's tap. A product PR is merged by the owner.
 
 The AI reviewer has its own loop: every false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`,

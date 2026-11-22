@@ -13,7 +13,7 @@
 // comes once its PRs merged at their approved heads, or it stopped.
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
-// {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts, diff and trial edits against
+// {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts and diff against
 // the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and never
 // one that moves an `aidenhq` marketplace pin (the official modules come with the product pin); /apply/write → the owner's
 // typed settings change as a commit on main's head (kernel/src/settings-change.ts), which only a kernel.apply then lands.
@@ -44,6 +44,7 @@ import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle, publishRef } from "./aidenhq-sdk/box-bundle.ts";
+import { APPLY_PATHS } from "./aidenhq-sdk/instance-paths.ts";
 import { noteKept } from "./tidy.ts";
 import * as setupWrite from "./setup.ts";
 
@@ -91,8 +92,6 @@ type Base = { repo: string; base: string; read: (path: string) => Promise<string
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
-/** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
-const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
@@ -652,7 +651,6 @@ export function createService(o: Options) {
     if (!base) throw fail(409, `${sha.slice(0, 12)} shares no history with the instance's ${def}`);
     return { s, dir, sha, def, main, base };
   }
-  const AGENT = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md|memory\.md)$/;
   /**
    * A file at a commit: undefined only when the path isn't there (ls-tree lists nothing); a path that isn't a regular file, is
    * over MAX_TEXT or binary is refused, and any other git failure throws. What the kernel tiers is never a silent gap.
@@ -672,17 +670,16 @@ export function createService(o: Options) {
   }
   /**
    * What the kernel plans an apply on (its apply-tier.ts): the files the commit changes against its merge base with main, the
-   * texts its rules read on both sides (each changed file, the agent.yaml of each agent it touches, instance.yaml; absent
-   * where the file isn't), the diff, and the graduation card's trial edits. Read from git here, never from the requester.
+   * texts its rules read on both sides (each changed file and instance.yaml; absent where the file isn't) and the diff. Read
+   * from git here, never from the requester.
    */
   async function applyRead(b: any) {
     const c = await instanceCommit(b);
     const files = (await git(c.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", c.base, c.sha])).split("\0").filter(Boolean);
     if (files.length > MAX_FILES) throw fail(413, `the commit changes ${files.length} files; an apply reviews at most ${MAX_FILES}`);
-    const agents = [...new Set(files.map((f) => AGENT.exec(f)?.[1]).filter(Boolean))] as string[];
     const texts: { base: Record<string, string>; head: Record<string, string> } = { base: {}, head: {} };
     let budget = MAX_TOTAL;
-    for (const p of new Set([...files, ...agents.map((k) => `agents/${k}/agent.yaml`), "instance.yaml"])) {
+    for (const p of new Set([...files, "instance.yaml"])) {
       for (const [side, rev] of [["base", c.base], ["head", c.sha]] as const) {
         const t = await fileAt(c.dir, rev, p);
         if (t === undefined) continue;
@@ -693,32 +690,7 @@ export function createService(o: Options) {
     const diff = await run("git", [...SAFE_GIT_ARGS, "-c", "core.attributesFile=/dev/null", "--git-dir", c.dir, "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", c.base, c.sha], { env: ENV, maxBuffer: Math.max(budget, 1) }).then((o) => o.stdout, (e: Error & { code?: string }) => {
       throw e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? fail(413, `the commit's diff is too large to review (over ${MAX_TOTAL} bytes with its files)`) : e;
     });
-    return { files, texts, diff, trial: await trialEdits(c.dir, c.base, agents, texts), base: c.base, main: c.main };
-  }
-  const isTrial = (t: string | undefined) => t !== undefined && /^trial:[ \t]*true[ \t]*(#.*)?$/m.test(t);
-  /**
-   * The graduation card's list of what changed without a tap: for each agent the change takes out of trial, the handbook-only
-   * commits on main touching its AGENTS.md since the commit that added its agent.yaml, up to the change's merge base. From git
-   * only, never agent-written text but the commit subjects (one printable line each). "" when nothing graduates.
-   */
-  async function trialEdits(dir: string, base: string, agents: string[], texts: { base: Record<string, string>; head: Record<string, string> }) {
-    const out: string[] = [];
-    for (const key of agents) {
-      const def = `agents/${key}/agent.yaml`, book = `agents/${key}/AGENTS.md`;
-      if (!isTrial(texts.base[def]) || texts.head[def] === undefined || isTrial(texts.head[def])) continue;
-      const added = (await git(dir, ["log", "--diff-filter=A", "--format=%H", base, "--", def])).split("\n").filter(Boolean).pop();
-      if (!added) continue;
-      const edits: string[] = [];
-      for (const sha of (await git(dir, ["log", "--first-parent", "--format=%H", `${added}..${base}`, "--", book])).split("\n").filter(Boolean)) {
-        const [date, short, ...subject] = (await git(dir, ["log", "-1", "--format=%as%x09%h%x09%s", sha])).split("\t");
-        const [num] = (await git(dir, ["diff", "--no-renames", "--numstat", `${sha}^1`, sha, "--", book])).split("\n").map((l) => l.split("\t"));
-        // Other paths are counted, never named: a path is the committer's text and the card is the reviewer's input.
-        const others = (await git(dir, ["diff", "--no-renames", "--name-only", "-z", `${sha}^1`, sha])).split("\0").filter((f) => f && f !== book).length;
-        edits.push(`${short}  ${date}  ${subject.join(" ").replace(/[\x00-\x1f\x7f]/g, "").slice(0, 100)}  (+${num?.[0] ?? 0} -${num?.[1] ?? 0})${others ? `  also changed: ${others} other file${others === 1 ? "" : "s"}` : ""}`);
-      }
-      out.push(`${key}: ${edits.length ? `${edits.length} handbook change${edits.length === 1 ? "" : "s"} since the trial began (those not marked "also changed" landed without a tap):\n${edits.join("\n")}` : "no handbook changes since the trial began."}`);
-    }
-    return out.length ? `Trial edits that landed without a tap:\n${out.join("\n")}` : "";
+    return { files, texts, diff, base: c.base, main: c.main };
   }
   async function applyLand(b: any) {
     const c = await instanceCommit(b);
@@ -890,7 +862,7 @@ export function createService(o: Options) {
     if (!same(s.slug, o.instanceRepo)) throw fail(403, `a settings change writes only the instance repo (${o.instanceRepo ?? "not set"}), not ${s.slug}`);
     const files: Record<string, string | null> = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? b.files : {};
     const paths = Object.keys(files);
-    if (!paths.length || paths.some((p) => !INSTANCE_PATH.test(p) || (files[p] !== null && typeof files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
+    if (!paths.length || paths.some((p) => !APPLY_PATHS.test(p) || (files[p] !== null && typeof files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
     const message = String(b.message ?? "").slice(0, 2000);
     const sha = await commitOnHead(s.slug, "settings", message || "settings", async (_dir, head, def) => {
       if (head !== String(b.base ?? "")) throw fail(409, `the instance's ${def} moved on since the change was read; try again`);

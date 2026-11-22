@@ -5,7 +5,7 @@ import { KINDS, fence, notify, type Caller, type Deps } from "./notify.js";
 
 const json = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 
-export function buildServer(d: Deps, caller?: Caller, trial = false): McpServer {
+export function buildServer(d: Deps, caller?: Caller): McpServer {
   const server = new McpServer({ name: "owner-channel", version: "0.1.0" }, { instructions: "The one way to message the owner: on their chat on the board and on their phone (Slack or Telegram)." });
   server.registerTool(
     "notify",
@@ -29,9 +29,7 @@ export function buildServer(d: Deps, caller?: Caller, trial = false): McpServer 
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
     async (args) => {
-      // An agent in trial reaches the owner and nothing else: `task` would route the message into that task's chat.
-      if (trial && args.task !== undefined) return json({ sent: false, reason: "in trial, notify reaches only the owner: `task` would route it into a task chat, so nothing was sent. Send the text to the owner without it." });
-      return json(await notify(d, args as Parameters<typeof notify>[1], caller && trial ? { ...caller, trial: true } : caller));
+      return json(await notify(d, args as Parameters<typeof notify>[1], caller));
     },
   );
   server.registerTool(

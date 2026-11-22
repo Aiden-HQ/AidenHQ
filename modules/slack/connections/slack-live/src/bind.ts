@@ -15,7 +15,7 @@ export const CHANNEL = /^[CG][A-Z0-9]{6,}$/;
 const AGENT = /^[a-z][a-z0-9-]{0,63}$/;
 const USER = /^[UW][A-Z0-9]{2,}$/;
 export type Binding = { agent: string; by: string; at: number };
-export type Agents = () => Promise<Record<string, { key?: string; trial?: boolean }>>;
+export type Agents = () => Promise<Record<string, { key?: string }>>;
 
 export const bindings = (store: Store) => ({
   get: (channel: string): Binding | undefined => {
@@ -52,7 +52,6 @@ export function binder(store: Store, opts: { ownerId: string; agents: Agents; mo
     if (a.op !== "assign" || !AGENT.test(a.agent ?? "")) throw new Error("assign needs an agent key");
     const g = Object.values(await agents()).find((x) => x.key === a.agent);
     if (!g) throw new Error(`no agent ${a.agent}`);
-    if (g.trial) throw new Error(`${a.agent} is in trial and can't take a channel`);
     return { op: "assign", channel: a.channel, by: t.by, agent: a.agent as string, token: a.token };
   };
   return {

@@ -61,6 +61,15 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
   ([minimal-core-install.md](../docs/design/minimal-core-install.md)).
 - **Apps a module owns** start from the app starter and the design system (`modules/apps-platform/`).
 
+## Local modules
+
+The owner's and the agents' own modules live in the instance repo, `modules/<name>/` (tier `local`), and the same compiler
+loads them. One is always on: its folder enables it. Its `module.yaml` takes only `name`, `description`, `agents` and
+`routines`; skills are `skills/<name>/SKILL.md`, found by folder. A local agent's identity is in `module.yaml` (its
+`AGENTS.md` has no frontmatter), it has no roles, services, connections of its own, apps or privileged entries, and each
+routine names the `agent` it runs as, with at most one schedule whose cron minute is one number. Its routines start active.
+The agents' shared skills and routines go in one local module, `library`. ([configuration.md](../docs/configuration.md))
+
 ## Tests and docs
 
 - **A few end-to-end tests** per package, run by its CI suite (`.github/ci/areas.json`; [README.md](README.md) "Test

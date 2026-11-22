@@ -40,7 +40,7 @@ async function liveWakes(lane: LaneTools, wakes: Wake[]): Promise<Wake[]> {
 
 const json = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 
-export function buildServer(lane: LaneTools, caller?: Caller, trial = false): McpServer {
+export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
   const server = new McpServer(
     { name: "chat-lane", version: "0.1.0" },
     { instructions: "Wakes (reminders and follow-ups for yourself) and answers in your fast-lane chats." },
@@ -64,10 +64,8 @@ export function buildServer(lane: LaneTools, caller?: Caller, trial = false): Mc
       const who = Object.values(lane.agents()).find((x) => x.id === caller.id)?.key;
       const owner = who ?? caller.id;
       if (!a.chat === !a.task) return json({ ok: false, reason: "pass exactly one of chat: true or task" });
-      // A chat wake is a turn in the caller's own chat with the owner, so only a lane agent has one. An agent in trial may wake
-      // only there: a `task` wake is a notice on a task that needn't be the caller's (it wakes that task's agent).
+      // A chat wake is a turn in the caller's own chat with the owner, so only a lane agent has one.
       if (a.chat && !who) return json({ ok: false, reason: "you have no fast-lane chat" });
-      if (trial && a.task) return json({ ok: false, reason: `in trial you may only wake your own chat with the owner (chat: true), not a task notice on ${a.task}` });
       const due = parseWhen(a.when_local, lane.timezone);
       if (due === undefined) return json({ ok: false, reason: 'when_local must be "YYYY-MM-DD HH:MM" (owner-local) or "in N minutes|hours|days"' });
       if (due < Date.now() - 60_000) return json({ ok: false, reason: `that is in the past (${localShort(lane.timezone, due)})` });
@@ -126,7 +124,7 @@ export function buildServer(lane: LaneTools, caller?: Caller, trial = false): Mc
       if (!lane || !caller) return json({ ok: false, reason: "chat_send isn't available here" });
       const key = Object.values(lane.agents()).find((x) => x.id === caller.id)?.key ?? "";
       if (!key) return json({ ok: false, reason: "you have no fast-lane chats" });
-      // Always the caller's own chat: there is no other to name, in trial or not.
+      // Always the caller's own chat: there is no other to name.
       await lane.lane.followUp(key, a.text);
       return json({ ok: true });
     },

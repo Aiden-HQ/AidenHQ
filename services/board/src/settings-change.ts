@@ -23,13 +23,12 @@ export const ChangeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
   z.object({ kind: z.literal("module"), name: NAME, on: z.boolean() }).strict(),
-  // A routine's schedules, status or model (overrides.routines.<key>).
+  // A routine's schedules or model (overrides.routines.<key>). Pause and resume are the routine's live controls (fleet.ts).
   z.discriminatedUnion("field", [
     z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("schedules"), value: z.array(SCHEDULE).max(10) }).strict(),
-    z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("status"), value: z.enum(["active", "paused"]) }).strict(),
     z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("model"), value: MODEL }).strict(),
   ]),
-  // The owner's rules for an agent: agents/<key>.md (a module agent; empty deletes it), or an instance agent's whole handbook.
+  // The owner's rules for an agent: agents/<key>.md (a module agent; empty deletes it), or a local agent's whole handbook.
   z.object({ kind: z.literal("rules"), agent: AGENT, text: TEXT(120_000) }).strict(),
   // A module agent's own copy of its main handbook (agents/<key>/AGENTS.md + overrides.agents.<key>.handbook_fork).
   z.object({ kind: z.literal("handbook"), agent: AGENT, text: TEXT(120_000).min(1) }).strict(),
@@ -151,19 +150,19 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   }
   const a = compiled.agents?.[ch.agent];
   if (!a) throw new ChangeRefused(`there is no agent ${ch.agent}`);
-  const own = a.module === "instance";
+  const own = a.tier === "local";
   if (ch.kind === "rules") {
-    if (own && !ch.text.trim()) throw new ChangeRefused("an instance agent's handbook can't be empty");
+    if (own && !ch.text.trim()) throw new ChangeRefused("a local agent's handbook can't be empty");
     if (!own && ch.text.length > 20_000) throw new ChangeRefused("your rules are at most 20,000 characters: a longer change belongs in the main handbook");
     return ch;
   }
   if (ch.kind === "handbook" || ch.kind === "unfork") {
-    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is the instance's own agent: its whole handbook is its rules`);
+    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is a local agent: its whole handbook is its rules`);
     if (ch.kind === "unfork" && !a.handbook_fork) throw new ChangeRefused(`${a.name ?? ch.agent}'s handbook isn't forked`);
     return ch;
   }
   if (ch.kind === "grants") {
-    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is the instance's own agent: its grants are in its agent.yaml`);
+    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is a local agent: its grants are in its module.yaml`);
     const c = compiled.mcp_servers?.[ch.connection];
     if (!c) throw new ChangeRefused(`there is no connection ${ch.connection}`);
     const all = [...(c.tools?.read ?? []), ...(c.tools?.write ?? []), ...(c.tools?.destructive ?? [])];

@@ -130,7 +130,6 @@ export interface AgentProfile {
   title: string | null;
   state: AgentState;
   stateNote?: string;
-  trial: boolean;
   model: string | null;
   effort: string | null;
   reportsTo: string | null;
@@ -166,7 +165,6 @@ export interface RosterAgent {
   running: number;
   queued: number;
   workingSince: string | null;
-  trial: boolean;
   schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
   lastRunAt: string | null;
   lastRunStatus: string | null;
@@ -655,7 +653,6 @@ export type SettingChange =
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel"; value: string | number | boolean }
   | { kind: "module"; name: string; on: boolean }
   | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
-  | { kind: "routine"; routine: string; field: "status"; value: "active" | "paused" }
   | { kind: "routine"; routine: string; field: "model"; value: string }
   | { kind: "rules"; agent: string; text: string }
   | { kind: "handbook"; agent: string; text: string }
@@ -713,8 +710,7 @@ export interface AgentSettings {
   team?: string;
   /** A team member: its team record's key. */
   memberOf?: string;
-  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown> }[];
-  trial: boolean;
+  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown> }[];
   graded: boolean;
   roles: string[];
   /** The module's own model, reasoning_effort and heartbeat where the instance overrides them. */

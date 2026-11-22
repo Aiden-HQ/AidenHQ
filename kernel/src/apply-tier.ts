@@ -7,7 +7,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
-import { readDigest, strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
+import { readDigest, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
+import { strayFiles } from "../sdk/src/instance-paths.ts";
 import { applyCard, repoKey } from "./kinds.ts";
 import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
@@ -32,19 +33,12 @@ export const changedKeys = (a: any = {}, b: any = {}) => [...new Set([...Object.
  */
 export function applyParts(s: any): { refusals: string[]; authority: string[] } {
   const refusals: string[] = [];
-  const def = (key: any, side: any) => s[side]?.[`agents/${key}/agent.yaml`];
   for (const f of s.files ?? []) {
     let m: any;
     if (f === "instance.yaml") refusals.push(...instanceRefusals(s));
-    else if (f === "apps.yaml" && (parse(s.base?.[f]) === null || parse(s.head?.[f]) === null)) refusals.push("apps.yaml doesn't parse");
-    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f)) && (parse(def(m[1], "base")) === null || parse(def(m[1], "head")) === null)) refusals.push(`agents/${m[1]}/agent.yaml doesn't parse`);
-    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f))) {
-      const key = m[1];
-      const [base, head] = [parse(def(key, "base")), parse(def(key, "head"))];
-      // A new agent's handbook comes only with its new agent.yaml, in trial, in this same change (or as a module agent's fork).
-      if (base === undefined && !(head === undefined && forked(s, key)) && !((s.files ?? []).includes(`agents/${key}/agent.yaml`) && head?.trial === true)) refusals.push(`${key}'s handbook, without a new trial agent.yaml in the change`);
-      else if (base === null) refusals.push(`agents/${key}/agent.yaml doesn't parse`);
-    }
+    else if ((f === "apps.yaml" || /^modules\/[a-z0-9][a-z0-9-]*\/module\.yaml$/.test(f)) && (parse(s.base?.[f]) === null || parse(s.head?.[f]) === null)) refusals.push(`${f} doesn't parse`);
+    // agents/<key>/AGENTS.md is a module agent's handbook fork only: a new one comes with its fork in instance.yaml.
+    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f)) && s.base?.[f] === undefined && s.head?.[f] !== undefined && !forked(s, m[1])) refusals.push(`${f} is a module agent's handbook fork, without overrides.agents.${m[1]}.handbook_fork in instance.yaml`);
   }
   const release = standingRelease(parse(s.base?.["instance.yaml"]), parse(s.head?.["instance.yaml"]), s.releaseVerified === true, Boolean(s.pin?.back));
   return { refusals, authority: authorityArgs(s, release).authority ?? [] };
@@ -221,7 +215,7 @@ export class Refused extends Error {
 }
 /** The largest diff a card shows: a bigger change is split, never shown in part. */
 export const DIFF_MAX = 60_000;
-/** The largest card details (the diff, the product commits, third-party code, trial edits): the reviewer reads them whole. */
+/** The largest card details (the diff, the product commits, third-party code): the reviewer reads them whole. */
 export const DETAILS_MAX = 80_000;
 
 /**
@@ -263,10 +257,8 @@ export function createApplyPlanner(h: {
     const c = await h.read(src);
     if (!c.files.length) throw new Refused("the commit changes nothing against the instance's main");
     const stray = strayFiles(c.files);
-    if (stray.length) throw new Refused(`it changes files outside the instance config (${stray.join(", ")}). Only instance.yaml, apps.yaml, agents/<key>.md, agents/<key>/{agent.yaml,AGENTS.md} and owner/profile.md can be applied; product code and module handbooks change through an Engineer PR`);
+    if (stray.length) throw new Refused(`it changes files outside the instance config (${stray.join(", ")}). Only instance.yaml, apps.yaml, owner/profile.md, agents/<key>.md, agents/<key>/AGENTS.md (a handbook fork) and a local module's modules/<name>/{module.yaml,agents/<key>/AGENTS.md,skills/<name>/SKILL.md} can be applied; product code and module handbooks change through an Engineer PR`);
     if (c.diff.length > DIFF_MAX) throw new Refused(`the diff is too large to review (${c.files.length} files, ${c.diff.length} characters): split the change into smaller ones`);
-    const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
-    if (untrialed.length) throw new Refused(`a new agent starts in trial (\`trial: true\` in agents/${untrialed[0]}/agent.yaml, read-only grants, reporting to architect); its write grants come with a second change after the trial`);
     const [baseI, headI] = [c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]];
     const bump = await productBump(productPin(baseI), productPin(headI), h.product);
     if (bump && "error" in bump) throw new Refused(bump.error);
@@ -279,7 +271,7 @@ export function createApplyPlanner(h: {
     if (refusals.length) throw new Refused(refusals.join("; "));
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...(authority.length ? { authority } : {}), ...(release ? { release } : {}) };
-    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote, c.trial].filter(Boolean).join("\n\n");
+    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const card = applyCard(full, details);
     return {

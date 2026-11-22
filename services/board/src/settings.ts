@@ -65,7 +65,7 @@ interface CompiledAgent {
   team?: { name: string; members: string[] };
   /** A team member: its team record's key. */
   member_of?: string;
-  trial?: boolean;
+  tier?: string;
   image?: string;
   /** crew, engineer or check (compile sets it for every agent). */
   profile?: string;
@@ -83,7 +83,6 @@ export interface Compiled {
 interface GrantsAgent {
   key: string;
   graded?: boolean;
-  trial?: boolean;
 }
 export interface Grants {
   agents?: Record<string, GrantsAgent>;
@@ -191,7 +190,7 @@ export function settingsView(s: Sources) {
     const g = grantsByKey.get(key);
     const routines = Object.entries(c.routines ?? {})
       .filter(([, r]) => r.agent === key)
-      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.status ? { status: r.status } : {}), ...(r.webhook ? { webhook: true } : {}), defaults: defaultsOf("routines", rk, ["schedules", "status", "model"]) }));
+      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.webhook ? { webhook: true } : {}), defaults: defaultsOf("routines", rk, ["schedules", "model"]) }));
     return {
       key,
       name: a.name ?? key,
@@ -210,7 +209,6 @@ export function settingsView(s: Sources) {
       ...(a.team ? { team: a.team.name } : {}),
       ...(a.member_of ? { memberOf: a.member_of } : {}),
       routines,
-      trial: Boolean(a.trial ?? g?.trial),
       graded: Boolean(g?.graded),
       roles: a.roles ?? [],
       defaults: defaultsOf("agents", key, ["model", "reasoning_effort", "heartbeat"]),

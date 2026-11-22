@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
 
-const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "review_log", "graded", "feedback_for", "profile"];
+const DIRECTORY = ["key", "roles", "description", "delegate_to", "review_log", "graded", "feedback_for", "profile"];
 const SERVICE_KEY = "tasks-service-key";
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] };
@@ -90,14 +90,14 @@ export async function rpc(msg, headers = {}) {
 
 /**
  * The tasks server for one agent: `handler` is the fake Paperclip (and apps-mcp, gateway), `board` the fake board (default:
- * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key, roles and trial from
+ * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key and roles from
  * `agents`), `task`/`run` what the kernel knows of its run. call(name, args) resolves with the JSON-RPC reply ({ result }).
  */
 export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {}, repos, acceptWaits = false }) {
   current = { handler, board, directory: { agents }, states, repos, acceptWaits };
   forget();
   const g = agents[agent] ?? {};
-  const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? []), ...(g.trial ? ["kernel.trial"] : [])], task, run };
+  const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? [])], task, run };
   const call = async (name, args, as = caller) => (await rpc({ method: "tools/call", params: { name, arguments: args } }, { "x-aidenhq-caller": assertion(as) })).json;
   return { call, caller };
 }

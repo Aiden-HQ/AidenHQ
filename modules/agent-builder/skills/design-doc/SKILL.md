@@ -13,9 +13,9 @@ tables, and replace every example value with the agent you designed:
 3. **How each run works**: one Mermaid `flowchart LR` from what wakes it, through each run's steps, to its output and
    escalation, then the same steps "In words". Keep every label in double quotes, decisions as `{"…?"}` with `-- "yes" -->`
    edges, and short labels; check that each node is connected.
-4. **What it can read and change**: in trial and after trial.
+4. **What it can read and change**.
 5. **Schedule and cost**: runs a month, cost a run, cost a month (for the owner's information).
-6. **Trial plan**, **Examples** (the test cases: what happens, and what a good result contains) and **Open decisions**, each
+6. **Onboarding plan**, **Examples** (the test cases: what happens, and what a good result contains) and **Open decisions**, each
    with the recommended choice in bold and why in a few words.
 
 Write it in plain words for the person, as in the example: no file names, YAML, tool names or grants. Keep it short

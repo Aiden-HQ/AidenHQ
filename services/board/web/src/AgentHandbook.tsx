@@ -10,8 +10,8 @@ import { ago } from "./util";
 import { Segmented } from "./ui";
 
 export interface HandbookData {
-  kind: "module" | "instance";
-  main: { text: string; source: "module" | "fork" | "instance"; module?: string; revision?: string };
+  kind: "module" | "local";
+  main: { text: string; source: "module" | "fork" | "local"; module?: string; revision?: string };
   rules: string | null;
   compiled: string | null;
   fork: { base: string; moduleMovedOn: boolean; moduleText?: string } | null;
@@ -97,7 +97,7 @@ function Dialog({ open, onClose, children }: { open: boolean; onClose: () => voi
 }
 
 function Edit({ agentKey, data }: { agentKey: string; data: HandbookData }) {
-  const instance = data.kind === "instance";
+  const local = data.kind === "local";
   const savedRules = data.rules ?? "";
   const [rules, setRules] = useState(savedRules);
   const [review, setReview] = useState<HandbookChange | null>(null);
@@ -114,8 +114,8 @@ function Edit({ agentKey, data }: { agentKey: string; data: HandbookData }) {
   return (
     <div className="hb">
       <section>
-        <div className="hb-head"><h4>{instance ? "Handbook" : "Your rules"}</h4></div>
-        <p className="muted">{instance ? "Your agent's whole handbook." : "Kept across module updates. Put lasting preferences here."}</p>
+        <div className="hb-head"><h4>{local ? "Handbook" : "Your rules"}</h4></div>
+        <p className="muted">{local ? "Your agent's whole handbook." : "Kept across module updates. Put lasting preferences here."}</p>
         <textarea className="hb-box" aria-label="Your rules" value={rules} onChange={(e) => (setRules(e.target.value), setReview(null))} disabled={busy(inFlight)} />
         {review?.kind === "rules" ? (
           <Preview change={review} was={savedRules} onDone={() => setReview(null)} onCancel={() => setReview(null)} />
@@ -126,7 +126,7 @@ function Edit({ agentKey, data }: { agentKey: string; data: HandbookData }) {
         )}
         {inFlight && <ChangeProgress f={inFlight} />}
       </section>
-      {!instance && (
+      {!local && (
         <section>
           <div className="hb-head">
             <h4>Main handbook</h4>
@@ -174,7 +174,7 @@ function labelled(text: string, kind: HandbookData["kind"]): { label: string; bo
   const parts = text.split(/\n(?=## )/);
   return parts.map((p, i) => {
     const heading = /^## (.+)/.exec(p)?.[1]?.trim();
-    const label = i === 0 ? (kind === "instance" ? "Your handbook" : "Main handbook") : heading === "Instance rules" ? "Your rules" : `Added for every agent: ${heading ?? "section"}`;
+    const label = i === 0 ? (kind === "local" ? "Your handbook" : "Main handbook") : heading === "Instance rules" ? "Your rules" : `Added for every agent: ${heading ?? "section"}`;
     return { label, body: p };
   });
 }
@@ -246,8 +246,8 @@ function Memory({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void
   );
 }
 
-/** An instance agent's whole handbook is its rules; a fork's text is a handbook change. */
-const instanceKind = (data: HandbookData, kind: "rules" | "handbook") => (data.kind === "instance" ? "rules" : kind);
+/** A local agent's whole handbook is its rules; a fork's text is a handbook change. */
+const instanceKind = (data: HandbookData, kind: "rules" | "handbook") => (data.kind === "local" ? "rules" : kind);
 
 const SUBS = [["edit", "Edit"], ["reads", "What it reads"], ["memory", "Memory"], ["history", "History"]] as const;
 

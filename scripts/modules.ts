@@ -29,7 +29,7 @@ const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.ts); the instance turns it on or off per agent.
 // handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
 // connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "status", "model"] };
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "model"] };
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
 const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
@@ -860,9 +860,12 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const [key, { when, ...r }] of Object.entries<Obj>(def.routines ?? {})) {
       if (tier === "local") {
         // A local routine: schedules (and, with the event router, an event) only; webhooks and their secrets come from product modules.
+        if (!/^[a-z0-9][a-z0-9_-]{0,80}$/.test(key)) fail(`routine ${key}: a local routine's key is lowercase letters, digits, _ and -`);
         if (when != null) fail(`routine ${key}: when isn't allowed`);
         for (const f of Object.keys(r)) if (!LOCAL_ROUTINE_FIELDS.includes(f)) fail(`routine ${key}: ${f} isn't allowed (known: ${LOCAL_ROUTINE_FIELDS.join(", ")})`);
         if (typeof r.agent !== "string" || !r.agent) fail(`routine ${key}: agent is required (the agent it runs as)`);
+        // Setup's identity marker is setup's alone: a routine can't claim another's compiled key.
+        if (/aidenhq:routine:/.test(String(r.description ?? ""))) fail(`routine ${key}: its description may not carry a routine marker`);
       }
       if (!r.title || routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
       routineTitles.add(r.title);
@@ -1075,10 +1078,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
     a.delegate_to = a.delegate_to.map((k: string) => k.replace(/\?$/, "")).filter((k: string) => k === "app-owners" || paperclip.agents[k]);
   }
-  // Quiet start (docs/design/quiet-start.md): a product module's scheduled routines start paused until an override turns one on
-  // (before the heartbeats, which quiet start leaves off unless the instance turned one on). A local module's routines are the
-  // owner's and the agents' own, whichever agent they run as: they start active.
-  if (settings.quiet_start === "on") for (const r of Object.values<Obj>(paperclip.routines)) if (r.schedules?.length && r.tier !== "local") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
@@ -1106,6 +1105,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
     for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone; // else Paperclip runs it in UTC
+    // Its status when setup creates it (docs/design/quiet-start.md); after that, Paperclip owns pause and resume. A local
+    // module's routines are the owner's and the agents' own, whichever agent they run as: active. An imported (declared)
+    // module's start paused. An official module's scheduled ones start paused under quiet start (a heartbeat the instance
+    // turned on, or an app's feedback routine, is generated with no tier: active).
+    r.status = r.tier === "declared" || (r.tier === "official" && settings.quiet_start === "on" && r.schedules?.length) ? "paused" : "active";
     // A local routine (the owner's or an agent's own), checked as it ends up after the overrides: at most hourly, as one
     // schedule whose cron minute is a single literal number (no cron parser; events cover anything faster).
     if (r.tier === "local") {
@@ -1211,7 +1215,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const optionalSecrets = enabled.flatMap((name) => all.get(name)!.def.optional_secrets ?? []);
   // Host-only tokens a module needs: created random when missing (compile.ts).
   const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name)!.def.generated_secrets ?? [])];
-  validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
+  validateImages(paperclip.agents); // image: an agent computer (module, local module or instance override)
   // Every agent's jobs run on an engine (after the overrides that may set it): its own `engine:`, else the one enabled engine
   // that runs in a computer.
   const boxEngines = Object.keys(engines).filter((k) => engines[k].box === true).sort();

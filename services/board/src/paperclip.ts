@@ -30,7 +30,7 @@ export interface Agent {
   lifecycleHolds?: string[];
   /** The agent it reports to (the org chart). */
   reportsTo?: string | null;
-  metadata?: { setupKey?: string; module?: unknown; trial?: unknown; model?: unknown; models?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown; team?: unknown; memberOf?: unknown; maxParallel?: unknown } | null;
+  metadata?: { setupKey?: string; module?: unknown; tier?: unknown; model?: unknown; models?: unknown; avatar?: unknown; runnerEngine?: unknown; engine?: unknown; profile?: unknown; department?: unknown; team?: unknown; memberOf?: unknown; maxParallel?: unknown } | null;
 }
 
 export interface Issue {
@@ -81,7 +81,7 @@ export interface Routine {
   status: string;
   assigneeAgentId?: string | null;
   lastTriggeredAt?: string | null;
-  triggers?: { id?: string; kind?: string; enabled?: boolean; label?: string | null; cronExpression?: string | null; nextRunAt?: string | null; lastFiredAt?: string | null }[];
+  triggers?: { id?: string; kind?: string; enabled?: boolean; label?: string | null; cronExpression?: string | null; timezone?: string | null; nextRunAt?: string | null; lastFiredAt?: string | null }[];
 }
 
 export interface Comment {

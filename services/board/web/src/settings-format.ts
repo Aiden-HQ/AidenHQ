@@ -54,7 +54,7 @@ export const modelShort = (id: string) => (id ? id.split("/").at(-1)!.replace(/^
 export function wakeText(a: AgentSettings): { text: string; full: string[] } {
   const parts: { text: string; raw: string }[] = [];
   if (a.heartbeatHours) parts.push({ text: `every ${a.heartbeatHours}h`, raw: "heartbeat" });
-  for (const r of a.routines.filter((x) => !x.key.startsWith("heartbeat-") && x.status !== "paused"))
+  for (const r of a.routines.filter((x) => !x.key.startsWith("heartbeat-")))
     for (const s of r.schedules) parts.push({ text: cronText(s.cron), raw: `${r.title}: ${s.cron}${s.timezone ? ` (${s.timezone})` : ""}` });
   if (!parts.length) return { text: a.routines.some((r) => r.webhook) ? "on an event" : "when asked", full: [] };
   const shown = [...new Set(parts.map((p) => p.text))];

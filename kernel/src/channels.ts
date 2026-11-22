@@ -257,16 +257,15 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
      * A colleague's @mention in a Slack channel bound to an agent (slack's binding): one thread is one task for `agent`,
      * found by `thread` ("channel:thread_ts") or created, and each mention is a comment on it. Not the owner's words: the text is
      * fenced and labelled with the Slack user, the description carries a `source:` marker (so the runner never reads it as the
-     * owner's own request) and each comment is marked for other agents only (the runner skips those). The agent must exist and
-     * not be in trial; the channel module decides which agent a channel is bound to.
+     * owner's own request) and each comment is marked for other agents only (the runner skips those). The agent must exist; the
+     * channel module decides which agent a channel is bound to.
      */
-    async thread(module: string, b: { agent?: unknown; thread?: unknown; from?: unknown; text?: unknown; link?: unknown }, agentOf: (key: string) => { id: string; trial?: boolean } | undefined) {
+    async thread(module: string, b: { agent?: unknown; thread?: unknown; from?: unknown; text?: unknown; link?: unknown }, agentOf: (key: string) => { id: string } | undefined) {
       channelOf(module);
       const key = str(b.agent, 100), thread = str(b.thread, 80), from = str(b.from, 40), text = neutral(str(b.text, 4000)).trim();
       if (!/^[A-Z0-9]+:\d+\.\d+$/.test(thread) || !/^[UW][A-Z0-9]+$/.test(from) || !text) throw fail(400, "bad_request", "send {agent, thread: channel:ts, from: slack user id, text}");
       const a = agentOf(key);
       if (!a) throw fail(404, "not_found", `no agent ${key.slice(0, 40)}`);
-      if (a.trial) throw fail(403, "forbidden", `${key} is in trial`);
       const link = /^https:\/\/[\w.-]+\.slack\.com\/archives\/[\w/?=.&-]*$|^https:\/\/slack\.com\/archives\/[\w/?=.&-]*$/.test(str(b.link, 300)) ? str(b.link, 300) : "";
       const fence = "`".repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map((r) => r.length + 1)));
       const [channel, ts] = thread.split(":");

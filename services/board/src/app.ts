@@ -1307,9 +1307,9 @@ export function createApp(opts: AppOptions): Server {
         const agent = agentByKey(await pc.agents(), m[1]!);
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
-        const module = typeof agent.metadata?.module === "string" ? agent.metadata.module : "instance";
+        const module = String(agent.metadata?.module ?? "");
         const text = await pc.request<{ content?: string }>("GET", `/api/agents/${encodeURIComponent(agent.id)}/instructions-bundle/file?path=AGENTS.md`).then((r) => String(r.content ?? ""), () => null);
-        return handbook({ key: m[1]!, module, revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
+        return handbook({ key: m[1]!, module, local: agent.metadata?.tier === "local", revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
       },
     },
     // The Handbook tab's Memory block: what the agent's memory holds, read-only (the agent and its memory tools change it).
@@ -1326,8 +1326,9 @@ export function createApp(opts: AppOptions): Server {
       method: "GET",
       path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/handbook\/history$/,
       handle: async (m) => {
-        if (!agentByKey(await pc.agents(), m[1]!)) throw new HttpError(404, "no such agent");
-        return history(m[1]!, process.env.BOARD_INSTANCE_DIR);
+        const agent = agentByKey(await pc.agents(), m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        return history(m[1]!, process.env.BOARD_INSTANCE_DIR, agent.metadata?.tier === "local" ? String(agent.metadata.module) : undefined);
       },
     },
     {
@@ -1647,8 +1648,9 @@ export function createApp(opts: AppOptions): Server {
           module,
           agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, activity, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
           ongoing,
-          // Its routines as compiled: on or off (quiet start pauses a schedule until the owner turns it on), and whose.
-          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: r.status !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
+          // Its routines: on or off as Paperclip runs them (setup creates one with its status; pause and resume are the live
+          // controls after that), else as compiled, and whose.
+          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const live = routines.find((x) => x.title === r?.title && x.status !== "archived"); return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
           authority: moduleAuthority(text, module.name),
           neededBy: module.neededBy,
           requires: module.requires,

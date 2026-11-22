@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge, parse } from "./helpers.ts";
 
-function world({ trial = false, me: meExtra = {} } = {}) {
+function world({ me: meExtra = {} } = {}) {
   const writes = [];
   const tasks = {
     cur: { id: "cur", identifier: "WOR-1", title: "Current", status: "in_progress", assigneeAgentId: "me", createdByAgentId: "boss" },
@@ -40,7 +40,7 @@ function world({ trial = false, me: meExtra = {} } = {}) {
       send([]);
     });
   };
-  const { call } = bridge({ handler, agents: { me: { key: "cos", ...meExtra, ...(trial ? { trial: true } : {}) }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
+  const { call } = bridge({ handler, agents: { me: { key: "cos", ...meExtra }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
   return { call, writes };
 }
 
@@ -72,14 +72,6 @@ test("task_finish with issue closes a task the caller holds, refuses another's",
   assert.match(parse(await call("task_finish", { issue: "WOR-7", comment: "x" })).error, /neither assigned to you nor/);
   assert.match(parse(await call("task_cancel", { issue: "WOR-7", comment: "x" })).error, /neither assigned to you nor/);
   assert.equal(writes.length, 1);
-});
-
-test("a trial agent finishes only its own task", async () => {
-  const { call, writes } = world({ trial: true });
-  assert.match(parse(await call("task_finish", { issue: "WOR-4", comment: "x" })).error, /in trial/);
-  assert.equal(writes.length, 0);
-  parse(await call("task_finish", { comment: "Done." }));
-  assert.deepEqual(writes, [["PATCH", "cur", { status: "done", comment: "Done." }]]);
 });
 
 test("task_delegate wait blocks the parent on the child", async () => {

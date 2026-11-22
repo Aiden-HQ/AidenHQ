@@ -63,8 +63,13 @@ test("local modules: every manifest key outside the allowlist fails", () => {
 test("a local agent compiles like today's instance agent, with no trial", () => {
   const r = compile(product, withAgents({ x: {} }, [], { quiet_start: "on" }));
   assert.equal(r.paperclip.agents.x.tier, "local");
-  assert.equal(r.paperclip.routines["x-sweep"].status, undefined, "a local routine is active under quiet start");
+  assert.equal(r.paperclip.routines["x-sweep"].status, "active", "a local routine is active under quiet start");
   assert.equal(r.paperclip.routines["x-sweep"].tier, "local");
+  assert.equal(r.paperclip.routines["daily-brief"].status, "paused", "a product module's schedule waits under quiet start");
+  // A heartbeat the instance turned on runs: quiet start held it off until then.
+  const hb = withAgents({}, [], { quiet_start: "on" });
+  writeFileSync(join(hb, "instance.yaml"), YAML.stringify({ ...YAML.parse(readFileSync(join(hb, "instance.yaml"), "utf8")), overrides: { agents: { "chief-of-staff": { heartbeat: true } } } }));
+  assert.equal(compile(product, hb).paperclip.routines["heartbeat-chief-of-staff"].status, "active");
   assert.throws(() => compile(product, withAgents({ x: { yaml: { trial: true } } })), /agent x: unknown field trial/);
   const sweep = (schedules) => ({ "x-sweep": { title: "Sweep", agent: "x", description: "Sweep, then close this task.", schedules } });
   assert.throws(() => compile(product, withAgents({ x: { routines: sweep([{ cron: "*/5 * * * *", label: "often" }]) } })), /routine x-sweep: a local routine runs at most hourly: its cron minute is one number 0-59 \(got \*\/5\)/);

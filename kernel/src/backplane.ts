@@ -135,7 +135,7 @@ const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read (name and model: code review's judge picks a model family other than a PR author's);
  * everything else in the grants table (tools, model lists, caps, images) stays here. */
-const DIRECTORY = ["key", "name", "model", "roles", "profile", "trial", "description", "delegate_to", "review_log", "graded", "feedback_for"];
+const DIRECTORY = ["key", "name", "model", "roles", "profile", "description", "delegate_to", "review_log", "graded", "feedback_for"];
 
 /** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
 const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
@@ -798,7 +798,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           case "POST /v1/channel/owner-message": return send(res, 200, await channels.ownerMessage(mod, await json(req), cos));
           case "POST /v1/channel/thread": {
             const b = await json(req);
-            return send(res, 200, await channels.thread(mod, b, (key) => { const e = Object.entries(grantsFile().agents ?? {}).find(([, g]) => key && g.key === key); return e && { id: e[0], trial: Boolean(e[1].trial) }; }));
+            return send(res, 200, await channels.thread(mod, b, (key) => { const e = Object.entries(grantsFile().agents ?? {}).find(([, g]) => key && g.key === key); return e && { id: e[0] }; }));
           }
           case "POST /v1/channel/stop": return send(res, 200, await channels.stop(mod, await json(req)));
           case "POST /v1/channel/exchange": {

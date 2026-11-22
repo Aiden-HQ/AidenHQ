@@ -17,7 +17,7 @@ import { createChecks } from "../src/checks.ts";
 import { createLane } from "../src/lane.ts";
 import { createOnce } from "../src/once.ts";
 import { createAsCaller, createBoardCp, createCp } from "../src/cp.ts";
-import { createIdentity, rolesOf } from "../src/identity.ts";
+import { createIdentity } from "../src/identity.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { createResolver } from "../src/net.ts";
 import { createHealthProbe } from "../src/health.ts";
@@ -100,7 +100,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   for (const [alias, a] of Object.entries(agents)) {
     const id = `job-${alias}`, g = grants[a.id] ?? {};
     const task = a.task ?? "TASK-1";
-    aliased.set(id, { agent: a.id, task, state: "running", identifier: a.identifier ?? task, authority: { tools: g.tools ?? {}, jobcaps: [], writes: [], roles: rolesOf(g) } });
+    aliased.set(id, { agent: a.id, task, state: "running", identifier: a.identifier ?? task, authority: { tools: g.tools ?? {}, jobcaps: [], writes: [], roles: [...(g.roles ?? [])] } });
     tokens[alias] = mintToken(allSecrets.gateway_job_secret, { kind: "job", job: id, agentId: a.id, issueId: task });
   }
   const token = (alias) => tokens[alias] ?? alias;

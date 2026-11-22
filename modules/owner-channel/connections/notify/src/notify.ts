@@ -33,7 +33,7 @@ export interface NotifyArgs {
 export type Message = { kind: Kind; text: string; head?: { agent: string; task: string; issue: string }; actions?: string[]; asks?: true };
 export type Found = { issueId: string; agentId: string; agentName: string; ownerVia?: "board" | "telegram" | "slack" | undefined };
 /** Who called notify: the agent, its key, its roles, and the kernel's assertion of this call (its reply is posted on it). */
-export interface Caller { id: string; name?: string | undefined; key: string; roles?: string[] | undefined; assertion: string; trial?: boolean | undefined }
+export interface Caller { id: string; name?: string | undefined; key: string; roles?: string[] | undefined; assertion: string }
 export type Result = { sent: boolean; reason?: "duplicate" | "limit" | "muted" | "blocked" | "error"; onChat?: true; queued?: true; note?: string; to?: "chief_of_staff" };
 
 export interface Deps {
@@ -138,7 +138,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     // A question reaches the owner directly only from the chief of staff, or on a task the owner is talking to its agent on
     // (the kernel decides, escalate.ts); any other goes to the chief of staff, which settles it. The wait is recorded first, so
     // a question is never sent without it.
-    if (kind === "decision" && caller && !caller.roles?.includes(CHIEF) && !caller.trial) {
+    if (kind === "decision" && caller && !caller.roles?.includes(CHIEF)) {
       // No task of its own to answer on: one standing task for the chief of staff per asking agent; each later question is a
       // wake notice on it while it is open (a new task once it is closed), and the loop brake caps the questions on it.
       if (!found) {

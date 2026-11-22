@@ -176,7 +176,7 @@ services:
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
         FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
         # Under quiet start the detector keeps checking but files no check task until the owner turns the Steward on
-        # (overrides.routines.fleet-ops-digest.status: active; service/src/detector.ts stewardOn).
+        # (resuming its "Fleet Ops: daily digest" routine; service/src/detector.ts stewardOn).
         FLEET_STEWARD_QUIET_START: "${settings.quiet_start}"
 generated_secrets:
   - fleet_steward_token

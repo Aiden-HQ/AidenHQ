@@ -19,7 +19,7 @@ writeFileSync(
   join(dir, "paperclip.yaml"),
   stringify({
     settings: { glean_mcp_url: { value: "", set: false }, grading: { value: "on", set: false }, maintainer_repos: { value: [{ repo: "acme/product" }], set: true } },
-    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "instance" }, "team-eng": { name: "Engineer", profile: "engineer", team: { name: "engineering", members: ["kai"] } }, kai: { name: "Kai", profile: "engineer", member_of: "team-eng" } },
+    agents: { "chief-of-staff": { name: "Aiden", module: "chief-of-staff", engine: "codex-openrouter", model: "openrouter/a" }, "fleet-engineer": { name: "Platform Engineer", engine: "codex-openrouter", profile: "engineer" }, helper: { name: "Helper", module: "helper", tier: "local" }, "team-eng": { name: "Engineer", profile: "engineer", team: { name: "engineering", members: ["kai"] } }, kai: { name: "Kai", profile: "engineer", member_of: "team-eng" } },
     mcp_servers: { crm: { tools: { read: ["crm_find"], write: ["crm_update"] } } },
     routines: { digest: { title: "Digest" } },
   }),
@@ -84,7 +84,7 @@ describe("POST /api/settings/change", () => {
       { kind: "grants", agent: "helper", connection: "crm", tools: ["crm_find"] },
       { kind: "handbook", agent: "helper", text: "x" },
       { kind: "unfork", agent: "chief-of-staff" },
-      { kind: "routine", routine: "nope", field: "status", value: "paused" },
+      { kind: "routine", routine: "nope", field: "model", value: "x/y" },
       { kind: "pin", name: "glean", sha: "main" },
       { kind: "marketplace", op: "add", name: "acme", sha: "a".repeat(40) },
       // A team member has no heartbeat of its own.
@@ -136,6 +136,13 @@ describe("POST /api/settings/change", () => {
     session = { accountId: "u", role: "user" };
     expect((await post({ changes: [{ kind: "setting", key: "autonomy", value: "tier0" }] })).status).toBe(403);
     session = { accountId: "owner", role: "admin" };
+  });
+  it("a local agent's rules are its whole handbook: accepted; its grants are its module.yaml's: refused; a routine's status is the live controls'", async () => {
+    expect(await post({ changes: [{ kind: "grants", agent: "helper", connection: "crm", tools: ["crm_find"] }] })).toMatchObject({ status: 400, body: { error: expect.stringContaining("module.yaml") } });
+    expect((await post({ changes: [{ kind: "routine", routine: "digest", field: "status", value: "paused" }] })).status).toBe(400);
+    const before = created.length;
+    expect((await post({ changes: [{ kind: "rules", agent: "helper", text: "# Helper\n\nYou help." }] })).status).toBe(200);
+    expect(created).toHaveLength(before + 1);
   });
 });
 

@@ -132,7 +132,8 @@ test("overrides apply to allowed fields only", () => {
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { max_parallel: 0 } } } })), /max_parallel must be 1 to 10/);
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { mcp_servers: [] } } } })), /override not allowed: agents\.x\.mcp_servers/);
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { nope: { model: "m" } } } })), /unknown agent: nope/);
-  assert.deepEqual(compile(mods, finst([], base, { overrides: { routines: { daily: { status: "paused" } } } })).paperclip.routines.daily.status, "paused");
+  // A routine's status is Paperclip's after setup creates it: the live controls pause and resume it, never an override.
+  assert.throws(() => compile(mods, finst([], base, { overrides: { routines: { daily: { status: "paused" } } } })), /override not allowed: routines\.daily\.status/);
 });
 test("grants entry: models, graded off by default; a removed spend key fails compile naming the replacement", () => {
   const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2" } } } })).paperclip;

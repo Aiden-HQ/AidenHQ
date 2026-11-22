@@ -282,7 +282,7 @@ function Routines({ d }: { d: ModuleDetail }) {
   return (
     <div className="mod-rows">
       {rows.map((r) => (
-        <ModRow key={r.key} href={`#/agents/${r.agent}/settings`} hint={r.on ? "Change or pause it on its agent's Settings" : "Turn it on from its agent's Settings"} title={r.title} meta={<StatusDot tone={r.on ? "working" : "done"}>{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
+        <ModRow key={r.key} href={`#/agents/${r.agent}/settings`} hint={r.on ? "Change it on its agent's Settings; ask Aiden to pause it" : "Ask Aiden to turn it on"} title={r.title} meta={<StatusDot tone={r.on ? "working" : "done"}>{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
       ))}
     </div>
   );

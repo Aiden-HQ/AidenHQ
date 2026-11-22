@@ -12,8 +12,7 @@ Nothing to connect.
 
 ## What agents get
 
-No tools. The prompts go to agents that hold `task_create`, and the Fleet Steward one only when `fleet-steward` is on;
-neither goes to an agent in trial.
+No tools. The prompts go to agents that hold `task_create`, and the Fleet Steward one only when `fleet-steward` is on.
 
 ## New installs
 

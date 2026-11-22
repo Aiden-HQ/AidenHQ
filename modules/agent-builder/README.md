@@ -2,8 +2,8 @@
 
 ## What it does
 
-The Agent Architect designs, builds and improves agents for you, and reviews the agents you have in trial. Describe an
-agent and it designs one from a template (`app-owner`, `digest-writer`, `pr-review-chaser`, `triage-bot`; see
+The Agent Architect designs, builds and improves agents for you, and onboards each new one on its first work. Describe an
+agent and it designs one, as a local module of your instance repo (`modules/<name>/`), from a template (`app-owner`, `digest-writer`, `pr-review-chaser`, `triage-bot`; see
 `templates/README.md`). The change reaches the fleet only through the Engineer, behind an approval.
 
 ## Connect
@@ -12,7 +12,7 @@ Nothing to connect. It tells you through the owner channel, so it needs a channe
 
 ## What agents get
 
-- It declares two roles: `architect` (its Engineer tasks may use the trial exception) and `repo-checkout` (a commit of an
+- It declares two roles: `architect` (the tasks it files may run on the product line) and `repo-checkout` (a commit of an
   agents-org repo placed in its computer).
 - The Architect reads: apps (`app_list`, `app_status`, `app_logs`, `app_view`, `web_view`, `warehouse_query`) and, when
   connected, a narrow read set of Glean, Jira, Slack and Primer. It writes `notify` (its questions are forms) and, with Primer
@@ -21,5 +21,5 @@ Nothing to connect. It tells you through the owner channel, so it needs a channe
 
 ## New installs
 
-In the default bundle. The Architect's heartbeat is off and its `trial-review` routine (weekdays, 17:00 in your timezone)
-starts paused while quiet start is on. It does nothing until you ask Aiden for an agent.
+In the default bundle. The Architect's heartbeat is off while quiet start is on. It does nothing until you ask Aiden for an
+agent.

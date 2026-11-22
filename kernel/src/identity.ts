@@ -7,7 +7,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { verifyToken } from "./gateway/token.ts";
 
-export type Grant = { key?: string; roles?: string[]; tools?: Record<string, string[]>; trial?: boolean; jobcaps?: string[]; [k: string]: unknown };
+export type Grant = { key?: string; roles?: string[]; tools?: Record<string, string[]>; jobcaps?: string[]; [k: string]: unknown };
 export type Connection = { url: string; auth_secret: string; module: string; returns: "trusted" | "untrusted"; tools: { read: string[]; write: string[]; destructive: string[]; named?: string[]; unreviewed?: string[] }; tool_timeout_s?: number;
   /** The module may make model calls billed to the caller of a tool call in flight (its manifest says so; off by default). */
   model_as_caller?: boolean;
@@ -46,8 +46,6 @@ const same = (a: string, b: string) => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return Boolean(a && b) && x.length === y.length && timingSafeEqual(x, y);
 };
-/** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
-export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
 /** An agent's roles as it holds them: its own, and a team member's team record's too (the record alone carries them for filing). */
 export function heldRoles(agents: Record<string, Grant | undefined> | undefined, id: string): string[] {
   const g = agents?.[id];
@@ -69,7 +67,7 @@ export function laneCaller(mod: Identity, agent: string, agents: Record<string, 
     const [c = "", t = ""] = String(ct).split(".");
     if (g.tools?.[c]?.includes(t)) tools[c] = [...(tools[c] ?? []), t];
   }
-  return { kind: "run", agent, key: g.key, name: g.key, roles: rolesOf(g), tools, task: g.chat_task, credential: "" };
+  return { kind: "run", agent, key: g.key, name: g.key, roles: [...(g.roles ?? [])], tools, task: g.chat_task, credential: "" };
 }
 
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */

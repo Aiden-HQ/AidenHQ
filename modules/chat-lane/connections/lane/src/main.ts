@@ -100,8 +100,7 @@ const http = createServer(async (req, res) => {
         return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!)));
       }
     }
-    // An agent in trial ("draft, don't do") wakes and answers only its own chats (the kernel's role mark).
-    const server = buildServer(laneTools, caller && { id: caller.agent, name: caller.name, key: caller.key }, Boolean(caller?.roles.includes("kernel.trial")));
+    const server = buildServer(laneTools, caller && { id: caller.agent, name: caller.name, key: caller.key });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

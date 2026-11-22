@@ -55,8 +55,6 @@ host: a repo's checks are check jobs.
   ceilings rather than reservations. Size the pool to the host's memory with no swap, and at least the sum of box agents'
   `max_parallel`.
 
-Compile refuses `image:` on a non-Engineer agent in trial (its limits would run inside a box it controls)
-(`scripts/computers.ts`, checked at compile).
 
 ## Module isolation
 

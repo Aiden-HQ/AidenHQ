@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODEHOSTS } from "./codehost.ts";
-import { heldRoles, rolesOf } from "./identity.ts";
+import { heldRoles } from "./identity.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { JobError, queueFacts } from "./jobs.ts";
@@ -24,7 +24,7 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 
 /** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.ts grantEntry). */
 export type AgentGrant = {
-  key?: string; roles?: string[]; trial?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
+  key?: string; roles?: string[]; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
   /** A team record (compile's teams): it never runs; its members do. A member names its team record's key. */
   team?: { name: string; members: string[] }; member_of?: string;
@@ -131,13 +131,12 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
-    // Not an agent in trial: its writes come with the change that graduates it.
-    const engineer = (id: string, k: { module: string }) => profile === "engineer" && g.trial !== true && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
+    const engineer = (id: string, k: { module: string }) => profile === "engineer" && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
     const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
-      roles: profile === "check" ? [] : rolesOf(g).filter((r) => platform || r !== PLATFORM),
+      roles: profile === "check" ? [] : (g.roles ?? []).filter((r) => platform || r !== PLATFORM),
       web: g.web_search !== "disabled",
     };
   }

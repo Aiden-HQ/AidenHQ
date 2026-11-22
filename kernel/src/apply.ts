@@ -24,38 +24,12 @@ import http from "node:http";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
+import { strayFiles } from "../sdk/src/instance-paths.ts";
 import { marketplacesOf, OFFICIAL } from "../../scripts/compiler/sources.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 import { LOCAL_ORG } from "./kinds.ts";
 import type { Resolver } from "./net.ts";
 import type { Rec } from "./records.ts";
-
-// Agents the instance defines itself live in agents/<key>/ (agent.yaml + AGENTS.md); owner/profile.md is how the owner works.
-export const APPLY_PATHS = /^(instance\.yaml|apps\.yaml|agents\/[\w.-]+\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md)|owner\/profile\.md)$/;
-
-/** Files a change touches outside what apply may land. */
-export const strayFiles = (files: string[]) => files.filter((f) => !APPLY_PATHS.test(f));
-
-const HANDBOOK = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/;
-const DEFINITION = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/;
-/** An agent.yaml that puts its agent in trial (a top-level `trial: true`). */
-export function isTrial(text: unknown): boolean {
-  try {
-    return text != null && YAML.parse(String(text))?.trial === true;
-  } catch {
-    return false;
-  }
-}
-/** The agent.yaml paths whose content the trial checks need, at the merge base and at the change. */
-export const definitionsOf = (files: string[]) => [...new Set(files.map((f) => HANDBOOK.exec(f)?.[1] ?? DEFINITION.exec(f)?.[1]).filter(Boolean))].map((k) => `agents/${k}/agent.yaml`);
-
-/**
- * Agents a change adds that don't start in trial. A new agent always starts read-only ("draft, don't do"), so tap 1 is
- * safe to approve; its write grants come with tap 2, a change to an agent that already exists. `base`/`head`: path → text
- * (undefined when the file isn't there).
- */
-export const untrialedNewAgents = (files: string[], base: Record<string, string | undefined>, head: Record<string, string | undefined>) =>
-  files.filter((f) => DEFINITION.test(f) && base[f] === undefined && head[f] !== undefined && !isTrial(head[f])).map((f) => DEFINITION.exec(f)![1]!);
 
 /** instance.yaml's top-level `product:` pin (a full sha), or undefined. */
 export function productPin(text: unknown): string | undefined {
@@ -108,10 +82,9 @@ export function officialMove(base: string | undefined, head: string | undefined)
 }
 /**
  * What the code host read at the commit, against its merge base with the instance's main: the files it changes, the texts the
- * rules read on both sides (each changed file, the agent.yaml of each agent it touches, and instance.yaml; absent where the
- * file isn't), the diff, and the graduation card's trial edits (handbook commits since an agent's trial began; "" if none).
+ * rules read on both sides (each changed file and instance.yaml; absent where the file isn't) and the diff.
  */
-export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; trial?: string; base?: string; main?: string };
+export type Read = { files: string[]; texts: { base: Record<string, string>; head: Record<string, string> }; diff: string; base?: string; main?: string };
 /**
  * What an apply's commit changes, as one digest: its files, the texts read on both sides and the diff. The plan binds it into
  * the record's targets; the land re-reads the commit and lands only when it is exactly the same.
@@ -245,8 +218,6 @@ export function createApply({ db, codehost, launch, unit, generations, contains,
         if ((r.targets as { content?: unknown })?.content !== readDigest(c)) return { ok: false, text: "Not applied: what the commit changes is no longer exactly what was approved; it needs a new approval." };
         const stray = strayFiles(c.files);
         if (stray.length) return { ok: false, text: `Not applied: it changes files outside the instance config (${stray.join(", ")}).` };
-        const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
-        if (untrialed.length) return { ok: false, text: `Not applied: a new agent must start in trial (${untrialed.join(", ")}).` };
         const official = officialMove(c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]);
         if ("error" in official) return { ok: false, text: `Not applied: ${official.error}.` };
         await codehost.land({ ...src, official });

@@ -4,7 +4,6 @@
 import http from "node:http";
 import { fail } from "./proxy.ts";
 import type { Connection, Grant } from "./identity.ts";
-import { rolesOf } from "./identity.ts";
 import type { Requester } from "./records.ts";
 import type { Resolver } from "./net.ts";
 
@@ -28,7 +27,7 @@ export function createHealthProbe({ grants, connections, kindOf, callAs, log = (
     const [id, g] = Object.entries(grants()).filter(([, g]) => g.tools?.[p.connection]?.includes(p.tool)).sort(([i, a], [j, c]) => count(a) - count(c) || i.localeCompare(j))[0] ?? [];
     if (!id || !g) throw fail(409, "no_caller", `no agent is granted ${p.connection}.${p.tool}`);
     const t0 = Date.now();
-    const r = await callAs({ agent: id, key: String(g.key ?? ""), name: String(g.key ?? ""), roles: rolesOf(g), kind: "run" }, p.connection, p.tool, p.args()).catch((e: Error) => ({ ok: false, text: e.message }));
+    const r = await callAs({ agent: id, key: String(g.key ?? ""), name: String(g.key ?? ""), roles: [...(g.roles ?? [])], kind: "run" }, p.connection, p.tool, p.args()).catch((e: Error) => ({ ok: false, text: e.message }));
     const ms = Date.now() - t0;
     log("proxy", { connection: p.connection, tool: p.tool, method: "tools/call", agent: g.key ?? id, ms, total: ms, outcome: r.ok ? "ok" : "error", via: "health-probe" });
     return r.ok ? { ok: true, ms } : { ok: false, ms, error: r.text.slice(0, 200) };

@@ -9,7 +9,8 @@ in [aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules), which takes n
 ## Layout
 
 `marketplace.json` lists every module. Each top-level folder is one module with a `module.yaml`, plus (as needed)
-`agents/<key>/AGENTS.md` handbooks, `connections/<name>/` MCP servers, `apps/` and a compose file.
+`agents/<key>/AGENTS.md` handbooks, `connections/<name>/` MCP servers, `apps/` and a compose file. An instance's own modules are local
+modules in its instance repo (`modules/<name>/`, [AGENTS.md](AGENTS.md) "Local modules").
 
 | Folder | What it is |
 |---|---|

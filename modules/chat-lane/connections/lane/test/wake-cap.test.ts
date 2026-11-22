@@ -18,7 +18,7 @@ async function server(closed: Set<string>, { slow = false }: { slow?: boolean } 
     if (slow) await new Promise((r) => setTimeout(r, 5));
     return closed.has(task);
   };
-  const s = buildServer({ store: laneStore, lane, agents: () => ({ aria }), timezone: "UTC", taskIsClosed }, { id: "ag-aria", name: "Aria", key: "aria" }, false);
+  const s = buildServer({ store: laneStore, lane, agents: () => ({ aria }), timezone: "UTC", taskIsClosed }, { id: "ag-aria", name: "Aria", key: "aria" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await s.connect(a);
   const client = new Client({ name: "t", version: "0" });

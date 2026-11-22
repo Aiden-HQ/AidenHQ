@@ -37,5 +37,5 @@ routines:
 # Improving the rules: proposals go to the Engineer. With fleet-steward, product defects are logged for the Fleet
 # Steward, which has the Maintainer report them upstream.
 prompts:
-  - { id: improving, file: prompts/improving.md, order: first, when: { tools: [ paperclip_tasks.task_create ] }, unless: { fields: { trial: true } } }
-  - { id: improving-fleet-steward, file: prompts/improving-fleet-steward.md, order: first, when: { tools: [ paperclip_tasks.task_create ], modules: [ fleet-steward ] }, unless: { fields: { trial: true, module: fleet-steward } } }
+  - { id: improving, file: prompts/improving.md, order: first, when: { tools: [ paperclip_tasks.task_create ] } }
+  - { id: improving-fleet-steward, file: prompts/improving-fleet-steward.md, order: first, when: { tools: [ paperclip_tasks.task_create ], modules: [ fleet-steward ] }, unless: { fields: { module: fleet-steward } } }

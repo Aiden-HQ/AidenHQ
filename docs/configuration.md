@@ -54,8 +54,8 @@ A private git repo (one per owner), checked out on the host and pointed to by `A
 instance.yaml                 product pin, modules, settings, overrides
 apps.yaml                     apps agents created (read and written by apps-mcp)
 agents/<key>.md               extra rules appended to that module agent's handbook
-agents/<key>/agent.yaml       an instance-defined agent
-agents/<key>/AGENTS.md        its handbook
+agents/<key>/AGENTS.md        a module agent's handbook fork (with overrides.agents.<key>.handbook_fork)
+modules/<name>/               a local module: the instance's own agents, skills and routines (below)
 owner/profile.md              how the owner works, in every crew handbook and chat lane
 decisions.md                  product decisions and "not building" entries the AI reviewer holds changes to
 ```
@@ -91,16 +91,19 @@ outcomes:
   model for a frequent sweep, the agent's stronger one for everything else). Compile writes it into the agent's grants
   entry (`routines`), and the kernel's admission gives a routine run's job that model. `reasoning_effort:` on a routine
   works the same way (generated heartbeats use both).
-- **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
-  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules and `model` only), `max_parallel`,
-  `image`, `trial`, `trial_writes`, `heartbeat` and `skills` (module skill ids). They cannot have roles. An agent that writes
-  or designs code lists `engineering.write-code` in `skills` (how code is written here), plus `engineering.publish` when it runs `aidenhq publish`; every agent gets "How we work".
-  `trial: true` keeps writes to reporting on the
-  agent's own tasks; `trial_writes: [connection.tool, …]` on a trial agent says which more it may use, so a definition can
-  give it the owner-channel writes before tap 2: `paperclip_tasks.task_create`, `chat_lane.wake_at`,
-  `chat_lane.chat_send`, `owner_channel.notify` (any other name, an entry it doesn't grant, or one on an agent not in
-  trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
-  and the Engineer commits them after the owner approves.
+- **Local modules** (`modules/<name>/` in the instance repo, tier `local`, always on: listing one in `modules:` is a
+  compile error) hold the instance's own agents, skills and routines, compiled like product modules. Their `module.yaml`
+  takes only `name` (the folder's), `description`, `agents` and `routines`; `skills/<name>/SKILL.md` is found by folder.
+  A local agent takes `name`, `description` (the routing contract), `reports_to`, `model`, `reasoning_effort`,
+  `timeout_sec`, `connections`, `max_parallel`, `image`, `heartbeat`, `web_search`, `graded`, `department`, `chat`,
+  `skills` and `profile`; it cannot have roles, and its handbook (`agents/<key>/AGENTS.md`) is plain Markdown with no
+  frontmatter. A local routine takes `title`, `description`, `concurrency`, `schedules`, `agent` (required: any agent),
+  `model` and `event`; it runs at most hourly (at most one schedule, its cron minute one number, checked after
+  `overrides.routines`) and starts active. An agent that writes or designs code lists `engineering.write-code` in `skills`
+  (how code is written here), plus `engineering.publish` when it runs `aidenhq publish`; every agent gets "How we work".
+  The Agent Architect designs local agents (templates in `modules/agent-builder/templates/`); a new one starts with its
+  designed grants, and the AI reviewer reads it at apply. The old `agents/<key>/agent.yaml` is a compile error naming
+  the move.
 - `image: engineer` on an Engineer (`profile: engineer`): every Engineer has one; its jobs run in that agent computer (a job for an
   agent without one is refused).
 - `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the reads its jobs hold,
@@ -191,7 +194,7 @@ run `node scripts/sync-shared.ts`.
 ## The web and apps' pages
 
 - **Web search** is live for every agent's jobs unless they hold private data (the kernel's admission).
-  An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
+  An agent may set `web_search: cached` or `disabled` (in its module's or local module's definition); computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
   (`modules/apps-platform/apps-mcp/src/view.ts`): a one-shot container of the browser image (`services/computer/images/browser`:
@@ -241,7 +244,7 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `github_fleet_org` | github | no | | The GitHub org the fleet's repositories live in: bare `create-repo` names and `@agents` grants resolve to it. Unset: they live on this server (`local`). A change is the owner's. |
 | `github_orgs` | github | no | `[]` | GitHub orgs or users, besides the fleet org, the owner allows: the apps platform builds trusted apps from their repos (private ones through the code host) and `create-repo` creates repositories there at Tier 0. |
 | `autonomy` | core | no | `off` (`ops/setup.sh` writes `full` for a new install) | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. A new install starts at `full` (owner, 2026-11-18); the reviewer's exit test (`modules/ai-reviewer/scripts/reviewer-eval.ts`) gates every change to the reviewer. Changing it is itself a Tier 2 apply. |
-| `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
+| `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every product module routine with `schedules:` is created paused and every module agent's heartbeat off, until the routine is resumed (its live control: Aiden's `fleet_control`) or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the heartbeat switch). Webhook-started routines and local modules are untouched. A routine's status is set once, when setup creates it; turning quiet start off later resumes nothing. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
 | `spend_day_usd`, `spend_month_usd` | core | no | `50`, `1000` | The install's spend limit on every model call (agents, check jobs, the AI reviewer, grader, CI review, source writers, side chat): USD per UTC day and per UTC calendar month, enforced in the kernel's model gateway. Past either, a call gets 402 `cap_reached` and the owner is told once per limit, period and value (no card); the board's header shows today's spend against the day limit. Raising one is the owner's at every autonomy; lowering is the panel's. |
 | `task_usd` | core | no | `20` | What an agent's calls on one task may spend, install-wide (a chat or routine task: per UTC day). Past it that task's calls get 402 and the delegator is told once (a wake notice on the parent task, else the owner); admission holds new jobs on it. Raising it is the owner's. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |

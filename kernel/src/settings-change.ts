@@ -75,7 +75,7 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
   const agentOf = (key: unknown, { module = false } = {}) => {
     if (!AGENT.test(String(key))) refuse(`${key} isn't an agent key`);
     const a = (has(compiled?.agents, String(key)) && compiled.agents[String(key)]) || refuse(`there is no agent ${key}`);
-    if (module && a.module === "instance") refuse(`${key} is the instance's own agent: its handbook and grants are its agents/${key}/ files`);
+    if (module && a.tier === "local") refuse(`${key} is a local agent: its handbook and grants are its modules/${a.module}/ files`);
     return a;
   };
   const moduleOf = (name: unknown) => (NAME.test(String(name)) && catalog.find((m) => m.name === name)) || refuse(`there is no module ${name}`);
@@ -115,7 +115,7 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
       if (!KEY.test(String(c.routine).replace(/-/g, "_")) || !has(compiled?.routines, c.routine)) refuse(`there is no routine ${c.routine}`);
       const v = c.value;
       const schedule = (s: unknown) => isMap(s) && Object.keys(s).every((k) => ["cron", "timezone", "label"].includes(k)) && typeof s.cron === "string" && /^[0-9*/,\- ]{9,100}$/.test(s.cron) && (s.timezone == null || (typeof s.timezone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+){0,2}$|^UTC$/.test(s.timezone))) && (s.label == null || (plain(s.label) && s.label.length <= 60));
-      const okFor = ({ schedules: () => Array.isArray(v) && v.length <= 10 && v.every(schedule), status: () => v === "active" || v === "paused", model: () => typeof v === "string" && MODEL.test(v) } as Record<string, () => boolean>);
+      const okFor = ({ schedules: () => Array.isArray(v) && v.length <= 10 && v.every(schedule), model: () => typeof v === "string" && MODEL.test(v) } as Record<string, () => boolean>);
       const ok = Object.hasOwn(okFor, c.field) ? okFor[c.field] : undefined;
       if (!ok) refuse(`${c.field} isn't a routine field the board may change`);
       if (!ok!()) refuse(`${c.routine}.${c.field} can't be ${JSON.stringify(v).slice(0, 200)}`);
@@ -124,8 +124,8 @@ export function checkTyped(ch: unknown, { compiled, catalog }: Sources): void {
     case "rules": {
       only(c, ["kind", "agent", "text"]);
       const a = agentOf(c.agent);
-      text(c.text, a.module === "instance" ? HANDBOOK_MAX : RULES_MAX);
-      if (a.module === "instance" && !c.text.trim()) refuse("an instance agent's handbook can't be empty");
+      text(c.text, a.tier === "local" ? HANDBOOK_MAX : RULES_MAX);
+      if (a.tier === "local" && !c.text.trim()) refuse("a local agent's handbook can't be empty");
       return;
     }
     case "handbook": {
@@ -182,11 +182,12 @@ export function yamlText(doc: YAML.Document, docText: string): string {
   return doc.toString({ lineWidth: 0 }).split("\n").map((l) => had.get(flat(l)) ?? l).join("\n");
 }
 
-type IsInstance = (key: string) => boolean;
+/** A local agent's module (its handbook is modules/<module>/agents/<key>/AGENTS.md), or undefined for a module agent. */
+type LocalOf = (key: string) => string | undefined;
 /** An agent on a team: the team's name and whether it is the record (else a member). */
 type TeamOf = (key: string) => { team: string; record: boolean } | undefined;
 /** Kind → the instance repo files it may write (and nothing else). */
-const PATHS: Record<string, (ch: Change, isInstance: IsInstance) => string[]> = {
+const PATHS: Record<string, (ch: Change, localOf: LocalOf) => string[]> = {
   setting: () => ["instance.yaml"],
   agent: () => ["instance.yaml"],
   module: () => ["instance.yaml"],
@@ -194,11 +195,11 @@ const PATHS: Record<string, (ch: Change, isInstance: IsInstance) => string[]> = 
   pin: () => ["instance.yaml"],
   marketplace: () => ["instance.yaml"],
   grants: () => ["instance.yaml"],
-  rules: (ch, isInstance) => [isInstance(ch.agent) ? `agents/${ch.agent}/AGENTS.md` : `agents/${ch.agent}.md`],
+  rules: (ch, localOf) => [localOf(ch.agent) ? `modules/${localOf(ch.agent)}/agents/${ch.agent}/AGENTS.md` : `agents/${ch.agent}.md`],
   handbook: (ch) => [`agents/${ch.agent}/AGENTS.md`, "instance.yaml"],
   unfork: (ch) => [`agents/${ch.agent}/AGENTS.md`, "instance.yaml"],
 };
-export const allowedPaths = (changes: Change[], isInstance: IsInstance) => [...new Set(changes.flatMap((ch) => ((Object.hasOwn(PATHS, ch.kind) && PATHS[ch.kind]) || refuse(`${ch.kind} writes nothing`))(ch, isInstance)))].sort();
+export const allowedPaths = (changes: Change[], localOf: LocalOf) => [...new Set(changes.flatMap((ch) => ((Object.hasOwn(PATHS, ch.kind) && PATHS[ch.kind]) || refuse(`${ch.kind} writes nothing`))(ch, localOf)))].sort();
 
 const entryId = (item: unknown) => String(YAML.isMap(item) ? item.get("id") : YAML.isScalar(item) ? item.value : item);
 const entryName = (item: unknown) => entryId(item).split("@")[0];
@@ -206,12 +207,12 @@ const entryName = (item: unknown) => entryId(item).split("@")[0];
 /**
  * The files these changes write, from the files as they are (`read(path)`: text, or undefined when absent): path → new text,
  * or null to delete. instance.yaml is edited through the yaml Document API, so its comments and layout stay; emptied maps
- * and lists are dropped, so a change and its undo leave it as it was. `isInstance(key)`: the instance's own agent;
+ * and lists are dropped, so a change and its undo leave it as it was. `localOf(key)`: a local agent's module;
  * `moduleHandbook(key)`: the module's handbook text the host runs (a new fork records its blob); `bundle`: the default
  * module set (modules/marketplace.json), whose members a turn-off also lists in `modules_removed` so an upgrade never
  * adds them back.
  */
-export function planFiles(changes: Change[], { read, isInstance, teamOf, moduleHandbook, bundle }: { read: (p: string) => string | undefined; isInstance: IsInstance; teamOf: TeamOf; moduleHandbook: (key: string) => string | undefined; bundle: string[] }): Map<string, string | null> {
+export function planFiles(changes: Change[], { read, localOf, teamOf, moduleHandbook, bundle }: { read: (p: string) => string | undefined; localOf: LocalOf; teamOf: TeamOf; moduleHandbook: (key: string) => string | undefined; bundle: string[] }): Map<string, string | null> {
   const out = new Map<string, string | null>();
   const current = (p: string) => (out.has(p) ? (out.get(p) ?? undefined) : read(p));
   const docText = current("instance.yaml") ?? refuse("the instance repo has no instance.yaml");
@@ -295,8 +296,8 @@ export function planFiles(changes: Change[], { read, isInstance, teamOf, moduleH
         break;
       }
       case "rules": {
-        const [p] = PATHS.rules!(ch, isInstance);
-        out.set(p!, !isInstance(ch.agent) && !ch.text.trim() ? null : ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`);
+        const [p] = PATHS.rules!(ch, localOf);
+        out.set(p!, !localOf(ch.agent) && !ch.text.trim() ? null : ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`);
         break;
       }
       case "handbook": {
@@ -388,8 +389,8 @@ export function createSettingsChanges(d: SettingsDeps) {
     const repo = d.instanceRepo() ?? refuse("this kernel has no instance repo (AIDENHQ_INSTANCE_REPO)");
     for (const ch of changes) checkTyped(ch, src);
     const typed = changes as Change[];
-    const isInstance = (key: string) => has(src.compiled.agents, key) && src.compiled.agents[key].module === "instance";
-    const allowed = allowedPaths(typed, isInstance);
+    const localOf = (key: string) => (has(src.compiled.agents, key) && src.compiled.agents[key].tier === "local" ? String(src.compiled.agents[key].module) : undefined);
+    const allowed = allowedPaths(typed, localOf);
     const { base, texts } = await d.main(allowed);
     const moduleHandbook = (key: string) => {
       const a = has(src.compiled.agents, key) ? src.compiled.agents[key] : undefined;
@@ -400,7 +401,7 @@ export function createSettingsChanges(d: SettingsDeps) {
       const a = has(src.compiled.agents, key) ? src.compiled.agents[key] : undefined;
       return a?.team ? { team: a.team.name, record: true } : a?.member_of ? { team: src.compiled.agents[a.member_of]?.team?.name, record: false } : undefined;
     };
-    const files = planFiles(typed, { read: (p) => texts.get(p), isInstance, teamOf, moduleHandbook, bundle });
+    const files = planFiles(typed, { read: (p) => texts.get(p), localOf, teamOf, moduleHandbook, bundle });
     const stray = [...files.keys()].filter((f) => !allowed.includes(f));
     if (stray.length) refuse(`it would change ${stray.join(", ")}, which these changes may not touch`);
     if (!files.size) refuse("it changes nothing: the instance is already like this");

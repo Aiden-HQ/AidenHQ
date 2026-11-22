@@ -117,7 +117,7 @@ export async function marketplacesOf(catalog: Entry[], resolve: Resolve) {
   return { marketplaces: rows };
 }
 
-/** The tools its module grants an agent on one connection (module.yaml as written), or null for an agent without one (an instance agent's). */
+/** The tools its module grants an agent on one connection (module.yaml as written), or null for an agent its module doesn't list. */
 function moduleGrant(catalog: Entry[], key: string, connection: string, tools: { read: string[]; write: string[] }): string[] | null {
   const g = catalog.find((m) => m.defaults?.agents?.[key])?.defaults!.agents![key]!.connections?.[connection];
   return g === "read" ? tools.read : g === "write" ? [...tools.read, ...tools.write] : Array.isArray(g) ? g : null;

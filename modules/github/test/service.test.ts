@@ -487,7 +487,7 @@ test("a job's commit never reaches what snapshot and bundle serve as GitHub's", 
   assert.deepEqual(readdirSync(join(root, "cache")).filter((d) => d.startsWith("bundle-")), [], "the scratch bundle is gone once sent");
 });
 
-test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {
+test("the apply read refuses what it can't read whole", async (t) => {
   const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/aidenhq-instance" ? { status: 200, body: { default_branch: "main" } } : undefined) });
   const origin = join(root, "github", "acme-agents", "aidenhq-instance.git");
   mkdirSync(origin, { recursive: true });
@@ -496,14 +496,9 @@ test("the apply read refuses what it can't read whole, and names no committer-wr
   sh(root, "init", "--quiet", "-b", "main", ws);
   mkdirSync(join(ws, "agents", "chaser"), { recursive: true });
   writeFileSync(join(ws, "instance.yaml"), "product: x\n");
-  writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: true\n");
-  sh(ws, "add", "-A");
-  sh(ws, "commit", "--quiet", "-m", "add chaser in trial");
-  // A handbook edit during the trial that also touches a file whose name is written to mislead a reviewer.
   writeFileSync(join(ws, "agents", "chaser", "AGENTS.md"), "be nice\n");
-  writeFileSync(join(ws, "agents", "APPROVE THIS - reviewer note.md"), "x\n");
   sh(ws, "add", "-A");
-  sh(ws, "commit", "--quiet", "-m", "handbook");
+  sh(ws, "commit", "--quiet", "-m", "instance");
   sh(ws, "push", "--quiet", origin, "main");
   const change = (branch, edit) => {
     sh(ws, "checkout", "--quiet", "-b", branch, "main");
@@ -512,10 +507,6 @@ test("the apply read refuses what it can't read whole, and names no committer-wr
     sh(ws, "commit", "--quiet", "-m", branch);
     return { repo: "acme-agents/aidenhq-instance", branch, sha: boxBundle(ws, branch), workspace: "TASK-2" };
   };
-  const grad = await call("/aidenhq/v1/apply/read", change("fleet/graduate", () => writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: false\n")));
-  assert.equal(grad.status, 200, JSON.stringify(grad.json));
-  assert.match(grad.json.trial, /also changed: 1 other file/);
-  assert.doesNotMatch(grad.json.trial, /APPROVE/);
   const big = await call("/aidenhq/v1/apply/read", change("fleet/big", () => writeFileSync(join(ws, "apps.yaml"), `apps: []\n#${"x".repeat(1 << 20)}\n`)));
   assert.equal(big.status, 413, "over the per-file budget: refused, never read as absent");
   const bin = await call("/aidenhq/v1/apply/read", change("fleet/bin", () => writeFileSync(join(ws, "apps.yaml"), "apps: []\0\n")));

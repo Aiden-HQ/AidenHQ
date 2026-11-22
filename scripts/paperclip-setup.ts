@@ -19,7 +19,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit } from "./modules.ts";
 import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.ts";
-import { routineDrift, syncAgents } from "./paperclip-diff.ts";
+import { routinePlan, syncAgents, syncRoutines } from "./paperclip-diff.ts";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.ts";
 import { agentSkills, handbookParts, laneHandbook, readInstructions as readHandbook } from "./handbook.ts";
 import { recoverStalePid } from "./paperclip-recover.ts";
@@ -359,94 +359,30 @@ function updateSystemYaml(companyId: string) {
 }
 
 /**
- * Each configured routine (matched by title), its schedules and its webhook, written only where Paperclip's differs: one list
- * call (it carries the triggers) is the whole read. A routine that differs gets today's full write: schedules first, then
- * its own fields (re-saving a schedule moves its next run to the next tick from now, so a routine resumed after a long pause
- * starts there instead of Paperclip catching up every tick it missed, up to 25 runs).
+ * Each configured routine, its schedules and its webhook, by identity (paperclip-diff.ts syncRoutines: the compiled key,
+ * recorded in the grants table and in a marker in the routine itself), written only where Paperclip's differs.
  */
 async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
-  const { json: routines } = await api("GET", `/api/companies/${companyId}/routines`);
-  const work: { key: string; r: Obj; body: Obj; routine?: Obj; webhook?: { prefix: string; label: string; existing?: Obj } }[] = [];
-  for (const [key, r] of Object.entries<Obj>(cfg.routines ?? {})) {
-    const agent = agents[r.agent];
-    if (!agent) fail(`routine ${key}: unknown agent ${r.agent}`);
-    const routine = routines.find((x: Obj) => x.title === r.title);
-    const body = {
-      title: r.title,
-      description: r.description,
-      assigneeAgentId: agent.id,
-      priority: "medium",
-      // A paused routine stays paused across applies (the detector's auto-pause, the owner's pause) unless the config sets a status; an archived one that returns comes back active.
-      status: r.status ?? (routine?.status === "paused" ? "paused" : "active"),
-      concurrencyPolicy: r.concurrency ?? "coalesce_if_active",
-      // Placeholders like {{tasks}} are filled by whoever starts the run (API); give them a default.
-      variables: [...new Set([...(r.description ?? "").matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g)].map((m) => m[1]))]
-        .filter((v) => !["date", "timestamp"].includes(v))
-        .map((name) => ({ name, type: "text", required: false, defaultValue: "" })),
-      // A lost scheduler tick still fires on the next one (Paperclip enqueues one run per missed tick, at most one for sub-hourly crons); always_enqueue routines already queue every event, so they skip.
-      catchUpPolicy: (r.concurrency ?? "coalesce_if_active") === "always_enqueue" ? "skip_missed" : "enqueue_missed_with_cap",
-      // A routine's model and reasoning_effort are the kernel's (grants.json `routines`); nothing rides in the routine's env.
-      env: null,
-    };
-    const drift = routine ? routineDrift(body, routine, r.schedules ?? []) : ["new"];
-    let webhook;
-    if (r.webhook) {
-      // Webhooks come from product modules only: a local routine (writable through apply) could otherwise take another routine's secret.
-      if (r.tier === "local") fail(`routine ${key}: a local routine can't have a webhook`);
-      if (r.secrets_prefix != null && !/^[a-z0-9_]+$/.test(r.secrets_prefix)) fail(`routine ${key}: secrets_prefix must be lowercase letters, digits and _`);
-      // Secret files: <secrets_prefix>_url / _secret (default meeting_webhook, the transcript watcher).
-      const prefix = r.secrets_prefix ?? "meeting_webhook";
-      const label = r.secrets_prefix ? `${key} webhook` : "transcript watcher";
-      webhook = { prefix, label, existing: routine?.triggers?.find((t: Obj) => t.kind === "webhook" && t.label === label) };
-      if (routine && (!webhook.existing || !readSecret(`${prefix}_secret${companySuffix}`))) drift.push("webhook");
-    }
-    if (routine) routineKeys[routine.id] = key;
-    if (drift.length) { work.push({ key, r, body, routine, webhook }); step(`Routine ${r.title}: ${drift.join(", ")}${routine ? " changed" : ""}`); }
-  }
-  step(`setup: ${work.length} routines changed, ${Object.keys(cfg.routines ?? {}).length - work.length} unchanged`);
-  // A routine's key is the kernel's alone (never Paperclip's), so it lands here even when the routine itself is unchanged.
-  writeGrants(agents, reviewLogs, chatTasks);
-  // One routine's calls are independent of the next one's: a few side by side.
-  await mapLimit(work, 4, async ({ key, r, body, routine, webhook }: (typeof work)[number]) => {
-    const existed = Boolean(routine);
-    if (!routine) {
-      routine = (await api("POST", `/api/companies/${companyId}/routines`, body)).json as Obj;
-      step(`Created routine ${r.title}`);
-      routineKeys[routine.id] = key;
-      writeGrants(agents, reviewLogs, chatTasks);
-    }
-    const triggers: Obj[] = routine.triggers ?? [];
-    for (const s of r.schedules ?? []) {
-      const existing = triggers.find((t: Obj) => t.kind === "schedule" && t.label === s.label);
-      if (existing) {
-        await api("PATCH", `/api/routine-triggers/${existing.id}`, { cronExpression: s.cron, timezone: s.timezone, enabled: true });
-      } else {
-        await api("POST", `/api/routines/${routine.id}/triggers`, { kind: "schedule", label: s.label, cronExpression: s.cron, timezone: s.timezone });
-        step(`Added schedule "${s.label}" (${s.cron} ${s.timezone}) to ${r.title}`);
-      }
-    }
-    // Schedules are matched by label, so a renamed or removed one would keep firing next to its replacement: it stops.
-    for (const t of triggers.filter((t: Obj) => t.kind === "schedule" && t.enabled && !(r.schedules ?? []).some((s: Obj) => s.label === t.label))) await api("PATCH", `/api/routine-triggers/${t.id}`, { enabled: false }).then(() => step(`Disabled schedule "${t.label}" on ${r.title}: its config no longer names it`));
-    // An existing routine's own fields last (see above).
-    if (existed) await api("PATCH", `/api/routines/${routine.id}`, body);
-
-    if (webhook) {
-      const { prefix, label, existing } = webhook;
-      let material: Obj | undefined;
-      if (!existing) {
-        material = (await api("POST", `/api/routines/${routine.id}/triggers`, { kind: "webhook", label, signingMode: "hmac_sha256", replayWindowSec: 300 })).json.secretMaterial;
-        step(`Added signed webhook trigger to ${r.title}`);
-      } else if (!readSecret(`${prefix}_secret${companySuffix}`)) {
-        material = (await api("POST", `/api/routine-triggers/${existing.id}/rotate-secret`, {})).json.secretMaterial;
-        step("Rotated webhook secret (local copy was missing)");
-      }
-      if (material) {
-        // webhook_base: for callers inside the compose network (the public URL does not resolve there).
-        writeSecret(`${prefix}_url${companySuffix}`, r.webhook_base ? r.webhook_base + new URL(material.webhookUrl).pathname : material.webhookUrl);
-        writeSecret(`${prefix}_secret${companySuffix}`, material.webhookSecret);
-      }
-    }
+  const plans = Object.entries<Obj>(cfg.routines ?? {}).map(([key, r]) => {
+    const agent = agents[r.agent] ?? fail(`routine ${key}: unknown agent ${r.agent}`);
+    try { return routinePlan(key, r, agent.id, (name) => Boolean(readSecret(`${name}${companySuffix}`))); } catch (e) { return fail((e as Error).message); }
   });
+  // A routine's key is the kernel's alone (never Paperclip's): the live map lands in the grants table before a new routine's triggers.
+  const setKeys = (k: Record<string, string>) => {
+    for (const id of Object.keys(routineKeys)) delete routineKeys[id];
+    Object.assign(routineKeys, k);
+    writeGrants(agents, reviewLogs, chatTasks);
+  };
+  setKeys(await syncRoutines({
+    api, companyId, plans, keys: { ...routineKeys }, step, onKeys: setKeys,
+    onWebhook: (plan, material) => {
+      const r = cfg.routines[plan.key];
+      const prefix = r.secrets_prefix ?? "meeting_webhook";
+      // webhook_base: for callers inside the compose network (the public URL does not resolve there).
+      writeSecret(`${prefix}_url${companySuffix}`, r.webhook_base ? r.webhook_base + new URL(material.webhookUrl).pathname : material.webhookUrl);
+      writeSecret(`${prefix}_secret${companySuffix}`, material.webhookSecret);
+    },
+  }));
 }
 
 /**

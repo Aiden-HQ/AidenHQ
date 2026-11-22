@@ -8,7 +8,7 @@ import { Store } from "../src/store.js";
 
 const calls: string[] = [];
 const pc = {
-  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } }],
+  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "roadmap-keeper", tier: "local" } }],
   pauseAgent: async (id: string) => void calls.push(`pause ${id}`),
   resumeAgent: async (id: string) => void calls.push(`resume ${id}`),
 } as unknown as Paperclip;

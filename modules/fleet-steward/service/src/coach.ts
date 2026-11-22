@@ -121,7 +121,7 @@ const STATUSES = "backlog,todo,in_progress,in_review,blocked,done,cancelled";
 export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps: <T>(path: string) => Promise<T> }) {
   const companies = async () => (await d.kernel.read("/api/companies")) as { id: string }[];
   const agentsOf = async () => (await Promise.all((await companies()).map(async (c) => (await d.kernel.read(`/api/companies/${c.id}/agents`)) as Agent[]))).flat();
-  const directory = async () => ((await d.kernel.call("GET", "/v1/agents")).agents ?? {}) as Record<string, { key?: string; roles?: string[]; trial?: boolean; graded?: boolean; review_log?: string }>;
+  const directory = async () => ((await d.kernel.call("GET", "/v1/agents")).agents ?? {}) as Record<string, { key?: string; roles?: string[]; graded?: boolean; review_log?: string }>;
 
   /** Owner corrections of the last 14 days: the "Not right" comments on correction-labelled tasks, with the task's agent. */
   async function corrections(now: number, limit = 30): Promise<{ agentId: string; at: string; issue: Issue; text: string }[]> {
@@ -242,7 +242,7 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
       });
       return packEvidence({
         agent: { key: keyOf(a), name: a.name, id: a.id, status: a.status, createdAt: a.createdAt ?? null, engine: typeof a.metadata?.engine === "string" ? a.metadata.engine : null, model: typeof a.metadata?.model === "string" ? a.metadata.model : null },
-        grants: entry ? { roles: entry.roles ?? [], graded: entry.graded, trial: entry.trial ?? false } : undefined,
+        grants: entry ? { roles: entry.roles ?? [], graded: entry.graded } : undefined,
         runs, traces, wakes, scorecard: card,
         corrections: fixes?.filter((c) => c.agentId === a.id).map((c) => ({ task: c.issue.identifier, title: c.issue.title, at: c.at, text: c.text })),
         flags: keys.filter((k) => mineKeys.has(`${k.key}@${k.at}`)).map(({ key, state, at, reason }) => ({ key, state, at, reason })),

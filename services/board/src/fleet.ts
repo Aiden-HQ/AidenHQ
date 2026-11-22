@@ -260,7 +260,12 @@ async function control(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSc
   } else {
     const t = pick((await pc.request<Routine[]>("GET", `${co}/routines`)).filter((x) => x.status !== "archived"), a.target, "routine", (x) => [x.title]);
     if (a.action === "run_routine") await pc.request("POST", `/api/routines/${t.id}/run`, { source: "manual" });
-    else await pc.request("PATCH", `/api/routines/${t.id}`, { status: a.action === "pause_routine" ? "paused" : "active" });
+    else {
+      // Resuming re-saves each schedule first: that moves its next run to the next tick from now, so a routine resumed after a
+      // long pause starts there instead of Paperclip catching up every tick it missed.
+      if (a.action === "resume_routine") for (const tr of (t.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled && x.id && x.cronExpression)) await pc.request("PATCH", `/api/routine-triggers/${tr.id}`, { cronExpression: tr.cronExpression, ...(tr.timezone ? { timezone: tr.timezone } : {}), enabled: true });
+      await pc.request("PATCH", `/api/routines/${t.id}`, { status: a.action === "pause_routine" ? "paused" : "active" });
+    }
     done = a.action === "run_routine" ? `started routine ${t.title}` : `${a.action === "pause_routine" ? "paused" : "resumed"} routine ${t.title}`;
   }
   return { ok: true, done };

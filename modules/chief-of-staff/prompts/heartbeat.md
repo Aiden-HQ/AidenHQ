@@ -29,7 +29,6 @@ comment on that task to wake it, or re-delegate under it.
 7. **A missed wake-up or stuck item** (a sub-task finished but nobody told you, a card that should exist but doesn't, a
    job stuck far past its usual time): add ONE comment to the "Fleet issues" task, {{fleet_issues}}. Read its recent
    comments first and skip it if the same key is already there. Form:
-   `key: <task> · <failure kind> · <event, card or job id>`, then expected vs observed, with timestamps. In trial, put it
-   in your own report instead.
+   `key: <task> · <failure kind> · <event, card or job id>`, then expected vs observed, with timestamps.
 8. **Finish the heartbeat task** with `task_finish`: one line on what you did, or "nothing to catch up". This finishes the
    heartbeat task only, never your work task.

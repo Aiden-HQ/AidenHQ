@@ -23,7 +23,7 @@ const NEW_AUTHORITY = { modules: { acme: { base: { name: "acme" }, head: { name:
 function kernel({ modules = { modules: {}, marketplaces: [] }, reviewer = "approve", texts = { base: yaml(OLD), head: yaml(NEW) }, verifyRelease = async () => null, autonomy = "full" } = {}) {
   const h = { reads: 0, lands: [], launches: [], gens: [] };
   // The commit as the code host reads it, at plan and again at the land.
-  const commit = () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: `-product: ${OLD}\n+product: ${NEW}\n`, trial: "" });
+  const commit = () => ({ files: ["instance.yaml"], texts: { base: { "instance.yaml": texts.base }, head: { "instance.yaml": texts.head } }, diff: `-product: ${OLD}\n+product: ${NEW}\n` });
   const planner = createApplyPlanner({
     instanceRepo: () => "acme/aidenhq-instance",
     read: async (s) => (h.reads++, h.read = s, commit()),

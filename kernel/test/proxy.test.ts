@@ -7,7 +7,7 @@ import { kernel, moduleServer } from "./helpers.ts";
 const conn = (url, module, tools, extra = {}) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "untrusted", tools: { read: [], write: [], destructive: [], ...tools }, ...extra });
 const secrets = { docs_service_key: "docs-key", other_service_key: "other-key" };
 const agents = { "run-jwt-ada": { id: "ag-ada", name: "Ada" }, "agent-key-bo": { id: "ag-bo", name: "Bo" } };
-const grants = { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer", tools: { docs: ["doc_read", "doc_write"] } }, "ag-bo": { key: "bo", roles: [], trial: true, tools: { docs: ["doc_read"] } } };
+const grants = { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer", tools: { docs: ["doc_read", "doc_write"] } }, "ag-bo": { key: "bo", roles: [], tools: { docs: ["doc_read"] } } };
 
 test("the proxy: grants, listing, the service key, assertions, fencing", async (t) => {
   let hold;
@@ -41,9 +41,6 @@ test("the proxy: grants, listing, the service key, assertions, fencing", async (
   const caller = await verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "docs");
   assert.deepEqual({ agent: caller.agent, key: caller.key, name: caller.name, roles: caller.roles, task: caller.task, tool: caller.tool }, { agent: "ag-ada", key: "ada", name: "ada", roles: ["writer"], task: "TASK-1", tool: "docs.doc_read" });
   await assert.rejects(verifyCaller({ headers: { "x-aidenhq-caller": s.caller } }, k.jwks, "other"), /not other/);
-  // A trial agent's assertion carries kernel.trial.
-  await k.call("docs", "agent-key-bo", { method: "tools/call", params: { name: "doc_read", arguments: {} } });
-  assert.deepEqual((await verifyCaller({ headers: { "x-aidenhq-caller": docs.seen.at(-1).caller } }, k.jwks, "docs")).roles, ["kernel.trial"]);
 
   // Untrusted results are fenced, and only the fenced text reaches the agent.
   const text = answer.result.content[0].text;
@@ -103,7 +100,7 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.deepEqual((await r.json()).error, { code: -32602, message: "no-grant" });
   assert.equal(docs.seen.filter((s) => s.method === "tools/call").length, 0);
   const dir = await fetch(`${k.url}/v1/agents`, { headers: { authorization: "Bearer other-key" } }).then((x) => x.json());
-  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [], trial: true } }, repos: {}, log_tasks: [] });
+  assert.deepEqual(dir, { agents: { "ag-ada": { key: "ada", roles: ["writer"], profile: "engineer" }, "ag-bo": { key: "bo", roles: [] } }, repos: {}, log_tasks: [] });
   assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } })).status, 401);
   const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } }).then((x) => x.json());
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], task: "TASK-1", tools: { docs: ["doc_read", "doc_write"] } });
