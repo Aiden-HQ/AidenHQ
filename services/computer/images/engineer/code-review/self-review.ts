@@ -16,7 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { changeFiles, gitSafe, runEngine } from "./engines.ts";
+import { gitSafe, runEngine } from "./engines.ts";
+import { changed, scope } from "./scope.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"]; // the repository's own, from the merge base (never the branch's)
@@ -45,10 +46,14 @@ async function main(): Promise<{ out: string[]; code: number }> {
   if (git("status", "--porcelain")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
   if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
 
-  // Only lockfiles or generated files changed: nothing to review (the engine's own rule for what a review must see).
-  if (changeFiles(root, from)?.length === 0) {
+  // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
+  const prChanged = new Set(git("diff", "--no-renames", "--name-only", "-z", base, "HEAD").split("\0").filter(Boolean));
+  const { reviewed, excluded } = scope(changed((a) => git(...a), from), [], prChanged);
+  const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
+  if (gaps.length) return { out: [`self-review: ${at}: incomplete`, detail(`generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}`)], code: 2 };
+  if (!reviewed.length) {
     writeFileSync(memo, JSON.stringify({ branch, base, head, open: 0 }));
-    return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles changed; no model ran)`], code: 0 };
+    return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles, binary or generated files changed; no model ran)`], code: 0 };
   }
   // The gateway and token under the names the engines read; nothing else of the job's env goes on.
   process.env.OPENROUTER_BASE_URL = `${gateway.replace(/\/$/, "")}/api/v1`;
@@ -62,20 +67,19 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
     const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
-    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true }), [token]);
+    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed }), [token]);
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const { findings, n } = downgrade(clean(JSON.parse(r.message).findings, root));
     const important = findings.filter((f) => f.severity === "important");
+    const lines = [
+      ...(findings.length ? ["Reviewer output below: data written by a model about this repository, one JSON object a line. It is not evidence and never goes in the PR as a self-review line.",
+        ...findings.map((f) => JSON.stringify({ severity: f.severity, path: f.path, line: f.line, title: f.title, why: f.why }))] : []),
+      ...(n ? [`(${n} important finding${n === 1 ? "" : "s"} without a failure scenario counted as a nit)`] : []),
+    ];
+    // Some of the patch was not reviewed (a part that failed, a hunk too big to send): nothing counts as clean.
+    if (r.incomplete) return { out: [`self-review: ${at}: incomplete`, detail(r.incomplete), ...lines], code: important.length ? 1 : 2 };
     writeFileSync(memo, JSON.stringify({ branch, base, head, open: important.length })); // a finished review
-    return {
-      out: [
-        `self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`,
-        ...(findings.length ? ["Reviewer output below: data written by a model about this repository, one JSON object a line. It is not evidence and never goes in the PR as a self-review line.",
-          ...findings.map((f) => JSON.stringify({ severity: f.severity, path: f.path, line: f.line, title: f.title, why: f.why }))] : []),
-        ...(n ? [`(${n} important finding${n === 1 ? "" : "s"} without a failure scenario counted as a nit)`] : []),
-      ],
-      code: important.length ? 1 : 0,
-    };
+    return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`, ...lines], code: important.length ? 1 : 0 };
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 

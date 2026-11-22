@@ -36,7 +36,9 @@ import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
 import { brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
 import type { Cleaned, Excluded, Severity } from "./brief.ts";
-import { checklistText, globRe, matchChecklist } from "./review-checklist.ts";
+import { checklistText, matchChecklist } from "./review-checklist.ts";
+import { changed, scope } from "./scope.ts";
+import type { Changed } from "./scope.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
 import { setupPath } from "./deepsec.ts";
 import { plain, readSmall } from "./proc.ts";
@@ -56,7 +58,6 @@ export interface Spec {
   /** deepsec's spend cap (the run's remaining budget), and, when a setup branch is pending, its files as JSON text (path to text). */
   budget_usd?: number | string; setup_files?: string;
 }
-interface Changed { path: string; added: number; removed: number; binary: boolean }
 type Placed = Cleaned & { id: string; option?: string; lens?: string };
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -74,12 +75,6 @@ interface Result {
 }
 const RANK: Record<Severity, number> = { important: 0, nit: 1, pre_existing: 2 };
 const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"];
-// Excluded unless the reviewer's own globs say otherwise: lockfiles, generated code, build output, minified bundles (made, not
-// written). Vendored code is reviewed: a repo that vendors third-party code ignores it with its own globs (owner-tier).
-// Lockfiles: no findings asked for, never a coverage gap (they carry no code). Generated and bundled code: a gap when
-// the change adds it (a place to hide code).
-const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lock", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum", "**/bun.lockb"];
-const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
 const MAX_PRE = 5;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
@@ -173,33 +168,6 @@ export function unreadDiffs(answers: EngineResult[], reviewed: string[], t: Retu
   // A file the tool can't diff by path (one the head deleted) is read only through the whole diff.
   const own = (p: string) => { try { return starts(String(t.diff!.run({ path: p }))); } catch { return undefined; } };
   return reviewed.filter((p) => { if (wholes.has(p) || viaTree(p)) return false; const got = fetched(p), s = own(p); return !s || !s.every((x) => got.has(x)); });
-}
-
-/** The changed files from `from` to the head with their line counts: [{ path, added, removed, binary }]. */
-export function changed(git: Git, from: string): Changed[] {
-  const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", from, "HEAD"]);
-  return out.split("\0").filter(Boolean).map((l) => {
-    const [a, r, ...p] = l.split("\t");
-    return { path: p.join("\t"), added: a === "-" ? 0 : Number(a), removed: r === "-" ? 0 : Number(r), binary: a === "-" };
-  });
-}
-
-/**
- * Which files a review reports on and which it leaves out, with why. Left out means "no findings there", never unread: the tools
- * still read and search them. `gap`: a left-out file the change could hide code in (a new file under a generated
- * path), so the review is incomplete and never reads as a clean pass. Size never leaves a file out. The repo's own ignore globs
- * (its config) and binary files are no gap. `added`: the paths this change adds.
- */
-export function scope(files: Changed[], ignore: unknown[] = [], prChanged = new Set<string>()) {
-  const mine = [...ignore].map(String).map(globRe), gen = GENERATED.map(globRe), locks = LOCKS.map(globRe);
-  const reviewed: string[] = [], excluded: Excluded[] = [];
-  for (const f of files) {
-    // A change to how git reads files is always reviewed, whatever the globs say.
-    const attrs = posix.basename(f.path) === ".gitattributes";
-    const why = attrs ? undefined : f.binary ? "binary" : mine.some((re) => re.test(f.path)) ? "ignored" : locks.some((re) => re.test(f.path)) ? "lockfile" : gen.some((re) => re.test(f.path)) ? (prChanged.has(f.path) ? "generated, changed by this PR" : "generated") : undefined;
-    ((why ? excluded : reviewed) as (Excluded | string)[]).push(why ? { path: f.path, why, gap: why === "generated, changed by this PR" } : f.path);
-  }
-  return { reviewed, excluded };
 }
 
 /** The old-side lines a change touches in one file (from -U0 hunks), or "all" when the file is gone; undefined when untouched. */
@@ -430,7 +398,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   };
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, ...engineSpec })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, files: reviewed, ...engineSpec })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });
