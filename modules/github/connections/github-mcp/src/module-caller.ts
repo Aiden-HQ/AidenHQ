@@ -106,14 +106,17 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
       if ((e as { code?: string }).code !== "ENOENT") o.log.warn({ err: (e as Error).message }, "the kept connection needs could not be read");
     }
   }
+  /** The cap is applied only after a replay: a staged need the kernel takes is not an entry still waiting. True when it dropped one. */
   const cap = () => {
+    let evicted = false;
     while (pending.size > PENDING_MAX) {
-      const evicted = pending.keys().next().value!;
-      pending.delete(evicted);
-      o.log.warn({ key: evicted }, "a connection need was dropped from the pending set: more than the cap of 20 were waiting");
+      const k = pending.keys().next().value!;
+      pending.delete(k);
+      evicted = true;
+      o.log.warn({ key: k }, "a connection need was dropped from the pending set: more than the cap of 20 were waiting");
     }
+    return evicted;
   };
-  cap();
   if (migrated) save();
   let flushing = false;
   const flush = async (): Promise<void> => {
@@ -134,7 +137,7 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
         pending.delete(k);
         changed = true;
       }
-    } finally { flushing = false; if (changed) save(); }
+    } finally { flushing = false; if (cap() || changed) save(); }
   };
   return {
     /** Report now, bounded; the report is kept on disk before the first attempt, so a restart inside the wait still sends it. */

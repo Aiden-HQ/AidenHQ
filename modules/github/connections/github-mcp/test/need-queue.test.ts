@@ -155,6 +155,20 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
   });
 
+  it("a restart does not evict a staged need before it is replayed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    // A full queue (the cap) plus the one tell() staged and was posting when the process died.
+    const rows = Array.from({ length: 21 }, (_, n) => ({ key: `restricted\u0000\u0000acme${n}\u0000`, need: { cause: "restricted", org: `acme${n}`, detail: "x" }, gen: "g" }));
+    writeFileSync(file, JSON.stringify(rows));
+    const k = replies([ok()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file, generation: () => "g" });
+    expect(q.pending(), "all 21 are replayed, not capped to 20 up front").toBe(21);
+    await q.flush();
+    expect(k.seen, "every staged need was sent before the cap").toHaveLength(21);
+    expect(q.pending()).toBe(0);
+  });
+
   it("a kept need that is not a sign-in failure survives a reconnect", async () => {
     let credential = "first";
     const k = replies([busy(), busy()]);
