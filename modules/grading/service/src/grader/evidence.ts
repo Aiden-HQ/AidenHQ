@@ -389,14 +389,21 @@ const unverifiable = (url: string) => `${url} is named by the runner's own recor
 /**
  * Every identifier the task keeps for one of its PRs, its branch rows and the runner's own merge records together: one row's
  * gap is filled by another's fact, and two rows that disagree stay two values for identityOf to refuse.
+ *
+ * `unread`: the records read failed and this row's own identifiers cannot establish the PR by themselves. That is an answer it
+ * could not get, never "this number is not the task's change": a retry may fill the gap, so a caller deciding whether work
+ * exists must wait rather than close on the row's silence.
  */
-async function idsWithRecord(p: any, deps: any): Promise<RecordedIds> {
+async function idsWithRecord(p: any, deps: any): Promise<RecordedIds & { unread: boolean }> {
   const ids = idsOf(p);
-  if (!deps.taskMerged) return ids;
-  const row = taskMergePrs(await deps.taskMerged().catch(() => [])).find((x) => samePr(x, p));
-  if (!row) return ids;
+  const establishes = ids.heads.length > 0 || ids.headOids.length > 0 || ids.merges.length > 0;
+  if (!deps.taskMerged) return { ...ids, unread: false };
+  const records = await deps.taskMerged().then((r: any[]) => ({ rows: r }), () => undefined);
+  if (!records) return { ...ids, unread: !establishes };
+  const row = taskMergePrs(records.rows).find((x) => samePr(x, p));
+  if (!row) return { ...ids, unread: false };
   const other = idsOf(row);
-  return { heads: [...new Set([...ids.heads, ...other.heads])], headOids: [...new Set([...ids.headOids, ...other.headOids])], merges: [...new Set([...ids.merges, ...other.merges])] };
+  return { heads: [...new Set([...ids.heads, ...other.heads])], headOids: [...new Set([...ids.headOids, ...other.headOids])], merges: [...new Set([...ids.merges, ...other.merges])], unread: false };
 }
 
 /**
@@ -456,6 +463,13 @@ export async function presentNow(deliverable: any, deps: any) {
       // another change, or proves nothing, that change's state is not this task's: the fact is the merge commit the task's own
       // record holds, and it is never "present", so the row escalates with what the record does hold instead.
       const ids = await idsWithRecord(p, deps);
+      // The record that would tell this PR's own branch, head or merge could not be read and the row alone proves nothing: that
+      // is a failed read, not "this number is not the task's change", so the close waits and asks again.
+      if (ids.unread) {
+        unknown = true;
+        facts.push(`${p.url} could not be read just now`);
+        continue;
+      }
       const who = identityOf(ids, pr);
       if (who.state !== "ok") {
         facts.push(who.state === "unknown" ? unverifiable(p.url) : staleFact(p.url, who.why, ids.merges));
@@ -575,6 +589,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // not this task's, so nothing of it is read or graded; the wait says so, and names the merge commit the record holds.
     // A record that proves nothing is not graded either: the wait says the number can't be checked, rather than trusting it.
     const ids = await idsWithRecord(p, deps);
+    if (ids.unread) return { awaiting: `${p.url}: the runner's record for this task could not be read just now` };
     const who = identityOf(ids, pr);
     if (who.state !== "ok") {
       if (who.state === "unknown") return { awaiting: unverifiable(p.url) };

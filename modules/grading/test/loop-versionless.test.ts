@@ -172,6 +172,25 @@ it("a held close whose deliverable was unreadable says so, never that the delive
     assert.doesNotMatch(String(notes.at(-1)), /deliverable is there/);
   });
 
+
+it("a versionless close returns to grading as soon as gathering finds a version, never waiting on an outage", async () => {
+  // The close is queued while the app has no readable evidence (no version), then the deploy lands: on replay gather() has the
+  // version, so the close is stale whatever the presence check would say. A transient outage there must not leave the old
+  // close queued for another day.
+  let looked = 0, deployed = false;
+  const { loop, calls, posts, failing, state } = setup("satisfied", {
+    id: "t-late", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
+    gather: () => ({ facts: [], version: deployed ? "roadmap-keeper@abc123" : "" }),
+    presentNow: async () => { looked++; return { present: false, unknown: true, facts: ["registry did not answer"] }; },
+  });
+  failing.done = 1; // the close PATCH fails, so the close stays owed and is replayed on the next pass
+  await loop.runGrades();
+  deployed = true;
+  await loop.runGrades(); // the deploy is there, and the presence check is down
+  // The first pass checked presence (there was no evidence to read); the replay does not, because gather() already has the version.
+  assert.equal(looked, 1, "the presence check does not run again over a version already in hand");
+  assert.deepEqual(calls, [], "the close never lands");
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "sent back to grading");
 });
 
 describe("grade loop presence with several recorded PRs", () => {
@@ -192,5 +211,6 @@ it("a confirmed merged PR makes a versionless close stale even when another PR's
   const errors = posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "error");
   assert.ok(errors.every(([, b]) => b.version !== "" || b.reason !== "gaveUp"), "and never the gave-up close on the unreadable one");
   assert.ok(!errors.some(([, b]) => String(b.reason ?? "").includes("could not be read")), "no unreadable-close reason is written");
+});
 });
 });

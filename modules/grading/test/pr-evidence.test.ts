@@ -540,3 +540,34 @@ test("an unreadable deploy history is reported as unknown, never as 'no healthy 
   const said = complete.facts.find((f) => f.startsWith("app roadmap-keeper:"));
   assert.match(String(said), /no healthy deploy/, "a complete history with no healthy row is a real miss");
 });
+
+// The runner's own merge record fills in the identifier a branch row may lack. When that read fails, a row whose own identifiers
+// prove nothing is an unreadable answer, never "this number is not the task's change": a retry may confirm the PR.
+test("an unreadable identity record is unknown, not proof the PR is not the task's", async () => {
+  // The branch row names the PR by number only: no branch, head commit or merge commit to tell it by.
+  const bare = [{ repo: REPO, number: 224, url: url(224) }];
+  const mergedPr = merged(224, "b", "c");
+  const record = { repo: REPO, number: 224, url: url(224), headRef: "branch-b", merge: SHA("c") };
+  const deps = (taskMerged: any) => ({
+    taskPrs: async () => bare, pr: async () => ({ repository: { pullRequest: mergedPr } }), taskMerged,
+    appOfRepo: async () => null,
+  });
+  // The record read failed: the row alone can't establish identity, so the close waits rather than closing on the silence.
+  const unread = await presentNow({ kind: "pr", ref: "" }, deps(async () => { throw new Error("kernel GET /v1/merges → 502"); }));
+  assert.deepEqual([unread.present, unread.unknown], [false, true], "a failed records read is unknown");
+  assert.match(unread.facts.join("; "), /could not be read just now/);
+  assert.doesNotMatch(unread.facts.join("; "), /keeps no branch, head commit or merge commit/, "never worded as an unverifiable number");
+  // The same read answering, with no row for this PR, is a real answer: the number proves nothing and is not read as the change.
+  const nothing = await presentNow({ kind: "pr", ref: "" }, deps(async () => []));
+  assert.deepEqual([nothing.present, nothing.unknown], [false, false], "a readable record with no row is a known answer");
+  assert.match(nothing.facts.join("; "), /keeps no branch, head commit or merge commit/);
+  // With the record, the identifiers are there and the merged PR is the deliverable.
+  const found = await presentNow({ kind: "pr", ref: "" }, deps(async () => [record]));
+  assert.deepEqual([found.present, found.unknown], [true, false], "the record's identifiers establish the PR");
+  // A row that carries its own identifiers needs no record: a failed read still leaves a definitive answer, no wait.
+  const own = await presentNow({ kind: "pr", ref: "" }, {
+    taskPrs: async () => [{ ...bare[0], headRef: "branch-b" }], pr: async () => ({ repository: { pullRequest: mergedPr } }),
+    taskMerged: async () => { throw new Error("502"); }, appOfRepo: async () => null,
+  });
+  assert.deepEqual([own.present, own.unknown], [true, false], "the row's own branch identifies it without the record");
+});

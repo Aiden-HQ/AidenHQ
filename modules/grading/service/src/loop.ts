@@ -92,7 +92,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // that could not answer (GitHub or the apps registry unreachable) is not "absent": it waits for the next pass, but
           // only so long. After the day a grade waits, an answer that never comes closes the task ungraded, saying the
           // deliverable could not be read, rather than letting the close replay forever.
-          const presence = !active && Boolean(deps) && !s.version ? await presentNow(s.deliverable, deps) : undefined;
+          // A gathered version is itself proof the close is stale, and it is the answer already in hand: the presence check is
+          // only for a deliverable whose evidence could not be captured (no version), so it never runs — and never waits on an
+          // outage — over a deliverable `gather()` has already read.
+          const presence = !active && Boolean(deps) && !s.version && !found ? await presentNow(s.deliverable, deps) : undefined;
           // Confirmed presence first: one recorded PR merged is proof the close is stale even when another PR's lookup failed
           // (`present` and `unknown` are both true then), so the row goes back to grading instead of waiting on the uncertain one.
           const present = Boolean(presence?.present);
