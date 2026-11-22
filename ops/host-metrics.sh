@@ -13,9 +13,12 @@
 # written while the directory is missing (the module is off).
 set -uo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -f "$repo/.env" ] && { set -a; . "$repo/.env"; set +a; }
-data="${AIDENHQ_DATA_DIR:-data}"
-case "$data" in /*) ;; *) data="$repo/$data" ;; esac
+# The host's settings come from the environment the unit gives this script (its EnvironmentFile=, which the apply writes from
+# the host's settings): ops/lib/data-dir.sh is the same resolver the CI runner's backoff marker uses, so the unit's marker is
+# the file this exports. This script reads no `.env` itself; a relative value is the checkout's and `~` is the home dir.
+# shellcheck source=ops/lib/data-dir.sh
+. "$repo/ops/lib/data-dir.sh"
+data="$(aidenhq_data_dir)"
 dir="$data/modules/monitoring/textfile"
 [ -d "$dir" ] || exit 0
 
@@ -54,6 +57,37 @@ write() { # name: atomic, so node-exporter never reads half a file
         echo "aidenhq_unit_failed{scope=\"$scope\",unit=\"$unit\"} $([ "$active" = failed ] && ! is_paused "$unit" && echo 1 || echo 0)"
       done
   done
+  # A runner unit's persisted wait after a refused registration token (ops/lib/ci-runner-backoff.sh): seconds, absent once a
+  # token mints or the marker is stale. It is the loop's own state, not the unit's sampled active bit: a unit backing off is
+  # activating for nearly the whole 60s cap, so a 30s snapshot can miss every active interval and CiRunnerRestartLooping's
+  # changes() can stay at zero; CiRunnerBackoff reads this instead and cannot miss a loop that is backing off.
+  echo "# HELP aidenhq_unit_backoff The CI runner unit's wait after a refused registration token, in seconds (0 when there is none)."
+  echo "# TYPE aidenhq_unit_backoff gauge"
+  # The runner units that are still in play: enabled, or live despite being disabled -- `systemctl --user disable` without
+  # `--now` leaves a runner running and retrying under its restart policy, so its wait is still the loop's own state. A marker
+  # a retired unit left behind (disabled and stopped just after reaching the cap) is not: it must not keep CiRunnerBackoff
+  # pending for its 15-minute life when nothing is retrying any more.
+  runners="$( {
+    systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' | awk '{print $1}'
+    systemctl --user list-units --all --plain --no-legend --no-pager 'aidenhq-ci-runner@*' | awk '$3 == "active" || $3 == "activating" || $3 == "reloading" {print $1}'
+  } 2>/dev/null | clean | sort -u)"
+  for backoff_dir in "$data"/ci-runner; do
+    [ -d "$backoff_dir" ] || continue
+    for marker in "$backoff_dir"/*.backoff; do
+      [ -f "$marker" ] || continue
+      delay="$(cat "$marker" 2>/dev/null || true)"
+      [[ "$delay" =~ ^[0-9]+$ ]] && [ "$delay" -ge 1 ] || continue
+      stamp="$(stat -c %Y "$marker" 2>/dev/null || true)"
+      [[ "$stamp" =~ ^[0-9]+$ ]] || continue
+      [ $(( $(date +%s) - stamp )) -le 900 ] || continue
+      # Not a delay this version writes (the cap): no series rather than a wait the runner itself would not serve.
+      [ "$delay" -le 60 ] || continue
+      unit_name="aidenhq-ci-runner@$(basename "$marker" .backoff).service"
+      # A runner neither enabled nor live has been retired: its marker is not a loop still running.
+      printf '%s\n' "$runners" | grep -qxF -- "$unit_name" || continue
+      echo "aidenhq_unit_backoff{scope=\"user\",unit=\"$unit_name\"} $delay"
+    done
+  done
   # The declared set: the enabled user units above. A per-unit `is-enabled` reads a unit systemd unloaded after a stop as absent, which
   # would look like a retirement; `list-unit-files` reads the unit files, so a stopped unit still counts as declared.
   systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null \
@@ -88,7 +122,8 @@ ids="$(docker ps -aq 2>/dev/null | sort -u)"
 } | write containers.prom
 
 # The newest finished apply (not an auto-revert's own line, not one still running). Rewritten every run, like the others.
-gens="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
+state="$(aidenhq_env_dir AIDENHQ_STATE_DIR "$HOME/.local/state/aidenhq")"
+gens="$state/generations.jsonl"
 {
   echo "# HELP aidenhq_apply_failed 1 when the newest apply failed its health check (reverted to the last known good) or was refused at validation."
   echo "# TYPE aidenhq_apply_failed gauge"

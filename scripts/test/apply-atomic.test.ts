@@ -9,6 +9,8 @@
 import assert from "node:assert/strict";
 import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -108,7 +110,9 @@ const [cmd, ...rest] = a.slice(i + 1);
 process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process.env, ...env } }).status ?? 1);
 `,
   df: `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 999999999 1%% /\\n'\n`,
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;; esac\nexit 0\n`,
+  // list-unit-files is empty unless ctrl/runners names a count: then the CI runner template is enabled (the apply keeps it in
+  // step with the checkout).
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;; *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
   "systemd-run": `#!/usr/bin/env bash\nprintf 'systemd-run %s\\n' "$*" >> "$CALLS"\n`,
   curl: `#!/usr/bin/env bash\n[ -f "$CTRL/kernel-down" ] && exit 7\necho ok\n`,
   // npm ci --prefix <dir> installs the one package the fake kernel/src/apply.ts imports.
@@ -134,10 +138,10 @@ function world() {
   for (const f of REAL) exe(d("pw", f), readFileSync(join(repo, f), "utf8"));
   for (const [f, t] of Object.entries(FAKES)) { mkdirSync(dirname(d("pw", f)), { recursive: true }); writeFileSync(d("pw", f), t); }
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
-  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer", "aidenhq-security-sbom.service", "aidenhq-security-sbom.timer"]) {
+  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer", "aidenhq-security-sbom.service", "aidenhq-security-sbom.timer", "aidenhq-ci-runner@.service"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
-    // The host-metrics and security-sbom units are the product's own: the apply compares the installed copy with them.
-    writeFileSync(d("pw", "ops/units", u), /^aidenhq-(host-metrics|security-sbom)\./.test(u) ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
+    // The host-metrics, security-sbom and CI runner units are the product's own: the apply compares the installed copy with them.
+    writeFileSync(d("pw", "ops/units", u), /^aidenhq-(host-metrics|security-sbom|ci-runner@?)\./.test(u) ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
   }
   // The one service image the product builds, from svc/ (the fake compose config names it as the build context).
   mkdirSync(d("pw", "svc"));
@@ -217,6 +221,60 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   const board = YAML.parse(readFileSync(join(repo, "compose.yaml"), "utf8")).services.board.volumes.find((v) => String(v).endsWith(":/generations:ro"));
   assert.ok(board, "the board mounts the generations mirror");
   assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
+});
+
+// The security module's SBOM timer runs the checkout this apply applied, not the one setup recorded: every apply writes the
+// unit's last EnvironmentFile= (AIDENHQ_DIR=realpath of the applied checkout) and installs/enables the timer; a module the
+// instance no longer has removes it. The unit's AIDENHQ_DIR is therefore the applied checkout even while
+// ~/.config/aidenhq-checkout.env still names the one setup installed from.
+// A unit's AIDENHQ_DIR as systemd resolves it: Environment= first, then each EnvironmentFile= in order (a later one wins).
+function resolvedAidenhqDir(unit, home) {
+  let dir;
+  for (const line of readFileSync(unit, "utf8").split("\n")) {
+    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
+    if (!m) continue;
+    const value = m[2].replaceAll("%h", home);
+    if (m[1] === "Environment") {
+      for (const kv of value.split(/\s+/)) if (kv.startsWith("AIDENHQ_DIR=")) dir = kv.slice("AIDENHQ_DIR=".length);
+    } else {
+      const file = value.replace(/^-/, "");
+      if (!existsSync(file)) continue;
+      const v = readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("AIDENHQ_DIR=")).at(-1);
+      if (v) dir = v.slice("AIDENHQ_DIR=".length);
+    }
+  }
+  return dir;
+}
+
+// The runner template the enabled units run is the checkout's, kept in step by the apply: a rollout lands the ExecStartPre
+// backoff with the scripts it calls, and an installed copy from another product is replaced (rollback included) rather than
+// left calling a helper this checkout may not have. A host with no runner unit enabled keeps the template it has.
+test("the CI runner unit template follows the applied checkout, only while runner units are declared", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(units, { recursive: true });
+  // An enabled runner instance (queue) and a template an older product installed.
+  writeFileSync(w.d("ctrl/runners"), "");
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\nExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i\n");
+  writeFileSync(join(units, "aidenhq-ci-runner@1.service"), "[Unit]\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template is the product's");
+  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /ops\/ci-runner-backoff\.sh %i/, "and carries the ExecStartPre backoff");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@1.service"), "utf8"), "[Unit]\n", "the instance's own unit is untouched");
+  // The data dir the unit's scripts resolve (they read no .env themselves) comes from this env file, which the apply writes
+  // from the host's settings; the template reads it last, so it wins.
+  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
+  assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
+  // Nothing changed: no rewrite, no reload.
+  const before = w.calls();
+  assert.equal((await w.run()).status, 0);
+  assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
+  // Runners retired from the config: the installed template stays as the operator left it.
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=kept\n");
+  rmSync(w.d("ctrl/runners"));
+  assert.equal((await w.run()).status, 0);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=kept\n", "no runner units declared: the apply leaves the template alone");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {
@@ -309,4 +367,43 @@ test("an apply SIGKILLed mid-compose is reverted to the last known good by the n
   assert.equal(retry.status, 0, retry.out);
   assert.deepEqual([w.gens().at(-1).product, w.gens().at(-1).instance, w.gens().at(-1).health], [p2, i2, "good"]);
 });
+
 });
+
+// The host-metrics timer runs the script of the checkout the apply applied, not the one ops/setup.sh recorded at install
+// time: the unit's last EnvironmentFile= (written every apply) names the applied checkout, and systemd reads it after
+// ~/.config/aidenhq-checkout.env.
+const OLD_HOST_METRICS_UNIT = `[Unit]
+Description=AidenHQ host metrics for the monitoring module: unit and container states as node-exporter textfiles (ops/host-metrics.sh)
+
+[Service]
+# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
+Environment=AIDENHQ_DIR=%h/aidenhq
+EnvironmentFile=-%h/.config/aidenhq-checkout.env
+Type=oneshot
+ExecStart=/usr/bin/env bash \${AIDENHQ_DIR}/ops/host-metrics.sh
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+`;
+
+// What systemd does with the unit's environment: Environment= first, then each EnvironmentFile= in order (a later one
+// wins), then expand ${AIDENHQ_DIR} in ExecStart.
+function hostMetricsScript(unit, home) {
+  const env = {};
+  for (const line of readFileSync(unit, "utf8").split("\n")) {
+    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
+    if (!m) continue;
+    const value = m[2].replaceAll("%h", home);
+    if (m[1] === "Environment") {
+      for (const kv of value.split(/\s+/)) { const [k, ...v] = kv.split("="); env[k] = v.join("="); }
+    } else {
+      const file = value.replace(/^-/, "");
+      if (!existsSync(file)) continue;
+      for (const l of readFileSync(file, "utf8").split("\n")) {
+        if (!l || l.startsWith("#")) continue;
+        const [k, ...v] = l.split("="); env[k] = v.join("=");
+      }
+    }
+  }
+  const exec = /^ExecStart=(.*)$/m.exec(readFileSync(unit, "utf8"))[1];
+  return exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? "").split(/\s+/).at(-1);
+}

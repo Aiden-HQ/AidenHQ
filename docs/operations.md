@@ -210,6 +210,23 @@ Moving a running instance to another host (drain, cold copy, tailnet names, roll
 
 ## Task workspaces
 
+## Host one-offs
+
+A disk reclaim, an image or build-cache prune, or removing runner state is destructive host work, and an apply must never
+start inside one: the apply's compose step builds images and restarts services, and a prune can remove an image the apply
+has built but not yet attached. Run the whole one-off under the apply lock:
+
+    cd ~/aidenhq
+    flock data/apply.lock -c '<the one-off>'
+
+That is the same `data/apply.lock` the apply opens and holds for its whole run (`ops/lib/apply-lock.sh`), so an apply
+queued meanwhile waits its turn (`another apply is running: this one waits its turn`) instead of starting inside the work.
+A one-off that will outlast a few minutes says so in the message that asks for it.
+
+Never delete stateful data — an app's, the warehouse's or a module's files under `~`. Never remove a path a live job is
+using: a closed task's workspace goes through the kernel's own sweep (`kernel/src/workspaces.ts`), and anything a running
+job holds waits until it holds none.
+
 ## Logs and debugging a run
 
 - `docker compose logs -f <service>` for any service; `systemctl --user status aidenhq-kernel` and
@@ -407,10 +424,33 @@ change under 20 added plus deleted lines with no sensitive path; `package-lock.j
 /v1/codehost/runner_token` with the ci module's `ci_token`; the code host mints it as the owner, whose sign-in needs
 `admin:org`, and answers only that token), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
-the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
-of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
-only the model gateway's CI listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits
-per runner: 4 CPUs, 8 GB.
+the unit then starts the next, at once (`Restart=always`, `RestartSec=1`). A refused token (the sign-in missing
+`admin:org`, GitHub unreachable) backs off instead: `ops/ci-runner.sh` writes that unit's delay (1 second, doubling to a
+minute) and exits, and the unit's `ExecStartPre` (`ops/ci-runner-backoff.sh`) waits it out before the next attempt. The
+minute is a hard cap: a longer `ExecStartPre` wait would outlast systemd's 90-second timeout. The next token that mints
+clears the delay, and a marker more than 15 minutes old (a drain, an outage) is dropped rather than served, so a
+persistent refusal retries slowly rather than hot-looping while a clean job exit still starts the next runner
+immediately. Because the wait runs before `ExecStart`, a unit backing off is `activating` rather than `active`. The
+marker sits under the host's data dir, which `ops/lib/data-dir.sh` resolves from the unit environment alone -- the apply
+writes each unit's `EnvironmentFile=` (`~/.config/aidenhq-ci-runner.env`, `~/.config/aidenhq-host-metrics.env`) from the
+host's own `.env`, so the runner and the exporter never read a settings file themselves. A relative value is the
+checkout's and a leading `~` is the home directory, with a trailing slash dropped but a lone `/` kept, so the marker is
+the same file `ops/host-metrics.sh` exports its backoff series from. The marker is written beside itself and renamed
+into place, so the exporter never reads a half-written file, and the exporter only reports a marker for a runner unit
+systemd still has enabled or still has running: a runner retired at the cap (disabled and stopped) does not keep the alert
+pending, while one disabled with `systemctl --user disable` but left running still retries under its restart policy and
+keeps its series. The missing permission also
+reaches the owner: a codehost op's `needs_owner` answer is recorded
+as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
+scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
+`CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat
+at the one-minute cap for ten minutes, which the host-metrics timer writes as `aidenhq_unit_backoff` from the runner's
+own marker (the wait itself, so a scrape that misses the brief active intervals between backoffs still alerts; the rule
+holds while the wait is at the cap and its `for` is the ten minutes, so a wait that has since cleared raises nothing).
+
+Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
+sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI
+listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits per runner: 4 CPUs, 8 GB.
 
 **Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
 (`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)

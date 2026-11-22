@@ -22,7 +22,7 @@ const boxBundle = (ws, branch) => {
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, maintained, connected = () => true } = {}) {
+async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -74,7 +74,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   };
   // GitHub as the owner (github-mcp client.ts GitHubAccess), faked: the owner's login, a token, the routes above.
   const access = {
-    connected, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
+    connected, scopes, status: () => ({ scopes: scopes(), problems: [] }), token: async () => "tok",
     identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
@@ -250,6 +250,28 @@ test("ops answer the kernel only; the token op is gone", async (t) => {
   const { call } = await setup(t);
   assert.equal((await call("/ops/snapshot", { module: "apps-platform", repo: "acme-agents/widget", ref: "main" }, "apps-key")).status, 401);
   assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } })).status, 404);
+});
+
+// A runner-token refusal with no usable X-Accepted-OAuth-Scopes header (GitHub leaves it off some 403s) is still the
+// owner's missing runner permission when the sign-in's own scopes say admin:org is absent: the op derives the typed need
+// itself, so the kernel records a scope need instead of a silent error. With the scope granted, the same 403 stays plain.
+test("runner_token derives the admin:org need from the known scopes when GitHub gives no header", async (t) => {
+  const refused = () => ({ status: 403, body: { message: "Forbidden", documentation_url: "https://docs.github.com/rest/actions/self-hosted-runners" } });
+  const noScope = await setup(t, { routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const missing = await noScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(missing.status, 403, JSON.stringify(missing.json));
+  assert.deepEqual(missing.json.need, { cause: "scope", scope: "admin:org" }, "the owner-fixable need the kernel records");
+  assert.match(missing.json.error, /admin:org/);
+  // Scopes that could not be read (an empty list) say nothing about admin:org: the refusal stays the plain error it was.
+  const unknownScopes = await setup(t, { scopes: () => [], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const unread = await unknownScopes.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(unread.status, 502, "an unknown scope list is not a missing admin:org");
+  assert.equal(unread.json.need, undefined);
+  const hasScope = await setup(t, { scopes: () => ["repo", "admin:org"], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const other = await hasScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(other.status, 502, "a 403 the scopes do not explain is still a plain error");
+  assert.equal(other.json.need, undefined);
+  assert.match(other.json.error, /403 Forbidden/);
 });
 
 test("held write resumes on reconnect", async (t) => {

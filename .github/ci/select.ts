@@ -52,7 +52,8 @@ export function shard(tests: { name: string; dir: string; run?: string; secs: nu
 }
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 << 20 }).trim();
-const changed = (a: string, b: string) => git("diff", "--name-only", a, b).split("\n").filter(Boolean);
+// --no-renames: a moved file lists both its old and its new path, so the suites of both sides run.
+const changed = (a: string, b: string) => git("diff", "--name-only", "--no-renames", a, b).split("\n").filter(Boolean);
 
 function main() {
   const env = process.env;

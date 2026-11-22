@@ -5,7 +5,7 @@
 // LAN, the tailnet, the host and other containers. The address check here is a second, thinner layer.
 import { isIP } from "node:net";
 import { apiTarget, plainPath, targetContainer, type Resolve } from "./api.js";
-import { IDENTITY_HEADER, type Sign } from "./identity.js";
+import { IDENTITY_HEADER, memberScope, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
 /** The one browser image (services/computer/images/browser: Node, agent-browser and its pinned Chrome), built on the host by
@@ -60,7 +60,7 @@ async function renderApp(app: App, caller: { key: string; roles: string[] }, req
   const t = apiTarget(app);
   const container = await targetContainer(app, t.service, d.resolve);
   // An agent looking is a member that may only read; the renderer attaches the token to the app's own origin alone.
-  const secret = d.sign(app.name, caller.key, { role: "member", methods: ["GET", "HEAD"] });
+  const secret = d.sign(app.name, caller.key, memberScope());
   let r: ViewResult;
   try {
     r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, ...(cap !== undefined ? { snapshotCap: snapshotCap(cap) } : {}), headers: { [IDENTITY_HEADER]: secret } });
