@@ -825,4 +825,14 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
   const apt = (line: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line}\nRUN apt-get install -y foo=1.0\n`).pins.find((p) => p.kind === "apt")?.sources ?? [];
   for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
     assert.deepEqual(apt(`echo 'deb https://a.example/apt bookworm main' | echo 'deb https://b.example/apt bookworm main' | ${sink}`), ["https://b.example/apt bookworm main"], sink);
+  // A `cat` whose own fd 0 a redirect moved reads that file, not the pipe: `</dev/null` writes nothing, so the file adds
+  // no repository. A file it can't read is content we can't rule out, so that one still counts.
+  assert.deepEqual(apt(`${D} | cat </dev/null > /etc/apt/sources.list.d/vendor.list`), []);
+  assert.deepEqual(apt(`${D} | cat /tmp/x > /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
+  // The file that takes the bytes is the one fd 1 ends on, not the one the redirect was opened with: `2> f 1>&2` writes
+  // the line to f, while `2> f` alone sends stdout nowhere near it.
+  assert.deepEqual(apt(`${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2`), ["https://repo.example/apt bookworm main"]);
+  assert.deepEqual(apt(`${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2 >/dev/null`), []);
+  // `>|` is noclobber, not the end of `tee`'s operand list: the file after it is still written.
+  assert.deepEqual(apt(`${D} | tee >| /tmp/log /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
 });

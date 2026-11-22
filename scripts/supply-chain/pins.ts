@@ -262,6 +262,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
     .some((m) => /^[A-Za-z_][\w]*$/.test(m[1] !== undefined ? quoted[Number(m[1])]! : m[2]!));
 
   const hereText = heredoc ? writtenKind(body ?? "") : undefined;
+  // The last fd-0 (`<`, `0<`) redirect after a position overrides the pipe, and its filename ends at an unquoted shell
+  // operator, so a redirect with no whitespace before it is still one: `f < /tmp/x</dev/null` reads /dev/null (the shell
+  // applies `< /dev/null` last), not `/tmp/x</dev/null`. `2<` is another descriptor and `<<`/`<<<` are not `<`.
+  const stdinOf = (text: string) => [...text.matchAll(/(?<![0-9<])(?:0<|<)(?![<&])\s*([^\s<>&|;]+)/g)].map((n) => n[1]!).at(-1);
   // The command whose stdout reaches this element: the last of a `&&` chain (`a && b | tee f` pipes b's stdout, and
   // `echo x > log && cat | tee f` reads from `cat`, not the earlier command's redirect).
   const lastCommand = (part: string) => part.split(/&&|\|\|/).filter((x) => x.trim()).at(-1) ?? "";
@@ -280,13 +284,17 @@ function writtenFiles(segment: string, body?: string): Written[] {
       // Only fd 0 (`<`, `0<`) overrides the pipe, and the filename ends at an unquoted shell operator, so a redirect
       // with no whitespace before it is still one: `tee f < /tmp/x</dev/null` reads /dev/null (the shell applies
       // `< /dev/null` last), not `/tmp/x</dev/null`; `2<` is another descriptor and `<<`/`<<<` are not `<`.
-      const input = [...piece.slice(tee.index + 4).matchAll(/(?<![0-9<])(?:0<|<)(?![<&])\s*([^\s<>&|;]+)/g)].map((n) => n[1]!).at(-1);
+      const input = stdinOf(piece.slice(tee.index + 4));
       return input ? (unmask(strip(input)) === "/dev/null" ? { content: "empty" } : { content: "unknown" }) : flow(i - 1);
     }
-    // A lone pass-through copies its stdin to its stdout; anything else is a command whose own output the next element
-    // reads (its own stdout redirect, if any, is checked above), so what it writes is a `deb` line — unless it is a
-    // `printf` that adds none, which is content we can't read past a description.
-    if (/^\s*cat\s*$/.test(piece)) return flow(i - 1);
+    // `cat` copies its stdin to its stdout, so an fd-0 redirect overrides the pipe: `echo … | cat </dev/null > f` writes
+    // nothing to f. A bare `cat` passes the pipeline's bytes through, and anything else is a command whose own output the
+    // next element reads (its own stdout redirect, if any, is checked above), so what it writes is a `deb` line.
+    if (/^\s*cat(?:\s|$)/.test(piece)) {
+      const input = stdinOf(piece);
+      if (input) return { content: unmask(strip(input)) === "/dev/null" ? "empty" : "unknown" };
+      if (/^\s*cat\s*$/.test(piece)) return flow(i - 1);
+    }
     return { content: "deb", text: expand(piece) };
   };
   // The command containing an index: one `&&`/`||` chain gives each command its own stdout, so `a > f && b > g` sends
@@ -314,20 +322,31 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const takes = finalTarget !== "pipe" && cStart + finalTarget === m.index!;
     // A pass-through (`cat > f`) writes what its pipeline element receives, so a producer that sent its own stdout
     // elsewhere leaves f empty rather than holding a `deb` line.
-    const passThrough = /^\s*cat\s*$/.test(lastCommand((parts[part]?.text ?? clean).slice(0, m.index! - (parts[part]?.start ?? 0))));
+    const passThrough = /^\s*cat(?:\s|$)/.test(lastCommand((parts[part]?.text ?? clean).slice(0, m.index! - (parts[part]?.start ?? 0))));
     // A command that writes its own `deb` line gives the file only that line: another command on the same line writing
     // to a log must not have its repository credited here too (`echo a > /tmp/log ; echo b > vendor.list`).
     const own = takes && !passThrough ? writtenKind(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) : undefined;
-    const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? (passThrough ? flow(part - 1) : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) } : undefined);
-    add(unmask(strip(m[3]!)), append, m[1] !== "" && m[1] !== "1" ? { content: "unknown" } : takes ? fed ?? { content: "deb" } : { content: append ? "none" : "empty" });
+    // A `cat` reading a file other than the pipe writes that file's content, which we can't read, or nothing for
+    // /dev/null — the same rule `tee` follows above.
+    const catInput = passThrough ? stdinOf(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) : undefined;
+    const through: Pick<Written, "content" | "text"> | undefined = passThrough
+      ? catInput ? { content: unmask(strip(catInput)) === "/dev/null" ? "empty" : "unknown" } : flow(part - 1)
+      : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) } : undefined;
+    const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
+    // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with
+    // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line; with `2> f` alone nothing reaches
+    // it and it is left empty.
+    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: "deb" } : { content: append ? "none" : "empty" });
   });
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
-  for (const m of clean.matchAll(/\btee\b([^|;&]*)/g)) {
+  // A `>` glued to a `|` is the noclobber redirect, not a pipe: masked so `tee >| /tmp/log f` keeps the operands after it.
+  const teeLine = clean.replace(/>\|/g, ">\uE002");
+  for (const m of teeLine.matchAll(/\btee\b([^|;&]*)/g)) {
     const arg = m[1]!;
     // Its operands are the words that are not options or redirections (`2>&1`, `< file` and `3< file` are neither), and
     // a redirect leaves no whitespace between itself and the next one: `tee f < /tmp/x</dev/null` names only `f`.
-    const options = words(arg.replace(/(?:(?<![0-9<])(?:0<|<)(?![<&])|\d+(?:>>?|<<?)|&>>?)\s*(?:&?-?\d+|[^\s<>&|;]+)|>>?\s*[^\s<>&|;]+/g, " ")).map(unmask);
+    const options = words(arg.replace(/(?:(?<![0-9<])(?:0<|<)(?![<&])|\d+(?:>>?|<<?)|&>>?)\s*(?:&?-?\d+|[^\s<>&|;\uE002]+)|>>?(?:\uE002)?\s*[^\s<>&|;\uE002]+/g, " ")).map(unmask);
     // `-a` may be quoted or combined with other short options (`tee -ai file`, `tee "-a" file`), and `--append` is the
     // long form; another group (`-i`, `-p`) does not append.
     const append = options.some((a) => a === "--append" || (/^-[a-zA-Z]+$/.test(a) && a.includes("a")));
