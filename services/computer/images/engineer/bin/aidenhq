@@ -161,8 +161,8 @@ const bundle = (repo, branch, sha) => {
     const at = execFileSync("git", ["-C", dir, "for-each-ref", "--points-at", sha, "--format=%(refname)", "refs/heads/"], { encoding: "utf8" }).split("\n").filter(Boolean);
     if (!at.includes(`refs/heads/${branch}`)) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
     execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", tmp, ...at], { stdio: ["ignore", "ignore", "inherit"] });
-    const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" }).split("\n");
-    if (!heads.includes(`${sha} refs/heads/${branch}`)) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
+    const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" }).split("\n").filter(Boolean);
+    if (!heads.includes(`${sha} refs/heads/${branch}`) || heads.some((h) => !h.startsWith(`${sha} `))) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
     renameSync(tmp, join(out, `${sha}.bundle`));
   } finally {
     rmSync(tmp, { force: true });
