@@ -70,17 +70,33 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
   return hour === undefined ? undefined : `${p.year}-${p.month}-${p.day}T${hour}`;
 }
 
-/** Sends the queued digest once per slot (called on a timer); a failed send keeps the queue for the next tick. */
+/** One digest message stays under every transport's limit (Telegram cuts at 3,500 characters). */
+const DIGEST_MAX = 3000;
+const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`;
+
+/**
+ * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
+ * message's items leave the queue (and are told) only once it went; a failed send keeps the rest for the next tick.
+ */
 export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now()): Promise<boolean> {
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  const out = q.length ? await send(`Digest: ${q.length} update${q.length > 1 ? "s" : ""}\n\n${q.map((i) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`).join("\n")}`) : "off";
-  if (out === false) return false;
-  // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
-  const sent = new Set(q.map((i) => i.id));
-  store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
-  if (out === true) for (const i of q) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
+  const batches: Item[][] = [];
+  for (const i of q) {
+    const b = batches.at(-1);
+    if (b && [...b, i].map(line).join("\n").length <= DIGEST_MAX) b.push(i);
+    else batches.push([i]);
+  }
+  for (const [n, b] of batches.entries()) {
+    const head = `Digest${batches.length > 1 ? ` (${n + 1}/${batches.length})` : ""}: ${b.length} update${b.length > 1 ? "s" : ""}`;
+    const out = await send(`${head}\n\n${b.map(line).join("\n")}`);
+    if (out === false) return false;
+    // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
+    const sent = new Set(b.map((i) => i.id));
+    store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
+    if (out === true) for (const i of b) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
+  }
   store.setKv("digest:slot", slot);
   return q.length > 0;
 }

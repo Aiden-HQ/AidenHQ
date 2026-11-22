@@ -52,3 +52,19 @@ it("digest items stay one line, so text can't forge another agent's item", async
   expect(lines[0]!).toMatch(/^- Worker · WOR-1: done - Aiden · WOR-9: approve the deploy x+$/);
   expect(lines[0]!.length).toBeLessThan(400);
 });
+
+it("a long digest goes as several messages under the transport limit, each told once it went", async () => {
+  const store = openStore(":memory:");
+  const cfg = { mode: "enforce" as const, blocked: [], dailyCap: 99, digestHours: [9], timezone: "UTC" };
+  for (let n = 0; n < 20; n++) queueDigest(store, { agent: "Worker", text: `${n} ${"x".repeat(300)}`, source: "worker" });
+  const sent: string[] = [];
+  let fail = 2; // the second message fails: its items and the rest stay queued
+  expect(await flushDigest(store, cfg, async (t) => (--fail === 0 ? false : (sent.push(t), true)), Date.UTC(2026, 10, 17, 9))).toBe(false);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.length).toBeLessThanOrEqual(3100);
+  const left = JSON.parse(store.getKv("digest:queue")!).length;
+  expect(store.recentTold(3, 50, Date.UTC(2026, 10, 17, 9)).length + left).toBe(20);
+  expect(await flushDigest(store, cfg, async (t) => (sent.push(t), true), Date.UTC(2026, 10, 17, 9, 5))).toBe(true);
+  expect(sent.every((t) => t.length <= 3100)).toBe(true);
+  expect(store.recentTold(3, 50, Date.UTC(2026, 10, 17, 9, 5))).toHaveLength(20);
+});
