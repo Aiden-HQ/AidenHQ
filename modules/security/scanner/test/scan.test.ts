@@ -240,7 +240,7 @@ it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on th
     matches: [
       { ...match("openssl", "3.0.1", "CVE-2024-0002", "/a"), vulnerability: { ...match("x", "1", "CVE-2024-0002", "/a").vulnerability, knownExploited: [kev], epss: [{ cve: "CVE-2024-0002", epss, percentile: 0.97, date: "2026-11-22" }] } },
       { ...match("lodash", "4.17.20", "GHSA-aaaa-bbbb-cccc", "/b"), relatedVulnerabilities: [{ id: "CVE-2021-23337", knownExploited: [{ cve: "CVE-2021-23337", dateAdded: "2025-01-02" }, kev], epss: [{ epss: 0.2, percentile: 0.9 }, { epss: 0.5, percentile: 0.95 }] }] },
-      match("zlib", "1.2.11", "CVE-2022-37434", "/c"),
+      { ...match("zlib", "1.2.11", "CVE-2022-37434", "/c"), vulnerability: { ...match("x", "1", "CVE-2022-37434", "/c").vulnerability, ...(epss === 0.4 ? { epss: [{ epss: 0.3, percentile: 0.8 }] } : {}) } },
     ],
   });
   let epss = 0.4;
@@ -252,11 +252,11 @@ it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on th
   expect(await scanPass(store, deps)).toBe(3);
   expect(rows.get("image:x|openssl|3.0.1|CVE-2024-0002")).toMatchObject({ kev: true, kev_added: "2026-10-26", epss: 0.4, epss_percentile: 0.97 });
   expect(rows.get("image:x|lodash|4.17.20|GHSA-aaaa-bbbb-cccc")).toMatchObject({ kev: true, kev_added: "2025-01-02", epss: 0.5, epss_percentile: 0.95 });
-  expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")).toMatchObject({ kev: null, kev_added: null });
+  expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")).toMatchObject({ kev: null, kev_added: null, epss: 0.3, epss_percentile: 0.8 });
   epss = 0.45; // a daily EPSS move updates the score but is not a change worth re-delivering
   expect(await scanPass(store, deps)).toBe(0);
   expect(rows.get("image:x|openssl|3.0.1|CVE-2024-0002")?.epss).toBe(0.45);
-  expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")?.epss).toBeNull();
+  expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")).toMatchObject({ epss: null, epss_percentile: null }); // grype dropped the score: cleared
 });
 
 it("src_security: the DDL adds the exploitation columns additively and the view exposes them", () => {
