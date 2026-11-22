@@ -100,13 +100,21 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
 
   // A numeric suite tag is that suite: `debian:12` is bookworm and `ubuntu:24.04` is noble, so neither falls to the
   // default. Without this a Debian 12 stage was dated from Ubuntu's noble pockets — the same mis-dating the FROM base fixes.
-  for (const [base, distro, codename] of [["debian:12", "debian", "bookworm"], ["debian:12-slim", "debian", "bookworm"], ["debian:13", "debian", "trixie"], ["ubuntu:24.04", "ubuntu", "noble"], ["ubuntu:22.04", "ubuntu", "jammy"]]) {
+  // A point release keeps its suite: Debian by its major (`12.7`), Ubuntu by its year.minor (`24.04.1`).
+  for (const [base, distro, codename] of [
+    ["debian:12", "debian", "bookworm"], ["debian:12-slim", "debian", "bookworm"], ["debian:13", "debian", "trixie"],
+    ["debian:12.7", "debian", "bookworm"], ["debian:12.7-slim", "debian", "bookworm"], ["debian:13.1", "debian", "trixie"],
+    ["ubuntu:24.04", "ubuntu", "noble"], ["ubuntu:22.04", "ubuntu", "jammy"], ["ubuntu:24.04.1", "ubuntu", "noble"],
+  ]) {
     const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
     assert.deepEqual([p.distro, p.release], [distro, codename], base);
   }
-  // An unknown number keeps the default: a tag the map doesn't list is not guessed at.
-  const [unknown] = scanFile("Dockerfile", `FROM debian:99${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
-  assert.deepEqual([unknown.distro, unknown.release], [undefined, "noble"]);
+  // An unknown number keeps the default: a tag the map doesn't list is not guessed at, and neither is a non-numeric one
+  // that happens to name an Object.prototype key.
+  for (const base of ["debian:99", "debian:12a", "debian:constructor", "ubuntu:__proto__", "ubuntu:toString", "ubuntu:24.04.1.5x"]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], [undefined, "noble"], base);
+  }
 
   // The last FROM is the stage the pin runs in: an earlier Debian base doesn't date a later Ubuntu one, and vice versa.
   const [last] = scanFile("Dockerfile", `FROM debian:bookworm${d} AS tools\nFROM ubuntu:jammy${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");

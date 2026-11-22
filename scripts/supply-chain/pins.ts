@@ -80,10 +80,17 @@ const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
 // The distro and codename a Dockerfile FROM installs: Docker Hub's debian:<codename> (sid, bookworm, trixie, …) and
 // ubuntu:<codename> (noble, or a `noble-…` / `…-noble` tag), plus the numeric release tags each suite answers to
 // (`debian:12` is bookworm, `ubuntu:24.04` is noble). Anything else, a local stage or an unread codename: none.
-const DISTRO_TAGS = new Map<string, [string, string[], Record<string, string>]>([
-  ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"], { "12": "bookworm", "13": "trixie", "11": "bullseye", "10": "buster", "14": "forky" }]],
-  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"], { "24.04": "noble", "22.04": "jammy", "20.04": "focal", "24.10": "oracular", "25.04": "plucky", "25.10": "questing", "26.04": "resolute" }]],
+const DISTRO_TAGS = new Map<string, [string, string[], Map<string, string>]>([
+  ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"], new Map([["12", "bookworm"], ["13", "trixie"], ["11", "bullseye"], ["10", "buster"], ["14", "forky"]])]],
+  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"], new Map([["24.04", "noble"], ["22.04", "jammy"], ["20.04", "focal"], ["24.10", "oracular"], ["25.04", "plucky"], ["25.10", "questing"], ["26.04", "resolute"]])]],
 ]);
+// A numeric tag names its suite by its leading number: Debian's whole major covers its point releases (`12.7` is
+// bookworm), and Ubuntu's year.minor covers its point releases (`24.04.1` is noble). A tag of any other shape is not one.
+function numericRelease(part: string, distro: string, numbers: Map<string, string>): string | undefined {
+  if (!/^\d+(?:\.\d+)*$/.test(part)) return undefined;
+  const fields = part.split(".");
+  return numbers.get(distro === "debian" ? fields[0]! : fields.slice(0, 2).join("."));
+}
 function baseDistro(ref: string): { distro: string; release: string } | undefined {
   const { host, repo, tag } = parseImage(ref);
   if (!tag || !repo.startsWith("library/")) return undefined;
@@ -91,8 +98,12 @@ function baseDistro(ref: string): { distro: string; release: string } | undefine
   const entry = host === "docker.io" ? DISTRO_TAGS.get(repo.slice("library/".length)) : undefined;
   if (!entry) return undefined;
   const [distro, codenames, numbers] = entry;
-  const release = tag.split("-").find((part) => codenames.includes(part) || numbers[part] !== undefined);
-  return release ? { distro, release: numbers[release] ?? release } : undefined;
+  for (const part of tag.split("-")) {
+    if (codenames.includes(part)) return { distro, release: part };
+    const release = numericRelease(part, distro, numbers);
+    if (release) return { distro, release };
+  }
+  return undefined;
 }
 
 export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
