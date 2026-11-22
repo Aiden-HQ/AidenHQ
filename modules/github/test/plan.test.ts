@@ -50,4 +50,16 @@ describe("plan: maintained repos (maintainer_repos)", () => {
     assert.equal(rules("merge", m, pr(s.instanceRepo))[0][0], "core-repo-merge");
   });
 
+  it("a product merge card states the gate plainly, keeping the check counts and reading as no weakened check", () => {
+    const checks = [{ name: "tests", ok: true }, { name: "image-scan", ok: true, skipped: true }, { name: "code-review", pending: true }];
+    const parts = planParts("merge", { ...s, prs: [pr(s.productRepo, { checks })] })[0];
+    assert.deepEqual(parts.map((p) => [p.rule, p.tier]), [["product-merge", 1]]);
+    assert.match(parts[0].reason, /On its head: 3 named checks, 1 passed, 1 skipped, 1 running\./);
+    assert.match(parts[0].reason, /only after every named check has finished without failure$/);
+    assert.doesNotMatch(parts[0].reason, /skipped counts as passed/);
+    // A head the runner did not push is still the foreign-head rule, at Tier 1, with the same wording.
+    const foreign = planParts("merge", { ...s, prs: [pr(s.productRepo, { ownHead: false })] })[0];
+    assert.deepEqual(foreign.map((p) => [p.rule, p.tier]), [["product-merge-foreign-head", 1]]);
+  });
+
 });

@@ -198,7 +198,9 @@ function productMergePart(p: Pr, ref: string) {
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
-  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed)`;
+  // Plain wording, and no "skipped counts as passed": the reviewer reads this line as code's description of the gate, and a
+  // sentence that reads as a weakened check made every product merge card a false reject (issue #1449).
+  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head and only after every named check has finished without failure`;
   if (p.ownHead) return T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`);
   return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
 }
