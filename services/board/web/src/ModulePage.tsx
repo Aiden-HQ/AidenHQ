@@ -275,15 +275,30 @@ function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void;
   );
 }
 
-/** Each routine on or off; its agent's Settings tab turns it on or off (the routine editor there). */
+/** Each routine on or off, with its live Pause or Resume; its agent's Settings tab changes its schedule and model. */
 function Routines({ d }: { d: ModuleDetail }) {
   const rows = d.routines ?? [];
   if (!rows.length) return d.module.routines.length ? tags(d.module.routines) : <p className="mod-none">No routines.</p>;
   return (
     <div className="mod-rows">
-      {rows.map((r) => (
-        <ModRow key={r.key} href={`#/agents/${r.agent}/settings`} hint={r.on ? "Change it on its agent's Settings; ask Aiden to pause it" : "Ask Aiden to turn it on"} title={r.title} meta={<StatusDot tone={r.on ? "working" : "done"}>{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
-      ))}
+      {rows.map((r) => <RoutineRow key={r.key} r={r} />)}
+    </div>
+  );
+}
+
+function RoutineRow({ r }: { r: NonNullable<ModuleDetail["routines"]>[number] }) {
+  const [on, setOn] = useState(r.on);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const toggle = () => {
+    setBusy(true);
+    api.pauseRoutine(r.id!, on).then((x) => (setOn(x.status !== "paused"), setError("")), (e) => setError((e as Error).message)).finally(() => setBusy(false));
+  };
+  return (
+    <div className="mod-row-with-action">
+      <ModRow href={`#/agents/${r.agent}/settings`} hint="Change its schedule or model on its agent's Settings" title={r.title} meta={<StatusDot tone={on ? "working" : "done"}>{on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
+      {r.id && <button className="btn" type="button" disabled={busy} onClick={toggle}>{on ? "Pause" : "Resume"}</button>}
+      {error && <span className="st-error" role="alert">{error}</span>}
     </div>
   );
 }

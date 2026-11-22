@@ -96,10 +96,10 @@ export function routinePlan(key: string, r: Obj, agentId: string, hasSecret: (na
 }
 
 /**
- * Brings Paperclip's managed routines to the compiled ones, by identity, never by title. A compiled key's routine is the one
- * `keys` (the last grants table's id → key) maps it to; a key with none is recovered from the routine whose marker names it,
- * archived ones included (a crash after create, a lost create response, a removed routine coming back); only then is one
- * created, its marker in the create request. A routine's status is written only on create (and when an archived one comes
+ * Brings Paperclip's managed routines to the compiled ones, by identity. A compiled key's routine is the one `keys` (the
+ * last grants table's id → key) maps it to; a key with none is recovered from the routine whose marker names it, archived
+ * ones included (a crash after create, a lost create response, a removed routine coming back), or, once, from an unmarked
+ * routine an older setup made (its compiled title and agent); only then is one created, its marker in the create request. A routine's status is written only on create (and when an archived one comes
  * back): pause and resume are Paperclip's after that. Its own fields are written when they differ, and its triggers are
  * reconciled on every pass: a configured schedule is put right, and any enabled trigger the compiled form doesn't name is
  * disabled. A managed routine no longer compiled (marked, or mapped by `keys`) is archived and its triggers disabled; a
@@ -118,6 +118,14 @@ export async function syncRoutines({ api, companyId, plans, keys, step, onKeys, 
   for (const r of rows) {
     const key = markedKey(r);
     if (key && compiled.has(key) && !idOf[key] && !Object.values(idOf).includes(r.id)) idOf[key] = r.id;
+  }
+  // A routine an older setup made carries no marker. In a company whose key map never held it (setup keeps the map only in
+  // the work company's grants table), it is the unmarked routine with the compiled title and agent: adopted once, and
+  // marked on this pass.
+  for (const p of plans) {
+    if (idOf[p.key]) continue;
+    const r = rows.find((x) => !markedKey(x) && !keys[x.id] && !Object.values(idOf).includes(x.id) && x.title === p.title && x.assigneeAgentId === p.body.assigneeAgentId);
+    if (r) idOf[p.key] = r.id;
   }
   const live = Object.fromEntries(Object.entries(idOf).map(([k, id]) => [id, k]));
   onKeys({ ...live });

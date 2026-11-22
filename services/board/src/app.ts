@@ -11,7 +11,7 @@ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { handbook, history } from "./agent-handbook.js";
-import { PauseSchema, setAgentPaused } from "./agent-pause.js";
+import { PauseSchema, RoutinePauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks, tasksOf } from "./agent-page.js";
 import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
@@ -23,7 +23,7 @@ import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, h
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -1331,6 +1331,20 @@ export function createApp(opts: AppOptions): Server {
         return history(m[1]!, process.env.BOARD_INSTANCE_DIR, agent.metadata?.tier === "local" ? String(agent.metadata.module) : undefined);
       },
     },
+    // A routine's live pause and resume (the module page's routine rows): Paperclip's status, no settings change.
+    {
+      method: "POST",
+      path: /^\/api\/routines\/([0-9a-f-]{36})\/pause$/,
+      handle: async (m, body) => {
+        const ask = parse(RoutinePauseSchema, body);
+        const t = await pc.routine(m[1]!).catch(() => undefined);
+        if (!t || t.status === "archived") throw new HttpError(404, "no such routine");
+        await setRoutinePaused(pc, t, ask.paused);
+        log.info({ routine: t.title, paused: ask.paused }, ask.paused ? "routine paused" : "routine resumed");
+        store.events.emit("fleet");
+        return { status: ask.paused ? "paused" : "active" };
+      },
+    },
     {
       method: "POST",
       path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/pause$/,
@@ -1650,7 +1664,7 @@ export function createApp(opts: AppOptions): Server {
           ongoing,
           // Its routines: on or off as Paperclip runs them (setup creates one with its status; pause and resume are the live
           // controls after that), else as compiled, and whose.
-          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const live = routines.find((x) => x.title === r?.title && x.status !== "archived"); return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
+          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const live = routines.find((x) => x.title === r?.title && x.status !== "archived"); return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", ...(live ? { id: live.id } : {}), on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
           authority: moduleAuthority(text, module.name),
           neededBy: module.neededBy,
           requires: module.requires,

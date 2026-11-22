@@ -33,6 +33,9 @@
 .mod-rows { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
 .mod-row { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 14px; color: inherit; text-decoration: none; font-size: var(--text-md); transition: background-color var(--fast) var(--ease); }
 .mod-row + .mod-row { border-top: 1px solid var(--border); }
+.mod-row-with-action { display: flex; align-items: center; gap: 10px; padding-right: 14px; }
+.mod-row-with-action > .mod-row { flex: 1; min-width: 0; }
+.mod-row-with-action + .mod-row-with-action { border-top: 1px solid var(--border); }
 .mod-row:hover { background: var(--hover); }
 .mod-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mod-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }

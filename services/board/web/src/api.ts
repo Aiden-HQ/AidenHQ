@@ -242,6 +242,7 @@ export const api = {
   agentProfile: (key: string) => call<{ profile: AgentProfile }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}`),
   /** Lane B: pause or resume an agent now; `stop` also cancels its live runs. */
   pauseAgent: (key: string, body: { paused: boolean; stop?: boolean }) => call<{ status: string }>("POST", `/api/agents/by-key/${encodeURIComponent(key)}/pause`, body),
+  pauseRoutine: (id: string, paused: boolean) => call<{ status: string }>("POST", `/api/routines/${encodeURIComponent(id)}/pause`, { paused }),
   agentOpenTasks: (key: string) => call<{ needs: TaskRow[]; ongoing: TaskRow[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?view=open`),
   agentHistory: (key: string, opts: { q?: string; status?: "done" | "cancelled"; offset?: number } = {}) => {
     const p = new URLSearchParams({ view: "history", ...(opts.q ? { q: opts.q } : {}), ...(opts.status ? { status: opts.status } : {}), ...(opts.offset ? { offset: String(opts.offset) } : {}) });

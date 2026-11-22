@@ -21,8 +21,8 @@ request, and start active):
 - **Heartbeats are off.** An agent's `heartbeat:` counts only when `overrides.agents.<key>.heartbeat` sets it. The
   compiled agent says `heartbeat: false`, so the board shows it off and offers the module's value as its default.
 
-A module enabled later follows the same rule. The owner turns a routine on with its live control (asking Aiden, whose
-`fleet_control` resumes it with the owner's words) and a heartbeat with the typed change (`overrides.agents.<key>.heartbeat`).
+A module enabled later follows the same rule. The owner turns a routine on with its live control (Resume on its module's
+page, or asking Aiden, whose `fleet_control` resumes it with the owner's words) and a heartbeat with the typed change (`overrides.agents.<key>.heartbeat`).
 Turning `quiet_start` off changes what later routines are created with; it resumes none that exist. Under full autonomy those go to
 the AI panel instead (approvals.md, Autonomy). Raising a spend limit (`spend_day_usd`, `spend_month_usd`, `task_usd`) is the owner's at every autonomy;
 tightening (a lower limit, pausing again) tiers as usual.
@@ -32,7 +32,7 @@ once the owner turns the Steward on (resuming its "Fleet Ops: daily digest" rout
 `external_triage` defaults to false: no task per stranger's issue until `external_triage: true`.
 
 **No catch-up burst on resume.** Paperclip catches a missed tick up (one run per tick, at most 25). Resuming a routine
-(`fleet_control`, services/board/src/fleet.ts) re-saves its schedule triggers first, which moves each next run to the next
+(the board's Resume or `fleet_control`, services/board/src/fleet.ts `setRoutinePaused`) re-saves its schedule triggers first, which moves each next run to the next
 tick from now, so a routine turned on after weeks paused starts at its next tick.
 
 ## 2. The install's spend limit
@@ -53,8 +53,8 @@ A new install gets the defaults: `spend_day_usd` 50 (a UTC day) and `spend_month
 
 - Aiden's tour (chief-of-staff handbook) offers the useful paused schedules in plain words and, on a yes, resumes the
   routine with `fleet_control`.
-- Module pages list each routine with on or off, as Paperclip runs it, and link to its agent's Settings tab, where the
-  routine editor changes its schedule and model.
+- Module pages list each routine with on or off, as Paperclip runs it, with Pause or Resume, and link to its agent's
+  Settings tab, where the routine editor changes its schedule and model.
 - The board header shows today's spend against the day limit ("$3.20 / $50 today", linking to Costs), read from the gateway
   (`GET /v1/spend/summary`): the sum the limit enforces.
 

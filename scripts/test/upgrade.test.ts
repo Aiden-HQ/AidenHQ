@@ -123,6 +123,14 @@ test("V1: an instance upgrades onto local modules: memory once, compile, and rou
   assert.deepEqual(board, boardBefore);
   assert.ok(!pc.calls.some(([, p]) => /r-board|t-board/.test(p)));
 
+  // Another company setup manages has no key map (only the work company's grants table holds one): its unmarked routine,
+  // the compiled title run by the compiled agent, is adopted and marked, never made twice.
+  const other = paperclip([{ id: "r-p1", title: brief.title, status: "active", description: brief.description, assigneeAgentId: "ag-chief-of-staff", triggers: [] }]);
+  const otherKeys = await syncRoutines({ api: other.api as any, companyId: "co", plans: plans(["lib-brief"]), keys: {}, step: () => {}, onKeys: () => {} });
+  assert.deepEqual(otherKeys, { "r-p1": "lib-brief" });
+  assert.equal(other.rows.length, 1);
+  assert.equal(markedKey(other.rows[0]), "lib-brief");
+
   // Compile refusals: two schedules through an override, a manifest smuggling authority keys, the old agent folder.
   const inst = YAML.parse(readFileSync(join(dir, "instance.yaml"), "utf8"));
   write("instance.yaml", YAML.stringify({ ...inst, overrides: { routines: { "lib-brief": { schedules: [...brief.schedules, { cron: "0 18 * * *", label: "evening" }] } } } }));
