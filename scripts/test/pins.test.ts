@@ -1170,4 +1170,9 @@ test("pins: a known empty target, clustered -t/-S flags and flags after the path
   // ...and a `cp -n` on a later line onto that may-be file also records the copy's content (the file may not be there).
   const laterLine = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && printf 'deb https://vendor.example/apt stable main\n' > ${vendor}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
   assert.equal(scanFile("Dockerfile", laterLine).problems.length, 1);
+  // A guarded write that may have run still counts as adding a repository: the install after it needs a pin, on its own
+  // line and later in the same chain.
+  const enabled = `FROM debian:bookworm${d}\nRUN test -f /tmp/enable && echo 'deb https://vendor.example/apt stable main' > ${vendor}`;
+  assert.equal(scanFile("Dockerfile", `${enabled} && apt-get update && apt-get install -y foo\n`).problems.length, 1);
+  assert.equal(scanFile("Dockerfile", `${enabled}\n${unpinned}\n`).problems.length, 1);
 });

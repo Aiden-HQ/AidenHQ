@@ -51,8 +51,10 @@ const sources = (s: State) => [...new Set([...s.entries.values()].flat())];
 const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), entries: new Map(), added: false, releases: new Set() });
 // A deep copy, so one stage's later writes never reach another's (a stage inherits a snapshot, not a live view).
 const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
-// Whether a stage holds any repository a later install would see: an entry, or a file whose content we can't read.
-const hasRepo = (s: State) => s.entries.has(undefined) || s.files.size > 0;
+// Whether a stage holds any repository a later install would see: any entry (a `deb` line or a Deb822 stanza, filed under
+// its file or the `undefined` bucket), or a file whose content we can't read. Content, not existence: a repository a
+// guarded write may have left still counts, since an install after it may well see it.
+const hasRepo = (s: State) => [...s.entries.values()].some((v) => v.length > 0) || s.files.size > 0;
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
