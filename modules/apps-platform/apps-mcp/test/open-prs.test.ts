@@ -59,7 +59,11 @@ it("a full open list is not read as closed: each recorded PR missing from it is 
   expect(out.map((x) => `${x.number}${x.draft ? " draft" : ""}`)).toEqual(["1000", "1 draft"]);
 });
 
-it("an incident key keeps the warehouse's repo casing", async () => {
-  const out = await recordedOpenPrs([{ repo: "acme/app", number: 7 }], [{ ...row("Acme/App", 7), kind: "pr", state: "open" }], async () => [], none);
-  expect(out.map((x) => x.repo)).toEqual(["Acme/App"]);
+it("a mixed-case repo keeps one incident key whether the code host or the warehouse answers", async () => {
+  const ours = [{ repo: "acme/app", number: 7 }, { repo: "acme/app", number: 8 }];
+  const viaHost = await recordedOpenPrs(ours, [], async () => [{ number: 7, created_at: "2026-11-22T08:00:00Z", repo: "Acme/App" }], async () => null);
+  const viaFull = await recordedOpenPrs([ours[1]!], [], async () => Array.from({ length: 500 }, (_, i) => ({ number: 1000 + i })), async () => ({ nameWithOwner: "Acme/App", state: "OPEN", isDraft: false, createdAt: "2026-11-22T08:00:00Z" }));
+  const viaWarehouse = await recordedOpenPrs(ours, [{ ...row("Acme/App", 7), kind: "pr", state: "open" }, { ...row("Acme/App", 8), kind: "pr", state: "open" }], async () => [], none);
+  expect([...viaHost, ...viaFull].map((x) => `${x.repo}#${x.number}`)).toEqual(["Acme/App#7", "Acme/App#8"]);
+  expect(viaWarehouse.map((x) => `${x.repo}#${x.number}`)).toEqual(["Acme/App#7", "Acme/App#8"]);
 });

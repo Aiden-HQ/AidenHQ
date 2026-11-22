@@ -33,10 +33,10 @@ const notReadable = (err: unknown) => {
  * The open GitHub PRs among the refs the kernel recorded (issues included): state from the warehouse's row where it has one, else from
  * the code host's list of the repo's open PRs (one call per repo; the warehouse syncs only the configured orgs and lags by up to 15
  * minutes). A recorded PR absent from that list is closed; when the list is full (cut at its limit) each missing PR is read on its own.
- * A repo outside the module's read grant or gone (notReadable) is not looked up; any other failure throws. A row keeps the casing of
- * the warehouse's repo (the incident key before this check watched recorded PRs); one the code host answers uses the record's lower case.
+ * A repo outside the module's read grant or gone (notReadable) is not looked up; any other failure throws. A PR's repo is GitHub's own
+ * spelling (the warehouse row's, or the code host's `nameWithOwner`/`full_name`): the same incident key whichever source answers.
  */
-export async function recordedOpenPrs(ours: Recorded[], rows: WarehouseRow[], listOpen: (repo: string) => Promise<{ number: number; draft?: boolean; created_at?: string | null }[]>, readPr: (repo: string, number: number) => Promise<{ state: string; isDraft: boolean; createdAt: string } | null>): Promise<OpenPr[]> {
+export async function recordedOpenPrs(ours: Recorded[], rows: WarehouseRow[], listOpen: (repo: string) => Promise<{ number: number; draft?: boolean; created_at?: string | null; repo?: string | null }[]>, readPr: (repo: string, number: number) => Promise<{ nameWithOwner?: string | null; state: string; isDraft: boolean; createdAt: string } | null>): Promise<OpenPr[]> {
   const key = (r: Recorded) => `${r.repo.toLowerCase()}#${r.number}`;
   const known = new Set(rows.map(key));
   const missing = new Map<string, Set<number>>();
@@ -46,13 +46,13 @@ export async function recordedOpenPrs(ours: Recorded[], rows: WarehouseRow[], li
     try {
       const list = await listOpen(repo);
       const found = list.filter((p) => numbers.has(p.number));
-      for (const p of found) if (p.created_at) listed.push({ repo, number: p.number, opened_at: p.created_at, draft: !!p.draft });
+      for (const p of found) if (p.created_at) listed.push({ repo: p.repo ?? repo, number: p.number, opened_at: p.created_at, draft: !!p.draft });
       if (list.length < LIST_LIMIT) continue;
       // The list stops at its limit: a recorded PR missing from it may be open past it.
       for (const n of numbers) {
         if (found.some((p) => p.number === n)) continue;
         const pr = await readPr(repo, n);
-        if (pr?.state === "OPEN") listed.push({ repo, number: n, opened_at: pr.createdAt, draft: pr.isDraft });
+        if (pr?.state === "OPEN") listed.push({ repo: pr.nameWithOwner ?? repo, number: n, opened_at: pr.createdAt, draft: pr.isDraft });
       }
     } catch (err) {
       if (!notReadable(err)) throw err;

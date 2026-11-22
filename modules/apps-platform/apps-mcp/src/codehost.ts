@@ -131,8 +131,8 @@ export interface CodeHostOps {
   /** Fetches `ref` (refs/heads/*, refs/heads/<b> or refs/pull/<n>/head) into the bare/regular repo at `gitDir`: branches land in refs/remotes/origin/*, a pull head in refs/remotes/pr/head. */
   fetch: (repo: string, ref: string, gitDir: string) => Promise<void>;
   /** One PR's state (the kernel's `pr` read: `repository.pullRequest` is null when GitHub has no such PR). */
-  pr: (repo: string, number: number) => Promise<{ state: string; isDraft: boolean; createdAt: string } | null>;
-  read: (repo: string, body: { kind: "prs" }) => Promise<{ number: number; sha: string; base: string; head_repo: string | null; draft?: boolean; created_at?: string | null }[]>;
+  pr: (repo: string, number: number) => Promise<{ nameWithOwner: string | null; state: string; isDraft: boolean; createdAt: string } | null>;
+  read: (repo: string, body: { kind: "prs" }) => Promise<{ number: number; sha: string; base: string; head_repo: string | null; draft?: boolean; created_at?: string | null; repo?: string | null }[]>;
   /** Posts a comment, or edits comment `id`; the comment's id. */
   comment: (repo: string, number: number, body: string, id?: number) => Promise<number>;
   /** One file committed to `branch` on top of `parent` (409 when the branch moved); the new commit's sha. */
@@ -163,7 +163,10 @@ export function codeHostOps(kernelUrl: string, key: string, fetchImpl: typeof fe
         rmSync(dir, { recursive: true, force: true });
       }
     },
-    pr: async (repo, number) => (await json("read", { repo, kind: "pr", number }))?.repository?.pullRequest ?? null,
+    pr: async (repo, number) => {
+      const r = (await json("read", { repo, kind: "pr", number }))?.repository;
+      return r?.pullRequest ? { ...r.pullRequest, nameWithOwner: r.nameWithOwner ?? null } : null;
+    },
     read: async (repo, b) => json("read", { repo, ...b }),
     comment: async (repo, number, body, id) => Number((await json("comment", { repo, number, body, ...(id ? { id } : {}) })).id),
     commit: async (a) => String((await json("commit", a)).sha),
