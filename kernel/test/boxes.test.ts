@@ -232,19 +232,15 @@ test("a launch that never ran the engine does not erase the session a real run l
     h.release();
     await until("the job after the refusal ends", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(afterRefusal.id).state === "done");
   }
-  // A row that recorded no session and read no events never ran, whatever stopped it (no box, a box whose exec never started
-  // the engine). Each is placed newest in turn, so each must be skipped for the session before it to come back.
-  const neverRan = (id, at) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(id, at);
-  let at = Date.now();
-  for (const id of ["j-no-box", "j-exec-failed"]) {
-    neverRan(id, (at += 1000));
-    const next = await h.admit("task-1");
-    try {
-      assert.ok(session(next), `${id} must not mask the session the run before it left`);
-    } finally {
-      h.release();
-      await until(`${id}: the next job's end`, () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(next.id).state === "done");
-    }
+  // A box whose exec never started the engine records no session and reads no events: it never ran, so it must be skipped
+  // for the session before it to come back. (The refusal above is the no-box case.)
+  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES ('j-exec-failed', 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(Date.now() + 1000);
+  const boxed = await h.admit("task-1");
+  try {
+    assert.ok(session(boxed), "a box whose engine never ran must not mask the session before it");
+  } finally {
+    h.release();
+    await until("the boxed job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(boxed.id).state === "done");
   }
 });
 
