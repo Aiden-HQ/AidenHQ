@@ -36,7 +36,7 @@ function fakeGitHub(prs) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: p.squash !== false, rebaseMergeAllowed: p.rebase === true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: stale ? "OPEN" : p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
           mergedAt: stale ? null : p.mergedAt ?? null, mergeCommit: !stale && p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
-          mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: "main",
+          mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
           files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
           baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS", { names: p.baseNames }) } },
@@ -595,6 +595,99 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.equal(outcomes[0]?.ok, false);
   assert.match(outcomes[0].text, /^merged-prs: \[\]/);
   assert.match(outcomes[0].text, /merged by someone else at/);
+});
+
+test("an unlinked PR already merged by its merge commit's message is evidence only when the message names the record's identifier", async (t) => {
+  // A PR the fleet never opened has no pr-tasks.json row, so nothing links it: the merge commit that landed on the default
+  // branch is what can credit it, and only when its message names this record's identifier as a whole token.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-merged-message-"));
+  const prs = {
+    "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: `Fix the widget\n\nWOR-9` },
+    "acme-agents/lib": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the lib\n\nNo task named here" },
+    "acme-agents/tool": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the tool\n\nWOR-95" },
+  };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
+  await merge("k-00000000000000c9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.deepEqual(github.merges(), [], "it was already merged: the queue calls nothing");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/);
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the merge commit names WOR-9, so the PR is this task's evidence");
+  assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's, so it names no object as made here");
+
+  // A message naming no identifier: never this task's evidence.
+  outcomes.length = 0;
+  await merge("k-00000000000000ca", [{ repo: "acme-agents/lib", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, "still a no-op success: the PR did merge at its head");
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, JSON.stringify(outcomes[0].text));
+
+  // A longer identifier sharing the prefix (WOR-95 for WOR-9) names another task: a whole-token match, never a prefix one.
+  outcomes.length = 0;
+  await merge("k-00000000000000cc", [{ repo: "acme-agents/tool", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "WOR-95 is not WOR-9");
+
+  // Merged into a release branch: the commit names WOR-9 but its change never reached the default branch, so it proves nothing.
+  prs["acme-agents/release"] = { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, base: "release", message: "Fix the release\n\nWOR-9" };
+  outcomes.length = 0;
+  await merge("k-00000000000000cd", [{ repo: "acme-agents/release", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "a non-default-branch merge is not evidence");
+
+  // A row that names another task is an answer: a message mentioning WOR-9 in passing must not take the PR over.
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-10", branch: "feature" } }));
+  prs["acme-agents/widget"] = { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the widget\n\nWOR-9" };
+  outcomes.length = 0;
+  await merge("k-00000000000000ce", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "the row says WOR-10: the message never overrides it");
+});
+
+test("a cached merge credit is used only with its default-branch facts; a queue written before them credits nothing", async (t) => {
+  // An older queue kept the message alone (or, at the previous head, kept it without recording which branch it merged into): with
+  // no proof the merge reached the default branch, the cached row must not credit the task. The same queue with the branches
+  // recorded credits the merge only when they agree.
+  const mergeSha = "d".repeat(40);
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the widget\n\nWOR-9" } };
+  const queueWith = async (pr) => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "codehost-cached-credit-"));
+    mkdirSync(join(cacheDir, "merges"), { recursive: true });
+    writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000cf": {
+      id: "k-00000000000000cf", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9",
+      prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "skipped", sha: mergeSha, ...pr }],
+    } } }));
+    const r = await setup(t, { prs, cacheDir, checks: (m, u) => (m === "GET" && u === "/v1/work?record=k-00000000000000cf" ? { id: "k-00000000000000cf", task: "tsk_0000000000000w9", identifier: "WOR-9" } : undefined) });
+    await r.handle.stepMerges();
+    await r.settle();
+    return r.outcomes[0];
+  };
+
+  // A message cached without the branch facts: it is not evidence.
+  const legacy = await queueWith({ mergeMessage: "Fix the widget\n\nWOR-9" });
+  assert.equal(legacy?.ok, true);
+  assert.match(legacy.text, /^merged-prs: \[\]/, "a cached message with no branches is not evidence");
+
+  // A cached credit whose merge went to a release branch is not evidence either.
+  const release = await queueWith({ mergeCredit: { message: "Fix the widget\n\nWOR-9", base: "release", defaultBranch: "main" } });
+  assert.equal(release?.ok, true);
+  assert.match(release.text, /^merged-prs: \[\]/, "a release-branch merge cached as credit is not evidence");
+
+  // The same row with the default branch is evidence: the poll that recorded it proved where it landed.
+  const main = await queueWith({ mergeCredit: { message: "Fix the widget\n\nWOR-9", base: "main", defaultBranch: "main" } });
+  assert.equal(main?.ok, true);
+  assert.deepEqual(JSON.parse(main.text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "verified default-branch credit is evidence");
 });
 
 test("a queue persisted before the identifier was kept recovers it from the record, so its already-merged PR is still evidence", async (t) => {
