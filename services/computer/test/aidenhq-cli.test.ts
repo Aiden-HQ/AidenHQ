@@ -51,7 +51,8 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   const sha = git("rev-parse", "HEAD");
   writeFileSync(join(ws, "body.md"), "Why.");
   const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job", AIDENHQ_TASK_WORKTREE: ws };
-  const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
+  // Run from the test's own workspace, so a relative path the CLI reads (even one starting with `--`) is the fixture's.
+  const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env, cwd: ws })).stdout;
 
   // Publish needs a self-review record for the head (any outcome); with none, or one for an older head, nothing is filed.
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login"), (e) => e.code === 2 && /no self-review.*self-review\.ts <base-branch> fix-login/.test(e.stderr));
@@ -74,9 +75,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title", "fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
   // A value that merely starts with `--` is still a value: only the next option (or none) counts as missing.
-  const dotted = join(process.cwd(), "--notes.md");
-  writeFileSync(dotted, "A file named like a flag.");
-  t.after(() => rmSync(dotted, { force: true }));
+  writeFileSync(join(ws, "--notes.md"), "A file named like a flag.");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", "--notes.md");
   assert.equal(seen.at(-1).body.args.text.body, "A file named like a flag.");
   // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
