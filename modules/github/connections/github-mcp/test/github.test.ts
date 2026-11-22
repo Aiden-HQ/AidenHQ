@@ -163,15 +163,16 @@ describe("GitHub", () => {
      * A fake GitHub that answers a direct read of each comment in `comments` (by id), the reply write with `answer`, and any
      * other read with a 404. No review threads are listed at all: the lookup must not depend on that listing.
      */
-    function fakeReplies(comments: Record<number, unknown>, answer: () => Response = () => new Response(JSON.stringify({ id: 77, html_url: "https://github.com/a/b/pull/7#discussion_r77" }), { status: 201 })) {
+    function fakeReplies(comments: Record<number, unknown>, answer: () => Response = () => new Response(JSON.stringify({ id: 77, html_url: "https://github.com/a/b/pull/7#discussion_r77" }), { status: 201 }), prUrl = PR_URL) {
       const calls: { method: string; path: string; body?: any }[] = [];
       const impl = (async (input: URL | string, init?: RequestInit) => {
         const url = new URL(String(input));
         const method = init?.method ?? "GET";
         calls.push({ method, path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-        if (method === "POST" && /\/pulls\/7\/comments\/\d+\/replies$/.test(url.pathname)) return answer();
-        const m = url.pathname.match(/^\/repos\/a\/b\/pulls\/7\/comments\/(\d+)$/);
-        if (method === "GET" && m && comments[Number(m[1])]) return new Response(JSON.stringify(comments[Number(m[1])]), { status: 200 });
+        if (method === "POST" && /\/pulls\/\d+\/comments\/\d+\/replies$/.test(url.pathname)) return answer();
+        if (method === "GET" && /^\/repos\/[^/]+\/[^/]+\/pulls\/7$/.test(url.pathname)) return new Response(JSON.stringify({ url: prUrl }), { status: 200 });
+        const m = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/comments\/(\d+)$/);
+        if (method === "GET" && m && comments[Number(m[3])]) return new Response(JSON.stringify(comments[Number(m[3])]), { status: 200 });
         return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
       }) as typeof fetch;
       return { impl, calls };
@@ -214,7 +215,7 @@ describe("GitHub", () => {
     it("an id that isn't a review comment of the pull request fails with its reason, and nothing is posted", async () => {
       const { impl, calls } = fakeReplies({});
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(GitHubRefused);
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't a review comment of a\/b#7/);
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't a review comment of a\/b/);
       expect(posts(calls)).toHaveLength(0);
     });
 
@@ -228,6 +229,29 @@ describe("GitHub", () => {
       const { impl, calls } = fakeReplies({ 100: reply(100, 101), 101: reply(101, 100) });
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden")).rejects.toThrow(/broken reply chain/);
       expect(posts(calls)).toHaveLength(0);
+    });
+
+    it("a lookup that fails upstream (not a 404) is passed on, not reported as a missing comment", async () => {
+      const calls: { method: string; path: string }[] = [];
+      const impl = (async (input: URL | string, init?: RequestInit) => {
+        const url = new URL(String(input));
+        calls.push({ method: init?.method ?? "GET", path: url.pathname });
+        if ((init?.method ?? "GET") === "GET" && url.pathname === "/repos/a/b/pulls/7") return new Response(JSON.stringify({ url: PR_URL }), { status: 200 });
+        if ((init?.method ?? "GET") === "GET" && /^\/repos\/a\/b\/pulls\/comments\/\d+$/.test(url.pathname)) return new Response(JSON.stringify({ message: "Server Error" }), { status: 503 });
+        return new Response("Not Found", { status: 404 });
+      }) as typeof fetch;
+      const err = await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden").catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(GitHubRefused);
+      expect(String(err.message)).toMatch(/GitHub 503/);
+      expect(calls.some((c) => c.method === "POST")).toBe(false);
+    });
+
+    it("a repository renamed since the caller's URL still replies, on the canonical name", async () => {
+      const { impl, calls } = fakeReplies({ 100: reply(100, undefined, "https://api.github.com/repos/a/new-name/pulls/7") }, undefined, "https://api.github.com/repos/a/new-name/pulls/7");
+      await owner(impl).reply({ owner: "a", repo: "old-name", number: 7 }, 100, "fixed: abc1234.", "Aiden");
+      expect(calls.some((c) => c.path === "/repos/a/new-name/pulls/comments/100")).toBe(true);
+      expect(posts(calls)[0]!.path).toBe("/repos/a/new-name/pulls/7/comments/100/replies");
     });
 
     it("a 422 surfaces GitHub's errors[] field and code", async () => {
