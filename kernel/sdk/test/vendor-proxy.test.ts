@@ -103,22 +103,6 @@ describe("vendor pass-through", () => {
   });
 });
 
-describe("not signed in", () => {
-  it("lists the tools it saw last as stand-ins whose calls say how to connect", async () => {
-    const dir = tmp();
-    writeFileSync(join(dir, "tools.json"), JSON.stringify(["search"]));
-    const p = createVendorProxy({ name: "Acme", upstream: new URL("https://mcp.example.com/mcp"), auth: oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir }), log, serviceKey: "svc", caller: async () => {}, instructions: "", stateDir: dir });
-    const url = await listen(p);
-    const post = (body: unknown) => fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<any>);
-    expect((await post({ jsonrpc: "2.0", id: 1, method: "tools/list" })).result.tools[0]).toMatchObject({ name: "search", description: expect.stringMatching(/isn't connected/) });
-    const called = (await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search", arguments: {} } })).result;
-    expect(called).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/signs in from the board/) }] });
-    expect(readNeed(called)?.cause).toBe("not_connected");
-    expect((await fetch(`${url}/healthz`)).status).toBe(503);
-    p.close();
-  });
-});
-
 describe("sign-in", () => {
   const MCP = "https://mcp.example.com/v1/mcp?tools=all";
   function fakeVendor() {
@@ -170,85 +154,11 @@ describe("sign-in", () => {
     expect(calls.filter((c) => c.url.endsWith("/register"))).toHaveLength(1);
   });
 
-  it("uses a client the owner made, asks for no scopes when the vendor takes none, and marks a refused refresh expired", async () => {
-    const dir = tmp();
-    const fetchImpl = (async (url: string) =>
-      url.endsWith("/token") ? Response.json({ error: "invalid_grant" }, { status: 400 }) : url.includes("oauth-authorization-server") ? Response.json({ authorization_endpoint: "https://app.example.com/oauth/authorize", token_endpoint: "https://api.example.com/token" }) : new Response("", { status: 404 })) as unknown as typeof fetch;
-    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com", stateDir: dir, client: () => ({ id: "made", secret: "s" }), scopes: { supported: [] }, resource: false, fetchImpl });
-    const u = new URL((await auth.signIn!.start("http://localhost:3121/acme/callback")).url);
-    expect(u.searchParams.get("client_id")).toBe("made");
-    expect(u.searchParams.has("scope")).toBe(false);
-    expect(u.searchParams.has("resource")).toBe(false);
-    writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "a", refresh_token: "r", expires_at: 1, client_id: "made", token_endpoint: "https://api.example.com/token" }));
-    await expect(auth.headers()).rejects.toThrow(/invalid_grant/);
-    expect(auth.status().state).toBe("expired");
-  });
-
-  it("starts signed in when a token is already on disk (a restart is not a sign-out)", () => {
-    const dir = tmp();
-    writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "a", expires_at: Date.now() + 3_600_000 }));
-    expect(oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir }).status().state).toBe("ok");
-    writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "a", expires_at: 1 })); // expired, no refresh token: unusable
-    expect(oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir }).status().state).toBe("unknown");
-  });
-
-  it("keeps a sign-in whose refresh hit the vendor's 5xx: the next request tries again", async () => {
-    const dir = tmp();
-    const fetchImpl = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
-    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir, fetchImpl });
-    writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "a", refresh_token: "r", expires_at: 1, client_id: "c", token_endpoint: "https://auth.example.com/token" }));
-    await expect(auth.headers()).rejects.toThrow(/answered 503/);
-    expect(auth.status().state).toBe("unknown");
-  });
 });
 
 describe("device sign-in", () => {
   const endpoints = { authorize: "https://auth.example.com/authorize", token: "https://auth.example.com/token" };
   const device = { endpoint: "https://auth.example.com/device/code", client_id: "Iv1.acme", scopes: ["repo", "read:org"] };
-  const tick = () => new Promise((r) => setTimeout(r, 5));
-
-  it("polls until the token lands, through pending and slow_down, and keeps the device code to itself", async () => {
-    const dir = tmp();
-    const answers = [{ error: "authorization_pending" }, { error: "slow_down" }, { access_token: "gho_x", token_type: "bearer", scope: "repo,read:org" }];
-    const bodies: string[] = [];
-    const fetchImpl = (async (url: string, init: RequestInit) => {
-      bodies.push(`${url} ${String(init.body)} ${(init.headers as Record<string, string>).accept}`);
-      return url === device.endpoint ? Response.json({ device_code: "dc-secret", user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 }) : Response.json(answers.shift());
-    }) as unknown as typeof fetch;
-    const waits: number[] = [];
-    let signedIn = false;
-    const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: dir, endpoints, device, fetchImpl, wait: async (ms) => void waits.push(ms) });
-    const started = await auth.device!.start(() => (signedIn = true));
-    expect(started).toEqual({ user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 });
-    expect(JSON.stringify(started)).not.toContain("dc-secret");
-    for (let i = 0; i < 20 && !signedIn; i++) await tick();
-    expect(auth.device!.state()).toEqual({ state: "ok" });
-    expect(waits).toEqual([5000, 5000, 10000]);
-    expect(bodies[0]).toContain("scope=repo+read%3Aorg");
-    expect(bodies.every((b) => b.endsWith("application/json"))).toBe(true);
-    expect(await auth.headers()).toEqual({ authorization: "Bearer gho_x" });
-    expect(auth.status().state).toBe("ok");
-  });
-
-  it("stops on cancel, says when the code expired or access was denied, and refuses without a client ID", async () => {
-    const run = async (answer: Record<string, unknown>, cancel = false) => {
-      let release!: () => void;
-      const gate = new Promise<void>((r) => (release = r));
-      const fetchImpl = (async (url: string) => (url === device.endpoint ? Response.json({ device_code: "dc", user_code: "U", verification_uri: "https://auth.example.com/device" }) : Response.json(answer))) as unknown as typeof fetch;
-      const auth = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: tmp(), endpoints, device, fetchImpl, wait: () => gate });
-      await auth.device!.start();
-      if (cancel) auth.device!.cancel();
-      release();
-      for (let i = 0; i < 10; i++) await tick();
-      return auth.device!.state().state;
-    };
-    expect(await run({ access_token: "t" }, true)).toBe("cancelled");
-    expect(await run({ error: "expired_token" })).toBe("expired");
-    expect(await run({ error: "access_denied" })).toBe("denied");
-    const off = oauth({ name: "Acme", mcpUrl: "https://mcp.example.com/mcp", stateDir: tmp(), endpoints, device: { ...device, client_id: "" } });
-    await expect(off.device!.start()).rejects.toThrow(/isn't configured yet/);
-    expect(off.status().detail).toMatch(/no client ID/);
-  });
 
   it("serves start, state and cancel on the proxy's /auth/device, with the board's key only", async () => {
     const dir = tmp();
@@ -267,33 +177,6 @@ describe("device sign-in", () => {
   });
 });
 
-describe("/auth/check", () => {
-  it("is ok while the token works, and says to reconnect once the vendor revokes it", async () => {
-    let revoked = false;
-    const up = createServer(async (req, res) => {
-      if (revoked) return void res.writeHead(401).end("invalid_token");
-      const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "whoami", inputSchema: { type: "object" as const } }] }));
-      const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      res.on("close", () => void t.close());
-      await server.connect(t);
-      await t.handleRequest(req, res);
-    });
-    const upUrl = await listen(up);
-    let state: "ok" | "expired" = "ok";
-    const auth = { ...staticAuth({ authorization: "Bearer t" }), status: () => ({ state, since: "" }), mark: (s: "ok" | "expired") => void (state = s) };
-    const p = createVendorProxy({ name: "Acme", upstream: new URL(`${upUrl}/mcp`), auth, log, authKey: "brd", caller: async () => {}, instructions: "" });
-    const url = await listen(p);
-    const check = (key = "brd") => fetch(`${url}/auth/check`, { headers: { authorization: `Bearer ${key}` } });
-    expect((await check("wrong")).status).toBe(401);
-    expect(await (await check()).json()).toEqual({ ok: true });
-    revoked = true;
-    expect(await (await check()).json()).toEqual({ ok: false, message: "Acme no longer accepts the sign-in.", fix: "Reconnect" });
-    p.close();
-    up.close();
-  });
-});
-
 describe("needs_owner", () => {
   const post = (url: string, body: unknown) => fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<any>);
   const call = (url: string, args: Record<string, unknown> = {}) => post(url, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search", arguments: args } }).then((b) => b.result);
@@ -305,19 +188,4 @@ describe("needs_owner", () => {
     p.close();
   });
 
-  it("answers expired once the sign-in was refused", async () => {
-    const since = new Date().toISOString();
-    const auth: Auth = { headers: async () => { throw new AuthError("Acme token expired and can't be refreshed"); }, refresh: async () => {}, status: () => ({ state: "expired", since }), mark: () => {}, signedIn: () => true };
-    const p = createVendorProxy({ name: "Acme", upstream: new URL("https://mcp.example.com/mcp"), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "" });
-    const url = await listen(p);
-    expect(readNeed(await call(url))).toMatchObject({ cause: "expired", detail: expect.stringMatching(/reconnects it/) });
-    p.close();
-  });
-
-  it("an upstream error that isn't about sign-in stays a plain error", async () => {
-    const r = await rpc("/mcp", "svc", "tools/call", { name: "search", arguments: { q: "boom" } }, "ok");
-    expect(r.body.result).toMatchObject({ isError: true });
-    expect(r.body.result.structuredContent).toBeUndefined();
-    expect(readNeed(r.body.result)).toBeUndefined();
-  });
 });

@@ -126,9 +126,9 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   running it after every apply restarts those services a second time for nothing.
 - **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the kernel resumes in the same session.
 
-- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): caps count real cost. A call goes ahead while its run, task and agent-day caps (grants `caps`, default $2 / $10 / $30) are below their cap, so one call may take a cap past it; its output limit is bounded to what the tightest cap's room buys at the model's price on OpenRouter's own models list (`GET /api/v1/models`, held in memory and refreshed hourly, the last good list kept on a failed refresh; an id OpenRouter doesn't list is refused), never under 1,024 tokens. It settles at what OpenRouter billed for it (the answer's `usage.cost`). A call at a spent cap gets HTTP 402 and the owner a `raise_cap` card; there is no off switch. Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
+- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when `kernel/src/gateway` or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's `/usage` pull), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): limits count real cost. A call goes ahead while the install's spend (`spend_day_usd`, a UTC day, default $50; `spend_month_usd`, a UTC calendar month, default $1000) and the task's spend (`task_usd`, default $20; a chat or routine task: per UTC day) are below their limit, so one call may take a limit past it; its output limit is bounded to what the tightest limit's room buys at the model's price on OpenRouter's own models list (`GET /api/v1/models`, held in memory and refreshed hourly, the last good list kept on a failed refresh; an id OpenRouter doesn't list is refused), never under 1,024 tokens. It settles at what OpenRouter billed for it (the answer's `usage.cost`). A call past the install's limit gets HTTP 402 `cap_reached` and the owner is told once per limit, period and value; a call past a task's gets 402 and the delegator is told once; there is no off switch and no card. Raise a limit in Settings (the owner's). Ledger: `data/kernel/kernel.db` (`calls`); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
 - **Agent memory** (`agent_memory`): `memory_note` writes to the agent's own inbox task; the Fleet Steward's daily pass curates it into `agents/<key>/memory.md`, landed by an apply card. To clear one agent's memory, apply a change that empties its file. Kill switch: `agent_memory: off`.
-- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's caps). Kill switch: `settings.model_tools: off`, then apply.
+- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's limits). Kill switch: `settings.model_tools: off`, then apply.
 
 ## Health
 
@@ -407,10 +407,31 @@ change under 20 added plus deleted lines with no sensitive path; `package-lock.j
 /v1/codehost/runner_token` with the ci module's `ci_token`; the code host mints it as the owner, whose sign-in needs
 `admin:org`, and answers only that token), then
 `docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
-the unit then starts the next. Nothing carries between jobs. The container has no host mounts, no docker socket and none
-of the instance's secrets; it sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host,
-only the model gateway's CI listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits
-per runner: 4 CPUs, 8 GB.
+the unit then starts the next, at once (`Restart=always`, `RestartSec=1`). A refused token (the sign-in missing
+`admin:org`, GitHub unreachable) backs off instead: `ops/ci-runner.sh` writes that unit's delay (1 second, doubling to a
+minute) and exits, and the unit's `ExecStartPre` (`ops/ci-runner-backoff.sh`) waits it out before the next attempt. The
+minute is a hard cap: a longer `ExecStartPre` wait would outlast systemd's 90-second timeout. The next token that mints
+clears the delay, and a marker more than 15 minutes old (a drain, an outage) is dropped rather than served, so a
+persistent refusal retries slowly rather than hot-looping while a clean job exit still starts the next runner
+immediately. Because the wait runs before `ExecStart`, a unit backing off is `activating` rather than `active`. The
+marker sits under the host's data dir, which `ops/lib/data-dir.sh` resolves from the unit environment alone -- the apply
+writes each unit's `EnvironmentFile=` (`~/.config/aidenhq-ci-runner.env`, `~/.config/aidenhq-host-metrics.env`) from the
+host's own `.env`, so the runner and the exporter never read a settings file themselves. A relative value is the
+checkout's and a leading `~` is the home directory, with a trailing slash dropped but a lone `/` kept, so the marker is
+the same file `ops/host-metrics.sh` exports its backoff series from. The marker is written beside itself and renamed
+into place, so the exporter never reads a half-written file, and the exporter only reports a marker for a runner unit
+systemd still declares, so a runner retired at the cap does not keep the alert pending. The missing permission also
+reaches the owner: a codehost op's `needs_owner` answer is recorded
+as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
+scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
+`CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat
+at the one-minute cap for ten minutes, which the host-metrics timer writes as `aidenhq_unit_backoff` from the runner's
+own marker (the wait itself, so a scrape that misses the brief active intervals between backoffs still alerts; the rule
+holds while the wait is at the cap and its `for` is the ten minutes, so a wait that has since cleared raises nothing).
+
+Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
+sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI
+listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits per runner: 4 CPUs, 8 GB.
 
 **Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
 (`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
@@ -420,8 +441,7 @@ and trades it at the gateway's `POST /ci/token` for an opaque CI token that live
 once. The repo and PR come from that signed token, and the answer names the review model and effort
 (`settings.ci_review_model`). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
 for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
-server tools or stored responses, zero data retention forced, under CI's own caps (`ci_review_repo_day_usd`,
-`ci_review_day_usd`; a refusal fails the review, no retry). Each call goes out while CI's caps are below their cap
+server tools or stored responses, zero data retention forced, under the install's spend limit (a refusal fails the review, no retry). Each call goes out while the limit is not used up
 and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its input estimate.
 Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):
 the Costs tab's "App CI code review" line. Revoke: removing the `ci` module refuses every CI token at once.
@@ -435,16 +455,17 @@ nothing else: nothing of the PR runs, writes or connects, and its
 environment holds only the CI token (never the job's GitHub tokens). It runs from an empty directory with a config the
 job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
 `.codex/`, `codex.toml` or `AGENTS.override.md` fails the check, and AGENTS.md is a critical path. Its answer must match
-an output schema: anything else is no verdict, which fails the check. The gate is fail-closed (operator ruling 2026-11-17,
-replacing #144's pass for PRs over 2,000 counted lines that got no verdict): no verdict fails the check whatever its size,
-and past 2,000 counted lines the comment gives the size as the reason ("too large to review in one pass; split into PRs
-under ~2,000 counted lines"). Only a confirmed provider error (HTTP 429 or 5xx, a dropped connection, seen in codex's events)
-is transient and gets one retry. If the retry also fails, the check fails. A timeout or an answer that isn't a review is
-never retried. A package-lock.json change that adds a package, changes a version or source, or adds an install script is a
+an output schema: anything else is no verdict, which passes the check with a comment saying so ("Code review: no verdict on
+`abc1234` (not blocking)"; the system fails open rather than stalls, owner ruling 2026-11-21, replacing the fail-closed ruling of
+2026-11-17). A run without a verdict (a provider error, a timeout, an answer that isn't a review) gets one
+retry when time is left (an incomplete review is not retried); a gateway refusal (bad token, our spend cap) isn't retried. The review target of 2,000 counted lines is
+advisory: past it, a run without a verdict says the change is large and suggests stacked PRs. Findings that did come out still
+decide (high or critical block). A run without a verdict records no baseline for the next push's delta review, so the next
+push reviews the whole PR. A package-lock.json change that adds a package, changes a version or source, or adds an install script is a
 critical path, and the reviewer gets a summary of it. Its scripts and the house rules (`.github/code-review-rules.md`) come
 from the base commit. Its brief: the house rules, the app's critical paths and its AGENTS.md (base commit), and the PR's
 title and description fenced as data, so it judges scope. P0 and P1 findings block (critical, high); P2 and P3 are listed.
-A same-repo PR can edit the workflow and spend up to its repo's day cap on the allowed models: the cap and scope are the
+A same-repo PR can edit the workflow and spend up to the install's spend limit on the allowed models: the limit and scope are the
 boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret
 `OPENROUTER_API_KEY` instead; where the gateway is on, delete that secret from the app repos (an edited workflow could
 read it).

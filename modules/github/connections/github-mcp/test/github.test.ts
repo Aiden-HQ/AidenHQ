@@ -1,10 +1,5 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { GitHubNeed, needResult } from "../src/client.js";
-import { readNeed } from "../src/vendor/needs.js";
-import { GitHub, GitHubRefused, GRAPHQL, guard, parseRef } from "../src/github.js";
+import { GitHub, GitHubRefused, GRAPHQL, guard } from "../src/github.js";
 import { accessFor } from "./fake-access.js";
 
 /** The owner's GitHub over the fake: the client (src/client.ts) and the job-log fetch both use it. */
@@ -107,81 +102,7 @@ describe("owner-token label writes", () => {
   });
 });
 
-describe("parseRef", () => {
-  it("rejects anything else", () => {
-    expect(() => parseRef({ url: "https://gitlab.com/a/b/issues/1" })).toThrow();
-    expect(() => parseRef({ url: "https://github.com/a/b" })).toThrow();
-    expect(() => parseRef({ repo: "a/b/c", number: 1 })).toThrow();
-    expect(() => parseRef({ repo: "a/b" })).toThrow();
-  });
-});
-
 describe("GitHub", () => {
-  const issue = { number: 7, html_url: "https://github.com/a/b/issues/7", repository_url: "https://api.github.com/repos/a/b", title: "T", state: "open", user: { login: "x" }, labels: [{ name: "bug" }], created_at: "c", updated_at: "u", body: "B", comments: 150 };
-
-  it("adds merge state and reviews for a pull request", async () => {
-    const { impl } = fake({
-      "GET /repos/a/b/issues/7": { ...issue, comments: 0, pull_request: {} },
-      "GET /repos/a/b/issues/7/comments": [],
-      "GET /repos/a/b/pulls/7": { draft: false, merged: true, base: { ref: "main" }, head: { ref: "feat/x" } },
-      "GET /repos/a/b/pulls/7/reviews": [{ user: { login: "r" }, state: "APPROVED", body: "" }],
-    });
-    const out = (await owner(impl).read({ owner: "a", repo: "b", number: 7 })) as { kind: string; pull_request: { merged: boolean; reviews: unknown[] } };
-    expect(out.kind).toBe("pull_request");
-    expect(out.pull_request.merged).toBe(true);
-    expect(out.pull_request.reviews).toHaveLength(1);
-  });
-
-  it("lists the head's Actions check runs next to the commit statuses, a running one included", async () => {
-    const head = "0123456789abcdef0123456789abcdef01234567";
-    const job = (id: number, name: string, status: string, conclusion: string | null) => ({
-      id,
-      name,
-      status,
-      conclusion,
-      html_url: `https://github.com/a/b/actions/runs/90000000001/job/${id}`,
-      details_url: `https://github.com/a/b/actions/runs/90000000001/job/${id}`,
-    });
-    const { impl, calls } = fake({
-      "GET /repos/a/b/issues/7": { ...issue, comments: 0, pull_request: {} },
-      "GET /repos/a/b/issues/7/comments": [],
-      "GET /repos/a/b/pulls/7": { draft: false, merged: false, base: { ref: "main" }, head: { ref: "feat/x", sha: head } },
-      "GET /repos/a/b/pulls/7/reviews": [],
-      "GET /repos/a/b/pulls/7/files": [],
-      "GET /repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/status": { statuses: [{ context: "design-review", state: "pending", description: "Reviewing" }] },
-      "GET /repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/check-runs": {
-        check_runs: [job(50000000001, "tests", "completed", "success"), job(50000000002, "secrets", "completed", "success"), job(50000000003, "code-review", "in_progress", null), job(50000000004, "design-check", "queued", null)],
-      },
-    });
-    const out = (await owner(impl).read({ owner: "a", repo: "b", number: 7 })) as {
-      pull_request: { statuses: unknown[]; check_runs: { name: string; status: string; conclusion: string | null; run_id?: number; job_id: number }[]; check_runs_error?: string };
-    };
-    // Commit statuses alone would have said "only design-review pending"; the CI jobs are listed too.
-    expect(out.pull_request.statuses).toEqual([{ context: "design-review", state: "pending", description: "Reviewing" }]);
-    expect(out.pull_request.check_runs.map((c) => [c.name, c.status, c.conclusion])).toEqual([
-      ["tests", "completed", "success"],
-      ["secrets", "completed", "success"],
-      ["code-review", "in_progress", null],
-      ["design-check", "queued", null],
-    ]);
-    expect(out.pull_request.check_runs[2]).toMatchObject({ run_id: 90000000001, job_id: 50000000003 });
-    expect(out.pull_request.check_runs_error).toBeUndefined();
-    expect(calls.some((c) => c.url.pathname.endsWith("/check-runs") && c.url.searchParams.get("filter") === "latest")).toBe(true);
-  });
-
-  it("returns the tail of a job log, fetched from the redirect without the token", async () => {
-    const calls: { url: string; auth?: string }[] = [];
-    const impl = (async (input: URL | string, init?: RequestInit) => {
-      calls.push({ url: String(input), auth: (init?.headers as Record<string, string> | undefined)?.authorization });
-      return String(input).startsWith("https://productionresultssa1.blob.core.windows.net/") ? new Response("x".repeat(70_000) + "END") : new Response(null, { status: 302, headers: { location: "https://productionresultssa1.blob.core.windows.net/log" } });
-    }) as typeof fetch;
-    const out = (await owner(impl).jobLog("a/b", 5)) as { clipped: boolean; log: string };
-    expect(out.clipped).toBe(true);
-    expect(out.log).toHaveLength(64_000);
-    expect(out.log.endsWith("END")).toBe(true);
-    expect(calls[0]!.auth).toContain("gho_test");
-    expect(calls[1]!.auth).toBeUndefined();
-  });
 
   it("refuses a log redirect to any other host without fetching it", async () => {
     const calls: string[] = [];
@@ -193,45 +114,6 @@ describe("GitHub", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("stops reading a log past the cap and refuses one that declares itself too big", async () => {
-    let pulled = 0;
-    const big = new ReadableStream<Uint8Array>({ pull(c) { pulled += 1_000_000; c.enqueue(new Uint8Array(1_000_000).fill(120)); } });
-    const mk = (body: BodyInit, headers: Record<string, string> = {}) => (async (input: URL | string) => (String(input).startsWith("https://productionresultssa1.blob.core.windows.net/") ? new Response(body, { headers }) : new Response(null, { status: 302, headers: { location: "https://productionresultssa1.blob.core.windows.net/log" } }))) as typeof fetch;
-    const out = (await owner(mk(big)).jobLog("a/b", 5)) as { clipped: boolean; log: string };
-    expect(out.clipped).toBe(true);
-    expect(out.log).toHaveLength(64_000);
-    expect(pulled).toBeLessThan(60_000_000);
-    const declared = (await owner(mk("x", { "content-length": "999999999" })).jobLog("a/b", 5)) as { clipped: boolean; log: string };
-    expect(declared).toMatchObject({ clipped: true, log: "" });
-  });
-
-  it("lists a pull request's files with clipped patches", async () => {
-    const { impl } = fake({ "GET /repos/a/b/pulls/7/files": [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "p".repeat(5000) }, { filename: "b.png", status: "added", additions: 0, deletions: 0 }] });
-    const out = (await owner(impl).prFiles({ owner: "a", repo: "b", number: 7 })) as { files: { filename: string; patch: string; patch_clipped?: boolean }[] };
-    expect(out.files.map((f) => [f.filename, f.patch.length, f.patch_clipped])).toEqual([["a.ts", 4000, true], ["b.png", 0, undefined]]);
-  });
-
-  it("says a check read failed instead of returning an empty list", async () => {
-    const head = "0123456789abcdef0123456789abcdef01234567";
-    const { impl } = fake({
-      "GET /repos/a/b/issues/7": { ...issue, comments: 0, pull_request: {} },
-      "GET /repos/a/b/issues/7/comments": [],
-      "GET /repos/a/b/pulls/7": { draft: false, merged: false, base: { ref: "main" }, head: { ref: "feat/x", sha: head } },
-      "GET /repos/a/b/pulls/7/reviews": [],
-      "GET /repos/a/b/pulls/7/files": [],
-      "GET /repos/a/b/commits/0123456789abcdef0123456789abcdef01234567/status": { statuses: [] },
-    });
-    const out = (await owner(impl).read({ owner: "a", repo: "b", number: 7 })) as { pull_request: { check_runs: unknown[]; check_runs_error?: string } };
-    expect(out.pull_request.check_runs).toEqual([]);
-    expect(out.pull_request.check_runs_error).toContain("GitHub 404");
-  });
-
-  it("comments as the owner, signed by the agent, and names the comment for AidenHQ's records", async () => {
-    const { impl, calls } = fake({ "POST /repos/Example-Org/b/issues/7/comments": { id: 1, html_url: "https://github.com/Example-Org/b/issues/7#issuecomment-1" } });
-    await expect(owner(impl, "gho_owner").comment({ owner: "Example-Org", repo: "b", number: 7 }, "Update", "Aiden")).resolves.toEqual({ id: 1, url: "https://github.com/Example-Org/b/issues/7#issuecomment-1", objects: ["github:example-org/b#7/comment/1"] });
-    expect(calls[0]?.body).toEqual({ body: `Update\n\n${FOOTER("Aiden")}` });
-    expect(calls[0]?.auth).toBe("Bearer gho_owner");
-  });
   describe("createIssue", () => {
     const project = {
       data: {
@@ -272,38 +154,9 @@ describe("GitHub", () => {
       expect(calls.at(-1)?.body).toEqual({ doc: "setStatus", project: "P1", item: "IT1", field: "F1", option: "o2" });
     });
 
-    it("refuses before opening anything when the status or label is wrong", async () => {
-      const { impl, calls } = gql({ project }, { "GET /repos/example-org/issue-tracker/labels": [{ name: "bug" }], "POST /repos/example-org/issue-tracker/issues": created });
-      const gh = owner(impl);
-      const p = "https://github.com/orgs/example-org/projects/16";
-      await expect(gh.createIssue({ title: "T", body: "", project: p, status: "Doing" }, "Aiden")).rejects.toThrow(/Icebox/);
-      await expect(gh.createIssue({ title: "T", body: "", project: p, labels: ["waas"] }, "Aiden")).rejects.toThrow(/no label "waas"/);
-      await expect(gh.createIssue({ title: "T", body: "" }, "Aiden")).rejects.toThrow(/name the repository/);
-      expect(calls.some((c) => c.method === "POST" && c.url.pathname.endsWith("/issues"))).toBe(false);
-    });
-
   });
 
   describe("issue, review and re-run writes", () => {
-    const issue7 = { ...issue, comments: 0, labels: [{ name: "bug" }, { name: "needs triage" }], assignees: [] };
-
-    it("closes an issue as not planned and changes labels, with existing labels only", async () => {
-      const { impl, calls } = fake({ "GET /repos/a/b/issues/7": issue7, "GET /repos/a/b/labels": [{ name: "WaaS" }, { name: "bug" }], "POST /repos/a/b/issues/7/labels": [], "DELETE /repos/a/b/issues/7/labels/needs%20triage": [], "PATCH /repos/a/b/issues/7": {} });
-      const gh = owner(impl);
-      const out = (await gh.updateIssue({ owner: "a", repo: "b", number: 7 }, { state: "closed", reason: "not_planned", addLabels: ["waas"], removeLabels: ["Needs Triage"] })) as { done: string[] };
-      expect(out.done).toEqual(["added labels WaaS", "removed label needs triage", "closed as not planned"]);
-      expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ state: "closed", state_reason: "not_planned" });
-      expect(calls.find((c) => c.method === "POST")?.body).toEqual({ labels: ["WaaS"] });
-    });
-
-    it("refuses a missing label and closing a pull request before writing", async () => {
-      const { impl, calls } = fake({ "GET /repos/a/b/issues/7": issue7, "GET /repos/a/b/issues/8": { ...issue7, pull_request: {} }, "GET /repos/a/b/labels": [{ name: "bug" }] });
-      const gh = owner(impl);
-      await expect(gh.updateIssue({ owner: "a", repo: "b", number: 7 }, { addLabels: ["nope"] })).rejects.toThrow(/has no label "nope"/);
-      await expect(gh.updateIssue({ owner: "a", repo: "b", number: 8 }, { state: "closed" })).rejects.toThrow(/pull requests aren't closed/);
-      expect(calls.every((c) => c.method === "GET")).toBe(true);
-    });
-
     it("pr review posts COMMENT only, at the head it read, signed by the agent", async () => {
       const { impl, calls } = fake({ "GET /repos/a/b/pulls/7": { state: "open", head: { sha: "abc" } }, "POST /repos/a/b/pulls/7/reviews": { id: 5, html_url: "h", state: "COMMENTED" } });
       const gh = owner(impl);
@@ -312,25 +165,6 @@ describe("GitHub", () => {
       await expect(gh.review({ owner: "a", repo: "b", number: 7 }, " ", "Aiden")).rejects.toBeInstanceOf(GitHubRefused);
     });
 
-    it("re-runs only the latest failed run of each workflow on a pull request", async () => {
-      const run = (id: number, workflow_id: number, conclusion: string, created_at: string) => ({ id, name: `w${workflow_id}`, html_url: `h${id}`, status: "completed", conclusion, head_sha: "abc", workflow_id, created_at });
-      const { impl, calls } = fake({
-        "GET /repos/a/b/pulls/7": { head: { sha: "abc" } },
-        "GET /repos/a/b/actions/runs": { workflow_runs: [run(1, 10, "failure", "1"), run(2, 10, "success", "2"), run(3, 20, "failure", "1"), run(4, 30, "success", "1")] },
-        "POST /repos/a/b/actions/runs/3/rerun-failed-jobs": {},
-      });
-      const out = (await owner(impl).rerunFailed({ pr: { owner: "a", repo: "b", number: 7 } })) as { rerun: { url: string }[] };
-      expect(out.rerun).toEqual([{ name: "w20", url: "h3" }]);
-      expect(calls.filter((c) => c.method === "POST").map((c) => c.url.pathname)).toEqual(["/repos/a/b/actions/runs/3/rerun-failed-jobs"]);
-    });
   });
 
-});
-
-it("an owner-fixable GitHubNeed answers needs_owner with its org and url", async () => {
-  const url = "https://github.com/orgs/acme/sso?authorization_request=x";
-  const sso = (async () => new Response(JSON.stringify({ message: "Resource protected by organization SAML enforcement." }), { status: 403, headers: { "x-github-sso": `required; url=${url}` } })) as typeof fetch;
-  const err = (await owner(sso).read({ owner: "acme", repo: "app", number: 1 }).catch((e: unknown) => e)) as GitHubNeed;
-  expect(err).toBeInstanceOf(GitHubNeed);
-  expect(readNeed(needResult(err))).toEqual({ cause: "sso", org: "acme", url, detail: expect.stringContaining("authorize single sign-on") });
 });

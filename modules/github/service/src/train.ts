@@ -21,7 +21,6 @@ import { join } from "node:path";
 import { pinOwner } from "./aidenhq-sdk/pin-owner.ts";
 import { bumpInstance, trainDescription, trainStep } from "./release.ts";
 
-type Gate = undefined | { wait: string } | { stop: string };
 export type Commit = { repo: string; sha: string; subject: string };
 export type TrainOptions = {
   dir: string; productRepo: string; instanceRepo: string; windowMinutes: number;
@@ -36,8 +35,6 @@ export type TrainOptions = {
   };
   /** The bump's commit on the instance's main, in this service's cache: `edit` reads the file at the head it builds on. */
   commit(repo: string, path: string, edit: (text: string) => string, message: string): Promise<string>;
-  /** The reviewer-eval gate on the product's move (evalgate.ts bump): the reviewer code it brings, judged by the pinned commit. */
-  evalBump(from: string, to: string): Promise<Gate>;
   now?: () => Date; log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 type State = {
@@ -142,9 +139,6 @@ export function createReleaseTrain(o: TrainOptions) {
     // idempotent re-file answers `deduplicated`). Either way its card, if any, is on that task.
     let adopt = Boolean(s.filing?.to === to);
     if (!s.filing || s.filing.to !== to) {
-      const gate = await o.evalBump(pinned, to);
-      if (gate && "wait" in gate) return void log("release bump waits for the reviewer eval", { to, why: gate.wait });
-      if (gate) throw Object.assign(new Error(gate.stop), { lasting: true });
       edit(text); // refused before a task is filed for it
       const carries = await o.github.commits(o.productRepo, pinned, to);
       const source = `release:instance:${to}`;

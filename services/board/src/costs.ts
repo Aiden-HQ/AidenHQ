@@ -1,7 +1,7 @@
 // The Costs tab's sources (cost-ledger.ts reads them):
 //  - the model gateway's ledger: every model call, with what OpenRouter billed for it, mirrored into the board's usage table every
 //    minute (pullUsage), so the tab can group it in SQL;
-//  - the kernel's spend summary: today against every cap in force, as the gateway enforces them (spendSummary);
+//  - the kernel's spend summary: the install's day and month against its spend limits, as the gateway enforces them (spendSummary);
 //  - OpenRouter's own figures for the key (keyUsage) and its list prices (prices).
 import { readFileSync } from "node:fs";
 import type { Logger } from "pino";
@@ -18,7 +18,8 @@ const Attribution = {
   runId: z.string().min(1).max(80).nullable().optional(),
   issueId: z.string().min(1).max(80).nullable().optional(),
   rev: z.string().regex(/^[0-9a-f]{1,64}$/).nullable().optional(),
-  kind: z.enum(["agent", "advisor", "grader", "reviewer", "fanout", "source", "ci-code-review", "aside"]).nullable().optional(),
+  // The gateway's own label for the call (any it files: agent, reviewer, check, ci-code-review, ...); a kind this list doesn't know must never drop the call and its dollars.
+  kind: z.string().min(1).max(40).nullable().optional(),
   ms: z.number().int().min(0).nullable().optional(),
   status: z.string().regex(/^[a-z0-9_]{1,40}$/).nullable().optional(),
 };
@@ -116,7 +117,11 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
       const now = new Date().toISOString();
       const res = await fetch(`${gateway.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json" }, body: JSON.stringify({ since }), signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
-      for (const r of pulledRecords(await res.json())) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
+      const body = await res.json();
+      const records = pulledRecords(body);
+      for (const r of records) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
+      const skipped = (body as { records: unknown[] }).records.length - records.length;
+      if (skipped) log.warn({ skipped }, "usage records the board could not read: their dollars are not counted");
       store.setMeta(metaKey, now);
       // Kept 62 days, so the Costs tab can set the last 30 days against the 30 before.
       store.pruneUsage(new Date(Date.now() - 62 * DAY).toISOString());
@@ -128,11 +133,12 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
   setInterval(tick, everyMs).unref();
 }
 
-/** Today (UTC) against every cap in force, from the kernel (GET /v1/spend/summary: the sums the caps enforce, raises included). */
+/** The install's spend against its two limits, from the kernel (GET /v1/spend/summary: the sums the gateway enforces; a UTC day and month). */
 export interface SpendSummary {
   day: string;
-  install: { spent: number; cap: number | null };
-  agents: { agent_id: string; spent: number; cap: number }[];
+  month: string;
+  install: { day: { spent: number; cap: number }; month: { spent: number; cap: number } };
+  agents: { agent_id: string; spent: number }[];
 }
 
 /** The kernel's spend summary; null when it doesn't answer (the header then shows no spend line). */

@@ -1,6 +1,6 @@
 ---
 name: delegate-work
-description: Hand work to an Engineer, the UI/UX Designer or another graded agent (task_delegate, or task_create with an assignee), and decide an escalated grade - the brief, the deliverable and rubric, choosing the agent, UI work, and what counts as done.
+description: Hand work to an Engineer, the UI/UX Designer or another graded agent (task_delegate, or task_create with an assignee) - the brief, the deliverable and rubric, choosing the agent, UI work, and what counts as done.
 unless: { fields: { module: engineering } }
 ---
 
@@ -37,7 +37,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
   name the live copy and the path inside it.
 - **Only checks the repository runs.** Before a brief names a CI check, read that repository's workflows on its default
   branch and name a job that is there (`sed -n '/^jobs:/,$p' .github/workflows/*.yml | rg -N '^  [a-z][a-z0-9_-]*:$'`):
-  the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` is the product repo's and the app repos' that copied
+  the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` (advisory in the product repo) is the product repo's and the app repos' that copied
   its CI template, so each criterion is one this repository's CI can satisfy. Name the selector and its rule ("pin what
   `best-version.ts` prints"), not a version: the description can't be edited after filing, and the AI reviewer reads it,
   not the comments.
@@ -50,8 +50,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 
 - Pick by what the work needs, using `task_team`: it lists each agent's description and roles. Product-repo code goes to the holder of the
   `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR, and once
-  the checks are green its merge is filed for its task at that head, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
-  tools or models). Several product tasks may go to it at once.
+  the checks are green its merge is filed for its task at that head, each a card the AI reviewer decides. Several product tasks may go to it at once.
 - Every Engineer has the repository, its tests and toolchains, package installs into the workspace, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
   changed pages at 1440 and 390, light and dark, and the changed flow) and attaches the screenshots (rubric: "screenshots
@@ -59,8 +58,9 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 - Engineers work without Docker, system installs, this host, app logs or the warehouse: put the data a task needs in
   the task. A task for the Engineer says "don't try to view the deployed app: the grader captures
   its pages".
-- Image and CVE fixes are proven by the PR's image scan: in the product repo and app repos built from its CI template,
-  the rubric says "`image-scan` green on the PR's head"; elsewhere it names the change and the PR carries the registry's
+- Image and CVE fixes are proven by the PR's image scan: in app repos built from the CI template the rubric says
+  "`image-scan` green on the PR's head"; in the product repo, where the scan is advisory (always green, findings as its
+  error annotations), it says "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere it names the change and the PR carries the registry's
   vulnerability data for the tag and digest it pins. What a Dockerfile's RUN steps install is proven by the deployed
   image's security scan.
 - One task per change: the Engineer publishes, merges and rebases its one PR. A change over about 2,000 changed lines
@@ -94,14 +94,14 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 
 Work delegated to the Engineer, the DevOps Engineer and the UI/UX Designer is graded, however you hand it
 on (`task_delegate`, or `task_create` with an `assignee`; an Engineer sub-task is graded on its PRs): it closes only once
-the grader finds it meeting its rubric, and is otherwise reopened with the unmet criteria. After 3 rejected versions it
-escalates to you. A grader that is down, can't judge it or can't verify a criterion closes the task done, with an
-"ungraded: <reason>" note.
+the grader finds it meeting its rubric, and is otherwise reopened to its agent with the criteria it shows unmet. Nothing
+parks on you: a grader that is down, can't judge it or can't verify a criterion, and a third rejected version, close the
+task done with an "ungraded: <reason>" note, and you hear it as done. Reopen it with what to change if it isn't.
 
 - **Deliverable:** `pr` (the repo or PR link), `app` (the app name), `apply` or `file`. `report` (read-only work: a
   diagnosis, research) and `none` (a question) are not graded: read the answer and close the task. A brief whose honest
-  answer may be "no release carries the fix, record that and park" is a `report` (the tools refuse it as a `pr`: that
-  rubric can only pass with a merged PR that may never exist).
+  answer may be "no release carries the fix, record that and park" is a `report`: a `pr` rubric can only pass with a
+  merged PR that may never exist, so it would close ungraded.
 - **Rubric:** 3-8 criteria, each naming a fact the grader is given for that deliverable. For a `pr`: the PR's diff, its
   head and merge commit, its named checks, and for an app repo its deploys, newest first ("deployed at the merged commit"
   is checkable; a `by: auto-deploy` deploy is the platform's). Standard criteria, made specific to the request:
@@ -119,9 +119,10 @@ escalates to you. A grader that is down, can't judge it or can't verify a criter
   commit's own changes are outside the PR's diff, a merged commit has no checks when the workflow runs only on
   `pull_request`, and a file in another repository can't be read: name the in-scope equivalent (the PR merged into its
   base; "deployed at the merged commit"), or ask the owner for that evidence.
-- **Pages.** The capture is a page's text from its top, cut at 8,000 characters: an item in a list, board or feed needs
-  the path that isolates it (`/slipped?q=CMBT`, not `/slipped`), or a page that shows that item alone. Write the path
-  itself: a URL's host is not read and an anchor is dropped.
+- **Pages.** The capture is a page's text from its top, bounded (up to 120,000 characters a page, 300,000 across the
+  pages a criterion names): an item in a list, board or feed still needs the path that isolates it
+  (`/slipped?q=CMBT`, not `/slipped`), or a page that shows that item alone. Write the path itself: a URL's host is not
+  read and an anchor is dropped.
 - **Merge jobs:** criteria on what the merge shows (the PR merged into its base, its head and merge commit, the gate's
   reply on the task), never a card or merge-request id: a Tier 0 merge answers "No card is needed.", and a card filed
   while the PR is a draft can be spent without a merge.
@@ -148,9 +149,5 @@ escalates to you. A grader that is down, can't judge it or can't verify a criter
   `assignee` the app's owning agent per `fleet_catalog`, else yourself; marker `code-review:<owner/name>#<PR number>`;
   priority low; `deliverable` pr with that repo when the assignee's work is graded). The PR merges without waiting for
   them.
-- **An escalated grade is yours to decide, in that turn**, from the grader's note and the work's evidence: close the task
-  (`task_finish` with its `issue`) when the work meets what was asked, even if a criterion was worded so it could not pass;
-  reopen it with the exact changes still needed (`task_comment` with `reopen: true`); or cancel it (`task_cancel`) and hand the work to someone better placed. The owner
-  decides only what is theirs by authority (spend, a veto, a choice of taste), as one `decision` with concrete options.
 - A task blocked on one you might cancel: closing the dependent releases it once the blocker ends cancelled; an active
   blocker still holds it.

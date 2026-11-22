@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 # The self-hosted Primer (primer_mode: self-host): Primer's own image recipe (apps/api/Dockerfile) built from its source at a
 # pinned commit, plus start.ts, which turns AidenHQ's gate key and vault files into Primer's proxy sign-in settings.
-# PRIMER_SHA: the commit of github.com/maxsam4/primer (the collaboration stack, 0xPolygon/primer#162-#182, plus proxy sign-in) this
+# PRIMER_SHA: the commit of github.com/maxsam4/primer (the collaboration stack, 0xPolygon/primer#162-#184, plus proxy sign-in) this
 # product runs. Bump it here; the Primer source enforces its own dependency age (14 days) and frozen lockfile.
-ARG PRIMER_SHA=4dc290ce51cf72ab820dde48743a1afdecad6e44
+ARG PRIMER_SHA=dd32055368fb00b213b0d94dd57256f9b14766aa
 
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
 ARG PRIMER_SHA

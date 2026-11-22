@@ -217,7 +217,7 @@ export function createAdmin(d: Deps) {
       connect = `<div class="card"><h2>Connect your account</h2><p class="muted">Sign in to OpenRouter (or make an account) and approve; you come straight back here.</p><a class="b" href="${esc(url)}">Connect OpenRouter</a></div>`;
     }
     const field = d.firstRun?.fields().find((f) => f.secret === MODEL_KEY);
-    // A pasted key keeps whatever limit it has; the install cap (a new install's) stops spend first.
+    // A pasted key keeps whatever limit it has; the install's daily spend limit stops spend first.
     const cap = d.model?.dayCap();
     const capLine = cap ? `<p class="muted">This key's own limit applies; AidenHQ also stops at $${cap}/day (change it in Settings).</p>` : "";
     const paste = `<div class="card"><h2>Use your API key</h2><p class="muted">Paste a key you have, or make one at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>.</p>${form("/setup/model", `<input type="hidden" name="action" value="paste"><label>${esc(field?.label ?? "OpenRouter API key")}<input name="${MODEL_KEY}" type="password" autocomplete="off" maxlength="300" placeholder="sk-or-…" required></label><button class="b">Save</button>`, s)}${capLine}</div>`;
@@ -232,7 +232,7 @@ export function createAdmin(d: Deps) {
     return redirect(res, welcome());
   }
   function cardHtml(a: Card, s: AdminSession, full: boolean) {
-    const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)}${a.panel ? " · panel" : ""} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
+    const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
     if (!full) return `<div class="card">${head}<div><a href="/approvals/${esc(a.id)}">Open</a></div></div>`;
     const rows = [["Changes", a.changes], ["Reads", a.reads], ["Cost", a.cost], ["Why", a.reason], ["AI reviewer", a.review]].filter(([, v]) => v).map(([k, v]) => `<div class="muted">${k}</div><pre>${esc(v)}</pre>`).join("");
     const decide = (decision: string, label: string, cls: string) => form(`/approvals/${a.id}/decide`, `<input type="hidden" name="digest" value="${esc(a.digest)}"><input type="hidden" name="decision" value="${decision}">${decision === "reject" ? `<input name="reason" maxlength="500" placeholder="Reason (optional)" aria-label="Reason">` : ""}<button class="b ${cls}">${label}</button>`, s);

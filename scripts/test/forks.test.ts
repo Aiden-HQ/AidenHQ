@@ -14,7 +14,7 @@ import { compile } from "../modules.ts";
 import { moduleInputs } from "../compiler/authority.ts";
 import { cacheRepo, forksOf, officialSides, remoteCodeText, withRemote } from "../compiler/sources.ts";
 import { applyParts } from "../../kernel/src/apply-tier.ts";
-import { highest, meritOwner } from "../../kernel/src/tier.ts";
+import { highest } from "../../kernel/src/tier.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
@@ -65,7 +65,7 @@ function instanceDir(doc) {
   mkdirSync(join(dir, "agents"));
   return dir;
 }
-const applyTier = (bi, hi, over) => meritOwner(highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify(bi) }, head: { "instance.yaml": YAML.stringify(hi) }, pin: null, roles: {}, ...over })));
+const applyTier = (bi, hi, over) => (highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify(bi) }, head: { "instance.yaml": YAML.stringify(hi) }, pin: null, roles: {}, ...over })));
 /** The apply's tier as the kernel's apply planner computes it (apply-tier.ts): both instance.yaml sides, the module inputs read at both product pins. */
 function tierOf(r, bi, hi, f, over = {}) {
   const sides = withRemote({ baseInstance: bi, headInstance: hi, ...officialSides(bi, hi, bi.product, hi.product, r.product, f) }, f);
@@ -88,7 +88,7 @@ test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () =
   const bi = { product: r.p1, modules: ["core"] };
   const hi = { ...bi, modules: [forked(r, r.f)] };
   const t = tierOf(r, bi, hi, f);
-  assert.deepEqual([t.tier, t.reviewFirst, t.rule], [2, true, "module-authority"]);
+  assert.deepEqual([t.tier, t.rule], [2, "module-authority"]);
   assert.match(t.reason, new RegExp(`core: runs fork .* at ${r.f.slice(0, 12)} \\(tier no longer official\\)`));
   const text = remoteCodeText(bi, hi, f, r.product);
   const lines = text.split("\n");
@@ -98,7 +98,7 @@ test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () =
   // The kernel's fork: the owner's too, and its patch is the whole product diff.
   const kernel = { ...bi, product_fork: { source: "url", url: URL_, sha: r.f, upstream_pr: PR } };
   const k = tierOf(r, bi, kernel, f);
-  assert.deepEqual([k.tier, k.reviewFirst], [2, true]);
+  assert.equal(k.tier, 2);
   assert.match(remoteCodeText(bi, kernel, f, r.product), /^Fork of kernel: .* its patch on \w{12} \(upstream .*\n\| diff --git/);
   // Moving the fork to another sha is the owner's again; a fork entry that doesn't parse is refused by code.
   git(r.fork, "checkout", "-q", "main");

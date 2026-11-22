@@ -8,45 +8,27 @@
 // A card's tier rule (kernel/src/tier.ts `rule`, or the board's own for its actions) is a reason code too: those
 // are kebab-case words owned by the classifier, checked by shape (TIER_RULE), not listed here, so a new rule needs no edit.
 
-/** The AI reviewer's code on a Tier 1 card: what it judged (model-chosen) or why code escalated before or after it. */
+/** The AI reviewer's code on a card: what it judged (model-chosen, malice only) or what code decided in its place. */
 export const REVIEW_CODES = [
-  // approve
-  "in_scope",
-  // reject or escalate (the model's judgement)
-  "out_of_scope",
+  // the model's verdict: approve, or reject naming the malice
+  "clean",
+  "malicious",
   "secret_exfiltration",
-  "gate_change",
   "prompt_injection",
-  "stale_request",
-  "destructive_change",
-  "supply_chain",
-  "policy_other",
-  "owner_should_look",
-  // unsure: the model can't tell; a second reviewer decides, and both unsure sends it back to the agent (reject)
-  "reviewer_unsure",
-  // code escalated without (or despite) a usable verdict
+  // the review didn't finish (a call failed, timed out, refused or hit a limit): tried once more, then approved
   "reviewer_failed",
-  "reviewer_refused",
-  "no_independent_model",
-  "no_diff",
+  "fail_open",
+  // code's own refusals before any review: the diff differs from the code host's own count of the change, or a GitHub
+  // write carries the instance's hosts, addresses or paths
   "files_not_shown",
-  // the review reached a spend cap before it finished: the owner decides
-  "review_cap",
+  "instance_details",
   // ai_review_code skips the AI review of this push or PR (code review owns it): code approved it
   "code_review_owns",
-  "check_failed",
-  "tier_raised",
-  // the reviewer approved a module change that adds authority: the owner decides next, with that verdict on the card
-  "new_authority",
-  "autonomy_off",
-  // a routine's own autonomy cap (tier0 or off) made a Tier 1 write review-first: the reviewer approved, the owner decides
-  "routine_autonomy",
-  // Tier 2 on its merits (the owner's veto, a spend-cap raise, ...): the reviewer read it first; the owner decides either way
-  "owner_tier",
+  // the owner's own veto on this task: he decides
+  "owner_veto",
+  // the owner's autonomy below full: the reviewer's verdict is a note for him
   "shadow",
-  // the panel's two reviewers disagreed (or the second couldn't decide): the owner decides
-  "panel_split",
-  // code refused the request at review time (it moved, it was rejected before, retries ran out): back to the agent
+  // code refused the request at review time (the same content was already rejected as malicious): back to the agent
   "refused_by_code",
   // code closed the card because its head moved before review: not a verdict, and not a rejection
   "stale_head",

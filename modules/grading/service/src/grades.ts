@@ -6,13 +6,12 @@ import type { DatabaseSync } from "node:sqlite";
 /**
  * open: filed with the delegation, the task not finished yet. pending: a completion path hit the gate, waiting for the
  * runner. awaiting_evidence: checks, a deploy or an approval still running. Then satisfied, needs_revision (back to the
- * assignee), grading_failed (the grader failed or returned no usable criteria: retried on a bounded ladder, never the
- * owner's) or escalated (3 rejected versions, or one resubmitted unchanged: the delegator decides, accepting by closing the task
- * or reopening it with what to change). A grader that is down, can't judge or can't verify settles the row satisfied: the task
- * closes done, ungraded. not_graded: the task was cancelled or otherwise closed before
+ * assignee: only a criterion the grader shows unmet sends work back) or grading_failed (the grader failed or returned no usable
+ * criteria: retried on a bounded ladder, never the owner's). Fail open: a grader that is down, can't judge or can't verify, and
+ * the MAX_LOOPS-th rejected version, settle the row satisfied: the task closes done, ungraded, and its parent hears why. not_graded: the task was cancelled or otherwise closed before
  * the grader settled it, so there is nothing left to grade.
  */
-export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "escalated" | "not_graded";
+export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
 export interface Deliverable {
   kind: "pr" | "app" | "apply" | "file" | "report" | "issue";
   ref: string;
@@ -22,10 +21,7 @@ export interface Verdict {
   at: string;
   version: string;
   model: string;
-  /** accepted: an escalated grade its delegator closed, which settles it in place of a rubric verdict. */
-  verdict: "satisfied" | "needs_revision" | "cannot_judge" | "accepted";
-  /** The delegator that accepted it (an accepted verdict has no grader model and no criteria). */
-  by?: string;
+  verdict: "satisfied" | "needs_revision" | "cannot_judge";
   criteria: { id: string; met: "yes" | "no" | "unknown"; evidence: string }[];
 }
 export interface Grade {
@@ -41,8 +37,6 @@ export interface Grade {
   failures: number;
   /** When the last grader pass failed (null until one does). */
   failedAt: string | null;
-  /** The agents the escalation was addressed to, saved when the grade escalated (null: escalated before this was saved). */
-  delegators: string[] | null;
   /** Why the row ended not_graded (the task was cancelled or closed before the grader settled it); null otherwise. */
   closedReason: string | null;
   createdAt: string;
@@ -58,17 +52,16 @@ interface Row {
   verdicts: string;
   failures: number;
   failed_at: string | null;
-  delegators: string | null;
   closed_reason: string | null;
   created_at: string;
   updated_at: string;
 }
 
-/** Rejected versions before the grade escalates to the delegator (owner decision, wave 1). */
+/** Rejected versions before the grade gives up and closes the task done, ungraded (fail open: never parked on anyone). */
 export const MAX_LOOPS = 3;
 /** The waits after successive failed grader passes (1, 5, 15 then 60 minutes); the pass after the last wait is the 5th. */
 export const GRADER_RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
-/** Failed grader passes before the grade escalates; the retry ladder has one wait fewer. */
+/** Failed grader passes before the task closes done, ungraded; the retry ladder has one wait fewer. */
 export const MAX_GRADER_FAILURES = 5;
 /** How long after the `failures`-th failed pass the runner retries it. */
 export const graderRetryDelay = (failures: number) => GRADER_RETRY_MS[Math.min(Math.max(failures, 1), GRADER_RETRY_MS.length) - 1]!;
@@ -126,10 +119,7 @@ export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, delegators: r.delegators ? JSON.parse(r.delegators) : null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
-
-/** A verdict whose criteria are met or unknown, at least one unknown, none shown unmet: the grader couldn't verify, not "no". */
-export const unverifiedOnly = (criteria: { met: string }[]) => criteria.some((c) => c.met === "unknown") && !criteria.some((c) => c.met === "no");
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
 
 export class Grades {
   private events?: { emit: (topic: string, id: string) => void };
@@ -149,15 +139,15 @@ export class Grades {
       const columns = (db.prepare("PRAGMA table_info(grades)").all() as { name: string }[]).map((c) => c.name);
       if (!columns.includes("failures")) db.exec("ALTER TABLE grades ADD COLUMN failures INTEGER NOT NULL DEFAULT 0");
       if (!columns.includes("failed_at")) db.exec("ALTER TABLE grades ADD COLUMN failed_at TEXT");
-      if (!columns.includes("delegators")) db.exec("ALTER TABLE grades ADD COLUMN delegators TEXT");
       if (!columns.includes("closed_reason")) db.exec("ALTER TABLE grades ADD COLUMN closed_reason TEXT");
-      // An escalated task finished again: graded again only once the runner finds a new deliverable version (resubmit).
       // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
       db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
-      db.exec("CREATE TABLE IF NOT EXISTS grade_resubmits (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
       // Who filed each row's rubric, in its own table rather than a column on `grades`. A fresh start, not a migration: a row
       // written before this table existed has no record and is treated as such by file() below.
       db.exec("CREATE TABLE IF NOT EXISTS grade_filers (issue_id TEXT PRIMARY KEY, filer TEXT NOT NULL)");
+      // The retired `escalated` state (2026-11-22): such a row's last verdict sent the work back, so it is needs_revision, and
+      // its assignee finishing again grades it afresh. Idempotent.
+      db.exec("UPDATE grades SET state = 'needs_revision' WHERE state = 'escalated'");
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");
@@ -180,8 +170,8 @@ export class Grades {
    * `agent:<id>` from the agent route, `module:<name>` from the kernel's module route (grades.test / settle.test write direct).
    *
    * A byte-identical filing is a retry: the stored row comes back and nothing is written. A filing that differs (another
-   * deliverable kind or ref, or another rubric) replaces both and restarts the row: open, no attempts, no verdicts, no
-   * delegators, no close reason. Only the row's recorded filer may do that, so a delegator's correction lands on the task
+   * deliverable kind or ref, or another rubric) replaces both and restarts the row: open, no attempts, no verdicts, no close
+   * reason. Only the row's recorded filer may do that, so a delegator's correction lands on the task
    * it already filed instead of needing a new task.
    *
    * A row with no filer record was filed before `grade_filers` existed, and it is deliberately not adopted, backfilled or
@@ -211,10 +201,9 @@ export class Grades {
         const recorded = (this.db.prepare("SELECT filer FROM grade_filers WHERE issue_id = ?").get(issueId) as { filer: string } | undefined)?.filer;
         if (!recorded) throw new Conflict("this task's rubric was filed before filers were recorded, so its deliverable cannot be re-bound: file the work as a new task");
         if (!filer || recorded !== filer) throw new Conflict(`only ${recorded}, which filed this task's rubric, may replace it`);
-        this.db.prepare("UPDATE grades SET rubric = ?, deliverable = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, delegators = NULL, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
+        this.db.prepare("UPDATE grades SET rubric = ?, deliverable = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
           .run(wantRubric, want, new Date().toISOString(), issueId);
-        // A restarted row has no pending resubmission and no failure worth carrying: both describe the version it replaced.
-        this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
+        // A restarted row has no failure worth carrying: it describes the version it replaced.
         this.db.prepare("DELETE FROM grade_failures WHERE issue_id = ?").run(issueId);
       } else {
         const now = new Date().toISOString();
@@ -238,11 +227,6 @@ export class Grades {
       .filter((g) => g.state !== "grading_failed" || !g.failedAt || Date.parse(g.failedAt) + graderRetryDelay(g.failures) <= now);
   }
 
-  /** Escalated rows, newest first (the Fleet Ops `grade` check flags one waiting over a day). */
-  escalated(): Grade[] {
-    return (this.db.prepare("SELECT * FROM grades WHERE state = 'escalated' ORDER BY updated_at DESC LIMIT 50").all() as unknown as Row[]).map(fromRow);
-  }
-
   /**
    * Every row that is not settled yet: what a task closing has to settle. One row per grade state, for a task already
    * `done` or `cancelled`:
@@ -252,69 +236,14 @@ export class Grades {
    * awaiting_evidence settles: the evidence will not be read for a closed task.
    * needs_revision   settles: there is nothing left to revise.
    * grading_failed   settles: the retry ladder has no task to retry.
-   * escalated        settles: the delegator's decision is moot once the task is closed any other way.
    * satisfied        never swept: a real verdict stands, and a settled row keeps its `satisfied` (the close did not undo it).
    * not_graded       never swept: already terminal, and the first reason is kept.
    *
    * So the sweep takes everything except the two settled states, which is what the query says. It reads each task's status
-   * first, so a task still open keeps its row whatever its state, and the detector's own reporting is unchanged (`due()` and
-   * `escalated()` are the only states it counts).
+   * first, so a task still open keeps its row whatever its state.
    */
   unsettled(): Grade[] {
     return (this.db.prepare("SELECT * FROM grades WHERE state NOT IN ('satisfied', 'not_graded') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
-  }
-
-  /**
-   * Escalated rows with no saved delegators: escalated before the column was populated (NULL), or with an empty list. The
-   * backfill fills these in from the task's creator; nothing else is read.
-   */
-  escalatedWithoutDelegators(): Grade[] {
-    return (this.db.prepare("SELECT * FROM grades WHERE state = 'escalated' AND (delegators IS NULL OR delegators = '[]' OR delegators = '') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
-  }
-
-  /**
-   * Saves the delegators of a row that still has none: an escalated row only, and only while its list is NULL or empty, so a
-   * second run writes nothing. `updated_at` is left alone: the row's escalation did not move.
-   */
-  saveDelegators(issueId: string, delegators: string[]): boolean {
-    const r = this.db
-      .prepare("UPDATE grades SET delegators = ? WHERE issue_id = ? AND state = 'escalated' AND (delegators IS NULL OR delegators = '[]' OR delegators = '')")
-      .run(JSON.stringify(delegators), issueId);
-    if (Number(r.changes) > 0) this.events?.emit("grades", issueId);
-    return Number(r.changes) > 0;
-  }
-
-  /** Escalated rows finished again since, with when: the runner checks each for a new deliverable version. */
-  resubmitted(): (Grade & { resubmittedAt: string })[] {
-    return (this.db.prepare("SELECT g.*, r.at AS resubmitted_at FROM grades g JOIN grade_resubmits r ON r.issue_id = g.issue_id WHERE g.state = 'escalated'").all() as unknown as (Row & { resubmitted_at: string })[])
-      .map((r) => ({ ...fromRow(r), resubmittedAt: r.resubmitted_at }));
-  }
-
-  /**
-   * Escalated rows not finished again since (or whose new version was checked), with no verdict move still owed (the grade loop's
-   * `owed:` rows: a grader-failure block needs its hold): the delegator's alone, held by nothing.
-   */
-  escalatedUnmarked(): Grade[] {
-    this.db.exec("CREATE TABLE IF NOT EXISTS loop_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)"); // the grade loop's (kernel-loop.ts)
-    return (this.db.prepare("SELECT g.* FROM grades g WHERE g.state = 'escalated' AND NOT EXISTS (SELECT 1 FROM grade_resubmits r WHERE r.issue_id = g.issue_id) AND NOT EXISTS (SELECT 1 FROM loop_state l WHERE l.k = 'owed:' || g.issue_id AND l.v != '') ORDER BY updated_at").all() as unknown as Row[]).map(fromRow);
-  }
-
-  /** Marks an escalated task as finished again (the completion gate); its state stays the delegator's. */
-  markResubmitted(issueId: string): void {
-    this.db.prepare("INSERT OR IGNORE INTO grade_resubmits (issue_id, at) VALUES (?, ?)").run(issueId, new Date().toISOString());
-  }
-
-  /**
-   * The runner's check of a resubmitted escalated task: a deliverable version other than the last one graded goes back to
-   * the grader; the same version stays escalated (the delegator or the owner resolves it). The mark is cleared either way.
-   */
-  resubmit(issueId: string, version: string): Grade | undefined {
-    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
-    const g = this.get(issueId);
-    if (!g || g.state !== "escalated") return g;
-    // A new round: the grader's failures count afresh (they are consecutive failures).
-    if (version && version !== g.verdicts.at(-1)?.version) this.set(issueId, "pending", g.attempts, g.verdicts, 0, null);
-    return this.get(issueId);
   }
 
   /**
@@ -325,37 +254,17 @@ export class Grades {
   settle(issueId: string, reason: string, now = Date.now()): Grade | undefined {
     const g = this.get(issueId);
     if (!g || g.state === "satisfied" || g.state === "not_graded") return g;
-    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
     this.db.prepare("UPDATE grades SET state = 'not_graded', closed_reason = ?, updated_at = ? WHERE issue_id = ?").run(reason.slice(0, 300), new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId);
   }
 
-  private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now(), delegators?: string[]): Grade {
-    // The delegators belong to the escalation: written in the same UPDATE that escalates, cleared when the grade leaves it.
+  private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
     this.db
-      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, updated_at = ?, delegators = CASE WHEN ? = 'escalated' THEN COALESCE(?, delegators) ELSE NULL END WHERE issue_id = ?")
-      .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), state, delegators ? JSON.stringify(delegators) : null, issueId);
+      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
+      .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
-  }
-
-  /**
-   * An escalated grade accepted by the task's delegator (closing it): the row is settled, its verdicts kept, and one more
-   * bound to the version it settles says who accepted it. The grader already declined to decide, so this takes the place
-   * of a rubric verdict rather than claiming one.
-   */
-  accept(issueId: string, by: string, now = Date.now()): void {
-    const g = this.get(issueId)!;
-    const verdict: Verdict = { at: new Date(now).toISOString(), version: g.verdicts.at(-1)?.version ?? "", model: "", verdict: "accepted", by, criteria: [] };
-    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
-    this.set(issueId, "satisfied", g.attempts, [...g.verdicts, verdict].slice(-20), 0, null, now);
-  }
-
-  /** An escalation nobody answered, finished again by the assignee: back to the grader for a fresh verdict (never an acceptance). */
-  regrade(issueId: string): void {
-    this.db.prepare("DELETE FROM grade_resubmits WHERE issue_id = ?").run(issueId);
-    this.pend(issueId);
   }
 
   /** Waiting for the grader again (the completion gate). */
@@ -365,33 +274,33 @@ export class Grades {
   }
 
   /**
-   * One grading pass's outcome. A rejected version counts once (loops are distinct versions). A version rejected before and
-   * handed in again unchanged, and the MAX_LOOPS-th rejected version, escalate to the delegator: criteria explicitly unmet are
-   * the only escalation. A verdict with criteria unverified but none unmet, cannot_judge, a grader refusal and evidence that
-   * never came (error) settle the row satisfied (the task closes done, ungraded). A grader that failed or returned no usable
+   * One grading pass's outcome. Only a criterion the grader shows unmet (`met: "no"`) sends the work back to its assignee
+   * (needs_revision); each distinct rejected version counts once, and the MAX_LOOPS-th, or a rejected version handed in again
+   * unchanged, settles the row satisfied, so the task closes done,
+   * ungraded, with the unmet criteria in the note. Anything else that isn't still waiting settles it satisfied too: a verdict
+   * with nothing shown unmet (unverified, cannot_judge, evidence that never came). A grader that failed or returned no usable
    * criteria (grading_failed) is retried on the 1-5-15-60 minute ladder and settles the same way after MAX_GRADER_FAILURES passes
    * in a row; any real verdict, or a new round, clears that count.
    */
-  record(issueId: string, v: VerdictInput, now = Date.now(), delegators?: string[]): Grade {
-    const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, at: number) => this.set(issueId, state, attempts, verdicts, failures, failedAt, at, delegators);
+  record(issueId: string, v: VerdictInput, now = Date.now()): Grade {
+    const set = (state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null) => this.set(issueId, state, attempts, verdicts, failures, failedAt, now);
     const g = this.get(issueId);
     if (!g) throw new Error("no grade for this task");
-    if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt, now);
-    // A verdict that marks a criterion unmet is a rejection whatever its outcome says, in the history too.
-    const unmet = ["cannot_judge", "error"].includes(v.outcome) && v.criteria.some((c) => c.met === "no");
-    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : ["error", "grading_failed"].includes(v.outcome) ? "cannot_judge" : (v.outcome as Verdict["verdict"]), criteria: v.criteria };
+    if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
+    const unmet = v.criteria.some((c) => c.met === "no");
+    const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : v.outcome === "satisfied" ? "satisfied" : "cannot_judge", criteria: v.criteria };
     const verdicts = [...g.verdicts, verdict].slice(-20);
-    if (v.outcome === "satisfied") return set("satisfied", g.attempts, verdicts, 0, null, now);
-    // Grader infrastructure failing, cannot_judge, missing evidence and unverified-only close the task done, ungraded (the loop's note says why).
-    if (v.outcome === "grading_failed") {
+    if (v.outcome === "grading_failed" && !unmet) {
       const failures = g.failures + 1;
-      if (failures >= MAX_GRADER_FAILURES) return set("satisfied", g.attempts, verdicts, 0, null, now);
-      return set("grading_failed", g.attempts, verdicts, failures, new Date(now).toISOString(), now);
+      if (failures >= MAX_GRADER_FAILURES) return set("satisfied", g.attempts, verdicts, 0, null);
+      return set("grading_failed", g.attempts, verdicts, failures, new Date(now).toISOString());
     }
-    if ((v.outcome !== "needs_revision" && !unmet) || unverifiedOnly(v.criteria)) return set("satisfied", g.attempts, verdicts, 0, null, now);
-    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("escalated", g.attempts, verdicts, 0, null, now);
+    if (!unmet) return set("satisfied", g.attempts, verdicts, 0, null);
+    // A version rejected before and handed in again unchanged spends no attempt, and sending it back once more would change
+    // nothing: it closes ungraded at once.
+    if (g.verdicts.some((x) => x.verdict === "needs_revision" && x.version === v.version)) return set("satisfied", g.attempts, verdicts, 0, null);
     const attempts = g.attempts + 1;
-    return set(attempts >= MAX_LOOPS ? "escalated" : "needs_revision", attempts, verdicts, 0, null, now);
+    return set(attempts >= MAX_LOOPS ? "satisfied" : "needs_revision", attempts, verdicts, 0, null);
   }
 }
 
@@ -423,47 +332,20 @@ export async function settleClosedGrades(grades: Grades, issue: (id: string) => 
   return settled;
 }
 
-/**
- * An escalated row with no saved delegators (it escalated before the column was populated) falls back to its task's creator:
- * the guard reads that creator live, and this stores it on the row so the answer stops depending on a mutable task record.
- * The creator is Paperclip's structured `createdByAgentId`; nothing is read from text, and a task with no creator is left
- * alone (that row keeps failing closed). Idempotent: a filled row is never selected, and `updated_at` is not touched.
- */
-export async function backfillEscalatedDelegators(grades: Grades, issue: (id: string) => Promise<{ createdByAgentId?: string | null } | undefined>): Promise<Grade[]> {
-  const filled: Grade[] = [];
-  for (const g of grades.escalatedWithoutDelegators()) {
-    const i = await Promise.resolve()
-      .then(() => issue(g.issueId))
-      .catch(() => undefined);
-    const creator = i?.createdByAgentId;
-    if (!creator) continue;
-    if (grades.saveDelegators(g.issueId, [creator])) filled.push(grades.get(g.issueId)!);
-  }
-  return filled;
-}
-
-/**
- * How long an escalation waits for its delegator. Past it, the task's own assignee finishing it again sends the row back to
- * the grader (never an acceptance): a delegator that was never woken by the escalation (its parent closed, or none) would
- * otherwise leave the row, and the task in review, escalated for good.
- */
-export const ESCALATION_WAIT_MS = 24 * 60 * 60_000;
-
 /** A held task's scheduled check sits at the runner's evidence deadline, well past a normal grader pass. */
 export const GRADE_CHECK_MS = 24 * 60 * 60_000;
 /** Every way a task reaches done: the tasks bridge's task_finish, the runner's finishTurn and finishMerges. */
 export type CompletionPath = "task_finish" | "finish_turn" | "finish_merges";
 /**
  * pass: the path may close the task as it would have. Otherwise the task goes to in_review with the `grading` label and the
- * row has this state (escalated: it waits for the delegator; grading_failed: the runner retries it).
+ * row has this state (grading_failed: the runner retries it).
  */
-export type GateResult = { pass: true } | { pass: false; state: "pending" | "awaiting_evidence" | "needs_revision" | "grading_failed" | "escalated"; label: "grading" };
+export type GateResult = { pass: true } | { pass: false; state: "pending" | "awaiting_evidence" | "needs_revision" | "grading_failed"; label: "grading" };
 
 /**
  * The completion gate, idempotent. A task without a rubric passes, and so does a satisfied one
  * that is already done (another path closing it again). Satisfied is not sticky: a satisfied task reopened and finished
- * again is graded again (each verdict is bound to its deliverable version). An escalated task stays the delegator's: finishing
- * it again only marks it, and the runner sends it back to the grader once there is a new deliverable version.
+ * again is graded again (each verdict is bound to its deliverable version).
  */
 export function completionGate(grades: Grades, issueId: string, _via: CompletionPath, { done = false }: { done?: boolean } = {}): GateResult {
   const g = grades.get(issueId);
@@ -474,10 +356,6 @@ export function completionGate(grades: Grades, issueId: string, _via: Completion
     // Unmet criteria are never a close: wait for the runner to grade a new deliverable version.
     grades.pend(issueId);
     return { pass: false, state: "needs_revision", label: "grading" };
-  }
-  if (g.state === "escalated") {
-    grades.markResubmitted(issueId);
-    return { pass: false, state: "escalated", label: "grading" };
   }
   grades.pend(issueId);
   return { pass: false, state: "pending", label: "grading" };

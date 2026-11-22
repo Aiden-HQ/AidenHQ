@@ -28,7 +28,7 @@ providers:
     url: http://apps-mcp:8090/aidenhq/v1/executor
     auth: apps_service_key
 # Each tool call below is filed as its kind. The plan checks the caller (an app's owner, or the DevOps Engineer during an
-# incident) and pins the exact commit; a stateful deploy is raised to the reviewer, with the panel when it touches a migration.
+# incident) and pins the exact commit; a stateful deploy is raised to the reviewer.
 writes:
   deploy:
     args: schemas/deploy.json
@@ -64,7 +64,7 @@ writes:
     args: schemas/api.json
     floor: 0
     tools: [ app_api ]
-    card: { sentence: "Call {{method}} {{path}} on app {{name}}'s agent API.", changes: "Whatever that path does in {{name}}, as agent {{caller}}.", reads: "The app's answer.", cost: "No model cost.", details: "{{details}}" }
+    card: { sentence: "Call {{method}} {{path}} on app {{name}}'s agent API.", changes: "Whatever that path does in {{name}}, as agent {{caller}} ({{role}}).", reads: "The app's answer.", cost: "No model cost.", details: "{{details}}" }
 # The typed code host operations apps-mcp asks the kernel for (POST /v1/codehost/:op, run as the owner inside the github
 # module): fetches of private app repos (the fleet org and github_orgs) and the registry, the registry commit (apps.yaml in
 # the instance repo) and the preview comments on app PRs. @agents, @orgs and @instance resolve from the kernel's own

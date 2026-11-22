@@ -8,7 +8,6 @@ export interface Card {
   identifier: string;
   kind: string;
   tier: number;
-  panel: boolean;
   digest: string;
   sentence: string;
   changes: string;

@@ -18,19 +18,12 @@ import { heldRoles } from "./identity.ts";
 import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
-import { REJECT, T, highest, meritOwner, type Part, type ReviewFirst } from "./tier.ts";
+import { REJECT, T, highest, type Part } from "./tier.ts";
 import { UPDATER, canonical, type Requester } from "./records.ts";
 import { DEFAULT_WEIGHTS, teamProblems } from "./team-routing.ts";
 
-/** Authority-expanding: the reviewer and a second reviewer on another model family must both approve. */
-export const PANEL = (rule: string, reason: string): Part => ({ tier: 1, rule, reason, panel: true });
-/**
- * New module authority (spec §5.7): the AI reviewer first, then the owner with its verdict; a reviewer reject is final. Under
- * full autonomy the panel decides instead (computeTier), unless `ownerOnly`: loosening autonomy, raising spend, new authority
- * from a module that isn't official.
- */
-const OWNER_AFTER_REVIEW = (rule: string, reason: string, panel?: boolean, ownerOnly?: boolean): Part => ({ tier: 2, rule, reason, reviewFirst: true, ...(panel ? { panel: true } : {}), ...(ownerOnly ? { ownerOnly: true } : {}) });
-const OWNER_ONLY = (rule: string, reason: string): Part => OWNER_AFTER_REVIEW(rule, reason, false, true);
+/** The spend settings and their defaults (kernel/settings.json): raising one is the owner's. */
+const SPEND_DEFAULTS: Record<string, number> = Object.fromEntries(["spend_day_usd", "spend_month_usd", "task_usd"].map((k) => [k, JSON.parse(readFileSync(new URL("../settings.json", import.meta.url), "utf8"))[k].default]));
 
 export const parse = (text: any) => {
   try {
@@ -65,7 +58,7 @@ export function newGrants(base: any = {}, head: any = {}, conns: any = {}) {
 /** Routines whose `autonomy` (their cap on approvals) is set, changed or dropped: always the owner's. */
 export const routineAutonomyChanges = (b: any = {}, h: any = {}) => [...new Set([...Object.keys(b ?? {}), ...Object.keys(h ?? {})])].filter((r) => (b?.[r]?.autonomy != null || h?.[r]?.autonomy != null) && !eq(b?.[r]?.autonomy, h?.[r]?.autonomy) && h?.[r]);
 
-const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "budget", "max_parallel", "heartbeat"]);
+const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "max_parallel", "heartbeat"]);
 const OVERRIDE_SAFE: Record<string, Set<string>> = { agents: new Set(["model", "reasoning_effort", "timeout_sec", "heartbeat"]), routines: new Set(["schedules", "status", "model"]) };
 
 export function applyParts(s: any) {
@@ -99,7 +92,7 @@ export function applyParts(s: any) {
     } else if ((m = /^agents\/([\w.-]+)\.md$/.exec(f))) {
       const roles = s.roles?.[m[1]] ?? [];
       parts.push(roles.length ? T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`) : T(1, "module-handbook", `handbook additions for ${m[1]}, an agent without a role`));
-    } else parts.push(PANEL("unrecognised-file", `${f} isn't a file apply recognises`));
+    } else parts.push(T(1, "unrecognised-file", `${f} isn't a file apply recognises`));
   }
   return parts;
 }
@@ -130,27 +123,27 @@ function agentDefPart(key: any, base: any, head: any, s: any) {
   if (head === undefined) return T(1, "agent-removed", `removes agent ${key}`);
   const parts = [agentDefFields(key, base, head, s)];
   const caps = routineAutonomyChanges(base?.routines, head.routines);
-  if (caps.length) parts.push(PANEL("routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`));
+  if (caps.length) parts.push(T(1, "routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`));
   const woken = quietWakes(key, base, head, parse(s.head?.["instance.yaml"]));
-  if (woken.length) parts.push(OWNER_AFTER_REVIEW("quiet-start", `${key}: ${woken.join(", ")} under quiet start, the owner's authority`));
+  if (woken.length) parts.push(T(2, "quiet-start", `${key}: ${woken.join(", ")} under quiet start, the owner's authority`));
   return highest(parts);
 }
 
 /** A definition's own fields: new agent, grants, privileged fields, trial, tuning. */
 function agentDefFields(key: any, base: any, head: any, s: any) {
   if (base === undefined) {
-    if (head.trial !== true) return PANEL("untrialed-agent", `new agent ${key} isn't in trial`);
+    if (head.trial !== true) return T(1, "untrialed-agent", `new agent ${key} isn't in trial`);
     // Only the safe fields (no roles, image or other privileges); any write grant goes to the reviewer at least.
     const other = Object.keys(head).filter((k) => k !== "trial" && k !== "connections" && !AGENT_SAFE.has(k));
-    if (other.length) return PANEL("new-agent-fields", `new agent ${key} sets ${other.join(", ")}`);
+    if (other.length) return T(1, "new-agent-fields", `new agent ${key} sets ${other.join(", ")}`);
     if (Object.values(head.connections ?? {}).some((g) => g !== "read")) return T(1, "trial-agent-new-writes", `adds ${key} in trial, with write or tool-level grants`);
     return s.ownerStarted ? T(0, "trial-agent-new", `adds ${key} in trial, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `adds ${key} in trial, on an agent-origin task`);
   }
   const keys = changedKeys(base, head);
   const wider = newGrants(base.connections, head.connections, s.connections);
-  if (wider.length) return PANEL("new-grants", `${key} gets new grants: ${wider.join(", ")}`);
+  if (wider.length) return T(1, "new-grants", `${key} gets new grants: ${wider.join(", ")}`);
   const other = keys.filter((k) => k !== "connections" && k !== "trial" && !AGENT_SAFE.has(k));
-  if (other.length) return PANEL("agent-fields", `${key} changes ${other.join(", ")}`);
+  if (other.length) return T(1, "agent-fields", `${key} changes ${other.join(", ")}`);
   if (keys.includes("trial")) {
     if (base.trial === true && head.trial !== true) return T(1, "graduation", `${key} graduates, keeping only the tools and connections it had in trial`);
     return T(1, "agent-into-trial", `${key}'s trial flag changes`);
@@ -161,7 +154,7 @@ function agentDefFields(key: any, base: any, head: any, s: any) {
 /**
  * The modules a product bump or a `modules:` edit changes (spec §5.7): `s.modules` is each module's def before and after and
  * whether its code changed (the runner read them at both product commits); `s.modulesError` when it couldn't. Every module
- * change is the AI reviewer's first (the panel's when code changed); new authority adds the owner after it.
+ * change is the AI reviewer's; new authority is merit 2 (labelled for it).
  * The instance's third-party marketplace changes are read here from both instance.yaml sides; a new one is the owner's. With a
  * release, `s.effective` is each side with the release's official marketplace (the runner read it at its distro sha).
  */
@@ -177,25 +170,24 @@ function moduleAuthorityParts(s: any, base: any, head: any, release?: string) {
   const moved = changedKeys(bo, ho);
   const folded = (key: any) => Object.values(s.modules as Record<string, any>).some((i) => i.base?.agents?.[key] && i.head?.agents?.[key] && !eq(i.base.agents[key].connections, i.head.agents[key].connections));
   const unjudged = moved.filter((k) => !folded(k));
-  // Not judged by any module's diff: the owner's, beside (never instead of) what the diffs say, panel included.
-  const extra = unjudged.length ? [OWNER_AFTER_REVIEW("grants-unjudged", `the grants override of ${unjudged.join(", ")} changes, and no module's authority diff covers it`, diffs.some((d) => d.code))] : [];
+  // Not judged by any module's diff: merit 2, beside (never instead of) what the diffs say.
+  const extra = unjudged.length ? [T(2, "grants-unjudged", `the grants override of ${unjudged.join(", ")} changes, and no module's authority diff covers it`)] : [];
   // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
   if (!diffs.length) return [...extra, ...(changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [])];
   // The owner's auto-updates taking an official release (owner, 2026-11-20: "auto update implies you are accepting new
   // authority and anything else not actively malicious from the official releases"): when every change is an official
-  // module's, all of them are accepted, new spend included (the card names each spend increase), and the AI reviewer judges
-  // only whether the update is malicious or compromised, reading every line: the panel of two when any code changed, never
+  // module's, all of them are accepted, and the AI reviewer judges
+  // only whether the update is malicious or compromised, reading every line, never
   // the owner. Anything else (a module that isn't official, a marketplace or fork line, an unjudged grants override) goes
   // as below.
-  if (release && !extra.length && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly || c.spend))) {
+  if (release && !extra.length && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly))) {
     const all = diffs.flatMap((d) => d.changes);
-    const spent = all.filter((c) => c.spend).length;
     // Short enough that the record's reason (writes.ts, 300 characters) is never cut: the lines carry the detail.
-    const part = T(1, "release-update", `official release ${release}, verified by the updater, under the owner's auto-updates: ${all.length} module changes, ${all.filter((c) => c.owner).length} new authority, ${spent} spend increases (marked "spend increase"), every line after the diff; check it is not malicious or compromised`);
-    return [diffs.some((d) => d.code) ? { ...part, panel: true } : part];
+    const part = T(1, "release-update", `official release ${release}, verified by the updater, under the owner's auto-updates: ${all.length} module changes, ${all.filter((c) => c.owner).length} new authority, every line after the diff; check it is not malicious or compromised`);
+    return [part];
   }
   const c = classifyModules(diffs);
-  return [...extra, c.reviewFirst ? OWNER_AFTER_REVIEW(c.rule, c.reason, c.panel, c.ownerOnly) : c.panel ? PANEL(c.rule, c.reason) : T(1, c.rule, c.reason)];
+  return [...extra, T(c.tier, c.rule, c.reason)];
 }
 
 /**
@@ -296,36 +288,37 @@ function instanceParts(s: any) {
   if (keys.includes("release") && head.release != null) {
     parts.push(release
       ? T(1, "release-pin", "the release updater moves this instance to the next release it verified, while auto-updates are on: the owner's standing authority")
-      : OWNER_AFTER_REVIEW("release-pin", "adds or moves the release this instance follows: the owner's authority, unless it is the updater's verified move while auto-updates are on"));
+      : T(2, "release-pin", "adds or moves the release this instance follows: the owner's authority, unless it is the updater's verified move while auto-updates are on"));
   }
   else if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin is removed; what it resolved to is unchanged"));
   for (const k of keys) {
     if (k === "modules" || k === "marketplaces" || k === "release" || k === "product_fork") continue; // the module parts above (a release by what it resolves to)
-    // A rollback can undo a security fix: the panel's. A pin off product main is refused.
-    if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? PANEL("pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
+    // A rollback can undo a security fix: the reviewer reads it. A pin off product main is refused.
+    if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? T(1, "pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
     else if (k === "settings") {
-      // Every setting is the panel's. (Slack channels agents post to are no special case since 2f: a post to a channel off
+      // Every setting is the reviewer's. (Slack channels agents post to are no special case since 2f: a post to a channel off
       // slack_post_channels is itself a Tier 2 slack.post record.)
       for (const sk of changedKeys(base.settings, head.settings)) {
-        parts.push(PANEL("settings", `changes the setting ${sk}`));
+        parts.push(T(1, "settings", `changes the setting ${sk}`));
         // An agent's change (never the owner's own, nor the kernel's) that does what the setting's module makes the owner's:
         // more spend, a wider reach (settings.<key>.owner, compiled into the catalog).
         const def = s.settingDefs?.[sk];
         const raised = s.byAgent && Array.isArray(def?.owner) ? ownerRaises(sk, def.owner, def.default, base.settings?.[sk], head.settings?.[sk]) : [];
-        if (raised.length) parts.push(OWNER_ONLY("setting-owner", `an agent's change the owner decides: ${raised.join("; ")}`.slice(0, 600)));
+        if (raised.length) parts.push(T(2, "setting-owner", `an agent's change the owner decides: ${raised.join("; ")}`.slice(0, 600)));
       }
-      // Spend is the owner's authority under every autonomy: raising or removing the install cap. Only a finite positive number
-      // at or under the old cap tightens it; unset was no cap at all (the gateway's default). Ending quiet start and turning
-      // auto-updates back on are the owner's below full autonomy, the panel's at full (computeTier).
-      const [was, now] = [base.settings?.spend_day_usd ?? Infinity, head.settings?.spend_day_usd];
-      const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
-      if (!eq(base.settings?.spend_day_usd, now) && !tighter) parts.push(OWNER_ONLY("spend-cap", `raises or removes the install's daily spend cap (${base.settings?.spend_day_usd ?? "none"} → ${now == null ? "none" : JSON.stringify(now).slice(0, 40)}): the owner's authority`));
-      if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(OWNER_AFTER_REVIEW("quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
+      // Spend is the owner's authority under every autonomy: raising the install's limits or the task cap. Only a finite positive
+      // number at or under the old value tightens it; unset is the default (SPEND_DEFAULTS, kernel/settings.json).
+      for (const [sk, dflt] of Object.entries(SPEND_DEFAULTS)) {
+        const [was, now] = [base.settings?.[sk] ?? dflt, head.settings?.[sk] ?? dflt];
+        const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
+        if (!eq(was, now) && !tighter) parts.push(T(2, "spend-cap", `raises ${sk} (${JSON.stringify(was).slice(0, 40)} → ${JSON.stringify(now).slice(0, 40)}): spend is the owner's authority`));
+      }
+      if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(T(2, "quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
       // Release updates (docs/design/release-updates.md): auto-updates on is the owner's standing authority to install releases.
-      if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(OWNER_AFTER_REVIEW("auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
+      if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(T(2, "auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
       // Autonomy is the owner's authority: any loosening (off → tier0 or full, tier0 → full; unset is off) is theirs to tap.
       const rank = (v: unknown) => ({ tier0: 1, full: 2 } as Record<string, number>)[String(v)] ?? 0;
-      if (rank(head.settings?.autonomy) > rank(base.settings?.autonomy)) parts.push(OWNER_ONLY("autonomy", `loosens autonomy (${base.settings?.autonomy ?? "off"} → ${String(head.settings?.autonomy).slice(0, 20)}): the owner's authority`));
+      if (rank(head.settings?.autonomy) > rank(base.settings?.autonomy)) parts.push(T(2, "autonomy", `loosens autonomy (${base.settings?.autonomy ?? "off"} → ${String(head.settings?.autonomy).slice(0, 20)}): the owner's authority`));
     } else if (k === "overrides") {
       for (const kind of changedKeys(base.overrides, head.overrides)) {
         const safe = OVERRIDE_SAFE[kind];
@@ -335,23 +328,21 @@ function instanceParts(s: any) {
           const fields = kind === "agents" ? all.filter((x) => x !== "connections" && x !== "handbook_fork") : all;
           if (kind === "agents" && all.includes("handbook_fork")) parts.push((s.roles?.[name] ?? []).length ? T(1, "role-handbook", `handbook fork of ${name}, which holds a role`) : T(1, "module-handbook", `handbook fork of ${name}, an agent without a role`));
           if (!fields.length) continue;
-          if (kind === "agents" && fields.includes("caps")) parts.push(OWNER_ONLY("agent-caps", `overrides agents ${name}: spend caps are the owner's authority`));
-          if (kind === "agents" && fields.includes("caps") && fields.length === 1) continue;
           // Under quiet start, what the owner hasn't turned on stays off until they tap: a routine to active, a heartbeat on.
           const [b, h] = [base.overrides?.[kind]?.[name] ?? {}, head.overrides?.[kind]?.[name] ?? {}];
           if (head.settings?.quiet_start === "on" && (kind === "routines" ? fields.includes("status") && h.status === "active" && b.status !== "active" : kind === "agents" && fields.includes("heartbeat") && h.heartbeat != null && h.heartbeat !== false))
-            parts.push(OWNER_AFTER_REVIEW("quiet-start", `overrides ${kind} ${name}: turns on scheduled work under quiet start, the owner's authority`));
-          parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : PANEL("overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
+            parts.push(T(2, "quiet-start", `overrides ${kind} ${name}: turns on scheduled work under quiet start, the owner's authority`));
+          parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : T(1, "overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
         }
       }
     } else if (k === "teams") {
       // The routing learning loop's own commit (the kernel wrote it: `s.routingTune`), proven by the one routing gate to move
       // only members' repos and routing weights: routing data, the reviewer's; anything more is refused. Any other change:
-      // a team's day cap is a spend cap, the owner's authority; members, repos, weights and the rest, the panel's.
+      // members, repos, weights and the rest: the reviewer's.
       const routing = s.routingTune ? routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]) : undefined;
       if (routing) parts.push("leaves" in routing ? T(1, "routing-only", `team routing only: ${routing.leaves.map((l) => l.path.slice(1).join(".")).join(", ")}`.slice(0, 300)) : REJECT("routing-scope", `a routing change moves only members' repos and routing weights: ${routing.problem}`));
-      else for (const t of changedKeys(base.teams, head.teams)) parts.push(!eq(base.teams?.[t]?.caps, head.teams?.[t]?.caps) ? OWNER_ONLY("team-caps", `teams ${t}: its day cap is the owner's authority`) : PANEL("teams", `changes team ${t}`));
-    } else parts.push(PANEL("instance-key", `changes ${k} in instance.yaml`));
+      else for (const t of changedKeys(base.teams, head.teams)) parts.push(T(1, "teams", `changes team ${t}`));
+    } else parts.push(T(1, "instance-key", `changes ${k} in instance.yaml`));
   }
   return parts;
 }
@@ -433,9 +424,9 @@ export function sensitiveTraits(app: any, all: any) {
 }
 
 /**
- * The registry change, per app: everything apps-mcp calls sensitive is authority-expanding (the panel's), except the spec's
+ * The registry change, per app: everything apps-mcp calls sensitive is authority-expanding (labelled for the reviewer), except the spec's
  * one carve-out (an app whose only sensitive trait is `database: warehouse`, ordinary DB provisioning: Tier 1). New secrets
- * (after the schema's additions) and an API write path are the panel's too. Removing an app is the reviewer's.
+ * (after the schema's additions) and an API write path are labelled too. Removing an app is the reviewer's.
  * `moduleApps`: the module apps, for restricted-app lookups.
  */
 export function appsParts(base: any, head: any, moduleApps: any = []) {
@@ -452,7 +443,7 @@ export function appsParts(base: any, head: any, moduleApps: any = []) {
     const secrets = a.secrets.filter((x: any) => !(b?.secrets ?? []).includes(x) && !(x === "DATABASE_URL" && a.database === "warehouse"));
     const warehouseOnly = traits.length === 1 && traits[0] === "database" && a.database === "warehouse";
     const why = [...(warehouseOnly ? [] : traits), a.api && "an API write path", secrets.length && `new secrets ${secrets.join(", ")}`].filter(Boolean);
-    if (why.length) parts.push(PANEL("sensitive-app", `app ${name}: ${why.join(", ")}`));
+    if (why.length) parts.push(T(1, "sensitive-app", `app ${name}: ${why.join(", ")}`));
     else parts.push(T(1, warehouseOnly ? "app-warehouse" : "app-registry", `${b ? "changes" : "adds"} app ${name}${warehouseOnly ? " (a warehouse database)" : ""}`));
   }
   return parts;
@@ -498,20 +489,16 @@ export function reviewerFacts(a: { authority?: string[]; release?: string }): st
 /**
  * The authority lines an apply's args carry (so its card lists them, the reviewer reads every one and its digest covers them),
  * owner changes first, each whole: never cut (a change too large to review is refused by the details cap instead). Each
- * module's `code changes` line folds into one; a spend or limit increase is marked as one. `release`: the release the owner's
- * auto-updates take (standingRelease): when every change is an official module's, its new spend needs no owner tap.
+ * module's `code changes` line folds into one. `release`: the release the owner's auto-updates take (standingRelease): when
+ * every change is an official module's, it needs no owner tap.
  */
-export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }, release?: string): { authority?: string[]; ownerRequired?: true } {
+export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marketplaces?: ReturnType<typeof marketplaceChanges> }, release?: string): { authority?: string[] } {
   const diffs = st.modules ? [...(st.marketplaces ?? []), ...diffAll(st.modules)] : [];
   const code = diffs.filter((d) => d.changes.some((c) => c.what === "code changes" && !c.owner)).map((d) => d.module);
-  // A spend or limit increase says so on its line, so the reviewer weighs it whoever decides after.
-  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)).map((c) => (c.spend ? { ...c, what: `spend increase: ${c.what}` } : c)) })));
+  const all = authorityLines(diffs.map((d) => ({ ...d, changes: d.changes.filter((c) => !(c.what === "code changes" && !c.owner)) })));
   const isOwner = (l: string) => l.endsWith("(owner)");
   const lines = [...all.filter(isOwner), ...all.filter((l) => !isOwner(l)), ...(code.length ? [`code changes in ${code.join(", ")} (review)`] : [])];
-  // The owner's under every autonomy (a non-official module's new authority, new spend): the reviewer's yes never runs it (records.ts).
-  const taken = Boolean(release) && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly || c.spend));
-  const ownerRequired = !taken && diffs.some((d) => d.changes.some((c) => c.ownerOnly));
-  return { ...(lines.length ? { authority: lines } : {}), ...(ownerRequired ? { ownerRequired: true as const } : {}) };
+  return lines.length ? { authority: lines } : {};
 }
 
 /** The product pin's move, as the product's git reads it on its main: the commits it adds or removes. */
@@ -537,9 +524,9 @@ export async function productBump(from: string | undefined, to: string | undefin
 
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
-  args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; ownerRequired?: true; release?: string };
+  args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; release?: string };
   targets: { diff: string; content: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
-  raise?: { tier: 1 | 2; panel?: boolean; reason?: string; rule?: string; ownerOnly?: true }; review_first?: ReviewFirst;
+  raise?: { tier: 1 | 2; reason?: string; rule?: string };
 };
 export class Refused extends Error {
   status = 422;
@@ -613,7 +600,7 @@ export function createApplyPlanner(h: {
     // An agent's settings change meets its module's owner rules: only the owner's settings change and the kernel's own (kind
     // kernel) are exempt; no requester counts as an agent (fail closed).
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
-    const t = meritOwner(highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st })));
+    const t = highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st }));
     if (t.reject) throw new Refused(String(t.reason));
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st, release), ...(release ? { release } : {}) };
@@ -623,8 +610,7 @@ export function createApplyPlanner(h: {
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
       paths: [{ repo, files: c.files.map((path) => ({ path })) }],
-      ...(t.tier >= 1 ? { raise: { tier: t.tier as 1 | 2, ...(t.panel ? { panel: true } : {}), ...(t.reason ? { reason: String(t.reason) } : {}), ...(t.rule ? { rule: String(t.rule) } : {}), ...(t.ownerOnly ? { ownerOnly: true as const } : {}) } } : {}),
-      ...(t.tier === 2 ? { review_first: (t.byMerit ? "owner" : "final") as ReviewFirst } : {}),
+      ...(t.tier >= 1 ? { raise: { tier: t.tier as 1 | 2, ...(t.reason ? { reason: String(t.reason) } : {}), ...(t.rule ? { rule: String(t.rule) } : {}) } } : {}),
     };
   };
 }

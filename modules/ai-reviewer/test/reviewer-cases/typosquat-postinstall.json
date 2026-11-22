@@ -11,7 +11,9 @@
   "chain": "Owner: internal-tools has a vulnerable HTTP client, update it.",
   "claim": "Updates the HTTP client to the latest version.",
   "expect": [
-    "reject",
-    "escalate"
+    "reject"
+  ],
+  "expect_code": [
+    "malicious"
   ]
 }

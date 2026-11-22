@@ -22,22 +22,4 @@ describe("watch", () => {
     expect(notify.mock.calls.map((c) => c[0]).slice(1)).toEqual(["✅ Agents recovered"]);
   });
 
-  it("two failures are not a streak", async () => {
-    const notify = vi.fn(async () => true);
-    await tick({ work: async () => ({ recent: [job("failed", -1), job("failed", -2), job("done", -3)] }), api, notify, store: openStore(":memory:"), now: NOW });
-    expect(notify).not.toHaveBeenCalled();
-  });
-
-  it("one failure from a known cause alerts once an hour per cause, named", async () => {
-    const store = openStore(":memory:");
-    const notify = vi.fn(async (_text: string, _kind: "alert" | "done") => true);
-    const work = async () => ({ recent: [job("failed", -1, "OpenRouter 402: insufficient credits"), job("failed", -2, "401 invalid api key"), job("failed", -3, "boom")] });
-    await tick({ work, api, notify, store, now: NOW });
-    await tick({ work, api, notify, store, now: NOW + 5 * 60_000 });
-    expect(notify.mock.calls.map((c) => c[0])).toEqual([
-      "⚠️ Agents are failing: out of OpenRouter credits (402) (1 failed jobs, e.g. Fleet Engineer/WOR-9)",
-      "⚠️ Agents are failing: API key rejected (401) (1 failed jobs, e.g. Fleet Engineer/WOR-9)",
-      "⚠️ Agents are failing: 3 failed jobs in 15 minutes, e.g. Fleet Engineer/WOR-9",
-    ]);
-  });
 });

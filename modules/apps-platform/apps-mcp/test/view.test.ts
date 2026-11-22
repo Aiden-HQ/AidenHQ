@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Resolve } from "../src/api.js";
 import type { Scope, Sign } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
-import { graderView, isPublicIp, renderArgs, viewApp, viewContent, BROWSER_IMAGE, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
+import { graderView, isPublicIp, renderArgs, viewApp, viewContent, BROWSER_IMAGE, GRADER_SNAPSHOT_CAP, SNAPSHOT_CAP, SNAPSHOT_MAX, VIEW_SCRIPT, webView, WEB_NETWORK, type Render, type ViewResult } from "../src/view.js";
 
 const app = (o: object = {}) => parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, ...o });
 const ID = "c".padEnd(64, "0");
@@ -115,5 +115,18 @@ describe("the grader's live view", () => {
     expect(await graderView(app({ access: { roles: ["finance"] } }), {}, d)).toEqual({ unavailable: expect.stringMatching(/restricted/) });
     expect(await graderView(app({ health: {} }), {}, d)).toEqual({ unavailable: expect.stringMatching(/health.url/) });
     expect(calls.length).toBe(2);
+  });
+  it("keeps an agent's view at SNAPSHOT_CAP; the grader's view takes the cap its verified caller was given", async () => {
+    const { calls, render } = fake();
+    const d = { resolve, render, sign, running: () => "a".repeat(40) };
+    await graderView(app(), { path: "/changes", cap: GRADER_SNAPSHOT_CAP }, d);
+    expect((calls[0]!.req as { snapshotCap?: number }).snapshotCap).toBe(GRADER_SNAPSHOT_CAP);
+    // Any other apps.read caller's view keeps the ordinary cap.
+    await graderView(app(), { path: "/changes", cap: SNAPSHOT_CAP }, d);
+    expect((calls[1]!.req as { snapshotCap?: number }).snapshotCap).toBe(SNAPSHOT_CAP);
+    await viewApp(app(), agent("scout"), {}, d);
+    expect(calls[2]!.req).not.toHaveProperty("snapshotCap"); // an agent's view keeps the renderer's own SNAPSHOT_CAP
+    // The renderer honours the request, bounded by SNAPSHOT_MAX, and reports the cut it made.
+    expect(VIEW_SCRIPT).toContain("Math.min(Number(r.snapshotCap) || " + SNAPSHOT_CAP + ", " + SNAPSHOT_MAX + ")");
   });
 });

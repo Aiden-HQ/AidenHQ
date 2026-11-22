@@ -5,6 +5,9 @@ import { mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
+/** The longest run a check may ask for (minutes): the launcher's /check limit and the module compiler's timeout_min ceiling. */
+export const MAX_CHECK_MIN = 180;
+
 /** A box the launcher holds: busy while a call runs in it, lastUsed for eviction. */
 export interface Box { busy: number; lastUsed: number; agentId?: string }
 /** A job's box record (see Jobs). */

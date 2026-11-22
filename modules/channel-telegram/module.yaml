@@ -40,7 +40,7 @@ connections:
       read: []
       write: []
 settings:
-  # Which approval cards may be decided in Telegram: all; standard (all but Tier 2 panel cards and applies, which come as
+  # Which approval cards may be decided in Telegram: all; standard (all but applies, which come as
   # text to decide on the board); or none (every card is text only).
   telegram_decide:
     default: all

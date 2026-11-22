@@ -33,7 +33,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync 
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
+import { MAX_CHECK_MIN, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 
 type Failure = Error & { status?: number };
@@ -268,7 +268,7 @@ const jobControl = {
     if (typeof check !== "string" || !/^c-[0-9a-f]{16}$/.test(check)) throw fail(400, "check is the kernel's check id");
     if (token != null && (typeof token !== "string" || !token.startsWith("ahqj_") || /\s/.test(token))) throw fail(400, "a check's token is the kernel's (ahqj_)");
     const ms = Number(timeoutMs);
-    if (!Number.isInteger(ms) || ms < 1000 || ms > 2 * 3600_000) throw fail(400, "timeoutMs is the run's time limit");
+    if (!Number.isInteger(ms) || ms < 1000 || ms > MAX_CHECK_MIN * 60_000) throw fail(400, "timeoutMs is the run's time limit");
     // Exactly this check's own folders under the kernel's work_dir/checks/<check>: the snapshot (ws, tree) and an out folder.
     const root = path.join(CFG.runnerWork, "checks", check);
     if (!["ws", "tree"].includes(path.basename(String(workspace))) || !/^out(-\d)?$/.test(path.basename(String(out)))) throw fail(400, "not a check's folders");

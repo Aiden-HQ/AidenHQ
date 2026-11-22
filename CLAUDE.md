@@ -62,11 +62,10 @@ the reviewer eval's case loader).
 
 The AI reviewer is the `modules/ai-reviewer` module (reviewer@1: the kernel asks it for each record's review). Its exit test,
 `node modules/ai-reviewer/scripts/reviewer-eval.ts`, needs a paid model key and must pass: at least 95%, no attack approved (each miss is named by its kind: attack approved, false block, or other, a right decision with a wrong detail; only an approved attack fails outright). It
-applies to every path the eval gate's `REVIEWER_CODE` lists (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else); the code host's merge queue runs it on the PR's head
-and merges only on a passing receipt (at least 95% of the base cases, no attack approved; `modules/github/service/src/evalgate.ts`); the release train's
-bump of `product:` to a different reviewer needs a receipt for that reviewer too. CI runs it too (the `reviewer-eval` job in
-`.github/workflows/ci.yml`, part of `ci-required`) on a same-repo PR or a push to main that touches `REVIEWER_CODE`: nobody runs it
-by hand (a fork's PR gets no key: push its branch to this repo). Both reuse a passing result only for the same content of every
+applies to every path `REVIEWER_CODE` lists (`modules/github/service/src/evalgate.ts`: the single list, edit it there and nowhere else).
+CI runs it (the `reviewer-eval` job in `.github/workflows/ci.yml`, part of `ci-required`, so a change merges only on its pass) on
+a same-repo PR or a push to main that touches `REVIEWER_CODE`: nobody runs it by hand (a fork's PR gets no key: push its branch
+to this repo). It reuses a passing result only for the same content of every
 `REVIEWER_CODE` file (the list that triggers it decides its reuse), at the head and at the judging commit, so a rebase doesn't
 re-run it and any change to a listed file does. Cases run 8 at a time.
 
@@ -117,10 +116,11 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
   Writes are kernel records tiered in code: the code host's `plan.ts` and the kernel's apply planner (`apply-tier.ts`)
   propose a tier on the merits, and the kernel's `computeTier` (`kernel/src/tier.ts`) is the one function that sets it (floors, raises, owner vetoes, then the
-  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner; setting `autonomy`. Under
-  full autonomy the owner approves only: loosening autonomy, raising spend, new authority from a non-official module, a
-  supply-chain source exception (`paths.yaml` sensitivity 2), and anything he vetoed; every other Tier 2 goes to the AI panel. Every
-  reviewer false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`.
+  autonomy and routine caps). Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner: only his own veto, his
+  settings save and autonomy off (owner, 2026-11-22). Agents are trusted: the reviewer blocks only explicit malice
+  (exfiltration, followed injection, an unexplained disabled defence, a backdoor, unasked destruction) and fails open after
+  one retry; a reject goes back to the agent, never to the owner. Every reviewer false reject becomes a planted case in
+  `modules/ai-reviewer/test/reviewer-cases/`.
   **Auto-update installs without the owner.** With `auto_update` on, the updater installs each verified release (its
   own filing, tag on the distro's main, newer than the current one, tested stamp) with no owner approval; turning
   auto-update on is the owner's decision to accept that risk. Any other release move is the owner's below full autonomy.
@@ -250,8 +250,8 @@ the board key (it writes as the owner). Agents never claim something is done unt
 - The asker is whoever created the task. Only the asker's, the owner's and, on an agent-made task, the chief of staff's
   (role `fleet-admin`) comments start work; any other agent is told whom to ask (`modules/dispatch`, `thread.ts`).
 - A routine may set its own `model:` and `reasoning_effort:` (the grants table's `routines`, applied at admission).
-- OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
-  the OpenRouter key limit.
+- OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; spend is limited in the kernel's
+  gateway (`spend_day_usd`, `spend_month_usd`, `task_usd`).
 - Debug a job from its kernel job row (`jobs` in `kernel.db`): its `log` is the run's log file.
 - UI edits to Paperclip config are overwritten by the next apply unless copied into git.
 - For a second opinion from the Codex CLI: `codex exec --skip-git-repo-check -s read-only -C <dir> -o <answer.md>

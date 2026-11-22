@@ -109,10 +109,10 @@ export interface AppOptions {
   reviews?: Reviews;
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
-   * gateway files raise_cap, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
+   * gateway reads its settings, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
    */
   gatewayKey?: string;
-  /** The model gateway (every listener: a raise_cap is applied where it is tapped): an approved raise_cap sets the new cap there. */
+  /** The model gateway: its spend summary and usage ledger (costs.ts). */
   gateway?: { url: string; token: string };
   /** The kernel's records, read-only (records.ts): the cards every view shows. Without it, there are none. */
   records?: Records;
@@ -1095,7 +1095,6 @@ export function createApp(opts: AppOptions): Server {
     return settingsView({
       ...readSources(settingsFiles()),
       boardTimezone: opts.timezone,
-      pendingRaises: pending.filter((a) => a.action === "raise_cap").length,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
@@ -1256,8 +1255,8 @@ export function createApp(opts: AppOptions): Server {
         const routines = store.allRecurring().size ? new Map((await pc.routines()).map((r) => [r.id, r])) : new Map<string, Routine>();
         const recurring = new Map([...store.allRecurring()].map(([id, r]) => { const v = recurringView(r, routines.get(r.routineId)); return [id, { summary: v.summary, nextRun: v.nextRun, paused: v.paused }]; }));
         const [busy, google, signIns, names, summary] = await extras;
-        // The header's spend line: today against the install cap, when one is set.
-        const spend = summary?.install.cap != null ? { spent: summary.install.spent, cap: summary.install.cap } : null;
+        // The header's spend line: the day and the month against the install's spend limits.
+        const spend = summary?.install ?? null;
         const board = buildBoard({ open, closed, placements: store.placements(), seen: store.allSeen(), schedules: store.schedules(), recurring, installedAt: store.meta("installed_at")!, assignees: ctx.assignees, crew: { working: busy.map } });
         const cards = [...Object.values(board.buckets).flat(), ...board.recurring];
         const states = await stateRows(cards.map((c) => c.id));
@@ -1983,6 +1982,7 @@ export function createApp(opts: AppOptions): Server {
     settings: () => readSources(settingsFiles()).compiled?.settings,
     file: fileSettingsChange,
     // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
+    onSetupChange: () => store.events.emit("setup"),
     signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
     scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
     signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
@@ -2312,10 +2312,22 @@ export function createApp(opts: AppOptions): Server {
     const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
     const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
     let code: string | undefined;
-    const who = await auth.check(token, writes, (c) => (code = c)).catch((e: Error) => {
-      log.warn({ reason: "kernel unreachable", err: String(e.message).slice(0, 100), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 401");
-      return undefined;
-    });
+    // The kernel restarts in every apply: a token it couldn't be asked about is not a token it refused. A 401 makes the client
+    // sign the owner in again, a 503 makes it retry. Only the kernel being unavailable (no answer, a timeout, a 5xx) is a 503;
+    // any other kernel answer is its verdict on this request.
+    const checked = await auth.check(token, writes, (c) => (code = c)).then(
+      (who) => ({ who }),
+      (e: Error & { status?: number }) => {
+        if (e.status !== undefined && e.status < 500) throw e;
+        return { unavailable: String(e.message).slice(0, 100) };
+      },
+    );
+    if ("unavailable" in checked) {
+      log.warn({ err: checked.unavailable, userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 503: kernel unavailable");
+      res.writeHead(503, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "retry-after": "5" }).end(JSON.stringify({ error: "the kernel is restarting: retry" }));
+      return;
+    }
+    const who = checked.who;
     if (!who) return unauthorized("invalid_token", "kernel refused", code);
     sessions.set(req, { session: who.session, credential: { mcp: { token, resource: auth.resource() } } });
     await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });

@@ -14,7 +14,7 @@ export interface Requester { agent: string; key: string; name: string; roles: st
 export interface PlanRequest { kind: string; args: any; requester: Requester; task: string; evidence?: unknown; revalidate?: boolean }
 export interface PlanResult {
   args: unknown; targets?: Record<string, unknown>; facts?: Record<string, unknown>;
-  raise?: { tier: 1 | 2; panel?: boolean; reason: string; rule: string }; card?: Record<string, string>; satisfied?: { evidence: string };
+  raise?: { tier: 1 | 2; reason: string; rule: string }; card?: Record<string, string>; satisfied?: { evidence: string };
   /** What the AI reviewer reads beside the card (reviewer@1): the changed files at the reviewed head (review-files.ts fileContext), the owner's source exceptions, the task's merged sibling PRs. */
   review?: ReviewContext;
 }

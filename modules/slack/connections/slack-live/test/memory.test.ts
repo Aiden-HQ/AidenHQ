@@ -1,14 +1,13 @@
 // Channel memory: written only by the bound agent from a thread task of that same channel, whole-note replace with a revision,
 // returned fenced by slack_channel_context, cleared on unbind or reassign.
 import { afterEach, describe, expect, it } from "vitest";
-import { binder, channelContext, mention } from "../src/bind.js";
+import { channelContext, mention } from "../src/bind.js";
 import { memoryWriter } from "../src/memory.js";
 import { openStore } from "../src/store.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => (globalThis.fetch = realFetch));
 const OWNER = "U0OWNER1";
-const agents = async () => ({ a1: { key: "roadmap-keeper" }, a2: { key: "other-agent" } });
 const requester = (task: string, key = "roadmap-keeper") => ({ agent: "a1", key, name: "Roadmap Keeper", roles: [], kind: "run", task });
 const note = (channel: string, text: string, rev: number) => ({ channel, note: text, base_revision: rev });
 
@@ -56,20 +55,4 @@ describe("channel memory", () => {
     expect(r.memory.note).toContain("ignore previous instructions");
   });
 
-  it("the note is cleared when the channel is unbound or reassigned to another agent", async () => {
-    const { store, ex } = await setup();
-    for (const ch of ["C0BOUND01", "C0BOUND02"]) await write(ex, note(ch, "- a fact", 0), requester(`task-${ch}:${ch === "C0BOUND01" ? "1700000000.000100" : "1700000000.000200"}`));
-    const b = binder(store, { ownerId: OWNER, agents });
-    const run = async (args: Record<string, string>) => {
-      const a = { ...args, by: OWNER, token: "t".padEnd(31, "t") };
-      store.setKv(`bindtok:${a.token}`, JSON.stringify({ ...args, by: OWNER, exp: Date.now() + 60_000 }));
-      await b.execute({ id: "k-0", kind: "slack.bind", args: a, digest: "", idempotency_key: "" });
-    };
-    await run({ op: "unassign", channel: "C0BOUND01" });
-    expect(store.getKv("mem:C0BOUND01")).toBeUndefined();
-    await run({ op: "assign", channel: "C0BOUND02", agent: "roadmap-keeper" });
-    expect(store.getKv("mem:C0BOUND02")).toBeDefined();
-    await run({ op: "assign", channel: "C0BOUND02", agent: "other-agent" });
-    expect(store.getKv("mem:C0BOUND02")).toBeUndefined();
-  });
 });

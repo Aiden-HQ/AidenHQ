@@ -17,8 +17,8 @@ Read `CLAUDE.md` at the repo root first: it is the source for layout, convention
   handbooks, never copied. A new path gets a security review before it switches on. `CLAUDE.md` Conventions is the full
   source.
 - **Gates in code.** Writes are approval records tiered in the kernel (`kernel/src/tier.ts`, `paths.yaml`). A change to the tier function,
-  the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or `scripts/compiler/authority.ts` needs the maintainer's reviewer eval:
-  say so in the PR.
+  the `modules/ai-reviewer` module (its policy and `test/reviewer-cases/`) or another `REVIEWER_CODE` path runs CI's reviewer eval,
+  part of `ci-required`: nothing to run by hand.
 - **No owner data.** Tests and docs use `acme`, `example.com` and documentation IP ranges.
 - **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts`, `kernel/sdk/src/source-store.ts` or `kernel/sdk/src/vendor/`, or the design
   system, run `node scripts/sync-shared.ts`; a test fails on drift.

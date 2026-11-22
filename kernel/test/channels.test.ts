@@ -22,8 +22,8 @@ const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 async function setup(t, extra = {}) {
   const k = await kernel(t, { modules: MODULES, secrets: SECRETS, grants: { "ag-cos": { key: "chief-of-staff", roles: ["fleet-admin"] } }, ...extra });
   const pushCard = { sentence: "Push x.", changes: "c", reads: "r", cost: "0", details: "" };
-  const push = k.records.file({ kind: "github.push", module: "github", args: { only: [] }, targets: {}, executor: { module: "github" }, policy: "p", tier: 2, panel: false, card: pushCard, requester: { agent: "ag-eng", key: "eng", name: "Eng", roles: [], kind: "job" }, task: "t-1", identifier: "WOR-1", state: "owner" });
-  const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, panel: false, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
+  const push = k.records.file({ kind: "github.push", module: "github", args: { only: [] }, targets: {}, executor: { module: "github" }, policy: "p", tier: 2, card: pushCard, requester: { agent: "ag-eng", key: "eng", name: "Eng", roles: [], kind: "job" }, task: "t-1", identifier: "WOR-1", state: "owner" });
+  const rec = k.records.file({ kind: "twin.post", module: "twin", args: { note: "x" }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 2, card: { sentence: "Post x.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "owner" });
   const cards = (token, q = "") => k.v1("GET", `/v1/channel/cards${q}`, undefined, token);
   const decide = (token, body) => k.v1("POST", "/v1/channel/decide", { sender: "owner", ...body }, token);
   return { k, rec, push, cards, decide };
@@ -208,15 +208,13 @@ test("the notify brake: five per task since the owner last wrote and per agent; 
   assert.equal((await ask({ decision: true })).json.allow, true);
 });
 
-test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps panel cards and applies", async (t) => {
+test("the kernel holds a channel to its own decide setting: none mints nothing; standard keeps applies", async (t) => {
   const { k, rec, push, cards, decide } = await setup(t);
   assert.ok((await cards("quiet-key")).json.cards.every((c) => !c.tokens));
-  // standard: the push card gets tokens; a panel card and an apply don't.
-  const panel = k.records.file({ ...k.records.get(rec.id), args: { note: "p" }, panel: true, state: "owner" });
+  // standard: the push card gets tokens; an apply doesn't.
   const apply = k.records.file({ ...k.records.get(push.id), kind: "kernel.apply", module: "kernel", state: "owner" });
   const std = (await cards("std-key")).json.cards;
   assert.ok(std.find((c) => c.id === push.id).tokens);
-  assert.equal(std.find((c) => c.id === panel.id).tokens, undefined);
   assert.equal(std.find((c) => c.id === apply.id).tokens, undefined);
   // A setting narrowed after the tokens were minted: decide re-checks it and refuses (403), and nothing is decided.
   const op = (await cards("op-key")).json.cards.find((c) => c.id === rec.id).tokens;

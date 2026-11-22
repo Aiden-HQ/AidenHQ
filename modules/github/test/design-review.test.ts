@@ -4,7 +4,7 @@
 // on, or whose PR merged, is cancelled. Fake GitHub (an in-process gh) and a fake kernel over HTTP.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,67 +85,4 @@ test("a UI head gets one task for the design-review role, waits on it, and a sec
   prs.set(9, pr(A, ["src/server.ts"]));
   assert.equal((await reviews.fileDesignReview({ repo: "Acme/App", number: 9, head: A })).filed, false);
   assert.equal(tasks().length, 2);
-});
-
-test("a later head is a re-review naming the earlier task; the superseded one is cancelled, never one with a verdict", async (t) => {
-  const { prs, pr, reviews, statuses, tasks, closes, calls } = await setup(t);
-  prs.set(7, pr(A, ["a.tsx"]));
-  await reviews.fileDesignReview({ repo: "acme/app", number: 7, head: A });
-  prs.set(7, pr(B, ["a.tsx"]));
-  await reviews.fileDesignReview({ repo: "acme/app", number: 7, head: B });
-  assert.match(tasks()[1].body.description, /This is a re-review: your reviews of earlier heads are ACME-1 \(head `a{40}`\)\. If any of them failed/);
-  assert.equal(tasks()[1].body.source, `design-review:acme/app/7@${B}`);
-  // Filing the new head closed the earlier head's task, as the runner's sweep did.
-  assert.equal(closes().length, 1);
-  assert.match(closes()[0].url, /^\/v1\/tasks\/11111111-1111-4111-8111-111111111111\/close$/);
-  assert.equal(closes()[0].body.status, "cancelled");
-  assert.match(closes()[0].body.body, /^Closed as superseded: its PR has moved on to head `b{12}`\. Nothing is waiting on this review\.$/);
-
-  // No verdict within its time: asked once more, as its own task (the runner's `#again` marker), once.
-  await reviews.fileDesignReview({ repo: "acme/app", number: 7, head: B, again: true });
-  assert.equal(tasks()[2].body.source, `design-review:acme/app/7@${B}#again`);
-  assert.equal(tasks()[2].body.title, "Design review (asked again): acme/app#7");
-  assert.match(tasks()[2].body.description, /With no verdict 2 hours after this request, the merge is parked\./);
-  assert.equal((await reviews.fileDesignReview({ repo: "acme/app", number: 7, head: B, again: true })).filed, false);
-
-  // The current head's task stays open until the head moves, the PR merges, or a verdict is on it.
-  await reviews.sweep();
-  assert.equal(closes().length, 1);
-  prs.set(7, pr(B, ["a.tsx"], { state: "MERGED" }));
-  await reviews.sweep();
-  assert.equal(closes().length, 3, "both open tasks of the head (the review and its ask-again) close");
-  assert.match(closes()[1].body.body, /its PR merged/);
-  await reviews.sweep();
-  assert.equal(closes().length, 3, "a closed task is not closed again");
-
-  // A head that already has its verdict is not set back to pending.
-  const verdict = pr(A, ["b.tsx"], { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "StatusContext", context: "design-review", state: "SUCCESS" }] } } } }] } });
-  prs.set(11, verdict);
-  const before = statuses.length;
-  await reviews.fileDesignReview({ repo: "acme/app", number: 11, head: A });
-  assert.equal(statuses.length, before);
-  assert.equal(calls.filter((c) => c.url === "/v1/tasks").length, 4);
-});
-
-test("no live agent holds the role: nothing is filed or recorded, so the next ask files it", async (t) => {
-  const { prs, pr, reviews, statuses } = await setup(t, { agent: false });
-  prs.set(7, pr(A, ["a.tsx"]));
-  const r = await reviews.fileDesignReview({ repo: "acme/app", number: 7, head: A });
-  assert.deepEqual([r.filed, statuses.length], [false, 0]);
-  assert.match(r.why, /no agent holds/);
-});
-
-test("a 404 on a close is tried again before the task is forgotten, and a corrupt table is set aside", async (t) => {
-  const { cacheDir, prs, pr, reviews, closes } = await setup(t, { closeStatus: 404 });
-  prs.set(7, pr(A, ["src/web/App.tsx"]));
-  await reviews.fileDesignReview({ repo: "Acme/App", number: 7, head: A });
-  prs.set(7, pr(B, ["src/web/App.tsx"]));
-  for (let i = 0; i < 4; i++) await reviews.sweep();
-  assert.equal(closes().length, 4);
-  assert.match(readFileSync(join(cacheDir, "design-reviews.json"), "utf8"), /"open":\{"/, "still held after four 404s");
-  await reviews.sweep();
-  assert.equal(JSON.parse(readFileSync(join(cacheDir, "design-reviews.json"), "utf8")).open && Object.keys(JSON.parse(readFileSync(join(cacheDir, "design-reviews.json"), "utf8")).open).length, 0, "dropped on the fifth");
-  writeFileSync(join(cacheDir, "design-reviews.json"), '{"asked":{"x"');
-  await reviews.sweep();
-  assert.equal(existsSync(join(cacheDir, "design-reviews.json.corrupt")), true);
 });

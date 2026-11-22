@@ -14,7 +14,7 @@ turns what you ask for into work for the right agent, chases it, and brings you 
 |---|---|
 | **Chief of staff (Aiden)** | The one agent you talk to. Turns chat and forwards into tasks, delegates, chases, sends the daily brief, relays your approvals word for word. |
 | **Crews** | Specialist agents on schedules and events. Core: Aiden, Researcher, DevOps Engineer, Agent Architect, Fleet Steward, Engineer. Modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`). |
-| **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, budgets, approvals, run history. Paperclip runs nothing: the kernel runs every agent as a job in an agent computer, on Codex via OpenRouter. |
+| **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, approvals, run history. Paperclip runs nothing: the kernel runs every agent as a job in an agent computer, on Codex via OpenRouter. |
 | **Shared connections** | MCP servers any agent can be granted: Google Workspace, Slack, Glean, Jira, GitHub, Primer, tasks, apps (Grafana and ClickHouse are Engineer-only). Each optional one is a module (`modules/<m>/connections/`). Tools are tagged read or write; every call is checked against the agent's grants. |
 | **Code host** | `github` (its code host part, on your one GitHub sign-in): the only holder of your GitHub token; pushes, PRs and merges are approval records tiered in code, and other modules get typed operations through the kernel. Coding jobs run in agent computers. |
 | **Apps platform** | Long-running services agents deploy and maintain (`apps-mcp`; registry is the instance's `apps.yaml` plus module apps), each sandboxed: no host access unless its registry entry grants it. |
@@ -68,11 +68,11 @@ override them):
 
 `ops/setup.sh` creates one OpenRouter key per instance with a monthly limit (`OPENROUTER_LIMIT_USD`, default 100 USD).
 A new install also starts quiet (`docs/design/quiet-start.md`): scheduled routines and heartbeats wait until the owner
-turns them on, and every model call stops at `spend_day_usd` (10 USD a day) until the owner raises it. Typical daily
+turns them on, and every model call stops at the install's spend limit (`spend_day_usd` 50 USD a day, `spend_month_usd` 1000 USD a month; one task at `task_usd`, 20 USD) until the owner raises it. Typical daily
 spend: one owner's full fleet ran about $30-50 a day before cost tuning. Most agents run on DeepSeek Flash; the expensive
 parts are GPT Sol advisor calls and the Agent Architect's max-effort reasoning. Raise both accordingly for a full fleet.
 The board's Costs page shows the real figures. Paperclip shows OpenRouter runs as unpriced, so Paperclip budgets stay at 0 (any budget pauses the agent at
-$0); use the OpenRouter key limit instead.
+$0); spend is limited in the kernel's gateway.
 
 ## Modules and the instance
 

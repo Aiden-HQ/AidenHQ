@@ -1,6 +1,5 @@
-// The kernel's own write kinds (spec §5.2): kernel.apply (a fleet apply: a commit landed on the instance repo and applied,
-// with the module changes it brings; planned by apply-tier.ts) and kernel.raise_cap (a spend cap doubled, filed and run by
-// the kernel itself: the model gateway). Each kind's args schema is strict.
+// The kernel's own write kind (spec §5.2): kernel.apply (a fleet apply: a commit landed on the instance repo and applied,
+// with the module changes it brings; planned by apply-tier.ts). Its args schema is strict.
 import type { Card } from "./records.ts";
 import type { Kind, Schema } from "./writes.ts";
 
@@ -21,28 +20,10 @@ const APPLY_ARGS = obj({
   release: { type: "string", pattern: "^[0-9]{4}\\.[0-9]{1,2}(\\.[0-9]+){0,2}$" },
 }, ["repo", "branch", "sha", "files"]);
 
-const RAISE_ARGS = obj({
-  scope: { enum: ["run", "task", "day"] }, agentId: { type: "string", minLength: 1, maxLength: 80 }, subject: { type: "string", pattern: "^[\\w:.-]{1,128}$" },
-  cap: { type: "number", exclusiveMinimum: 0, maximum: 1000 }, spent: { type: "number", minimum: 0, maximum: 100_000 }, to: { type: "number" },
-}, ["scope", "agentId", "subject", "cap", "spent", "to"]);
-
 /** An apply's card, from its validated args and the diff the planner computed (bound by its hash in the record's targets). */
 export function applyCard(a: { repo: string; branch: string; sha: string; files: string[]; authority?: string[] }, diff: string): Card {
   const authority = a.authority?.length ? `\nModule changes (the owner decides those marked owner, after the AI reviewer):\n${a.authority.join("\n")}` : "";
   return { target: `${a.repo} ${a.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${a.sha.slice(0, 12)}).`, changes: `Lands ${a.sha.slice(0, 12)} on ${a.repo}'s main and re-applies the live fleet. Files: ${a.files.join(", ")}${authority}`, reads: "Nothing new.", cost: "No model cost; services restart.", details: diff };
-}
-
-const oneLine = (s: string, max: number) => s.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, max);
-const usd = (n: number) => `$${n.toFixed(2)}`;
-/** A raise_cap's card: every number is the gateway's ledger; the agent's name is looked up, printable and capped. */
-export function raiseCapCard(a: { scope: string; agentId: string; subject: string; cap: number; spent: number; to: number }, agentName: string, identifier: string): Card {
-  const who = oneLine(agentName, 80) || a.agentId;
-  const on = a.scope === "run" ? "this run" : a.scope === "task" ? `task ${identifier}` : `${a.subject} (UTC day)`;
-  return {
-    target: `${who} ${a.scope} cap`, sentence: `Double ${who}'s ${a.scope} spend cap from ${usd(a.cap)} to ${usd(a.to)}.`, reads: "Nothing new.",
-    changes: `${who} may spend up to ${usd(a.to)} on ${on} (${usd(a.spent)} spent so far); its calls are refused again at the new cap.`,
-    cost: `Up to ${usd(Math.max(0, a.to - a.spent))} more in model calls.`, details: `agent: ${a.agentId}\nscope: ${a.scope}\non: ${a.subject}\ncap: ${usd(a.cap)} → ${usd(a.to)}\nspent: ${usd(a.spent)}`,
-  };
 }
 
 /**
@@ -71,5 +52,4 @@ export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", 
 export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1): planned by the kernel (apply-tier.ts); its files raise it by the path inventory.
   "kernel.apply": { module: "kernel", floor: 1, paths: true, tools: [], args: APPLY_ARGS },
-  "kernel.raise_cap": { module: "kernel", floor: 2, tools: [], args: RAISE_ARGS },
 };

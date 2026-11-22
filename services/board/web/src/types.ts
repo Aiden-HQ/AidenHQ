@@ -111,7 +111,7 @@ export interface Agents {
 /** GET /api/agents/:id/scorecard (fleet-stats.ts). */
 export interface Scorecard {
   done: { count: number; prior: number; tasks: { identifier: string; title: string }[] };
-  reopen: { graded: number; reopened: number; escalated: number };
+  reopen: { graded: number; reopened: number };
   approvals: { filed: number; rejected: number; priorRejected: number };
   runsFailed: number;
   cost: { usd: number; prior: number; perDone: number | null; billed: boolean };
@@ -189,6 +189,8 @@ export interface RecurringView {
   upcoming: string[];
 }
 
+/** The install's spend against its two limits (a UTC day and a UTC month). */
+export type SpendNow = { day: { spent: number; cap: number }; month: { spent: number; cap: number } };
 export interface Board {
   buckets: Record<Bucket, Card[]>;
   brief: { id: string; identifier: string; title: string; description: string } | null;
@@ -205,8 +207,8 @@ export interface Board {
   rollsTomorrow: boolean;
   /** Agent sessions running now. */
   agentsActive: number;
-  /** Today's model spend against the install-wide daily cap (settings.spend_day_usd); null without one. */
-  spend?: { spent: number; cap: number } | null;
+  /** The install's model spend against its two limits (settings.spend_day_usd, spend_month_usd: a UTC day and month); null without the kernel. */
+  spend?: SpendNow | null;
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string; client_type?: "desktop" | "web" } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
@@ -409,13 +411,14 @@ export interface CostLedger {
     week: LedgerPeriod;
     month: LedgerPeriod;
     key: { error: string } | { today: number; month: number; limit: number | null; remaining: number | null; reset: string | null };
-    caps: { agentId: string; name: string; usd: number; cap: number }[];
+    limits: { day: { spent: number; cap: number }; month: { spent: number; cap: number } } | null;
+    todayByAgent: { agentId: string; name: string; usd: number }[];
   };
   totals: LedgerMetrics & { prevUsd: number | null };
   modelOrder: string[];
   models: (LedgerMetrics & { model: string })[];
   lanes: (LedgerMetrics & { lane: string })[];
-  agents: (LedgerMetrics & { agentId: string; name: string; model: string | null; today: number; dayCap: number | null })[];
+  agents: (LedgerMetrics & { agentId: string; name: string; model: string | null; today: number })[];
   series: { t: string; model: string; usd: number; calls: number }[];
   insights: LedgerInsights;
 }
@@ -630,7 +633,7 @@ export interface RunTrace {
   tokens: { input: number; cached: number; output: number } | null;
   plan: PlanItem[];
   timeline: { at: string; kind: "step" | "message" | "error"; text: string; ok: boolean }[];
-  ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null; capUsd: number | null };
+  ledger: { rows: { at: string; kind: string | null; model: string; input: number; cached: number; output: number; costUsd: number | null; ms: number | null; status: string | null; runKey: string | null }[]; usd: number | null };
 }
 export interface NeedsYou {
   /** The fleet's counts of tasks needing the owner, failed, and idle with nothing to wake them. */
@@ -648,7 +651,6 @@ export type Question = { question: string; options: string[]; multi?: boolean };
 export type SettingChange =
   | { kind: "setting"; key: string; value: unknown }
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel"; value: string | number | boolean }
-  | { kind: "caps"; agent: string; value: Partial<Record<"run_usd" | "task_usd" | "day_usd", number>> }
   | { kind: "module"; name: string; on: boolean }
   | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
   | { kind: "routine"; routine: string; field: "status"; value: "active" | "paused" }
@@ -713,7 +715,6 @@ export interface AgentSettings {
   trial: boolean;
   graded: boolean;
   roles: string[];
-  caps: Record<string, number>;
   /** The module's own model, reasoning_effort and heartbeat where the instance overrides them. */
   defaults?: Record<string, unknown>;
   connections: string[];
@@ -731,7 +732,6 @@ export interface SettingsData {
   agents: AgentSettings[];
   choices: { heartbeatHours: number[]; models: string[] };
   approvals: { pending: number };
-  spend: { defaults: Record<string, number>; pendingRaises: number };
   /** Release updates (services/board/src/settings.ts UpdatesView); null when the instance pins its product by hand. */
   updates: UpdatesData | null;
 }

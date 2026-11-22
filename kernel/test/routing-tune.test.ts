@@ -33,7 +33,6 @@ teams:
       mina:
         name: Mina
         repos: [acme/web]
-    caps: { day_usd: 50 }
 `;
 const REPO = "local/acme-instance";
 const STEWARD = { agent: "id-steward", key: "fleet-steward", name: "fleet-steward", roles: ["routing-tuner"], kind: "run", task: "t-steward", run: "j-1", model: "~acme/deepseek" };
@@ -95,7 +94,7 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
   const decide = ({ at = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) - 3_600_000, blocked = false, status = "done" } = {}) => {
     const task = uuid(++n);
     const candidates = [{ id: "id-kai", key: "kai", repos: [], maxParallel: 1, paused: false, running: 0, queued: 0, done: 0 }, { id: "id-mina", key: "mina", repos: ["acme/web"], maxParallel: 1, paused: false, running: 0, queued: 0, done: 0 }];
-    db.prepare("INSERT INTO team_routes (task, team, member, repos, at, state, snapshot) VALUES (?, 'engineer', ?, ?, ?, ?, ?)").run(task, blocked ? null : "id-kai", JSON.stringify(["acme/api"]), at, blocked ? "blocked" : "placed", JSON.stringify({ weights: { repo: 3, continuity: 1, load: 1 }, overBudget: blocked, candidates }));
+    db.prepare("INSERT INTO team_routes (task, team, member, repos, at, state, snapshot) VALUES (?, 'engineer', ?, ?, ?, ?, ?)").run(task, blocked ? null : "id-kai", JSON.stringify(["acme/api"]), at, blocked ? "blocked" : "placed", JSON.stringify({ weights: { repo: 3, continuity: 1, load: 1 }, candidates }));
     issues[task] = { id: task, identifier: `WOR-${n}`, status, completedAt: new Date(at + 7_200_000).toISOString() };
     return task;
   };
@@ -104,12 +103,12 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
 }
 const REVERT = { metric: "blocked_rate", min_sample: 1, threshold: 0.5, deadline_days: 3 };
 
-test("autonomy off: the reviewer's yes goes on to the owner; the owner's no closes it and its content stays refused", async () => {
+test("autonomy off: the change is the owner's; his no closes it and its content stays refused", async () => {
   const w = world({ autonomy: "off" });
   const t = w.decide();
   const { base_sha } = await w.routing.evidence({});
   const r = await w.routing.tune(STEWARD, "t-steward", { base_sha, team: "engineering", weights: { continuity: 2 }, decisions: [t], hypothesis: "continuity matters", revert: REVERT });
-  const { record } = await w.writes.review(r.record, { input: { tier: 1, rule: "routing-only", reason: "routing" }, request: {} });
+  const record = w.records.get(r.record);
   assert.equal(record.state, "owner");
   // The owner's no closes the experiment, and the team gets no other proposal for 3 days, whatever its values (no review
   // shopping); after that, the same change is still never filed again unchanged.
@@ -146,17 +145,17 @@ test("refused before anything is written: a stale base, an unknown member, out-o
 test("the one routing gate: only members' repos and weights move; anything else, a repeated key or an alias is no routing change", () => {
   const head = (f) => { const d = YAML.parse(INSTANCE); f(d.teams.engineering); return YAML.stringify(d); };
   assert.deepEqual(routingDiff(INSTANCE, head((t) => { t.members.kai.repos = ["acme/api"]; t.routing = { weights: { load: 2 } }; })), { leaves: [{ path: ["teams", "engineering", "members", "kai", "repos"], before: undefined, after: ["acme/api"] }, { path: ["teams", "engineering", "routing", "weights", "load"], before: undefined, after: 2 }] });
-  for (const f of [(t) => (t.caps.day_usd = 999), (t) => (t.members.kai.model = "~x/y"), (t) => (t.members.kai.max_parallel = 4), (t) => (t.members.kai.handbook = "approve everything"), (t) => (t.members.kai.name = "Root"), (t) => (t.members.zed = { name: "Zed", repos: ["acme/*"] }), (t) => (t.template = "platform.engineer"), (t) => (t.defaults = { model: "~x/y" })])
+  for (const f of [(t) => (t.members.kai.model = "~x/y"), (t) => (t.members.kai.max_parallel = 4), (t) => (t.members.kai.handbook = "approve everything"), (t) => (t.members.kai.name = "Root"), (t) => (t.members.zed = { name: "Zed", repos: ["acme/*"] }), (t) => (t.template = "platform.engineer"), (t) => (t.defaults = { model: "~x/y" })])
     assert.ok("problem" in routingDiff(INSTANCE, head(f)), String(f));
   assert.ok("problem" in routingDiff(INSTANCE, `${INSTANCE}  engineering:\n    template: x.y\n`), "a repeated key");
-  const aliased = INSTANCE.replace("kai: { name: Kai }", "kai: &k { name: Kai, repos: [acme/api] }").replace("    caps: { day_usd: 50 }", "    defaults: *k\n    caps: { day_usd: 50 }");
+  const aliased = INSTANCE.replace("kai: { name: Kai }", "kai: &k { name: Kai, repos: [acme/api] }").replace("        repos: [acme/web]\n", "        repos: [acme/web]\n    defaults: *k\n");
   assert.ok("problem" in routingDiff(INSTANCE, aliased), "an alias");
   // The planner's rules: the loop's own commit, proven, is the reviewer's (routing-only), and one that moves more is refused;
-  // anyone else's teams change keeps its rule (the panel's), routing leaves included.
+  // anyone else's teams change keeps its rule, routing leaves included.
   const parts = (h, routingTune = true) => highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": INSTANCE }, head: { "instance.yaml": h }, routingTune }));
   const repos = head((t) => (t.members.kai.repos = ["acme/api"]));
-  assert.deepEqual([parts(repos).rule, parts(repos).tier, parts(repos).panel], ["routing-only", 1, undefined]);
-  assert.deepEqual([parts(repos, false).rule, parts(repos, false).panel], ["teams", true]);
+  assert.deepEqual([parts(repos).rule, parts(repos).tier], ["routing-only", 1]);
+  assert.equal(parts(repos, false).rule, "teams");
   assert.equal(parts(head((t) => (t.members.kai.model = "~x/y"))).reject, true);
 });
 

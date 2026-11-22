@@ -72,7 +72,7 @@ function kernel(db, h) {
 const claimed = (records, files = ["instance.yaml"]) => records.file({
   kind: "kernel.apply", module: "kernel", args: { repo: "acme/aidenhq-instance", branch: "fleet/edit", sha: SHA, files }, targets: { content: readDigest(READ(files)) }, executor: { module: "kernel" }, policy: "p",
   card: { sentence: "Apply.", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "the runner", roles: [], kind: "runner" },
-  task: "TASK-1", identifier: "ACME-1", tier: 1, panel: false, state: "claimed",
+  task: "TASK-1", identifier: "ACME-1", tier: 1, state: "claimed",
 });
 const dbFile = () => join(mkdtempSync(join(tmpdir(), "apply-")), "kernel.db");
 

@@ -6,8 +6,8 @@
 // answers non-2xx or malformed, takes over 10 s or can't be reached (a socket that refuses is asked again a few times first)
 // holds the task in review for its scheduled re-check rather than refusing a finish that would be lost; only an explicit deny
 // or reopen refuses. A graded agent's task that no check covers passes, recorded as a would-block note (owner, 2026-11-21).
-// A checks file that is missing or won't load still refuses. The check's module later
-// releases its label, or resolves a hold it placed (POST /v1/checks/:task). A check in observe mode (`mode: observe`, gates.ts)
+// A checks file that is missing or won't load still refuses. The check's module later resolves a hold it placed
+// (POST /v1/checks/:task). A check in observe mode (`mode: observe`, gates.ts)
 // is asked like the others, but a verdict other than ok, or its failure, is only recorded as a would-block: it never moves,
 // holds or refuses the task, and it doesn't count as covering a graded agent's task. A task with an undecided approval card
 // (a record of its own in review, owner or approved) doesn't close, whatever the modules' checks say: the card would be
@@ -25,7 +25,7 @@ import { inTx, strictFact } from "./factlog.ts";
 import { parseGraderNote, type GraderNote } from "./grader-note.ts";
 
 export type Check = { module: string; at: string; url: string; rubric?: string; grade?: string; auth_secret: string; agents?: string[]; label?: string; mode?: "observe" };
-type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number; unlabel?: boolean; accepts?: boolean };
+type Verdict = { verdict: "ok" | "hold" | "pending" | "reopen" | "deny"; reason?: string; until?: string; state?: string; status?: number };
 export type Finish = { pass: true } | { pass: false; held: true; state: string; reason: string } | { pass: false; reopened: true; reason: string };
 type Issue = { id: string; identifier?: string; companyId?: string; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; parentId?: string | null; labelIds?: string[]; labels?: { id: string; name?: string }[]; executionPolicy?: Record<string, unknown> | null };
 /** A hold's resolving verdicts and the status each moves the task to. */
@@ -58,7 +58,7 @@ export function checksFile(file: string): () => Record<string, Check> {
   };
 }
 
-export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], localChanges = async () => [], released = async () => {}, log = () => {} }: {
+export function createChecks({ db, registry, owner, secret, resolver, agentKey = () => undefined, graded = () => false, pending = () => [], localChanges = async () => [], log = () => {} }: {
   db: DatabaseSync; registry: () => Record<string, Check>; owner: Api; secret: (n: string) => string; resolver: Resolver;
   /** An agent id's key (the grants table), for a check scoped to `agents`. */
   agentKey?: (id: string) => string | undefined;
@@ -68,8 +68,6 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   pending?: (task: string) => { id: string; kind: string }[];
   /** A task's own change requests on this server that are still open (codehost-local's host), with their checks: none may when it closes. */
   localChanges?: (task: { id: string; identifier?: string }) => Promise<{ url: string; checks: { ok: boolean; pending: boolean }[] }[]>;
-  /** A hold released to the task's delegator (an escalated grade): with no open delegator, the chief of staff hears it (escalate.ts). */
-  released?: (task: string, check: string) => Promise<unknown>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS check_holds (task TEXT NOT NULL, check_id TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (task, check_id))");
@@ -157,18 +155,13 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   }
 
   /**
-   * The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny.
-   * `cross`: an agent closing a task that is neither its job's own nor one its agent holds (its delegator's acceptance of an
-   * escalated grade): refused before anything moves unless a check answers `accepts`, so no other cross-task close passes. A
-   * task the closing agent holds (an orphaned run's task, say) is its own and asks the checks like its job's own task. A check
-   * that is unavailable hasn't answered, so the close parks in review for the check's re-check rather than being refused;
-   * only its `accepts` ever lets it pass.
+   * The finish gate for one task: `agent` and `tool` for an agent's own close, `via` for the runner's. Throws on a deny. A
+   * check that is unavailable hasn't answered, so the close parks in review for the check's re-check rather than being refused.
    */
   /** A finish check's verdict on a task (a grader's reopen, say): an outcome the routing learning loop trusts (routing-tune.ts), never its words. */
   const verdictEvent = (task: string, check: string, verdict: string) => noteFact(facts, verdictFact(task, check, verdict));
 
-  async function finish(ref: string, caller: { agent?: string; tool?: string; via: string; cross?: boolean }): Promise<Finish> {
-    const refuseCross = () => fail(403, "forbidden", `only this job's own task is finished here; ${ref} is finished by its assignee, or accepted by its delegator once grading has escalated it`);
+  async function finish(ref: string, caller: { agent?: string; tool?: string; via: string }): Promise<Finish> {
     const all = finishing();
     const i = await issue(ref);
     // An approval card still undecided would be claimed on the closed task and fail its write (writes.ts run): the task
@@ -203,24 +196,18 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
         noteFact(facts, { type: "gate.would_block", subject: `task:${note.task}`, version: `e-${randomBytes(8).toString("hex")}`, task: i.id, at: new Date().toISOString(), actor: "kernel", data: note });
         log("graded task finished with no covering check", note);
       }
-      if (caller.cross) throw refuseCross();
       return { pass: true };
     }
     // An enforcing check whose service is still unavailable (a container being replaced) holds the task in review instead of
     // refusing the close: the scheduled re-check asks again once it is back, and a real verdict is never invented here.
     const [verdicts] = await Promise.all([Promise.all(mine.map(async ([id, c]) => {
-      try { return { id, c, v: await ask(id, c, body), down: false }; }
+      try { return { id, c, v: await ask(id, c, body) }; }
       catch (e) {
         const why = String((e as { cause?: unknown }).cause ?? (e as Error).message);
         log("finish check unavailable, holding", { task: i.identifier, check: id, err: why });
-        return { id, c, down: true, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
+        return { id, c, v: { verdict: "pending", state: "pending", reason: `the finish check ${id} couldn't be reached (${why}): the task waits in review while its service comes back` } as Verdict };
       }
     })), watched]);
-    // A cross-task close passes only on the check's own `accepts`. When a check couldn't be reached it has given no verdict, so
-    // the finish parks in review for its scheduled re-check rather than being refused and lost; a real deny or reopen still
-    // refuses it as before, and no unavailable check ever stands in for the `accepts`.
-    const settled = verdicts.some((x) => x.v.verdict === "deny" || x.v.verdict === "reopen");
-    if (caller.cross && !verdicts.some((x) => x.v.verdict === "ok" && x.v.accepts) && (!verdicts.some((x) => x.down) || settled)) throw refuseCross();
     const deny = verdicts.find((x) => x.v.verdict === "deny");
     if (deny) throw fail(deny.v.status === 409 ? 409 : 403, "refused", String(deny.v.reason ?? `refused by ${deny.id}`).slice(0, 500));
     const reopen = verdicts.find((x) => x.v.verdict === "reopen");
@@ -252,7 +239,6 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       log("finish held", { task: i.identifier, via: caller.via, checks: held.map((x) => x.id) });
       return { pass: false, held: true, state: String(held[0]!.v.state ?? held[0]!.v.verdict), reason: String(held[0]!.v.reason ?? "") };
     }
-    for (const x of verdicts) if (x.v.unlabel) await unlabel(i, x.c);
     return { pass: true };
   }
 
@@ -264,7 +250,6 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     return Boolean(l) && labelIds(i).includes(l!.id);
   }
   /** Whether the finish gate recorded its hold of the task: the `check_holds` row `finish()` wrote, which resolving a hold requires. */
-  const heldAt = (id: string, i: Issue) => (db.prepare("SELECT at FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) as { at: string } | undefined)?.at ?? "";
   const recorded = (id: string, i: Issue) => Boolean(i.id) && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id = ?").get(i.id, id) !== undefined;
   /**
    * Whether `id` holds the task for the grader's token: the recorded row, or — without one — a task still waiting in review
@@ -277,19 +262,18 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   }
 
   /**
-   * A check's module on a task: `release` takes its label off (the hold is over; the module's own flow moves the task on);
-   * `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or blocked as the owner. Only
-   * the check's own module, and ok/reopen/block only on a task it holds.
+   * A check's module on a task: `ok`, `reopen` and `block` resolve a hold this check placed, moving the task to done, todo or
+   * blocked as the owner. Only the check's own module, and only on a task it holds.
    */
   // One resolution at a time per task, so two checks' oks never each see the other's hold and both leave the task in review.
   const resolving = new Map<string, Promise<unknown>>();
-  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown; before?: unknown };
+  type Resolve = { check?: unknown; verdict?: unknown; comment?: unknown };
   /** The module's one finish check and the verdict's target status, or the refusal: asked before any task is looked up. */
   function pick(module: string, b: Resolve) {
     const mine = finishing().filter(([id, c]) => c.module === module && (b.check === undefined || id === `${module}.${String(b.check)}`));
     if (mine.length !== 1) throw fail(403, "forbidden", `${module} has ${mine.length ? "several finish checks: name one (check)" : "no finish check"}`);
     const to = RESOLVES.get(String(b.verdict));
-    if (!to && b.verdict !== "release") throw fail(400, "bad_request", "verdict is release, ok, reopen or block");
+    if (!to) throw fail(400, "bad_request", "verdict is ok, reopen or block");
     return { id: mine[0]![0], c: mine[0]![1], to };
   }
   async function resolve(module: string, ref: string, b: Resolve) {
@@ -303,12 +287,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   async function resolveOne(module: string, ref: string, b: Resolve) {
     const { id, c, to } = pick(module, b);
     const i = await issue(ref);
-    if (b.verdict !== "release" && !recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
-    // A release hands the task to its delegator: only a task this check holds (its row, or in review under its label). On any
-    // other task it changes nothing and records nothing, so a module can't move a task it never held.
-    if (b.verdict === "release" && !(await holds(id, c, i))) return { ok: true, held: false };
-    // `before`: release only a hold placed by then (the module read its own state at that time); a newer one is a later finish.
-    if (b.verdict === "release" && typeof b.before === "string" && heldAt(id, i) > b.before) return { ok: true, held: false };
+    if (!recorded(id, i)) throw fail(409, "conflict", `${id} holds no finish on ${i.identifier ?? i.id}`);
     // A module's ok moves the task to done as the owner: the same hold as an agent's finish, so a change still open on this
     // server stops it too, before the hold is released.
     if (b.verdict === "ok") await noOpenChange(i, "the grader or the module that held it can move it on once the merge lands");
@@ -317,7 +296,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
     // An ok clears only this check's hold: while another check still holds the task it stays in review.
     const others = b.verdict === "ok" && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id <> ?").get(i.id, id) !== undefined;
-    if (to && !others) {
+    if (!others) {
       const l = c.label ? await label(i, c.label) : undefined;
       const ids = labelIds(i);
       await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
@@ -329,21 +308,12 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
       const say = others ? comment : {};
       if (Object.keys(drop).length || Object.keys(say).length) await patch(i, { ...drop, ...say });
     }
-    // The hold ends with its verdict's fact; `release` is one too: the check hands the decision to the task's delegator
-    // (grading's escalation), so task state reads the task, still in review, as waiting on its delegator.
-    // A release with `before` deletes only a hold placed by then: a finish that held the task again meanwhile keeps its hold
-    // (the row is what the grader resolves; the label the release took is only the view), and nothing is recorded.
-    const cutoff = b.verdict === "release" && typeof b.before === "string" ? b.before : undefined;
-    const ended = inTx(db, "finish_resolved", () => {
-      if (cutoff && heldAt(id, i) > cutoff) return false;
+    // The hold ends with its verdict's fact.
+    inTx(db, "finish_resolved", () => {
       db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
       strict(verdictFact(i.id, id, String(b.verdict)));
-      return true;
     });
-    if (!ended) return { ok: true, held: false };
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
-    // Released with nobody to decide it: the chief of staff gets it. A failure is logged loudly; the release itself stands.
-    if (b.verdict === "release") await released(i.id, id).catch((e: Error) => log("released hold reached nobody: the chief of staff wasn't told", { task: i.identifier, check: id, err: String(e.message).slice(0, 300) }));
     return { ok: true };
   }
   /**
@@ -396,5 +366,5 @@ export type Checks = ReturnType<typeof createChecks>;
 
 /** The finish gate's hold of a task by one check (its `check_holds` row: the version is the row's own time). */
 const heldFact = (task: string, check: string, at: string) => ({ type: "finish.held", subject: `task:${task}`, version: `${check}@${at}`, at, actor: "kernel", task, data: { check } });
-/** A check's verdict on a task: ok, reopen or block resolve its hold, release hands the decision to the delegator. */
+/** A check's verdict on a task: ok, reopen or block resolve its hold. */
 const verdictFact = (task: string, check: string, verdict: string) => ({ type: "finish.verdict", subject: `task:${task}`, version: `e-${randomBytes(8).toString("hex")}`, task, at: new Date().toISOString(), actor: "kernel", data: { check, verdict } });

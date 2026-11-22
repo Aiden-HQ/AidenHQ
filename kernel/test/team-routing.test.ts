@@ -23,21 +23,21 @@ test("the scorer: repo match, continuity and load each move the pick; ties go to
   const tied = pick([member("kai", { repos: ["acme/api"], running: 3, maxParallel: 1 }), member("mina", { running: 0 })], ["acme/api"], { weights: { repo: 3, continuity: 1, load: 1 } });
   assert.equal(tied.scored[0].score, tied.scored[1].score);
   assert.equal(tied.pick.key, "mina");
-  // Busy members still get a pick (it waits in the backlog); paused ones and a used-up team day get none.
+  // Busy members still get a pick (it waits in the backlog); paused ones get none.
   assert.equal(pick([member("kai", { running: 1, queued: 4 })]).pick.key, "kai");
   assert.deepEqual(pick([member("kai", { paused: true })]).excluded, [{ key: "kai", why: "paused" }]);
-  assert.equal(pick([member("kai")], [], { overBudget: true }).pick, undefined);
 });
 
-test("the schema compile and the router share: members, names, weights and caps checked", () => {
-  assert.deepEqual(teamProblems("eng", { template: "engineering.engineer", members: { kai: { name: "Kai", repos: ["acme/*"] } }, routing: { weights: { repo: 2 } }, caps: { day_usd: 90 } }), []);
+test("the schema compile and the router share: members, names and weights checked; a team cap names its replacement", () => {
+  assert.deepEqual(teamProblems("eng", { template: "engineering.engineer", members: { kai: { name: "Kai", repos: ["acme/*"] } }, routing: { weights: { repo: 2 } } }), []);
+  assert.match(teamProblems("eng", { template: "engineering.engineer", members: { kai: { name: "Kai" } }, caps: { day_usd: 90 } }).join(), /eng\.caps is gone: one install limit/);
   assert.match(teamProblems("eng", { template: "engineering.engineer", members: {} }).join(), /at least one member/);
   assert.match(teamProblems("eng", { template: "x.y", members: { kai: { name: "Kai", max_parallel: 11 } } }).join(), /max_parallel: 1 to 10/);
   assert.match(teamProblems("eng", { template: "x.y", members: { kai: { name: "Kai" } }, routing: { weights: { speed: 1 } } }).join(), /routing/);
 });
 
 const TEAM = "id-team", KAI = "id-kai", MINA = "id-mina", PARENT = "p-1";
-function world({ paused = [], dayUsedUp = false } = {}) {
+function world({ paused = [] } = {}) {
   let clock = Date.parse("2026-11-19T10:00:00Z");
   const issues = { [PARENT]: { id: PARENT, status: "in_progress", assigneeAgentId: "id-cos" } }, comments = {}, patches = [];
   let failPatch = false;
@@ -73,7 +73,7 @@ function world({ paused = [], dayUsedUp = false } = {}) {
   const told = [];
   const wakes = createWakes({
     db, owner, post: async () => ({}), now: () => clock, grants: () => grants, knownRepo: (r) => ["acme/api", "acme/web"].includes(r),
-    teamDayUsedUp: () => dayUsedUp, tellBlocked: async (task, text) => { told.push({ task: task.id, text }); },
+    tellBlocked: async (task, text) => { told.push({ task: task.id, text }); },
     dispatches: { may: () => true, agents: (mod) => (mod === "dispatch" ? [TEAM, KAI, MINA] : []) },
   });
   wakes.claim("dispatch");

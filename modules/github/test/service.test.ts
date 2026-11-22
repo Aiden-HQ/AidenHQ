@@ -22,7 +22,7 @@ const boxBundle = (ws, branch) => {
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, maintained, connected = () => true } = {}) {
+async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -74,7 +74,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
   };
   // GitHub as the owner (github-mcp client.ts GitHubAccess), faked: the owner's login, a token, the routes above.
   const access = {
-    connected, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
+    connected, scopes, status: () => ({ scopes: scopes(), problems: [] }), token: async () => "tok",
     identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
     rest: async (method, path, body) => ({ ...(await gh(method, path, body)), headers: new Headers() }),
     graphql: async () => ({}),
@@ -218,14 +218,6 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha);
   assert.equal(existsSync(marker), false, "a workspace hook, filter or fsmonitor ran");
   assert.match(readFileSync(join(root, "cache", ".reviewed-refs.jsonl"), "utf8"), /"repo":"acme-agents\/widget","ref":"refs\/ws\/TASK-1\/feature"/, "the kept head is noted for pruning");
-  // The head is the task that planned it first; another task re-publishing it, noted or pushed without a note, never takes it.
-  const by = () => JSON.parse(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"));
-  assert.deepEqual(by(), { [sha]: { task: "t1", platform: false } });
-  await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
-  assert.equal(by()[sha].task, "t1");
-  writeFileSync(join(root, "cache", "pushed-by.json"), "{}");
-  await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t2" });
-  assert.deepEqual(by(), {});
 });
 
 test("a head is the runner's own only in the repo it was pushed to: the same commit as a PR on a maintained repo is reviewed, never Tier 0", async (t) => {
@@ -260,6 +252,28 @@ test("ops answer the kernel only; the token op is gone", async (t) => {
   assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } })).status, 404);
 });
 
+// A runner-token refusal with no usable X-Accepted-OAuth-Scopes header (GitHub leaves it off some 403s) is still the
+// owner's missing runner permission when the sign-in's own scopes say admin:org is absent: the op derives the typed need
+// itself, so the kernel records a scope need instead of a silent error. With the scope granted, the same 403 stays plain.
+test("runner_token derives the admin:org need from the known scopes when GitHub gives no header", async (t) => {
+  const refused = () => ({ status: 403, body: { message: "Forbidden", documentation_url: "https://docs.github.com/rest/actions/self-hosted-runners" } });
+  const noScope = await setup(t, { routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const missing = await noScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(missing.status, 403, JSON.stringify(missing.json));
+  assert.deepEqual(missing.json.need, { cause: "scope", scope: "admin:org" }, "the owner-fixable need the kernel records");
+  assert.match(missing.json.error, /admin:org/);
+  // Scopes that could not be read (an empty list) say nothing about admin:org: the refusal stays the plain error it was.
+  const unknownScopes = await setup(t, { scopes: () => [], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const unread = await unknownScopes.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(unread.status, 502, "an unknown scope list is not a missing admin:org");
+  assert.equal(unread.json.need, undefined);
+  const hasScope = await setup(t, { scopes: () => ["repo", "admin:org"], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const other = await hasScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(other.status, 502, "a 403 the scopes do not explain is still a plain error");
+  assert.equal(other.json.need, undefined);
+  assert.match(other.json.error, /403 Forbidden/);
+});
+
 test("held write resumes on reconnect", async (t) => {
   let on = false;
   const { origin, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
@@ -290,11 +304,9 @@ test("held write is re-checked on reconnect", async (t) => {
   rmSync(join(dirname(ws), ".aidenhq"), { recursive: true });
   const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
   assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
-  const notes = readFileSync(join(root, "cache", "pushed-by.json"), "utf8");
   on = true;
   await handle.stepHeld();
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(readFileSync(join(root, "cache", "pushed-by.json"), "utf8"), notes, "the re-check writes no provenance");
   assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
   assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);
@@ -322,6 +334,14 @@ test("editing a comment is allowed only for one the kernel recorded as ours", as
   assert.equal(ghCalls.some((c) => c.method === "PATCH"), false);
   oursRefs.add("github:acme-agents/widget#3/comment/55");
   assert.equal((await call("/ops/comment", edit)).status, 200);
+});
+
+test("reading a job: a missing one is null, a permission refusal stays a 403 and any other failure a 502", async (t) => {
+  const { call } = await setup(t, { routes: (m, p) => (p === "/repos/acme/gone/actions/jobs/1" ? { status: 404, body: {} } : p === "/repos/acme/denied/actions/jobs/1" ? { status: 403, body: { message: "Resource not accessible by integration" } } : p === "/repos/acme/down/actions/jobs/1" ? { status: 500, body: {} } : undefined) });
+  const job = (repo) => call("/ops/read", { kind: "job", repo, id: 1 });
+  assert.equal((await job("acme/gone")).status, 200);
+  assert.equal((await job("acme/denied")).status, 403);
+  assert.equal((await job("acme/down")).status, 502);
 });
 
 test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {

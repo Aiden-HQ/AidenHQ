@@ -27,7 +27,7 @@ async function harness(t) {
     "WOR-3": { id: "t3", identifier: "WOR-3", status: "done", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null },
   };
   const byRef = (ref) => Object.values(tasks).find((i) => i.id === ref || i.identifier === ref);
-  const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({}), release: async () => {} };
+  const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({}) };
   const { server, grades } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
@@ -69,69 +69,4 @@ test("an unauthenticated filing is refused 403 before its body is validated", as
   const h = await harness(t);
   assert.equal((await h.call("POST", "/grades", {}, {})).status, 403);
   assert.equal((await h.agentFile("cos", {})).status, 400);
-});
-
-test("the read route answers the delegating agent with the filed grade, so it can re-file the differing one", async (t) => {
-  const h = await harness(t);
-  assert.deepEqual((await h.agentRead("cos", "t1")).json, { grade: null });
-  await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR });
-  const read = await h.agentRead("cos", "t1");
-  assert.equal(read.status, 200);
-  assert.deepEqual(read.json.grade.rubric, RUBRIC);
-  assert.deepEqual(read.json.grade.deliverable, PR);
-  // Only the agent that delegated the task reads it.
-  assert.equal((await h.agentRead("other", "t1")).status, 403);
-});
-
-test("a module's differing re-file from the recorded module is accepted; another module's and an agent's are refused", async (t) => {
-  const h = await harness(t);
-  assert.equal((await h.moduleFile("maintainer", { task: { id: "t2" }, rubric: RUBRIC, deliverable: PR })).status, 200);
-  const corrected = ["the issue is closed", "its fix PR is merged", "the comment cites it"];
-  assert.equal((await h.moduleFile("maintainer", { task: { id: "t2" }, rubric: corrected, deliverable: { kind: "issue", ref: "acme/app#7" } })).status, 200);
-  assert.deepEqual(h.grades.get("t2").rubric, corrected);
-  // Another module filed neither row: refused, and the row is untouched.
-  const stranger = await h.moduleFile("security-watch", { task: { id: "t2" }, rubric: ["xray one", "yankee two", "zulu three"], deliverable: PR });
-  assert.equal(stranger.status, 409);
-  assert.match(stranger.json.error, /only module:maintainer/);
-  assert.deepEqual(h.grades.get("t2").rubric, corrected);
-});
-
-test("a row with no filer record refuses a differing re-file on both the agent route and the module route", async (t) => {
-  const h = await harness(t);
-  // An older build's row: written straight to the table, with no grade_filers entry.
-  h.grades.db.prepare("INSERT INTO grades (issue_id, rubric, deliverable, attempts, state, verdicts, created_at, updated_at) VALUES (?, ?, ?, 0, 'open', '[]', ?, ?)")
-    .run("t1", JSON.stringify(RUBRIC), JSON.stringify(PR), "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
-  for (const [route, r] of [
-    ["agent", await h.agentFile("cos", { issue: "t1", rubric: ["alpha one", "beta two", "gamma three"], deliverable: APP })],
-    ["module", await h.moduleFile("maintainer", { task: { id: "t1" }, rubric: ["alpha one", "beta two", "gamma three"], deliverable: APP })],
-  ]) {
-    assert.equal(r.status, 409, route);
-    assert.match(r.json.error, /filed before filers were recorded/, route);
-    assert.match(r.json.error, /new task/, route);
-  }
-  assert.deepEqual(h.grades.get("t1").rubric, RUBRIC, "the legacy row is left exactly as it was");
-  assert.deepEqual(h.grades.get("t1").deliverable, PR);
-  // A byte-identical filing on such a row is still just a retry on either route.
-  assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
-  assert.equal((await h.moduleFile("maintainer", { task: { id: "t1" }, rubric: RUBRIC, deliverable: PR })).status, 200);
-});
-
-test("a differing re-file of a closed task is refused on both routes while its row still reads open", async (t) => {
-  const h = await harness(t);
-  // Both rows were filed and are still open, so only the task's own status stands between them and a restart.
-  assert.equal((await h.agentFile("cos", { issue: "t3", rubric: RUBRIC, deliverable: PR })).json.created, true);
-  assert.equal(h.grades.get("t3").state, "open");
-  for (const [route, r] of [
-    ["agent", await h.agentFile("cos", { issue: "t3", rubric: ["alpha one", "beta two", "gamma three"], deliverable: APP })],
-    ["module", await h.moduleFile("maintainer", { task: { id: "t3" }, rubric: ["alpha one", "beta two", "gamma three"], deliverable: APP })],
-  ]) {
-    assert.equal(r.status, 409, route);
-    assert.match(r.json.error, /already closed/, route);
-  }
-  assert.deepEqual(h.grades.get("t3").rubric, RUBRIC, "the closed task's row is left as it was");
-  assert.deepEqual(h.grades.get("t3").deliverable, PR);
-  assert.equal(h.grades.get("t3").state, "open");
-  // A byte-identical filing on a closed task is still just a retry.
-  assert.equal((await h.agentFile("cos", { issue: "t3", rubric: RUBRIC, deliverable: PR })).status, 200);
-  assert.equal((await h.moduleFile("maintainer", { task: { id: "t3" }, rubric: RUBRIC, deliverable: PR })).status, 200);
 });

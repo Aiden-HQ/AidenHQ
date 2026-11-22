@@ -35,11 +35,17 @@ const slugOf = (repo: unknown) => {
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
 
-// A PR and an issue as the grader reads them (modules/grading/service/src/evidence.ts).
+// A PR and an issue as the grader reads them (modules/grading/service/src/grader/evidence.ts). `chain` is the PR's own commits as
+// GitHub defines them (the head branch's commits not present in the base branch), each with its first parent: evidence.ts finds the
+// one commit whose parent is not itself in that list -- the oldest -- and states that parent as the base commit. It is read as a
+// whole list, never as `first: 1`, because GitHub documents neither the connection's order nor that one page holds every commit.
+// Nodes are `PullRequestCommit`s, whose commit is under `.commit`; the base ref's oid is never selected: it is the base ref's moving
+// tip, not a commit the PR's history starts from.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       number title body url state headRefOid headRefName baseRefName mergedAt mergeCommit { oid }
+      chain: commits(first: 100) { pageInfo { hasNextPage } nodes { commit { oid parents(first: 10) { totalCount nodes { oid } } } } }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
@@ -120,7 +126,8 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   if (b.kind === "job") {
     const r = await ctx.access.rest("GET", `/repos/${s.slug}/actions/jobs/${b.id}`);
     if (r.status === 404) return { status: 200, json: null };
-    if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
+    // A permission refusal (the access layer already types rate limits and sign-in problems) stays a 403: the caller may try another repo.
+    if (r.status >= 300) throw fail(r.status === 403 ? 403 : 502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
     const j = r.body;
     return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, url: j.html_url } };
   }
@@ -148,11 +155,34 @@ async function commit(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): P
   return { status: 200, json: { sha: String(r.body?.commit?.sha ?? "") } };
 }
 
+/** The scopes that cover `admin:org`'s runner registration, GitHub's OAuth tree (its client.ts IMPLIES): any of these grants it. */
+const RUNNER_SCOPES = ["admin:org", "write:org", "manage_runners:org"];
+/**
+ * A runner registration refused with no usable `X-Accepted-OAuth-Scopes` header (the client cannot name the scope from the
+ * answer alone) is still a missing `admin:org` when the sign-in's own scopes say so: the owner's fix is the same one. GitHub
+ * omits that header on some 403s, so the op derives the need from the known scopes instead of leaving a plain error.
+ *
+ * Only a known scope list can say a scope is absent: an empty one means the scopes could not be read (a failed grant lookup, a
+ * connection that is not signed in), and a 403 with nothing to compare is the plain error it was, never a guessed need.
+ */
+const missingRunnerScope = (ctx: OpsContext) => {
+  const scopes = ctx.access.scopes();
+  return scopes.length > 0 && !RUNNER_SCOPES.some((s) => scopes.includes(s));
+};
+
 /** One op's answer: a status, then a JSON body (or, for fetch, the bundle's open file stream in `json`). */
 export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<Answer> {
   if (op === "runner_token") {
     if (!/^[\w.-]+$/.test(String(b.org ?? ""))) throw fail(400, `${String(b.org)} is not an org`);
-    const r = await ok(ctx, "POST", `/orgs/${b.org}/actions/runners/registration-token`);
+    const path = `/orgs/${b.org}/actions/runners/registration-token`;
+    // The client classifies a 403 with a usable X-Accepted-OAuth-Scopes as a scope need and throws it here unchanged; a 403
+    // it could not classify comes back as an answer, and is still the owner's missing runner permission when the sign-in's
+    // own scopes say admin:org is absent. Otherwise it stays the plain error it was.
+    const r = await ctx.access.rest("POST", path);
+    if (r.status >= 300) {
+      if (r.status === 403 && missingRunnerScope(ctx)) throw Object.assign(fail(403, `GitHub needs the \`admin:org\` permission: reconnect GitHub on the board (Settings, Connections)`), { need: { cause: "scope", scope: "admin:org" } });
+      throw fail(r.status === 409 ? 409 : 502, `GitHub POST ${path}: ${r.status} ${r.body?.message ?? ""}`.trim());
+    }
     return { status: 200, json: { token: r.body?.token, expires_at: r.body?.expires_at } };
   }
   const s = slugOf(b.repo);

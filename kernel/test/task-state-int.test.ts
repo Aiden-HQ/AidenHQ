@@ -29,8 +29,11 @@ function world(t: any) {
   const facts = openFacts(db);
   const issue: any = { id: "t1", identifier: "WOR-1", status: "in_progress", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1 };
   const comments: any[] = [];
+  // A blocker the task names is a live issue: a read of an id this fake does not hold is a deleted one.
+  const blocker: any = { id: "b1", identifier: "WOR-9", status: "in_progress", assigneeAgentId: "a-2" };
   const cp = async (method: string, p: string, body?: any) => {
     const u = new URL(p, "http://cp");
+    if (u.pathname === "/api/issues/b1") return { status: 200, json: blocker };
     if (u.pathname === "/api/agents/" + AGENT) return { status: 200, json: { id: AGENT, companyId: "c-1", status: "idle", lifecycleHolds: [] } };
     if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: u.searchParams.get("assigneeAgentId") === AGENT ? [issue] : [] };
     if (u.pathname === "/api/issues/t1") return { status: 200, json: issue };

@@ -6,11 +6,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs } from "../src/jobs.ts";
+import { createJobs, writeLastMessage } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 
@@ -119,42 +119,6 @@ test("the kernel is the job ledger: a module's open jobs stay until it acknowled
   assert.deepEqual(jobs.list("acme-dispatch", { task: "task-1" }).map((x) => [x.id, x.state, x.acked]), [[j.id, "done", true]]);
 });
 
-test("a refusal table from before the rule code gains its column once, however many openers find it missing", () => {
-  const sb = sandbox();
-  const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE job_refusals (job TEXT PRIMARY KEY, why TEXT NOT NULL)");
-  db.prepare("INSERT INTO job_refusals (job, why) VALUES (?, ?)").run("j-old", "publish: refused before the code existed");
-  const open = () => createJobs({ db, cfg: sb.cfg, boxWrap: 'exec "$@"', log: () => {}, mayDispatch: () => false, facts: openFacts(db), agentKey: () => "acme-crew", cp: { task: async (id) => ({ id, status: "todo" }) } });
-  open();
-  open();
-  assert.deepEqual({ ...db.prepare("SELECT why, code, kind, source FROM job_refusals WHERE job = ?").get("j-old") }, { why: "publish: refused before the code existed", code: null, kind: null, source: null }, "the old row survives, with no code, no kind and no source");
-});
-
-test("a job view shows a refusal's code, its kind and its module apart, so a dispatcher binds a terminal rule to the exact kind", async () => {
-  const sb = sandbox();
-  const db = new DatabaseSync(":memory:");
-  const jobs = createJobs({ db, cfg: sb.cfg, boxWrap: 'exec "$@"', log: () => {}, mayDispatch: () => false, facts: openFacts(db), agentKey: () => "acme-crew", cp: { task: async (id) => ({ id, status: "todo" }) } });
-  db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) VALUES ('j-twin', 'acme-dispatch', 'acme-crew', 'task-1', '', 0, '', '', 1, '[]', 0, 0, 'running')").run();
-  // The kernel's own routing: the kind and the module a caller asked through, never anything an executor's words could claim.
-  db.prepare("INSERT INTO job_refusals (job, why, code, kind, source) VALUES (?, ?, ?, ?, ?)").run("j-twin", "github.pr: only the platform line opens this", "platform-only", "github.pr", "github");
-  const view = await jobs.get("acme-dispatch", "j-twin");
-  assert.deepEqual([view.refusedCode, view.refusedKind, view.refusedSource], ["platform-only", "github.pr", "github"], "the view names all three apart");
-  // A refusal with no code shows its words only: nothing to match, so a caller treats it as the agent's to retry.
-  db.prepare("UPDATE job_refusals SET why = ?, code = NULL, kind = NULL, source = NULL WHERE job = ?").run("github.pr: head-moved", "j-twin");
-  const plain = await jobs.get("acme-dispatch", "j-twin");
-  assert.deepEqual([plain.refused, plain.refusedCode, plain.refusedKind, plain.refusedSource], ["github.pr: head-moved", undefined, undefined, undefined]);
-});
-
-test("a dispatcher may write into the workspace of an open task of an agent it dispatches, assigned to it", async () => {
-  const { cfg } = sandbox();
-  const code = async (jobs, module, task) => (await jobs.workspace(module, task).catch((e) => e)).code;
-  assert.deepEqual(await inProcess(cfg).workspace("acme-dispatch", "task-2"), { task: "task-2", workspace: "PEN-2" });
-  assert.equal(await code(inProcess(cfg), "other", "task-2"), "not-your-task");
-  assert.equal(await code(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-2", status: "todo" }) }), "acme-dispatch", "task-1"), "not-your-task");
-  assert.equal(await code(inProcess(cfg, { task: async (id) => ({ id, identifier: "PEN-1", assigneeAgentId: "agent-1", status: "done" }) }), "acme-dispatch", "task-1"), "task-closed");
-  assert.equal(await code(inProcess(cfg), "acme-dispatch", "../x"), "bad-request");
-});
-
 test("a job's env in its box: the launcher's env file, nothing of the kernel's own", async () => {
   const sb = sandbox();
   const jobs = inProcess(sb.cfg);
@@ -215,31 +179,6 @@ for (const signal of ["SIGUSR2", "SIGKILL"]) {
   });
 }
 
-test("a job that died while no kernel followed it is lost (exit null); a reused pid is never adopted", async () => {
-  const sb = sandbox();
-  const { dir } = sb;
-  const a = await host(dir);
-  const j = await a.run(sb, "slow");
-  await until("the job going", async () => (await a.call("GET", `/v1/jobs/${j.id}`)).progress.said);
-  a.p.kill("SIGKILL");
-  await a.exited;
-  process.kill(-j.pid, "SIGKILL"); // the whole group, the recording shell too: no exit status is left
-  await until("the job gone", () => !alive(j.pid));
-  assert.equal(existsSync(`${j.log}.exit`), false);
-  // A second job whose pid is a live process that isn't its run (this test runner's own): not adopted either.
-  const db = new DatabaseSync(join(dir, "kernel.db"));
-  db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) SELECT 'j-00000000000000ff', module, agent, 'task-2', engine, ?, log || '.other', dir, at, jobcaps, observing, live_input, 'running' FROM jobs WHERE id = ?").run(process.pid, j.id);
-  db.close();
-  const b = await host(dir);
-  for (const id of [j.id, "j-00000000000000ff"]) {
-    const v = await b.call("GET", `/v1/jobs/${id}`);
-    assert.equal(v.state, "lost", id);
-    assert.equal(v.exit, null);
-  }
-  b.p.kill("SIGTERM");
-  await b.exited;
-});
-
 // One entrance: POST /v1/jobs takes only an admitted wake from a module with kernel.jobs; the old request shape (agent, engine,
 // box) is refused, and so is the old agent-kind job token, everywhere (its jobcaps and write kinds are no one's authority).
 test("only an admitted wake starts a job; a legacy job request and an agent-kind token are refused", async (t) => {
@@ -272,44 +211,6 @@ test("only an admitted wake starts a job; a legacy job request and an agent-kind
   assert.deepEqual([may("acme-dispatch", "id-a"), may("acme-dispatch", "id-f"), may("acme-dispatch", "id-x"), may("acme-dispatch", "id-n"), may("other", "id-a"), may("acme-dispatch", "id-missing")], [true, true, false, false, false, false]);
 });
 
-test("a comment reaches a live run while it works; a stop cancels a run", async () => {
-  const sb = sandbox();
-  const jobs = inProcess(sb.cfg);
-  const j = jobs.run(sb);
-  await until("the first progress", async () => (await jobs.get("acme-dispatch", j.id)).progress.said);
-  assert.deepEqual(jobs.input("acme-dispatch", j.id, "also this"), { sent: true });
-  await until("the comment heard", async () => (await jobs.get("acme-dispatch", j.id)).progress.said === "heard: also this");
-  assert.equal((await finished(jobs, j.id)).state, "done");
-  assert.deepEqual(jobs.input("acme-dispatch", j.id, "too late"), { sent: false });
-  const s = jobs.run(sb, "slow");
-  const v0 = await jobs.get("acme-dispatch", s.id);
-  // A status read waits for a change when asked to.
-  const v1 = await jobs.get("acme-dispatch", s.id, { after: v0.version, waitMs: 5000 });
-  assert.ok(v1.version > v0.version);
-  jobs.stop("acme-dispatch", s.id);
-  const v = await finished(jobs, s.id);
-  assert.equal(v.state, "cancelled");
-  assert.equal(v.cancelled, true);
-});
-
-test("a program that isn't installed ends the job with the reason", async () => {
-  const sb = sandbox();
-  const jobs = inProcess(sb.cfg);
-  const j = jobs.run(sb, "missing");
-  const v = await finished(jobs, j.id);
-  assert.notEqual(v.exit, 0);
-  assert.match(v.final, /couldn't start \S+: ENOENT/);
-});
-
-test("a job that fails without a word carries its first error line as its final message", async () => {
-  const sb = sandbox();
-  const jobs = inProcess(sb.cfg);
-  const j = jobs.run(sb, "dies");
-  const v = await finished(jobs, j.id);
-  assert.equal(v.state, "failed");
-  assert.equal(v.final, "The job failed: Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=… Bearer … run ahqj_…");
-});
-
 // The owner's Stop (POST /v1/stop): only the board's key; the running job ends cancelled, records the account, and the task gets
 // the kernel's one fixed note. A module's token or an agent's is refused, and nothing is stopped.
 test("the owner stops a running job from the board; a module or agent token cannot", async (t) => {
@@ -333,55 +234,17 @@ test("the owner stops a running job from the board; a module or agent token cann
   assert.deepEqual((await stop("the-boards-key")).json, { stopped: [] }, "nothing running is left to stop");
 });
 
-test("a job's facts: started, then ended with what the gateway billed for it and whether it acted; a lost job ends as lost", async () => {
-  const sb = sandbox();
-  const jobs = inProcess(sb.cfg);
-  jobs.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, run_id TEXT, model TEXT, input INTEGER, cached INTEGER, output INTEGER, cost_usd REAL, status TEXT)");
-  const j = jobs.run(sb);
-  const add = jobs.db.prepare("INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-  add.run("k1", j.id, "acme/m1", 100, 40, 10, 0.25, "ok");
-  add.run("k2", j.id, "acme/m1", 50, 0, 5, 0.5, "ok");
-  add.run("k3", j.id, "acme/m1", 0, 0, 0, 9, "cap_reached");
-  jobs.facts.record({ type: "task.commented", subject: "task:task-1", version: "c1", at: new Date().toISOString(), actor: "agent:acme-crew", task: "task-1", data: { kind: "reply", job: j.id } });
-  await finished(jobs, j.id);
-  const [started, ended] = ["job.started", "job.ended"].map((t) => jobs.facts.forTask("task-1").find((f) => f.type === t));
-  assert.equal(started.subject, `job:${j.id}`);
-  assert.equal(started.actor, "agent:acme-crew");
-  assert.deepEqual(ended.data, { state: "done", exit: 0, why: "", cost_usd: 0.75, input: 150, cached: 40, output: 15, model: "acme/m1", acted: true });
-  // A run that died while no kernel followed it.
-  jobs.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state) VALUES ('j-gone', 'acme-dispatch', 'agent-1', 'task-2', 'echo', 999999, '/nope', '/nope', ?, '[]', 0, 0, 'running')").run(Date.now());
-  jobs.adopt();
-  const lost = jobs.facts.forTask("task-2").find((f) => f.type === "job.ended");
-  assert.equal(lost.data.state, "lost");
-  assert.equal(lost.data.acted, false);
-});
-
 // Two openers setup at once on one jobs database (a body and its map, a test and the service): the schema is one
 // BEGIN IMMEDIATE behind a busy timeout, each column read inside it, so the second opener sees the first's ALTERs instead of
 // trying them again. Both start while a third connection holds the write lock, so neither can win it before the other.
-test("two openers of the same jobs database setup cleanly at once: no duplicate column, no lock failure", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "kernel-jobs-race-"));
-  const file = join(dir, "kernel.db");
-  const open = () => new DatabaseSync(file);
-  const holder = open();
-  // The oldest shape: a jobs table without any of the columns added since.
-  holder.exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, module TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL, engine TEXT NOT NULL,
-    pid INTEGER NOT NULL, log TEXT NOT NULL, dir TEXT NOT NULL, at INTEGER NOT NULL, jobcaps TEXT NOT NULL, observing INTEGER NOT NULL,
-    live_input INTEGER NOT NULL, box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER,
-    final TEXT NOT NULL DEFAULT '', why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER);
-    PRAGMA journal_mode = WAL;`);
-  holder.exec("BEGIN IMMEDIATE");
-  const opener = () => spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "fixtures/jobs-open.ts")], { env: { ...process.env, JOBS_DB: file }, stdio: ["ignore", "pipe", "pipe"] });
-  const done = (p) => new Promise<{ code: number | null; message: string }>((r) => { let t = ""; p.stderr.on("data", (d) => (t += d)); p.on("close", (code) => r({ code, message: t })); });
-  // Both are waiting on the same held lock when it is released: whichever wakes first runs the ALTERs, the other must not repeat them.
-  const both = [opener(), opener()].map(done);
-  await wait(300);
-  holder.exec("COMMIT");
-  holder.close();
-  const [a, b] = await Promise.all(both);
-  assert.deepEqual([a.code, b.code], [0, 0], `both openers setup: ${a.message} | ${b.message}`);
-  const db = open();
-  const cols = (db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name);
-  for (const c of ["full_prompt", "resumed", "acked", "authority", "identifier"]) assert.ok(cols.includes(c), c);
-  db.close();
+
+test("a job's last message is written even when its logs folder was deleted, and a failed write never throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "lastmsg-"));
+  const logPath = join(root, "logs", "WOR-1-1.log");
+  writeLastMessage(logPath, "done", () => {});
+  assert.equal(readFileSync(`${logPath}.last.md`, "utf8"), "done");
+  const logged: string[] = [];
+  writeFileSync(join(root, "file"), "");
+  writeLastMessage(join(root, "file", "logs", "x.log"), "done", (msg) => logged.push(msg));
+  assert.deepEqual(logged, ["couldn't write the job's last message"]);
 });

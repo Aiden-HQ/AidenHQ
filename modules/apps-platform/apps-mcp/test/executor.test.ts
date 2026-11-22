@@ -1,5 +1,5 @@
 // The apps platform's write kinds (executor.ts): plan checks the caller and pins what runs, raising a stateful deploy to the
-// reviewer (the panel on a migration); execute runs the record's args through the engine.
+// reviewer (a migration labelled as one); execute runs the record's args through the engine.
 import { describe, expect, it } from "vitest";
 import { appsExecutor, touchesMigrations } from "../src/executor.js";
 import { parseApp, type App } from "../src/registry.js";
@@ -11,6 +11,8 @@ const apps: Record<string, App> = {
   web: parseApp({ name: "web", repo: "example-org/web", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] } }),
   narrow: parseApp({ name: "narrow", repo: "example-org/narrow", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: [{ agent: "keeper", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }], paths: ["/api/agent/intake"] } }),
   db: parseApp({ name: "db", repo: "example-org/db", owner: "app-maintainer", description: "d", stateful: true }),
+  // Restricted to the finance role: app_view refuses an agent without it, and so must a member app_api call.
+  ledger: parseApp({ name: "ledger", repo: "example-org/ledger", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] }, access: { roles: ["finance"] } }),
 };
 const who = (key: string, roles: string[] = []) => ({ agent: `ag-${key}`, key, name: key, roles, kind: "run" });
 
@@ -39,15 +41,15 @@ describe("apps-platform write kinds", () => {
     expect(await plan(ex, "restart", { name: "web" })).toEqual({ args: { name: "web" } });
   });
 
-  it("a deploy pins the full commit; a stateful one goes to the reviewer, with the panel on a migration, and is nothing to do when it already runs", async () => {
+  it("a deploy pins the full commit; a stateful one goes to the reviewer, a migration labelled as one, and is nothing to do when it already runs", async () => {
     const plain = await plan(platform().ex, "deploy", { name: "web", sha: "abc1234" });
     expect(plain).toMatchObject({ args: { name: "web", sha: "abc1234".padEnd(40, "a"), stateful: false }, targets: { commit: "abc1234".padEnd(40, "a") } });
     expect(plain.raise).toBeUndefined();
     const stateful = await plan(platform().ex, "deploy", { name: "db", sha: SHA });
-    expect(stateful.raise).toMatchObject({ tier: 1, panel: false, rule: "deploy-stateful" });
+    expect(stateful.raise).toMatchObject({ tier: 1, rule: "deploy-stateful" });
     // The author's commit message comes last, after its marker, printable (the reviewer reads it apart from the diff).
     expect(stateful.card!.details).toMatch(/\n\nCommit message \(written by the app's author\): fix: thing$/);
-    expect((await plan(platform({ diff: diff("migrations/002.sql") }).ex, "deploy", { name: "db", sha: SHA })).raise).toMatchObject({ tier: 1, panel: true, rule: "deploy-migration" });
+    expect((await plan(platform({ diff: diff("migrations/002.sql") }).ex, "deploy", { name: "db", sha: SHA })).raise).toMatchObject({ tier: 1, rule: "deploy-migration" });
     expect((await plan(platform({ running: { sha: SHA, healthy: true } }).ex, "deploy", { name: "db", sha: SHA })).satisfied?.evidence).toMatch(/db already runs aaaaaaaaaaaa and is healthy/);
     await expect(plan(platform({ diff: "" }).ex, "deploy", { name: "db", sha: SHA })).rejects.toThrow(/too large \(or couldn't be read\) to review/);
     await expect(plan(platform().ex, "rollback", { name: "db" })).rejects.toThrow(/stateful: rollback needs the owner's approval/);
@@ -68,7 +70,18 @@ describe("apps-platform write kinds", () => {
     expect(r.card!.details).toContain("Script (from the app's package.json): node seed.js\nReason (written by the requesting agent): fill it");
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x" })).rejects.toThrow(/may not call web's API/);
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/admin" }, who("keeper"))).rejects.toThrow(/isn't under web's agent API paths/);
-    expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", body: { a: 1 } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/api/agent/x", body: { a: 1 } });
+    expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", body: { a: 1 } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/api/agent/x", role: "admin", body: { a: 1 } });
+    // A member request is the signed-in test-user identity on a public route; the caller gate still applies.
+    expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/intake/feedback", role: "member", body: { text: "x" } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/intake/feedback", role: "member", body: { text: "x" } });
+    await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/intake/feedback", role: "member" }, who("intruder"))).rejects.toThrow(/may not call web's API/);
+    // A restricted app: member is what app_view would do, so the app's read-access policy applies as well as the caller gate.
+    await expect(plan(ex, "api_write", { name: "ledger", method: "POST", path: "/intake", role: "member" }, who("keeper"))).rejects.toThrow(/no access to ledger/);
+    expect((await plan(ex, "api_write", { name: "ledger", method: "POST", path: "/intake", role: "member" }, who("keeper", ["finance"]))).args).toMatchObject({ role: "member" });
+    // The admin API keeps its own scope: no finance role is needed under the app's api.paths.
+    expect((await plan(ex, "api_write", { name: "ledger", method: "POST", path: "/api/agent/x" }, who("keeper"))).args).toMatchObject({ role: "admin" });
+    // The kernel routes recorded arguments here, so an unknown role is refused rather than signed as admin.
+    await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", role: "Member" }, who("keeper"))).rejects.toThrow(/role must be admin or member/);
+    await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", role: "owner" }, who("keeper"))).rejects.toThrow(/role must be admin or member/);
     // A caller held to exact routes: the method is part of the check, so a write plan can't spend its read route.
     expect((await plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).args).toMatchObject({ caller: "keeper", method: "POST" });
     await expect(plan(ex, "api_write", { name: "narrow", method: "DELETE", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);

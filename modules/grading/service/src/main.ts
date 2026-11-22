@@ -26,7 +26,6 @@ async function appsCall(method: string, path: string, body?: unknown) {
 const kernel: Kernel = {
   issue: (ref) => kernelCall("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`),
   repos: async () => (await kernelCall("GET", "/v1/agents")).repos ?? {},
-  release: async (task, before) => (await kernelCall("POST", `/v1/checks/${encodeURIComponent(task)}`, { verdict: "release", ...(before ? { before } : {}) }))?.held !== false,
 };
 
 const db = new DatabaseSync(process.env.GRADES_DB ?? "/data/grades.sqlite");
@@ -44,6 +43,6 @@ const kernelText = async (path: string, body: unknown) => {
   if (!r.ok) throw new Error(`kernel POST ${path} → ${r.status}`);
   return r.text();
 };
-const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: grades.resubmitted() }), kernel: kernelCall, kernelBytes, github: createGithub({ kernel: kernelCall, text: kernelText }), apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log, emit: facts.emit });
+const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due() }), kernel: kernelCall, kernelBytes, github: createGithub({ kernel: kernelCall, text: kernelText }), apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log, emit: facts.emit });
 let grading = false;
 setInterval(() => { if (!grading) { grading = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (grading = false)); } }, 60_000).unref();

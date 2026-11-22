@@ -31,7 +31,7 @@ test("prune keeps 400 days", () => {
   assert.deepEqual(facts.forTask("t1").map((r) => r.version), ["kept"]);
 });
 
-const filing = (over = {}) => ({ kind: "twin.post_note", module: "twin", args: { n: 1 }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 1, panel: false,
+const filing = (over = {}) => ({ kind: "twin.post_note", module: "twin", args: { n: 1 }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 1,
   card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "t1", state: "review", ...over });
 
 test("backfillLocal twice records once, and never repeats a live fact", () => {

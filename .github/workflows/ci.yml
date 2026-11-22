@@ -321,6 +321,39 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      # The monitoring rules, checked with the image modules/monitoring/prometheus/Dockerfile pins. The checker comes from the
+      # commit the change is based on -- the PR's base, main for a merge train, or main's own tree on a push to main -- never
+      # the head, like the suite map and the eval gate below: this step runs code from the image, so a PR able to choose the
+      # image could point it at a promtool that exits 0 and skip the rules. Only the rules under test come from the head; a
+      # change to the Dockerfile still runs on main's push with its own image. `test rules` also runs `check rules`
+      # internally; both are run so a malformed rule file fails with promtool's own message before a test does.
+      - name: promtool image
+        id: promtool
+        run: |
+          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1)
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PR_BASE=$(git rev-parse origin/main) ;; refs/heads/main) PR_BASE= ;; esac
+          if [ -n "${PR_BASE:-}" ]; then
+            image=$(git show "$PR_BASE:modules/monitoring/prometheus/Dockerfile" | sed -n 's/^FROM \([^ ]*\).*/\1/p' | head -n 1)
+          else
+            image=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' modules/monitoring/prometheus/Dockerfile | head -n 1)
+          fi
+          # A digest is what makes the image immutable: the base's Dockerfile is pinned (the policy job dates a change to it),
+          # and an unpinned one must fail here rather than resolve a mutable tag.
+          case "$image" in
+            *@sha256:*) ;;
+            *) echo "::error::promtool image ${image:-<none>} is not digest-pinned"; exit 1 ;;
+          esac
+          echo "promtool from ${image}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - name: promtool check rules
+        env:
+          IMAGE: ${{ steps.promtool.outputs.image }}
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" check rules rules.yml
+      - name: promtool test rules
+        env:
+          IMAGE: ${{ steps.promtool.outputs.image }}
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" test rules rules.test.yml
       # The suites to test (.github/ci/select.ts, map in .github/ci/areas.json): on a pull request, those its changed
       # files touch, both files read from the base so a PR can't shrink its own set (a base without them runs every suite);
       # on a rebased head with an unchanged patch, only those main's new commits also touch. Every suite on a push to main.
@@ -516,7 +549,9 @@ jobs:
   # runner): scripts/supply-chain/image-scan.ts reads each Dockerfile as text and passes grype only digest-pinned
   # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
   # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is
-  # installed below, at the version the security module pins.
+  # installed below, at the version the security module pins. Advisory (owner, 2026-11-22): the scan step continues on
+  # error, so the job (and every reader of check and workflow results) stays green; what it found are the step's error
+  # annotations on the check. Secrets (secrets.yml, gitleaks) and the 7-day rule (policy) stay blocking.
   image-scan:
     needs: checks
     if: needs.checks.outputs.dockerfiles != ''
@@ -544,6 +579,7 @@ jobs:
           tar xzf "$RUNNER_TEMP/grype.tgz" -C "$RUNNER_TEMP" grype
           sudo install -m 0755 "$RUNNER_TEMP/grype" /usr/local/bin/grype
       - name: Scan (no build)
+        continue-on-error: true
         run: |
           # On a pull request the scanner and its exceptions come from the base commit, on a merge train from main (its tree holds
           # the PRs' own edits), so no PR can run its own code here or loosen its own scan; a base without the scanner fails
@@ -633,13 +669,13 @@ jobs:
           path: .eval-state
           key: reviewer-eval-${{ needs.checks.outputs.eval_key }}
 
-  # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
-  # be skipped: not a pull request, or the change doesn't touch them). Jobs that
+  # The one result a merge waits for: every job above passed (packages, modules, board and reviewer-eval may be skipped:
+  # the change doesn't touch them). image-scan is advisory, so it is not here. Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.ts withGate).
   ci-required:
     if: always()
-    needs: [checks, policy, packages, modules, board, image-scan, reviewer-eval]
+    needs: [checks, policy, packages, modules, board, reviewer-eval]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -647,4 +683,10 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["image-scan"], .["reviewer-eval"]] | all(.result | IN("success", "skipped")))' >/dev/null
+          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["reviewer-eval"]] | all(.result | IN("success", "skipped")))' >/dev/null
+      # A fork's PR gets no eval key, so its reviewer-eval is skipped: one that changes the reviewer's code fails here until
+      # the maintainer pushes its branch to this repo, where the eval runs.
+      - if: needs.checks.outputs.eval == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::this fork PR changes the AI reviewer's code (REVIEWER_CODE): push its branch to this repo so reviewer-eval runs"
+          exit 1

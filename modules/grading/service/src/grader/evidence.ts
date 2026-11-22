@@ -87,6 +87,39 @@ const addId = (list: string[], v: unknown, re?: RegExp) => {
 const samePr = (a: { repo: string; number: number }, b: { repo: string; number: number }) => a.repo.toLowerCase() === b.repo.toLowerCase() && Number(a.number) === Number(b.number);
 
 /**
+ * A merged PR's base commit: the single parent of the commit its own history starts from, or "" when the read does not
+ * establish one.
+ *
+ * GitHub defines a PR's commits as the head branch's commits not present in the base branch (`pullRequest.commits`). In that
+ * list a commit starts the history when none of its parents is itself in the list -- every parent, not just the first, since a
+ * merge commit's second parent can be the one that ties it to the rest. The start is found by the parent edges, never by list
+ * order: GitHub documents neither the connection's order nor that one page holds every commit.
+ *
+ * The value states only that relationship. It is not where the branch was cut -- a rebase after opening re-parents the oldest
+ * commit -- and it is not the base branch's tip or the git merge base, both of which move; neither is ever substituted for it.
+ *
+ * Nothing is established (""), rather than guessed, when the PR is not merged; the list was cut off
+ * (`pageInfo.hasNextPage`) or is empty; more than one commit starts the history; the single start has no parent or several (a
+ * merge commit that starts it: which parent would be the base is not settled); any of its parents was not read; or its parent
+ * is not a commit id.
+ */
+export function baseCommitOf(pr: any): string {
+  if (pr?.state !== "MERGED" || pr.chain?.pageInfo?.hasNextPage) return "";
+  const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit).filter((c: any) => c && typeof c.oid === "string");
+  const own = new Set(chain.map((c: any) => c.oid));
+  const parents = (c: any): string[] => (c?.parents?.nodes ?? []).map((p: any) => p?.oid).filter((oid: any) => typeof oid === "string");
+  // One entry per distinct commit, so a repeated node is not read as two starting commits.
+  const starts = new Map<string, any>();
+  for (const c of chain) if (!parents(c).some((oid) => own.has(oid))) starts.set(c.oid, c);
+  if (starts.size !== 1) return "";
+  const [root] = [...starts.values()];
+  // Every parent must have been read, or a second one could be hiding a tie to the rest of the list.
+  if (root?.parents?.totalCount !== 1 || root.parents.totalCount !== parents(root).length) return "";
+  const [parent] = parents(root);
+  return typeof parent === "string" && SHA40.test(parent) ? parent : "";
+}
+
+/**
  * Identifiers from anything that names a PR: a merged record (the arrays taskPrRows and taskMergePrs return) or a record as it
  * is stored. `head` is a branch on a branch row and a bound head commit on a merge card (a 40-hex value), so it goes wherever
  * its shape says.
@@ -288,7 +321,10 @@ export function localPullRequest(c: any, checks: { name: string; ok: boolean; pe
       pullRequest: {
         number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
         headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
+        // The local read gives no list of the change's own commits (only its head, its merge base and the default branch), so there is
+        // no oldest commit to read a base from: this adapter carries the chain empty, and the fact says the base was not established.
         commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
+        chain: { pageInfo: { hasNextPage: false }, nodes: [] },
       },
     },
   };
@@ -368,7 +404,11 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    // The base commit (baseCommitOf): the parent of the PR's oldest commit, stated only when the read proves exactly one
+    // starting commit with exactly one parent. It is where this history starts, never where the branch was cut, the base
+    // branch's tip or the git merge base, and "not established" is missing evidence rather than a guess.
+    const base = baseCommitOf(pr);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (parent of the PR's oldest commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
@@ -703,25 +743,36 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     const text = r.outcome_text ?? r.outcome?.text ?? "";
     return { citation: c, id: c.id, exists: true, state: String(r.state ?? "unknown"), outcome: { ...(typeof r.ok === "boolean" ? { ok: r.ok } : r.outcome?.ok !== undefined ? { ok: Boolean(r.outcome.ok) } : {}), text: String(text ?? "") } };
   }
-  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): the graded PRs' and report's repos
-  // are looked at first, and one whose name matches ignoring case and dashes is the real owner/name.
-  const flat = (r: string) => r.toLowerCase().replace(/[^a-z0-9/]/g, "");
-  const known = repos.find((r) => c.repo && flat(r) === flat(c.repo));
-  const candidates = c.repo ? [known ?? c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): an exact (case-insensitive) match among
+  // the graded PRs' and report's repos wins; otherwise the one known repo that differs only by dashes and case is tried first, then
+  // the cited spelling itself (dashes can make two real repos equal, and a job id exists in one repo only).
+  const lower = (r: string) => r.toLowerCase();
+  const nodash = (r: string) => lower(r).replace(/-/g, "");
+  const exact = repos.find((r) => c.repo && lower(r) === lower(c.repo));
+  const variants = [...new Set(repos.filter((r) => c.repo && nodash(r) === nodash(c.repo)).map(lower))];
+  const known = exact ?? (variants.length === 1 ? repos.find((r) => lower(r) === variants[0]) : undefined);
+  const candidates = c.repo ? [...new Map([known ?? c.repo, c.repo].map((r) => [lower(r), r])).values()] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  let refused: { repo: string; message: string } | undefined;
   for (const repo of candidates) {
     let j: any;
     try {
       j = await deps.citedJob(repo, c.id);
     } catch (err: any) {
-      // A 403 or 404 on a cited repo is a definite refusal (no grant, not owner/name, "Resource not accessible by integration",
-      // no such repo) that waiting never changes: the answer, shown once. A rate limit (message, x-ratelimit-remaining: 0 or a
-      // retry-after header) and any other failure are rethrown so the next look retries them.
-      if (c.repo && [403, 404].includes(Number(err?.status)) && !rateLimited(err)) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
-      throw err;
+      // What the code host answers (modules/github ops.ts "job": GitHub's 404 for a job is a 200 with null, so "no such job" is
+      // null, never a status; the kernel's POST /v1/codehost/:op (codehost.ts) answers 403 for a missing grant and 404 for an
+      // unknown repo or no code host). So a 403 or 404 here is a refusal, never "no such job". A rate limit (message,
+      // x-ratelimit-remaining: 0 or a retry-after header) and any other failure are rethrown: the next look retries them.
+      const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
+      if (rateLimited(err) || ![403, 404].includes(status)) throw err;
+      // The first refusal is kept and the next candidate tried.
+      refused ??= { repo, message: String(err.message ?? err) };
+      continue;
     }
     if (!j) continue;
     return { citation: c, id: c.id, exists: true, state: String(j.state ?? j.status ?? "unknown"), conclusion: String(j.conclusion ?? ""), name: String(j.name ?? ""), repo };
   }
+  // Every candidate came back empty or refused: a refusal means the job may be in a repo the grader cannot read, so it is unverified, not "no such job".
+  if (refused) return { citation: c, id: c.id, exists: false, unreadable: refused.message, repo: refused.repo };
   return { citation: c, id: c.id, exists: false };
 }
 
@@ -757,7 +808,7 @@ export async function citedEvidence(citations: Citation[], deps: any, repos: str
     } else {
       const repo = r.repo ?? c.repo ?? "an unknown repo";
       const conclusion = r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : "";
-      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)}), so the repo is not one the report can cite`);
+      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)})`);
       else facts.push(r.exists ? `cited Actions job ${c.id} in ${repo}: exists${state}${conclusion}; its name is in CITED_IDS` : `cited id ${c.id}: no such Actions job${c.repo ? ` in ${c.repo}` : ""}`);
       if (r.exists) lines.push(`${c.id} (Actions job in ${repo}): name ${oneLine(r.name, 120) || "(empty)"} (state ${oneLine(r.state, 40)}${r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : ""})`);
     }

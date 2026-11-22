@@ -70,8 +70,10 @@ async function fetchRetrying(fetchFn: typeof fetch, delays: number[], url: strin
  * what they return) until it answers, at most MAX_TURNS rounds. The services pass the model gateway's url and the token the
  * kernel minted for the call; an eval passes OpenRouter's key.
  */
-export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetch, schema, url = "https://openrouter.ai/api/v1/chat/completions", retryDelaysMs = [] as number[] }: {
+export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetch, schema, url = "https://openrouter.ai/api/v1/chat/completions", retryDelaysMs = [] as number[], effort }: {
   timeoutMs?: number; fetchFn?: typeof fetch; schema: unknown; url?: string; retryDelaysMs?: number[];
+  /** The reasoning effort for every model this caller asks, in place of EFFORT's per-model default. */
+  effort?: string;
 }) {
   return async (model: string, { system, user, tools = {} }: { system: string; user: string; tools?: Record<string, JudgeTool> }) => {
     const messages: Record<string, unknown>[] = [{ role: "system", content: system }, { role: "user", content: user }];
@@ -87,7 +89,7 @@ export function openRouterAsk(key: string, { timeoutMs = 600_000, fetchFn = fetc
           response_format: { type: "json_schema", json_schema: { name: "verdict", strict: true, schema } },
           ...(defs.length ? { tools: defs } : {}),
           provider: { zdr: true },
-          reasoning: { effort: EFFORT[model] ?? "high" },
+          reasoning: { effort: effort ?? EFFORT[model] ?? "high" },
           max_tokens: MAX_TOKENS,
           temperature: 0,
         }),

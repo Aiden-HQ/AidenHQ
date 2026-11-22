@@ -80,12 +80,6 @@ settings:
   # Models a CI token may call besides ci_review_model: repos still on the older template (codegenie).
   ci_review_models:
     default: ["~deepseek/deepseek-flash-latest"] # codegenie's (roadmap-keeper until its codex copy PR lands)
-  # CI review spend cap for one repo, USD per UTC day. Past it (or ci_review_day_usd), reviews fail until the next day.
-  ci_review_repo_day_usd:
-    default: 5
-  # CI review spend cap for all repos together, USD per UTC day (ci_review_repo_day_usd caps one repo).
-  ci_review_day_usd:
-    default: 20
 # The host's runner registration (ops/ci-runner-token.ts) asks the kernel with it.
 generated_secrets:
   - ci_token
