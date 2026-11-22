@@ -217,9 +217,12 @@ test("an amending tool reads a row it may amend; a filing tool still reads only 
   // filing tool keeps the older rule (its own delegation only): the read is not a way to see another agent's rubric.
   const h = await harness(t);
   assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
-  // The recorded filer's tool is not a filing tool: it may read the row it may amend.
+  // An amending tool reads the row it may amend: the delegator's.
   assert.equal((await h.agentRead("cos", "t1", "task_amend_rubric")).status, 200);
-  assert.equal((await h.agentRead("other", "t1", "task_amend_rubric")).status, 200, "the write's own rule decides who may amend");
+  // And not another agent's: the read is never a way to see a rubric the caller has no claim on.
+  assert.equal((await h.agentRead("other", "t1", "task_amend_rubric")).status, 403);
+  // The recorded filer of a task it did not delegate reads the row it may amend (WOR-5 is filed by cos, delegated by "other").
+  assert.equal((await h.moduleFile("maintainer", { task: { id: "t5" }, rubric: RUBRIC, deliverable: { kind: "issue", ref: "acme/app#7" } })).status, 200);
   // A filing tool still reads only the task it delegated.
   assert.equal((await h.agentRead("cos", "t1", "task_delegate")).status, 200);
   assert.equal((await h.agentRead("other", "t1", "task_delegate")).status, 403);

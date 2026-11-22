@@ -141,6 +141,32 @@ test("a revision move queued by a verdict on a rubric since amended never reopen
   assert.equal(issue.status, "todo");
 });
 
+test("a reopen whose grade-state read fails is retried, never replayed or dropped", async () => {
+  // A failed read is not "the row was amended": replaying the move would reopen a task the amendment restarted, and dropping
+  // it would lose a revision the grader still owes. The step stays queued and the next pass asks again.
+  const issue = { id: "t6", identifier: "WOR-6", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t6", filed, { kind: "report", ref: "" });
+  grades.record("t6", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(filed) });
+  // The loop's own api: the grade-state read fails on the first pass, then answers.
+  let reads = 0;
+  const loop = createKernelGradeLoop({ db, runner: async (m, p, b) => {
+    if (m === "GET" && /^\/internal\/grades\/[^/]+$/.test(p)) { reads++; if (reads === 1) throw new Error("grading is restarting"); }
+    return runner(m, p, b);
+  }, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t6', ?)").run(JSON.stringify([{ do: "reopen", note: "the grader sent it back" }]));
+  await loop.runGrades();
+  assert.equal(calls.resolve.length, 0, "a failed read never moves the task");
+  assert.equal(issue.status, "in_review");
+  assert.ok(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t6'").get()?.v, "the step is still queued");
+  await loop.runGrades();
+  assert.equal(issue.status, "todo", "the retried read says needs_revision, so the move lands");
+});
+
 test("a merge counts only as its executor wrote it on a record that ended ok, never by the args an agent filed", () => {
   const a = "a".repeat(40), b = "b".repeat(40);
   const line = `merged-prs: ${JSON.stringify([{ repo: "acme-agents/app", number: 7, head: a, sha: b }])}`;

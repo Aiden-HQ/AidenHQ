@@ -140,8 +140,14 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   async function readGrade(req: http.IncomingMessage, ref: string) {
     const caller = await rubricCaller(req, [...FILERS, ...AMENDERS], "read");
     const issue = await kernel.issue(ref);
-    if (FILERS.includes(String(caller.tool ?? "").split(".").pop()!) && issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task reads its rubric before re-filing it");
-    return { grade: grades.get(issue.id) ?? null };
+    const tool = String(caller.tool ?? "").split(".").pop()!;
+    const grade = grades.get(issue.id) ?? null;
+    // A filing tool reads only a task it delegated (as filing does). An amending tool reads only a row it could amend: the
+    // delegator's, or the recorded filer's. The read is never a way to see another agent's rubric; the write repeats the same
+    // rule, so a caller that passes here still cannot change what it may not.
+    const mine = FILERS.includes(tool) ? issue.createdByAgentId === caller.agent : issue.createdByAgentId === caller.agent || grades.filer(issue.id) === `agent:${caller.agent}`;
+    if (!mine) throw new HttpError(403, `only ${FILERS.includes(tool) ? "the agent that delegated a task" : "the task's delegator or the rubric's recorded filer"} reads its rubric`);
+    return { grade };
   }
 
   /** A module-filed task's rubric: the kernel's own call (its key), after it checked the filing module holds kernel.tasks. */
