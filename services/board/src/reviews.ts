@@ -78,6 +78,9 @@ export interface Run {
   incremental_from: string | null;
   posted: boolean;
   url?: string;
+  /** A repo review's option run (target tree): `number` is 0 and `url` the reviewed commit; `batch` its review. */
+  target?: "pr" | "tree";
+  batch?: string | null;
   /** The PR's title (untrusted text: shown as plain text only) and the posted review's link, when the service has them. */
   title?: string;
   review_url?: string;
@@ -146,10 +149,14 @@ export interface TreeBatch {
   /** The report the service serves (GET /reviews/:batch/report) and, when published, its Primer document. */
   report_url?: string;
   primer_url?: string;
+  /** The report's Primer outcome is in (a link or a refusal). */
+  published?: boolean;
+  /** Each option's run, whose page lists its findings (the report may leave some out to fit Primer). */
+  runs?: { id: string; option: string; status: RunStatus; important: number; nit: number; pre_existing: number }[];
 }
 export const TreeRequestSchema = z
   .object({
-    target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{7,40}$/i, "a commit is a hex SHA").optional() }).strict(),
+    target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{40}$/i, "a commit is a full 40-character SHA").optional() }).strict(),
     options: z.array(z.string().regex(/^[\w.-]{1,64}$/)).min(1, "tick at least one option").max(60),
     combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict(),
   })

@@ -200,7 +200,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const tab = "tab" in route ? route.tab : "reviews";
 
   if ("create" in route) return repos && !repos.lenses ? <RepoReviewsOff /> : repos && engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
-  if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} />;
+  if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} reload={loadRuns} />;
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
 
   const header = (
@@ -391,10 +391,17 @@ function BatchRow({ b }: { b: TreeBatch }) {
 }
 
 /** One whole-repo review's report, as the service rendered it (untrusted text: the Markdown part sanitises it). The list's polling refreshes `batch`; the report is read again when the batch's state moves. */
-function BatchPage({ id, batch, onSignIn }: { id: string; batch: TreeBatch | undefined; onSignIn: () => void }) {
+function BatchPage({ id, batch, onSignIn, reload }: { id: string; batch: TreeBatch | undefined; onSignIn: () => void; reload: () => unknown }) {
   const [md, setMd] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const state = `${batch?.status}|${batch?.ended}`;
+  const state = `${batch?.status}|${batch?.ended}|${batch?.published}`;
+  // Followed until the report and its Primer outcome are in, whether or not the list was already polling when it was started.
+  const settled = batch?.status === "done" && batch.published;
+  useEffect(() => {
+    if (settled) return;
+    const t = setInterval(() => void reload(), 4_000);
+    return () => clearInterval(t);
+  }, [settled, reload]);
   useEffect(() => {
     let stale = false;
     api.reviewReport(id).then(
@@ -422,7 +429,15 @@ function BatchPage({ id, batch, onSignIn }: { id: string; batch: TreeBatch | und
         }
       />
       {batch && (batch.status === "failed" || batch.status === "skipped") && batch.why && <Banner tone="danger">{batch.why}</Banner>}
-      {error ? <Banner tone="danger">Couldn't load this report: {error}</Banner> : md === null ? <div className="rv-loading" aria-busy="true" /> : <Card className="rv-report"><Markdown text={md} prefix="" className="md" /></Card>}
+      {batch && batch.status === "done" && batch.why && <Banner tone="warn">{batch.why}. The report is below.</Banner>}
+      {error && batch?.status === "done" ? <Banner tone="danger">Couldn't load this report: {error}</Banner> : md === null ? <div className="rv-loading" aria-busy="true" /> : <Card className="rv-report"><Markdown text={md} prefix="" className="md" /></Card>}
+      {batch?.runs?.length ? (
+        <Card className="rv-report">
+          <h3>Findings by option</h3>
+          <p className="muted">The report above keeps within Primer's size; each option's page lists all of its findings.</p>
+          <ul>{batch.runs.map((r) => <li key={r.id}><a href={`#/reviews/r/${encodeURIComponent(r.id)}`}>{r.option}</a>: {r.status}{r.status === "done" ? `, ${r.important} important, ${r.nit} nits, ${r.pre_existing} pre-existing` : ""}</li>)}</ul>
+        </Card>
+      ) : null}
     </Page>
   );
 }
@@ -472,7 +487,7 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
     <Page className={`rv-page ${hueClass(run.engine)}`} label="Review">
       <PageHeader
         crumb={<>{crumb} / {run.repo}</>}
-        title={`${run.repo} #${run.number}`}
+        title={run.target === "tree" ? `${run.repo} @ ${short(run.head)}` : `${run.repo} #${run.number}`}
         status={
           <span className="rv-head-status">
             <StatusDot tone={tone}>{word}</StatusDot>
@@ -483,8 +498,17 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
         sub={run.title}
         actions={
           <>
-            <Button disabled={!engines} onClick={() => setAgain(true)}>Review again</Button>
-            <LinkButton href={githubLink(run.review_url) ?? prUrl(run.repo, run.number)} external>{run.review_url ? "Open the review on GitHub" : "Open the PR"}</LinkButton>
+            {run.target === "tree" ? (
+              <>
+                {run.batch && <LinkButton href={`#/reviews/b/${encodeURIComponent(run.batch)}`}>Open the repo review</LinkButton>}
+                <LinkButton href={githubLink(run.url) ?? `https://github.com/${run.repo}/tree/${run.head}`} external>Open the commit</LinkButton>
+              </>
+            ) : (
+              <>
+                <Button disabled={!engines} onClick={() => setAgain(true)}>Review again</Button>
+                <LinkButton href={githubLink(run.review_url) ?? prUrl(run.repo, run.number)} external>{run.review_url ? "Open the review on GitHub" : "Open the PR"}</LinkButton>
+              </>
+            )}
           </>
         }
       />
@@ -752,7 +776,7 @@ const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
   maintainability: ["Maintainability", "Dead code, duplication, complexity, tangled structure"],
   performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
 };
-const SHA = /^[0-9a-f]{7,40}$/i;
+const SHA = /^[0-9a-f]{40}$/i;
 /** The service refuses repo reviews until settings.code_review.lenses is on; the page says so instead of failing. */
 function RepoReviewsOff() {
   return (
@@ -827,7 +851,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       <Card className="rv-form">
       <div className="rv-split">
         <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} />
-        <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A commit SHA; the default branch's head when empty."} error={commitOk ? null : "A commit SHA, 7 to 40 hex characters"}>
+        <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A full commit SHA; the default branch's head when empty."} error={commitOk ? null : "A full 40-character commit SHA"}>
           {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => setCommit(e.target.value)} spellCheck={false} />}
         </Field>
       </div>

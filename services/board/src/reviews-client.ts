@@ -58,7 +58,8 @@ export function createReviews({ kernel, fetchFn = fetch }: { kernel?: { url: str
     return p.size ? `?${p}` : "";
   };
   return {
-    list: (q) => call("GET", `/reviews${qs(q)}`),
+    // PR runs only: a repo review's option runs are in its batch, and would otherwise use up the limit.
+    list: (q) => call("GET", `/reviews${qs({ ...q, target: "pr" })}`),
     get: (id) => call("GET", `/reviews/${encodeURIComponent(id)}`),
     catalog: (q) => call("GET", `/catalog${qs(q)}`),
     runTree: (body) => call("POST", "/reviews", body),

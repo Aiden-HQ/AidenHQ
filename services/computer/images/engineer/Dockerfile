@@ -63,7 +63,7 @@ RUN npm i -g pnpm@10.34.9 typescript@5.9.3 && npm cache clean --force
 COPY --chmod=755 bin/aidenhq /usr/local/bin/aidenhq
 COPY --chmod=755 bin/sleep bin/aidenhq-browse /opt/aidenhq/bin/
 
-# ---- Code review tools (modules/code-review/catalog.json: every `tool` option's binary; recipe/tools.ts runs them) ----
+# ---- Code review tools (modules/code-review/service/src/catalog.json: every `tool` option's binary; recipe/tools.ts runs them) ----
 # Each is pinned (versions published on or before 2026-11-14, so 7+ days old) and checksummed (release downloads: sha256 per
 # architecture from the GitHub release's own digests), or resolved as of that date (npm --before, uv --exclude-newer, the Go
 # module proxy with its checksum database). gitleaks is the one above. Nothing is downloaded when a review runs, except the
@@ -99,7 +99,7 @@ RUN case "$(dpkg --print-architecture)" in \
     esac \
     && curl -fsSLo /tmp/zz.tgz "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/$file" && echo "$a  /tmp/zz.tgz" | sha256sum -c - \
     && tar -xzf /tmp/zz.tgz -C /usr/local/bin zizmor && rm /tmp/zz.tgz && zizmor --version | grep -q 1.32.0
-# scc 4.1.0 (2026-09-07; modules/code-review/catalog.json maint.scc): a review's complexity pass. Built from the module at
+# scc 4.1.0 (2026-09-07; modules/code-review/service/src/catalog.json maint.scc): a review's complexity pass. Built from the module at
 # that tag with the image's Go, not from its release binary: those are cut with go1.27.0 and carry x/net 0.56.0 (critical
 # GO-2026-6612, highs GO-2026-6603/6610/6611/6617/6860), x/crypto 0.53.0 and x/text 0.39.0, and there is no newer release.
 # scc/go.mod beside this file lifts them to x/net 0.62.0, x/crypto 0.58.0 and x/text 0.43.0 (the floors x/net 0.62.0

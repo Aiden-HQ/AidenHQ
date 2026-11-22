@@ -29,7 +29,7 @@ export interface Change {
  * the owner-readable reason when the result wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: string[] } {
-  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])] };
+  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], ...(raw.lenses !== undefined ? { lenses: raw.lenses } : {}) };
   let repos = value.repos as Dict[];
   const summary: string[] = [];
   const key = (r: unknown) => String(r).toLowerCase();
@@ -68,11 +68,21 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
  * already runs. Any other model is the owner's (as in settings: module.yaml settings.code_review.owner), set on
  * the board, whose one-off keeps full choice.
  */
+const watchedCombos = (repos: () => unknown) => ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];
+
+/** A repo review's model for an agent: one an engine offers or a watched repo's combos already run; any other is the owner's, from the board. */
+export function agentRepoModel(combo: unknown, repos: () => unknown) {
+  const model = (combo as { model?: unknown } | undefined)?.model;
+  if (combo === undefined || model === undefined) return;
+  const offered = [...Object.values(ENGINES).flatMap((e) => e.models as readonly string[]), ...watchedCombos(repos).map((c) => c.model)];
+  if (!offered.includes(String(model))) throw new Error(`${String(model).slice(0, 100)} is the owner's to choose: they start it from the board's Reviews page, or ask for a model an engine offers`);
+}
+
 export function agentCombos(raw: unknown, repos: () => unknown) {
   if (raw === undefined) return;
   const list = combos(raw, "combos");
   if ("error" in list) throw new Error(list.error);
-  const watched = ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];
+  const watched = watchedCombos(repos);
   const same = (a: Combo, b: Combo) => a.engine === b.engine && a.model === b.model && a.effort === b.effort;
   for (const c of list) {
     const e = ENGINES[c.engine];
@@ -107,8 +117,9 @@ export function configTools(d: {
   repos: () => unknown;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
-  /** The service's own one-off review (POST /reviews), with the calling agent and its task (verified by the service) so its batch's one summary reaches them. */
+  /** The service's own one-off review of a PR and repo review (POST /reviews), with the calling agent and its task (verified by the service) so a PR review's one summary reaches them. */
   oneoff: (body: Dict, asker: { requester: string; task?: string }) => Promise<unknown>;
+  repoReview: (body: Dict) => Promise<unknown>;
   runs: (q: { repo?: string; limit?: number }) => unknown[];
   /** The engine's record of an agent's answer to a finding (no GitHub write). */
   resolve: (b: Dict) => unknown;
@@ -134,10 +145,20 @@ export function configTools(d: {
     {
       name: "code_review_run",
       roles: ["reviewer-manager"],
-      description: "Review one pull request now, posted to it like a watched repo's review, one run and post per combo: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }. Each combo is an engine's offered model or a combo a watched repo already runs; any other model is the owner's to start from the board. Any PR the owner's GitHub sign-in can read; it posts as the owner, signed by AidenHQ.",
-      inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" } }, required: ["pr_url"], additionalProperties: false },
-      run: async (a, caller) => { agentCombos(a.combos, d.repos); return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) },
-        { requester: caller.agent, ...(caller.task ? { task: caller.task } : {}) }); },
+      description: `Review now. A pull request: { pr_url, combos? (default the repo's on_open combos; several run side by side), focus?, full? (the whole PR, not only what changed since the last review) }, posted to it like a watched repo's review, one run and post per combo; each combo is an engine's offered model, or a combo a watched repo already runs (any other model is the owner's to start from the board); it posts as the owner, signed by AidenHQ. A whole repository at a commit (a repo review): { repo: owner/name, commit? (default: the default branch's head, resolved when it starts), options? (catalog option ids; default the recommended ones its stack fits), combo? { model, effort } for the model options }: its report lands in Primer, private to the owner, and on the board's Reviews page. Any repo the owner's GitHub sign-in can read.`,
+      inputSchema: { type: "object", properties: { pr_url: { type: "string" }, combos: COMBOS, focus: { type: "string" }, full: { type: "boolean" },
+        repo: { type: "string" }, commit: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 50 }, combo: { type: "object", properties: { model: { type: "string" }, effort: { type: "string" } }, additionalProperties: false } }, additionalProperties: false },
+      run: async (a, caller) => {
+        if (a.repo !== undefined) {
+          if (a.pr_url !== undefined) throw new Error("give pr_url (a pull request) or repo (a whole repository), not both");
+          agentRepoModel(a.combo, d.repos);
+          return d.repoReview({ target: { repo: a.repo, ...(a.commit ? { commit: a.commit } : {}) }, ...(a.options ? { options: a.options } : {}), ...(a.combo ? { combo: a.combo } : {}) });
+        }
+        if (typeof a.pr_url !== "string") throw new Error("give pr_url (a pull request) or repo (a whole repository)");
+        agentCombos(a.combos, d.repos);
+        return d.oneoff({ pr_url: a.pr_url, ...(a.combos ? { combos: a.combos } : {}), ...(a.focus ? { focus: a.focus } : {}), ...(a.full ? { full: true } : {}) },
+          { requester: caller.agent, ...(caller.task ? { task: caller.task } : {}) });
+      },
     },
     {
       name: "code_review_runs",

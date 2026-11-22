@@ -1,4 +1,4 @@
-// The option catalog (modules/code-review/catalog.json): every ready-made reviewer a run can tick, one entry per upstream tool,
+// The option catalog (modules/code-review/service/src/catalog.json): every ready-made reviewer a run can tick, one entry per upstream tool,
 // skill or engine. Shared by the review recipe (tools.ts reads the tool entries a check's spec carries) and the state service
 // (what the board offers for a repo, and the spec of the tools check). We write no reviewer prompts: an option runs its upstream
 // command, skill or engine as shipped, pinned in the engineer image, and its output is mapped to findings (sarif.ts).
