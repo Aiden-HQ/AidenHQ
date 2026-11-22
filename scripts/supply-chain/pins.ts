@@ -95,16 +95,30 @@ const imagePin = (ref: string, at: string): Pin => {
 };
 const strip = (s: string) => s.replace(/^["']|["']$/g, "");
 const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
-// The sources.list.d files a command writes: a `>`/`>>` target and each `tee` destination. A path it only reads, as
-// `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, or as `tee /tmp/log < …/debian.sources` feeds
-// one in, is not a write. Every name is returned; the caller keeps `.list` and `.sources`, the only names APT loads.
-function writtenFiles(segment: string): string[] {
-  const dests: string[] = [];
-  for (const m of segment.matchAll(/(?:^|[^>])>>?\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g)) dests.push(strip(m[1]!));
-  // `tee`'s operands are its output files: its options and any redirection (`<`, `>`, `2>&1`, and the path it reads)
-  // are not.
-  for (const m of segment.matchAll(/\btee\b([^|;&]*)/g)) dests.push(...words(m[1]!.replace(/\d*(?:>>?|<<?)\s*("[^"]+"|'[^']+'|\S+)/g, " ")).filter((a) => !a.startsWith("-")));
-  return dests.map((p) => /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(p)?.[1]).filter((f): f is string => !!f);
+// A file a command writes, and whether that command's own output reaches it. `fed` is false for a `2>` (stderr) target
+// and for a `tee` whose stdin is redirected from a file (`< …`) rather than the pipe: the file is still written, but
+// not with this segment's content.
+interface Written { path: string; file?: string; fed: boolean }
+// The destinations a command writes: a `>`/`>>` target and each `tee` operand. A path it only reads, as
+// `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
+// sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads.
+function writtenFiles(segment: string): Written[] {
+  const out: Written[] = [];
+  const add = (path: string, fed: boolean) => {
+    const file = /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(path)?.[1];
+    out.push({ path, ...(file ? { file } : {}), fed });
+  };
+  // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
+  // target.
+  const clean = segment.replace(/\d*>&\d+/g, " ");
+  for (const m of clean.matchAll(/(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g)) add(strip(m[3]!), m[1] !== "2");
+  // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
+  // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
+  for (const m of clean.matchAll(/\btee\b([^|;&]*)/g)) {
+    const raw = m[1]!.replace(/(?:\d*>>?|\d*<<?|&>>?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " ");
+    for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(a, !/\d*<<?/.test(m[1]!));
+  }
+  return out;
 }
 
 // Install commands on one logical line: pins found, problems found.
@@ -157,7 +171,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     const files = writtenFiles(segment);
     // Only `.list` and `.sources` are loaded: a write to `vendor.list.disabled` is a repository neither APT nor a later
     // install sees, so it neither requires pins nor dates them.
-    const loaded = files.filter((f) => /\.(list|sources)$/.test(f));
+    const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
     if (removes) {
       // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
       // removes nothing it loads.
@@ -165,16 +179,19 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       if (removed.length) removed.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
       else if (!named.length) { state.files.clear(); state.entries.clear(); }
       state.added = state.files.size > 0 || state.entries.has(undefined);
-    } else if (files.length) {
+    } else if (loaded.length) {
       // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held. Any source file counts as added,
-      // Deb822 `.sources` included: its Types/URIs fields carry the repository a `deb` line would.
-      const append = />>|\btee\b[^|;&]*\s-a\b/.test(segment);
-      for (const f of loaded) {
-        state.files.set(f, append ? [...(state.files.get(f) ?? []), ...debs] : debs);
-        state.entries.set(f, append ? [...(state.entries.get(f) ?? []), ...debs] : debs);
+      // Deb822 `.sources` included: its Types/URIs fields carry the repository a `deb` line would. A destination this
+      // segment's output doesn't reach (`2>` stderr, a `tee` fed from `< file`) is still written, but with no `deb`
+      // line, so it holds no repository to date a pin from.
+      const append = />>|\btee\b[^|]*\s-a\b/.test(segment);
+      for (const { file, fed } of loaded) {
+        const written = fed ? debs : [];
+        state.files.set(file!, append ? [...(state.files.get(file!) ?? []), ...written] : written);
+        state.entries.set(file!, append ? [...(state.entries.get(file!) ?? []), ...written] : written);
       }
       state.added = state.added || loaded.length > 0;
-    } else if (debs.length) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
+    } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
     for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
       for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
         const [pkg, ver] = a.split("=") as [string, string | undefined];

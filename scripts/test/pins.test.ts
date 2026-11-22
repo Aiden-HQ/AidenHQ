@@ -282,6 +282,18 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   const inputPipedResult = scanFile("Dockerfile", inputPiped);
   assert.equal(inputPipedResult.problems.length, 1);
   assert.match(inputPipedResult.problems[0], /install foo/);
+  // A file-descriptor redirect inside the operand list must not cut it short, and a `tee` fed from a file writes that
+  // file empty, so it carries no `deb` line to date a pin from.
+  const fd = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&1 /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  const fdResult = scanFile("Dockerfile", fd);
+  assert.equal(fdResult.problems.length, 1);
+  assert.match(fdResult.problems[0], /install foo/);
+  const fdPin = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&1 /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", fdPin).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  const unfed = `FROM debian:bookworm${d}\nRUN echo 'deb https://discarded.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo=1.0\n`;
+  const unfedResult = scanFile("Dockerfile", unfed);
+  assert.deepEqual(unfedResult.problems, []);
+  assert.deepEqual(unfedResult.pins.filter((p) => p.kind === "apt")[0].sources, []);
 });
 
 test("pins: a disabled source file leaves no entry behind in apt dating", () => {
