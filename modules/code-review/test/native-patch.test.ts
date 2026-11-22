@@ -187,7 +187,7 @@ test("an important finding at a place the review would drop (a file that isn't t
 test("self-review counts what the PR check would: an important finding in a file its scope leaves out is not one", { timeout: 240_000 }, async (t) => {
   const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n`, "package-lock.json": (v) => `{"v":${v}}\n` });
   sh(repo, "update-ref", "refs/remotes/origin/main", base);
-  const model = await endpoint([], join(realpathSync(repo), "package-lock.json"));
+  const model = await endpoint([], "package-lock.json"); // a path as the reviewer gives it, relative to the copy it works in
   try {
     const dir = codexDir();
     if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
@@ -244,4 +244,24 @@ test("findings are validated against the reviewed commit's tree, not the work tr
   const f = { severity: "nit" as const, path: "a.txt", line: 3, title: "t", why: "w", evidence: "", fix_brief: "" };
   assert.equal(place([f], repo, new Set(["a.txt"])).length, 0, "against the work tree line 3 is gone");
   assert.equal(place([f], repo, new Set(["a.txt"]), undefined, undefined, head).length, 1, "against the commit it is there");
+});
+
+test("with a commit to review at, codex works in a copy of its files, not the live checkout", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  const head = sh(repo, "rev-parse", "HEAD");
+  writeFileSync(join(repo, "a.txt"), "edited later\n"); // the Engineer keeps editing
+  const model = await endpoint();
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    if (dir) process.env.PATH = `${dir}:${process.env.PATH}`;
+    process.env.OPENROUTER_BASE_URL = model.url; process.env.OPENROUTER_API_KEY = "test-token";
+    const scratch = mkdtempSync(join(tmpdir(), "native-scratch-"));
+    const r = await runEngine("codex-native", { prompt: "", instructions: "x", model: "m/m", effort: "low", root: repo, base, files: ["a.txt"], head, minutes: 3, scratch, own: true });
+    assert.equal(r.incomplete, undefined);
+    const text = JSON.stringify(model.requests[0]);
+    assert.ok(text.includes(join(realpathSync(scratch), "tree")) || text.includes(join(scratch, "tree")), "codex's cwd is the copy");
+    assert.ok(!text.includes(`<cwd>${repo}`), "not the live checkout");
+    assert.equal(execFileSync("cat", [join(scratch, "tree", "a.txt")], { encoding: "utf8" }), "a1\n", "the copy holds the reviewed commit's file");
+  } finally { model.close(); }
 });

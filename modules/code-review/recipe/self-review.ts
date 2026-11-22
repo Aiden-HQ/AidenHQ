@@ -53,6 +53,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
+  // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
+  const moved = () => { let r = ""; try { r = git("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || git("rev-parse", "HEAD") !== head; };
   const prChanged = new Set(git("diff", "--no-renames", "--name-only", "-z", base, head).split("\0").filter(Boolean));
   const { reviewed, excluded } = scope(changed((a) => git(...a), from, head), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
@@ -60,6 +62,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
   if (gaps.length) return { out: [`self-review: ${at}: incomplete`, detail(`generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}`)], code: 2 };
   if (!reviewed.length) {
+    if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review")], code: 2 };
     remember(0);
     return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles, binary or generated files changed; no model ran)`], code: 0 };
   }
@@ -78,8 +81,6 @@ async function main(): Promise<{ out: string[]; code: number }> {
   try {
     const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
     const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, head, left: [...left] }), [token]);
-    // The review is of the commit captured at the start: if the checkout moved meanwhile, nothing is recorded for it.
-    if (git("rev-parse", "HEAD") !== head) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review")], code: 2 };
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
     // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
@@ -93,6 +94,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
     ];
     // Some of the patch was not reviewed (a part that failed, a hunk too big to send): nothing counts as clean.
     if (r.incomplete) return { out: [`self-review: ${at}: incomplete`, detail(r.incomplete), ...lines], code: 2 };
+    if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review"), ...lines], code: 2 };
     remember(important.length); // a finished review
     return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`, ...lines], code: important.length ? 1 : 0 };
   } finally { rmSync(scratch, { recursive: true, force: true }); }
