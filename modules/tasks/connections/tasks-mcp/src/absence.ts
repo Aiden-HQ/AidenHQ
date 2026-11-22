@@ -33,7 +33,13 @@ function absenceSubjects(c: string, claim: RegExpExecArray): string[] {
   const head = c.slice(0, at);
   let start = 0;
   for (const m of head.matchAll(SENTENCE_BREAK)) start = Math.max(start, (m.index ?? 0) + m[0].length);
-  for (const m of head.slice(start).matchAll(CLAUSE_BREAK)) start += (m.index ?? 0) + m[0].length;
+  // The clause's subject starts after its last contrast. Every match is measured against the same slice of `head`, so the last
+  // one wins; moving `start` inside the loop would add each relative index to an already-moved base and skip past a subject
+  // still inside the clause.
+  const tail = head.slice(start);
+  let last: RegExpExecArray | undefined;
+  for (const m of tail.matchAll(CLAUSE_BREAK)) last = m;
+  if (last) start += (last.index ?? 0) + last[0].length;
   return head.slice(start).split(COORDINATION).map((p) => p.trim()).filter(Boolean);
 }
 /** Whether any subject of a claim names a repository file its evidence can't show. */

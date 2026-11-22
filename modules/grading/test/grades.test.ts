@@ -3,7 +3,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { Grades, completionGate, prRefAllowed } from "../service/src/grades.ts";
+import { Grades, completionGate, prRefAllowed, rubricHash } from "../service/src/grades.ts";
 
 class Store { constructor() { this.grades = new Grades(new DatabaseSync(":memory:")); } }
 /** vitest's matchers this file used, over node:assert. */
@@ -18,10 +18,11 @@ describe("graded done", () => {
     expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }, "agent:cos").created).toBe(false);
     expect(grades.get("t").rubric[0]).toBe("merged into main");
 
-    const reject = (version) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+    const filing = rubricHash(["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    const reject = (version) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: filing });
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "pending", label: "grading" });
     expect(completionGate(grades, "t", "task_finish")).toMatchObject({ pass: false, state: "pending" });
-    expect(grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [] }).state).toBe("awaiting_evidence");
+    expect(grades.record("t", { version: "", outcome: "awaiting_evidence", model: "", criteria: [], rubric: filing }).state).toBe("awaiting_evidence");
     expect(completionGate(grades, "t", "finish_turn")).toMatchObject({ pass: false, state: "awaiting_evidence" });
     expect(reject("sha1")).toMatchObject({ state: "needs_revision", attempts: 1 });
     completionGate(grades, "t", "finish_turn");

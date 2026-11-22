@@ -398,9 +398,10 @@ export class Grades {
     // A verdict computed on a filing since replaced (its rubric amended, or its deliverable re-bound) is stale: applying it
     // would grade the new filing by the old, spend an attempt on it, or park the row as awaiting evidence for work that is no
     // longer the one asked for. Every outcome is dropped alike, leaving the row as it is (open), so the next pass grades what
-    // the row now holds. A verdict with no rubric (an older runner) is kept as it was.
+    // the row now holds. A verdict naming no filing at all is dropped the same way: nothing shows it read what the row holds,
+    // and an unnamed wait would park an amended row for work it never looked at.
     const current = rubricHash(g.rubric, g.deliverable);
-    if (v.rubric && v.rubric !== current) return g;
+    if (v.rubric !== current) return g;
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
     const unmet = v.criteria.some((c) => c.met === "no");
     const verdict: Verdict = { at: new Date(now).toISOString(), version: v.version, model: v.model, verdict: unmet ? "needs_revision" : v.outcome === "satisfied" ? "satisfied" : "cannot_judge", criteria: v.criteria, rubric: current };

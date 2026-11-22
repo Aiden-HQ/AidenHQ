@@ -84,7 +84,7 @@ test("a delegator amends a filed rubric in place: the row restarts, the delivera
   const h = await harness(t);
   assert.deepEqual((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).json, { created: true, state: "open" });
   // A rejected version leaves the row unsettled with an attempt and a verdict to clear.
-  h.grades.record("t1", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+  h.grades.record("t1", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: rubricHash(RUBRIC, PR) });
   assert.equal(h.grades.get("t1").attempts, 1);
   assert.equal(h.grades.get("t1").verdicts.length, 1);
 
@@ -125,7 +125,7 @@ test("an amendment is refused for a caller with no claim on the task, and for a 
   assert.match(stranger.json.error, /only agent:cos/);
   assert.deepEqual(h.grades.get("t1").rubric, RUBRIC);
   // Settled rows are settled: satisfied keeps its rubric, whatever the delegator says now.
-  h.grades.record("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [] });
+  h.grades.record("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, PR) });
   assert.equal(h.grades.get("t1").state, "satisfied");
   const settled = await h.agentAmend("cos", { issue: "t1", rubric: ["alpha one", "beta two", "gamma three"] });
   assert.equal(settled.status, 409);
@@ -155,7 +155,7 @@ test("the row's recorded filer amends a rubric the delegator didn't file, and a 
   assert.equal(stranger.status, 409);
   assert.match(stranger.json.error, /only agent:other, the task's delegator, or module:maintainer/);
   // An amendment to the list already filed is a no-op, not a restart.
-  h.grades.record("t4", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }] });
+  h.grades.record("t4", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: rubricHash(byDelegator.json.rubric, { kind: "issue", ref: "acme/app#7" }) });
   const same = await h.agentAmend("cos", { issue: "t4", rubric: byDelegator.json.rubric });
   assert.equal(same.status, 200);
   assert.equal(h.grades.get("t4").attempts, 1);
@@ -255,6 +255,20 @@ test("a verdict computed on a deliverable since re-bound is dropped, even when t
   assert.equal(waiting.state, "open");
   const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, APP) });
   assert.equal(fresh.state, "satisfied");
+});
+
+test("a wait that names no filing is dropped, so an older runner cannot park an amended row", async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
+  const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
+  assert.equal((await h.agentAmend("cos", { issue: "t1", rubric: corrected })).status, 200);
+  // An unnamed awaiting-evidence verdict shows nothing about what the pass read: the row stays as the amendment left it.
+  const unnamed = await h.verdict("t1", { version: "", outcome: "awaiting_evidence", model: "glm", criteria: [] });
+  assert.equal(unnamed.state, "open");
+  assert.deepEqual(unnamed.rubric, corrected);
+  // One that names the row's filing is applied.
+  const named = await h.verdict("t1", { version: "", outcome: "awaiting_evidence", model: "glm", criteria: [], rubric: rubricHash(corrected, PR) });
+  assert.equal(named.state, "awaiting_evidence");
 });
 
 test("a re-file of a task already in review is graded at once, without the assignee finishing again", async (t) => {

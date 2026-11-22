@@ -268,6 +268,11 @@ test("an absence criterion is refused at filing and at amendment, naming a diff-
   assert.match(comma.text, /claims file contents are absent/);
   const pageObject = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the /totals page has no README.md link", "merged into main", "checks green on the head"] });
   assert.equal(pageObject.r.result?.isError, undefined, pageObject.text);
+  // Two contrast clauses before the claim do not move its subject past the file that names it: the clause break is measured
+  // from where the last one ended, not from its own offset inside the remainder.
+  const twoContrasts = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the page loads but the nav renders while docs/a.md contains no `Linus`", "merged into main", "checks green on the head"] });
+  assert.equal(twoContrasts.r.result?.isError, true, twoContrasts.text);
+  assert.match(twoContrasts.text, /claims file contents are absent/);
 });
 
 test("a refused rubric read is reported as a refusal, not as a task with no rubric", async () => {
