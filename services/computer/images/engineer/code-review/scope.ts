@@ -20,7 +20,7 @@ const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_modules/**
 
 /** The changed files from `from` to `to` (the head) with their line counts: [{ path, added, removed, binary }]. */
 export function changed(git: Git, from: string, to = "HEAD"): Changed[] {
-  const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", from, to]);
+  const out = git(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none", "--numstat", "-z", from, to]);
   return out.split("\0").filter(Boolean).map((l) => {
     const [a, r, ...p] = l.split("\t");
     return { path: p.join("\t"), added: a === "-" ? 0 : Number(a), removed: r === "-" ? 0 : Number(r), binary: a === "-" };

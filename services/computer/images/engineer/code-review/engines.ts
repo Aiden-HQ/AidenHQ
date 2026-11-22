@@ -487,15 +487,15 @@ export function patchGroups(root: string, base: string, files: string[], budget 
   for (const path of files) {
     // The path's own patch, whatever git does to its name in a header (it quotes some): the files under it (a file that became a
     // directory) are left out by an exclude pathspec, never by reading headers.
-    const bytes = gitBytes(deadline, root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
+    const bytes = gitBytes(deadline, root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
     let patch: string;
     try { patch = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { oversize.push(`${path} (not valid UTF-8)`); continue; }
     if (!patch) { oversize.push(`${path} (no patch could be made for it)`); continue; }
     // A type change (a file that became a link) is two records of one path: each is packed or split on its own, with its own header.
-    for (const record of patch.split(/^(?=diff --git )/m).filter(Boolean)) {
+    for (const record of patch.split(/(?<=^|\n)(?=diff --git )/).filter(Boolean)) {
       const text = record.endsWith("\n") ? record : `${record}\n`;
       if (text.length <= budget) { add(text, path); continue; }
-      const [header = "", ...hunks] = text.split(/^(?=@@ )/m);
+      const [header = "", ...hunks] = text.split(/(?<=^|\n)(?=@@ )/);
       if (!hunks.length) { oversize.push(`${path} (a patch of ${text.length} characters with no hunk to split at)`); continue; }
       let part = header, any = false;
       for (const h of hunks) {

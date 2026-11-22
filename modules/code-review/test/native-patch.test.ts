@@ -352,3 +352,14 @@ test("a patch that isn't valid UTF-8 is named, not sent in a lossy form", () => 
   assert.deepEqual(g.groups, []);
   assert.deepEqual(g.oversize, ["x.txt (not valid UTF-8)"]);
 });
+
+test("a bare carriage return or a line separator in a changed line is not a record or hunk boundary", () => {
+  const { repo, base } = repoWith({ "c.txt": (v) => (v ? `x\r@@ -1 +1 @@ fake\u2028diff --git a/z b/z\ny\n` : "a\n") });
+  const g = patchGroups(repo, base, ["c.txt"], 100_000);
+  assert.equal(g.groups.length, 1);
+  assert.equal(g.groups[0]!.text.trimEnd(), patchOf(repo, base, "c.txt").trimEnd());
+  // Over a budget, the one hunk is not read as several: it is named, not cut at the fake headers.
+  const tight = patchGroups(repo, base, ["c.txt"], 100);
+  assert.deepEqual(tight.groups, []);
+  assert.match(tight.oversize[0]!, /^c\.txt \(a hunk of \d+ characters\)$/);
+});

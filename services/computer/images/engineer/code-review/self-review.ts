@@ -56,7 +56,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
   // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
   const moved = () => { let r = ""; try { r = git("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || git("rev-parse", "HEAD") !== head; };
-  const prChanged = new Set(raw("diff", "--no-renames", "--name-only", "-z", base, head).split("\0").filter(Boolean));
+  const prChanged = new Set(raw("diff", "--no-renames", "--ignore-submodules=none", "--name-only", "-z", base, head).split("\0").filter(Boolean));
   const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
   const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
@@ -77,7 +77,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const guides = guidePaths(reviewed).flatMap((p) => { try { const text = git("show", `${base}:${p}`).slice(0, 20_000); total += text.length; return total > 80_000 ? [] : [{ path: p, text }]; } catch { return []; } });
   // The base's reliability checklist items the diff triggers, as the gate picks them (code matches, the base's file, never the branch's).
   let checks = "";
-  try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", from, head))); } catch {}
+  try { checks = checklistText(matchChecklist(JSON.parse(git("show", `${base}:.github/code-review-checklist.json`).slice(0, 200_000)).items, git("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none", from, head, "--", ...reviewed.map((p) => `:(literal)${p}`)))); } catch {}
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
     const instructions = brief({ guides, checks, focus: "", excluded: [], incremental, addressed: false });
