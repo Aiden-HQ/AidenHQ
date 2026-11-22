@@ -48,27 +48,17 @@ export interface ReviewRequest {
 }
 export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string }
 /**
- * Whether a dotted quad is a version number rather than an address: under a label that names one on the same line
- * (`Affected versions: 1.2.3.4`) or on the line just above (`Affected versions:` then the number). A bug report's version is
- * not instance data, and the decoded scan below now sees a newline the JSON-escaped text used to hide, so the label is what
- * tells the two apart. An address under a host or settings line is unaffected and still refused, and so is
- * a private-range address under a version label: the label is the agent's text and must not excuse the instance's own LAN.
+ * The argument names whose value is a version by the tool's schema, and whether a quad could be one at all: a whole-string
+ * dotted quad (no room around it for prose) outside the ranges a LAN or tailnet is actually reached on. An address is never
+ * excused by what the requester's text says around it, nor by which argument it lands in.
  */
-function versionNumber(text: string, at: number): boolean {
-  // A version label is the agent's own text, so it is never allowed to excuse an address a LAN or tailnet is actually reached
-  // on: a call that writes `versions:` above `192.168.x.y`, `10.x.y.z` or a `100.64-127.x.y` (tailscale's own range) still
-  // names the instance, and no real version number needs one. Only a quad outside those ranges can be a version.
-  const [a, b = 0] = text.slice(at).split(".").map(Number);
-  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)) return false;
-  const before = text.slice(0, at);
-  const lineStart = before.lastIndexOf("\n") + 1;
-  const label = /(?:^|[\s>*_-])[^:\n]{0,40}?\b(?:versions?|release|build|tag)\b[^:\n]{0,20}:\s*$/i;
-  if (label.test(before.slice(lineStart))) return true;
-  const above = lineStart > 0 ? before.slice(0, lineStart - 1).split("\n").pop() ?? "" : "";
-  // A label alone on the line above (`Affected versions`, or an argument's own key `version`, which the scan pushes as its own
-  // line before its value) names the number under it too.
-  return label.test(above) || /^\s*[*_>\s-]*(?:versions?|release|build|tag)\s*[*_]*\s*:?\s*$/i.test(above);
-}
+const VERSION_KEYS = /^(?:versions?|release|build|tag)$/i;
+const versionValue = (v: string) => {
+  const t = v.trim();
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(t)) return undefined;
+  const [a, , b = 0] = t.split(".").map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) ? undefined : t;
+};
 
 /**
  * Instance details in a GitHub write (a conn.tool card on the github connection: a comment, an issue, a review): a tailnet
@@ -85,6 +75,9 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
   // `diff` for a reviewer provider that doesn't read `tool_call` yet, so it is scanned too, never trusted to agree with the
   // arguments. A caller without a tool_call (an eval case, an older kernel) passes only the details text.
   const parts: string[] = [];
+  // The call's own version numbers, by argument name: the only dotted quads the scan may read as versions. A heading in the
+  // requester's text is never proof (`Build:` above an address is a copied build server's address, not a build number).
+  const versions = new Set<string>();
   if (toolCall) {
     if (toolCall.connection !== "github") return [];
     // Walked with an explicit stack, not recursion: this runs in the kernel before the reviewer's own depth check, and an
@@ -92,15 +85,19 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
     // twice (a shared reference, or a cycle only a direct caller could build) is read once.
     const seen = new Set<unknown>();
     const stack: unknown[] = [];
-    // Each string is pushed right after its own key, so a value and the label it sits under stay on adjacent lines; a nested
-    // object's entries are queued on the same stack rather than recursed into.
     const open = (v: unknown) => {
       if (!v || typeof v !== "object" || seen.has(v)) return;
       seen.add(v);
       for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
         parts.push(k);
-        if (typeof child === "string") parts.push(child);
-        else stack.push(child);
+        // The schema, not a line of the requester's prose, says which argument is a version: a dotted quad that is the whole
+        // value of `version` (or `versions`) is that report's version, wherever an agent's log quotes it back.
+        if (typeof child !== "string") stack.push(child);
+        else {
+          parts.push(child);
+          const version = VERSION_KEYS.test(k) ? versionValue(child) : undefined;
+          if (version) versions.add(version);
+        }
       }
     };
     open(toolCall.arguments);
@@ -116,7 +113,7 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
-      .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !versionNumber(text, m.index ?? 0)),
+      .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !versions.has(m[0])),
   ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
   return [...new Set(found)];
 }

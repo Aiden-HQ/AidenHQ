@@ -230,14 +230,20 @@ test("a structured tool call's arguments are scanned without recursion, so a dee
   assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: { ok: "plain" } }), []);
 });
 
-test("a four-part version under a versions label is not an instance address, while a real one still is", async () => {
+test("a report's own version argument is not an instance address, while a real one still is", async () => {
   const { instanceDetails } = await import("../sdk/src/reviewer.ts");
-  const scan = (log: string) => instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "github_product_issue", arguments: { title: "t", fingerprint: "f", evidence: { module: "m", version: "1.2.3.4", reproduction: "r", log } } });
-  assert.deepEqual(scan("Affected versions:\n1.2.3.4"), [], "a version on the line under its label");
-  assert.deepEqual(scan("Affected versions: 1.2.3.4"), [], "a version on the label's own line");
+  const scan = (log: string, version = "1.2.3.4") => instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "github_product_issue", arguments: { title: "t", fingerprint: "f", evidence: { module: "m", version, reproduction: "r", log } } });
+  // The schema says `version` is a version: its own value is not an address, wherever the log quotes it back.
+  assert.deepEqual(scan("Affected versions:\n1.2.3.4"), [], "a version quoted back under its heading");
+  assert.deepEqual(scan("Affected versions: 1.2.3.4"), [], "a version quoted back on the heading's line");
   assert.deepEqual(scan("the agent ran on 10.0.0.7"), ["10.0.0.7"], "a real address is still refused");
   assert.deepEqual(scan("Affected versions: 1.2.3.4, seen on 10.0.0.7"), ["10.0.0.7"], "the address beside a version too");
-  // The label is the requesting agent's text, so it cannot excuse the instance's own LAN or tailnet address.
-  assert.deepEqual(scan("Affected versions:\n192.168.1.10"), ["192.168.1.10"], "a private address under a version label");
-  assert.deepEqual(scan("build: 100.101.102.103"), ["100.101.102.103"], "a tailnet address under a build label");
+  // A heading in the requester's own text is never proof: an address under `Build:` is still an address.
+  assert.deepEqual(scan("Build:\n192.168.1.10"), ["192.168.1.10"], "an address under a Build heading");
+  assert.deepEqual(scan("build: 100.101.102.103"), ["100.101.102.103"], "a tailnet address under a build heading");
+  assert.deepEqual(scan("release: 10.0.0.7"), ["10.0.0.7"], "a private address under a release heading");
+  // And the schema key does not excuse a LAN or tailnet address either: a real version is never one of those.
+  assert.deepEqual(scan("nothing", "192.168.1.10"), ["192.168.1.10"], "a private quad in the version argument");
+  assert.deepEqual(scan("nothing", "100.101.102.103"), ["100.101.102.103"], "a tailnet quad in the version argument");
+  assert.deepEqual(scan("nothing", "1.2.3.4"), [], "an ordinary version argument");
 });
