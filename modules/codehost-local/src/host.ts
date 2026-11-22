@@ -103,14 +103,16 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         const named = { ...(text?.title?.trim() ? { title: text.title } : {}), ...(text?.body?.trim() ? { body: text.body } : {}) };
         if (Object.keys(named).length) lines.push(`update refs/changes/${n}/meta ${await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...c.meta, ...named }) })}`);
         await refs(repo, lines);
-        return { url: changeUrl(repo, n), title: String(text?.title ?? c.meta.title ?? branch), before: c.head };
+        // The title returned is the one the change now has: a blank one kept the stored title, so report that.
+        return { url: changeUrl(repo, n), title: String(named.title ?? c.meta.title ?? branch), before: c.head };
       }
       const n = ((await numbers(repo)).at(-1) ?? 0) + 1;
-      const m = await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ title: text?.title ?? branch, body: text?.body ?? "", branch, base: into, task, opened_at: new Date().toISOString(), draft: false }) });
+      const first = { title: text?.title?.trim() ? text.title : branch, body: text?.body ?? "" };
+      const m = await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...first, branch, base: into, task, opened_at: new Date().toISOString(), draft: false }) });
       // `opened` is written once and never moved: it is the commit the change was opened against, which a push leaves alone (as
       // GitHub's baseRefOid does). A repo with no default-branch commit yet has none to record, so neither ref is written then.
       await refs(repo, [`create refs/changes/${n}/head ${head}`, ...(tip ? [`create refs/changes/${n}/base ${tip}`, `create refs/changes/${n}/opened ${tip}`] : []), `create refs/changes/${n}/meta ${m}`]);
-      return { url: changeUrl(repo, n), title: String(text?.title ?? branch), before: undefined as string | undefined };
+      return { url: changeUrl(repo, n), title: first.title, before: undefined as string | undefined };
     });
   }
 

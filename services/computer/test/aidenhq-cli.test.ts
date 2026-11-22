@@ -115,7 +115,8 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // The tool proxy, as the box's own MCP config calls it: the token as X-Agent-Key.
   assert.deepEqual([seen.at(-1).path, seen.at(-1).key, seen.at(-1).auth], ["/c/paperclip_tasks/mcp", "ahqj_job", undefined]);
   assert.match(await aidenhq("reset"), /fresh session/);
-  // Outside a job's computer, nothing is sent.
+  // Outside a job's computer, nothing is sent, but help still works.
   await assert.rejects(run(process.execPath, [CLI, "reset"], { env: { PATH: process.env.PATH } }), /only available inside a job's computer/);
+  assert.match((await run(process.execPath, [CLI, "publish", "--help"], { env: { PATH: process.env.PATH } })).stdout, /^usage: aidenhq publish/);
 });
 
