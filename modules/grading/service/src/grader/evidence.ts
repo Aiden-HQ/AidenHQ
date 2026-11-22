@@ -87,6 +87,39 @@ const addId = (list: string[], v: unknown, re?: RegExp) => {
 const samePr = (a: { repo: string; number: number }, b: { repo: string; number: number }) => a.repo.toLowerCase() === b.repo.toLowerCase() && Number(a.number) === Number(b.number);
 
 /**
+ * A merged PR's base commit: the single parent of the commit its own history starts from, or "" when the read does not
+ * establish one.
+ *
+ * GitHub defines a PR's commits as the head branch's commits not present in the base branch (`pullRequest.commits`). In that
+ * list a commit starts the history when none of its parents is itself in the list -- every parent, not just the first, since a
+ * merge commit's second parent can be the one that ties it to the rest. The start is found by the parent edges, never by list
+ * order: GitHub documents neither the connection's order nor that one page holds every commit.
+ *
+ * The value states only that relationship. It is not where the branch was cut -- a rebase after opening re-parents the oldest
+ * commit -- and it is not the base branch's tip or the git merge base, both of which move; neither is ever substituted for it.
+ *
+ * Nothing is established (""), rather than guessed, when the PR is not merged; the list was cut off
+ * (`pageInfo.hasNextPage`) or is empty; more than one commit starts the history; the single start has no parent or several (a
+ * merge commit that starts it: which parent would be the base is not settled); any of its parents was not read; or its parent
+ * is not a commit id.
+ */
+export function baseCommitOf(pr: any): string {
+  if (pr?.state !== "MERGED" || pr.chain?.pageInfo?.hasNextPage) return "";
+  const chain = (pr.chain?.nodes ?? []).map((n: any) => n?.commit).filter((c: any) => c && typeof c.oid === "string");
+  const own = new Set(chain.map((c: any) => c.oid));
+  const parents = (c: any): string[] => (c?.parents?.nodes ?? []).map((p: any) => p?.oid).filter((oid: any) => typeof oid === "string");
+  // One entry per distinct commit, so a repeated node is not read as two starting commits.
+  const starts = new Map<string, any>();
+  for (const c of chain) if (!parents(c).some((oid) => own.has(oid))) starts.set(c.oid, c);
+  if (starts.size !== 1) return "";
+  const [root] = [...starts.values()];
+  // Every parent must have been read, or a second one could be hiding a tie to the rest of the list.
+  if (root?.parents?.totalCount !== 1 || root.parents.totalCount !== parents(root).length) return "";
+  const [parent] = parents(root);
+  return typeof parent === "string" && SHA40.test(parent) ? parent : "";
+}
+
+/**
  * Identifiers from anything that names a PR: a merged record (the arrays taskPrRows and taskMergePrs return) or a record as it
  * is stored. `head` is a branch on a branch row and a bound head commit on a merge card (a 40-hex value), so it goes wherever
  * its shape says.
@@ -288,7 +321,10 @@ export function localPullRequest(c: any, checks: { name: string; ok: boolean; pe
       pullRequest: {
         number: c.number, url: c.url, state: c.state === "open" ? "OPEN" : c.state === "merged" ? "MERGED" : "CLOSED", title: c.title ?? "", body: c.body ?? "",
         headRefOid: c.head, headRefName: c.branch, baseRefName: c.into, mergeCommit: c.merged ? { oid: c.merged } : null, mergedAt: c.merged ? mergedAt : null,
+        // The local read gives no list of the change's own commits (only its head, its merge base and the default branch), so there is
+        // no oldest commit to read a base from: this adapter carries the chain empty, and the fact says the base was not established.
         commits: { nodes: [{ commit: { oid: c.head, statusCheckRollup: { contexts: { nodes } } } }] }, history: { nodes: [] },
+        chain: { pageInfo: { hasNextPage: false }, nodes: [] },
       },
     },
   };
@@ -368,7 +404,11 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const own = history.findLast((c: any) => c.parents?.totalCount === 1);
     const shows = { commits: [pr.headRefOid, merged ? pr.mergeCommit?.oid : "", own?.oid].filter(Boolean), trees: [history.find((c: any) => c.oid === pr.headRefOid)?.tree?.oid, own?.tree?.oid].filter(Boolean) };
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    // The base commit (baseCommitOf): the parent of the PR's oldest commit, stated only when the read proves exactly one
+    // starting commit with exactly one parent. It is where this history starts, never where the branch was cut, the base
+    // branch's tip or the git merge base, and "not established" is missing evidence rather than a guess.
+    const base = baseCommitOf(pr);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (parent of the PR's oldest commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;
