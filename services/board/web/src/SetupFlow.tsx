@@ -64,7 +64,9 @@ function valid(pattern: string, value: string): boolean {
 
 function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: SetupFlowView; change?: boolean; board: Board; reload: () => Promise<void>; onDone: () => void; onSignIn: () => void }) {
   const [error, setError] = useState("");
-  const [restarted, setRestarted] = useState(false);
+  // A save that restarted the service, and the reloaded flow's own window: the later of them is the wait.
+  const [savedRestart, setSavedRestart] = useState(0);
+  const restartUntil = Math.max(savedRestart, flow.restarting_until ?? 0) || undefined;
   const fields = flow.fields ?? [];
   // A module with modes: its Connect waits for the pick to be live (the setting holds it).
   const picked = !flow.choose || flow.done || (flow.choose.chosen != null && flow.choose.chosen === flow.choose.value);
@@ -119,7 +121,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
           )}
           {fields.length > 0 && !viaOrg && (
             <Step n={n++} title="Paste the details" state={secretsDone ? "done" : "open"}>
-              <SecretFields module={flow.module} fields={fields} present={flow.present} done={secretsDone} elsewhere={flow.done} reload={reload} fail={fail} onSaved={setRestarted} />
+              <SecretFields module={flow.module} fields={fields} present={flow.present} done={secretsDone} elsewhere={flow.done} reload={reload} fail={fail} onSaved={setSavedRestart} />
             </Step>
           )}
           {connect && (
@@ -142,7 +144,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
           )}
           {flow.pair_url && (
             <Step n={n++} title="Pair" state={flow.paired ? "done" : secretsDone ? "open" : "wait"}>
-              {secretsDone ? <Pairing flow={flow} reload={reload} fail={fail} restarted={restarted || Boolean(flow.restarting)} /> : <p className="setup-hint">Save the details above first.</p>}
+              {secretsDone ? <Pairing flow={flow} reload={reload} fail={fail} restartUntil={restartUntil} /> : <p className="setup-hint">Save the details above first.</p>}
             </Step>
           )}
           {error && (
@@ -318,7 +320,7 @@ const ms = (t: string | number | undefined) => (typeof t === "number" ? (t < 1e1
 /** The code's life when the response omits it: what every pairing module keeps (the board sends the channel's own value). */
 const PAIR_TTL_S = 15 * 60;
 
-export function Pairing({ flow, reload, fail, restarted = false }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void; restarted?: boolean }) {
+export function Pairing({ flow, reload, fail, restartUntil }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void; restartUntil?: number }) {
   // `was`: paired already when minted. Then only a pairing time after the mint shows the re-pair; with no time, keep waiting.
   // `ends`: when this code dies by this browser's clock, from the lifetime the channel gave; `minted_at` stays the board's
   // clock, to compare with the service's `paired_at`.
@@ -326,14 +328,23 @@ export function Pairing({ flow, reload, fail, restarted = false }: { flow: Setup
   const [expired, setExpired] = useState(false);
   // Bumped on each mint: a check that answers after a newer code was minted is about the old one, so it changes nothing.
   const minted = useRef(0);
-  // `restarted` is the kernel's report that a saved secret's service is being recreated: only then is the module's 409 (or
-  // its container being briefly unreachable) a wait, not an error. A genuine conflict, with no restart reported, shows now.
+  // `restartUntil` is the board's report that a saved secret's service is being recreated, and until when: only then is the
+  // module's 409 (or its container being briefly unreachable) a wait, not an error. A genuine conflict, with no restart
+  // reported, shows at once, and the window is the board's, not a copy here.
   const [restarting, setRestarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const minting = useRef(false);
   const mounted = useRef(true);
+  // The pending retry's delay, so unmounting (leaving setup, folding the advanced steps) stops it instead of minting unseen.
+  const waiting = useRef<(() => void) | null>(null);
   const live = pair !== null && !expired;
-  useEffect(() => () => void (mounted.current = false), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      waiting.current?.();
+    };
+  }, []);
   useEffect(() => {
     if (!live) return;
     // A pairing the service now reports is this code's if it happened after the mint, or, from unpaired, when it gives no time.
@@ -361,14 +372,33 @@ export function Pairing({ flow, reload, fail, restarted = false }: { flow: Setup
     const t = setInterval(() => void check(), 2000);
     return () => (clearInterval(t), clearTimeout(last));
   }, [live, pair, flow.module, reload]);
+  /** Wait a retry's backoff; unmounting resolves it now, so the loop ends without another request. */
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(t);
+        waiting.current = null;
+        resolve();
+      };
+      const t = setTimeout(done, ms);
+      waiting.current = done;
+    });
   const mint = async () => {
     if (minting.current) return;
     minting.current = true;
     setBusy(true);
-    const started = Date.now();
+    // A POST cut off (the board's timeout, or no answer) may still have minted: the next try asks the module — a read-only
+    // GET — until it answers, then mints, so a code it shows is the live one and a retry never doubles a mint unseen.
+    let askFirst = false;
     try {
       for (;;) {
         try {
+          if (!mounted.current) return;
+          if (askFirst) {
+            await api.setupPaired(flow.module);
+            if (!mounted.current) return;
+            askFirst = false;
+          }
           const r = await api.setupPair(flow.module);
           if (!mounted.current) return;
           setRestarting(false);
@@ -378,12 +408,11 @@ export function Pairing({ flow, reload, fail, restarted = false }: { flow: Setup
           return;
         } catch (e) {
           // Recreated, not broken: the module's token-missing 409, or the board not reaching it between containers.
-          if (restarted && e instanceof HttpStatusError && (e.status === 409 || e.status === 503) && Date.now() - started < 5 * 60_000) {
-            setRestarting(true);
-            await new Promise((r) => setTimeout(r, 2500));
-            continue;
-          }
-          throw e;
+          const wait = restartUntil !== undefined && Date.now() < restartUntil;
+          if (!(wait && e instanceof HttpStatusError && (e.status === 409 || e.status === 503 || e.status === 504))) throw e;
+          askFirst = e.status !== 409;
+          setRestarting(true);
+          await pause(2500);
         }
       }
     } catch (e) {
@@ -453,7 +482,7 @@ function Effort({ effort, admin }: { effort: string; admin?: string }) {
 }
 
 /** Paste fields for a flow's secrets (each checked against its pattern here; the kernel checks again on save). */
-function SecretFields({ module, fields, present, done, elsewhere, reload, fail, onSaved }: { module: string; fields: NonNullable<SetupFlowView["fields"]>; present: Record<string, boolean>; done: boolean; elsewhere?: boolean; reload: () => Promise<void>; fail: (e: unknown) => void; onSaved?: (restarted: boolean) => void }) {
+function SecretFields({ module, fields, present, done, elsewhere, reload, fail, onSaved }: { module: string; fields: NonNullable<SetupFlowView["fields"]>; present: Record<string, boolean>; done: boolean; elsewhere?: boolean; reload: () => Promise<void>; fail: (e: unknown) => void; onSaved?: (restartUntil: number) => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const filled = fields.filter((f) => values[f.secret]?.trim());
@@ -464,7 +493,10 @@ function SecretFields({ module, fields, present, done, elsewhere, reload, fail, 
       // All at once, so one slow or failed save never keeps the others from being sent.
       const results = await Promise.allSettled(filled.map((f) => api.setupSecret(module, f.secret, values[f.secret]!.trim())));
       const failed = results.find((r) => r.status === "rejected");
-      onSaved?.(results.some((r) => r.status === "fulfilled" && Boolean(r.value.restarted?.length)));
+      // Saves go out together: a later save that restarted nothing must not hide one that did, so only a reported restart
+      // (with its window) is passed up, at the latest deadline.
+      const until = Math.max(0, ...results.map((r) => (r.status === "fulfilled" && r.value.restarted?.length ? (r.value.restarting_until ?? 0) : 0)));
+      if (until) onSaved?.(until);
       setValues(Object.fromEntries(filled.filter((_, i) => results[i]!.status === "rejected").map((f) => [f.secret, values[f.secret]!])));
       await reload();
       if (failed) fail((failed as PromiseRejectedResult).reason);
@@ -509,7 +541,8 @@ function SecretFields({ module, fields, present, done, elsewhere, reload, fail, 
  */
 function Advanced({ flow, advanced: a, board, reload, fail }: { flow: SetupFlowView; advanced: AdvancedFlowView; board: Board; reload: () => Promise<void>; fail: (e: unknown) => void }) {
   const [open, setOpen] = useState(a.done || (a.secrets ?? []).some((x) => flow.present[x]));
-  const [restarted, setRestarted] = useState(false);
+  const [savedRestart, setSavedRestart] = useState(0);
+  const restartUntil = Math.max(savedRestart, flow.restarting_until ?? 0) || undefined;
   const fields = a.fields ?? [];
   const saved = fields.every((f) => flow.present[f.secret]);
   let n = 1;
@@ -549,12 +582,12 @@ function Advanced({ flow, advanced: a, board, reload, fail }: { flow: SetupFlowV
           <div className="setup-side">
             {fields.length > 0 && (
               <Step n={n++} title="Paste the details" state={saved ? "done" : "open"}>
-                <SecretFields module={flow.module} fields={fields} present={flow.present} done={saved} reload={reload} fail={fail} onSaved={setRestarted} />
+                <SecretFields module={flow.module} fields={fields} present={flow.present} done={saved} reload={reload} fail={fail} onSaved={setSavedRestart} />
               </Step>
             )}
             {a.pair_url && (
               <Step n={n++} title="Pair" state={flow.paired ? "done" : saved ? "open" : "wait"}>
-                {saved ? <Pairing flow={flow} reload={reload} fail={fail} restarted={restarted || Boolean(flow.restarting)} /> : <p className="setup-hint">Save the details above first.</p>}
+                {saved ? <Pairing flow={flow} reload={reload} fail={fail} restartUntil={restartUntil} /> : <p className="setup-hint">Save the details above first.</p>}
               </Step>
             )}
           </div>

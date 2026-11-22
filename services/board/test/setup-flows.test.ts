@@ -29,10 +29,11 @@ const google = {
 } as unknown as GoogleAuth;
 let paired = false;
 let pairRefusal: { status: number; error: string } | null = null;
-let pairUnreachable = false;
+let pairUnreachable: boolean | "timeout" = false;
 const pairCalls: { method: string; auth: string }[] = [];
 const fakePair = (async (_url: string, init: RequestInit) => {
   pairCalls.push({ method: String(init.method), auth: String((init.headers as Record<string, string>).authorization) });
+  if (pairUnreachable === "timeout") throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
   if (pairUnreachable) throw new TypeError("fetch failed");
   if (init.method === "POST" && pairRefusal) return new Response(JSON.stringify({ error: pairRefusal.error }), { status: pairRefusal.status });
   return new Response(JSON.stringify(init.method === "POST" ? { code: "ABCD-1234", link: "https://t.me/bot?start=ABCD" } : { paired, ...(paired ? { paired_at: "2026-11-17T10:00:00.000Z" } : {}) }), { status: 200 });
@@ -165,13 +166,53 @@ describe("setup flows", () => {
     pairUnreachable = true;
     expect(await admin("GET", "/api/setup-flows/phone/pair")).toMatchObject({ status: 503, json: { error: "phone isn't reachable yet" } });
     expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 503, json: { error: "phone isn't reachable yet" } });
+    pairUnreachable = false;
+  });
+
+  it("a module that doesn't answer in time is a 504, not a 503 the page could repeat as a second mint", async () => {
+    pairUnreachable = "timeout";
+    expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 504, json: { error: "phone didn't answer in time" } });
+    pairUnreachable = false;
   });
 
   it("a save that restarted the service marks the flow as restarting, also after a reload", async () => {
     store.delMeta("setup_restarting:phone");
     const flow = async () => (await admin("GET", "/api/setup-flows")).json.flows.find((f: { module: string }) => f.module === "phone");
     expect(await flow()).toMatchObject({ restarting: false });
-    expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json).toMatchObject({ ok: true });
-    expect(await flow()).toMatchObject({ restarting: true, present: { phone_bot_token: true } });
+    const saved = (await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json;
+    expect(saved).toMatchObject({ ok: true, restarted: ["phone"], restarting_until: expect.any(Number) });
+    expect(await flow()).toMatchObject({ restarting: true, restarting_until: saved.restarting_until, present: { phone_bot_token: true } });
   });
+
+  it("a save that restarted nothing does not clear another save's live restart marker", async () => {
+    store.delMeta("setup_restarting:phone");
+    // One field's paste restarts the service; another save for the same module (the kernel already started the recreate) reports none.
+    const first = (await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json;
+    expect(first.restarting_until).toEqual(expect.any(Number));
+    kernel.restarted.services = [];
+    try {
+      expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json.restarting_until).toBe(first.restarting_until);
+      const flow = (await admin("GET", "/api/setup-flows")).json.flows.find((f: { module: string }) => f.module === "phone");
+      expect(flow).toMatchObject({ restarting: true, restarting_until: first.restarting_until });
+    } finally {
+      kernel.restarted.services = null;
+    }
+  });
+
+  it("an expired restart marker goes on the next save, and a pairing clears it", async () => {
+    store.setMeta("setup_restarting:phone", String(Date.now() - 1));
+    kernel.restarted.services = [];
+    try {
+      expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json.restarting_until).toBeUndefined();
+      expect(store.meta("setup_restarting:phone")).toBeUndefined();
+      // A pairing means the restart is over: a later 409 is a real conflict, not another five minutes of waiting.
+      store.setMeta("setup_restarting:phone", String(Date.now() + 300_000));
+      expect((await admin("POST", "/api/setup-flows/phone/pair")).json).toMatchObject({ code: "ABCD-1234" });
+      expect(store.meta("setup_restarting:phone")).toBeUndefined();
+    } finally {
+      kernel.restarted.services = null;
+      store.delMeta("setup_restarting:phone");
+    }
+  });
+
 });
