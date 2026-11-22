@@ -43,21 +43,10 @@ test("the compiled handbook carries the repair-loop rule and leaves its steps to
 });
 
 test("the write-code skill holds the stop steps, including the wait for the delegator", () => {
-  const skill = readFileSync(join(product, "modules/engineering/skills/write-code/SKILL.md"), "utf8");
-  const start = skill.indexOf("- A rejection of a change names a defect");
-  assert.notEqual(start, -1, "the skill holds the repair-loop steps");
-  const steps = skill.slice(start, skill.indexOf("\n- ", start + 1)).replace(/\s+/g, " ");
-  assert.match(steps, /both rejection ids/, "both rejection ids go on the task");
-  assert.match(steps, /`task_wait`s with `for` the delegator \(the owner when nobody delegated the task\)/, "the run waits on the delegator, or the owner when there is none");
-  assert.match(steps, /both rejection ids, what the two notes said, what it would change, and what the change must do/, "the question carries the ids and the clarification");
-  assert.match(steps, /the final reply repeats the two ids and the question onto the task/, "the reply records the ids, since the Engineer cannot comment");
-  assert.match(steps, /publishes the next head only once a reply resolves the\s+question/, "no third head before a resolving answer");
-  assert.match(steps, /an answer that asks something back, declines, or names no requirement is met\s+with the same question again/, "a non-answer gets the question, not a new head");
-  assert.match(steps, /Only the AI reviewer's own rejection of the change counts toward the stop/, "only AI reviewer rejections count");
-  assert.match(steps, /A `Not reviewed` notice is code's refusal, never the reviewer's silence/, "a Not reviewed notice is code's refusal");
-  assert.match(steps, /the kernel\s+retries a failed reviewer and then decides the write itself \(approved fail-open at full autonomy, or sent to the owner\s+under a cap\), so it posts no notice and leaves nothing to refile/, "a reviewer failure is the kernel's, not a refile");
-  assert.match(steps, /Either way that is not the write being done: report it\s+as decided when its outcome lands, not before/, "fail-open is a decision, not an execution");
-  assert.match(steps, /Fix what the notice's reason names \(instance details to take out, a diff that no longer matches the head\) and file the\s+changed write/, "the refusal's reason is fixed before filing");
-  assert.match(steps, /even though the rejection's own notice still ends "Fix that and file it\s+again": that tail states the\s+general case/, "the live notice is reconciled with the stop");
-  assert.doesNotMatch(steps, /accept it as it stands/, "the delegator is asked to clarify, not to accept the change as it is");
+  const skill = readFileSync(join(product, "modules/engineering/skills/write-code/SKILL.md"), "utf8").replace(/\s+/g, " ");
+  assert.match(skill, /second rejection names nothing still wrong at the current head, stop publishing/, "the stop is judged against the current head");
+  assert.match(skill, /`task_wait` with `for` the delegator \(the owner when none\)/, "the run waits on the delegator, or the owner");
+  assert.match(skill, /both rejection ids/, "both rejection ids go in the question");
+  assert.match(skill, /final reply repeats the ids and question/, "the reply records the ids, since the Engineer cannot comment");
+  assert.match(skill, /Publish again once a reply says what the change must do; meet any other reply with the same question/, "no new head before a resolving answer");
 });

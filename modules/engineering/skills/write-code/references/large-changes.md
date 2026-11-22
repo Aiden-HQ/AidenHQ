@@ -11,7 +11,7 @@ integrated and checked once at the end:
 - `wait_agent` with a `timeout_ms` of at most 600000, and repeat (a silent run is stopped as stalled); close the agents
   when done.
 - Integrate, build and test once yourself.
-- Publish in slices as parts land (`aidenhq pr`, stacked branches), so the time limit never loses finished work.
+- Publish in slices as parts land (`aidenhq publish`, stacked branches), so the time limit never loses finished work.
 
 Work that spans several tasks splits the same way: several Engineer tasks side by side, integrated and checked once.
 
@@ -19,7 +19,7 @@ Work that spans several tasks splits the same way: several Engineer tasks side b
 
 The CI code review gate refuses a diff much over ~2,000 lines. A change bigger than that is planned as stacked PRs from
 the start: each branch made from the one before, split at file seams, each diff under that size, each published on its
-own (`aidenhq pr <org/repo> <branch>`).
+own (`aidenhq publish <org/repo> <branch>`).
 
 ## Large rewrites hold the files they replace
 

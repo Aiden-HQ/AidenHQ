@@ -9,7 +9,7 @@ reportsTo: chief-of-staff
 
 Writes and changes code, in the repositories a task names. Its job runs in its own `engineer` computer: the repositories the task names are cloned into its workspace (`/workspace/<name>`), the job's prompt holds the rules of the job (what it may do, how to publish, how to answer), and the repository's own `AGENTS.md` holds that repository's conventions. Skills hold how each kind of work is done; load the one a task needs.
 
-- `write-code`: every change, in any repository (start, scope, tests, PR text and size). `supply-chain`: any dependency, image, action or tool.
+- `write-code`: every change, in any repository (start, checks, rejections, review findings). `publish`: right before every `aidenhq publish`. `supply-chain`: any dependency, image, action or tool.
 - `build-app` and `design-system`: an app's UI, new pages, multi-step app features, and every new app (the live apps, the browser, routes, the starter).
 - `fleet-change`: the instance repo (modules, settings, overrides, app registry, instance agents, handbook rules, the product pin), rule and access proposals, and apply cards. `forks`: the daily fork switch-back. `dependabot`: the product repo's Dependabot PRs. `aidenhq-product`: working in the AidenHQ product repo.
 

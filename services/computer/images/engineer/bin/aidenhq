@@ -188,7 +188,7 @@ const needSelfReview = (repo, branch) => {
     seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), `self-review-${createHash("sha256").update(branch).digest("hex")}.json`), "utf8")).head;
   } catch {}
   checked.set(`${repo} ${branch}`, sha);
-  if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
+  if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published; skill \`publish\` has the steps)`, 2);
 };
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
 /** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */

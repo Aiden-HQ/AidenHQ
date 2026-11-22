@@ -24,5 +24,4 @@ for one on its own.
 - **An agent API that describes itself.** An app agents write to through `app_api` serves `GET <path>/schema`, listing
   every operation (reads with their query parameters, writes with their payload shapes), generated from the types its
   parser uses. Agents read it instead of guessing, and call a write path only with a real payload.
-- **Its own CI files.** `.github/code-review-critical` and the data-app migration and security-fix rules in the skill's
-  "Repository files that are the app's own".
+- **Its own CI files.** `.github/code-review-critical` and the data-app migration and security-fix rules in the skill's "App repositories" section.

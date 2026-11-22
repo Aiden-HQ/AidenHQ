@@ -44,6 +44,6 @@ run.
   brand and the links on those pages, goes Back and Forward, reloads, and every link reads "renders" while no control
   reads as a dead click. The header's brand is `Link href="/"` and opens home in its default state; a redesign starts
   from the starter's shells; every clickable element visibly acts.
-- Publish the same way as every Engineer: commit on a branch, then `aidenhq publish <org/repo> <branch>`; the kernel tiers
+- Publish the same way as every Engineer (skill `publish`): commit on a branch, then `aidenhq publish <org/repo> <branch>`; the kernel tiers
   each write.
 - Your task ends when its PR merges: it closes (through its grade, when graded) and whoever delegated it hears the

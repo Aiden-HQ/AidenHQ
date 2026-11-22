@@ -63,7 +63,7 @@ RUN npm i -g pnpm@10.34.9 typescript@5.9.3 && npm cache clean --force
 COPY --chmod=755 bin/aidenhq /usr/local/bin/aidenhq
 COPY --chmod=755 bin/sleep bin/aidenhq-browse /opt/aidenhq/bin/
 # An Engineer's review of its own change before it publishes: the code-review check's engine and brief (synced from modules/code-review/recipe by
-# scripts/sync-shared.ts), run as `node /opt/aidenhq/code-review/self-review.ts <base>` (skill write-code).
+# scripts/sync-shared.ts), run as `node /opt/aidenhq/code-review/self-review.ts <base-branch> <branch>` (skill publish).
 COPY code-review/ /opt/aidenhq/code-review/
 
 # ---- Code review tools (modules/code-review/service/src/catalog.json: every `tool` option's binary; recipe/tools.ts runs them) ----
