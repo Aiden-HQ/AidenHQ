@@ -48,6 +48,9 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
       "twin.post": { module: "twin", floor: 1, tools: ["twin.post_note"], card: { sentence: "Post {{note}}.", details: "note: {{note}}\ntarget: {{target}}" }, executor,
         args: { type: "object", additionalProperties: false, required: ["note"], properties: { note: { type: "string", maxLength: 100 } } } },
       "twin.ping": { module: "twin", floor: 0, tools: ["twin.ping"], executor },
+      // The owning module consents to another module filing this kind (module.yaml `filed_by`).
+      "twin.shared": { module: "twin", floor: 1, filed_by: ["other"], tools: [], card: { sentence: "Post {{note}}." }, executor,
+        args: { type: "object", additionalProperties: false, required: ["note"], properties: { note: { type: "string", maxLength: 100 } } } },
     },
   });
   handler = serveExecutor({
@@ -124,6 +127,16 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   const ping = await k.v1("POST", "/v1/writes", { kind: "twin.ping", args: {} }, job(["twin.ping"]));
   assert.equal(ping.json.tier, 0);
   await until(() => fx.executes.some((e) => e.id === ping.json.id));
+});
+
+test("a module files another module's kind only when that kind's filed_by names it", async (t) => {
+  const { k } = await twin(t);
+  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-1" }, "other-key");
+  assert.equal(filed.status, 200, JSON.stringify(filed.json));
+  assert.deepEqual([k.records.get(filed.json.id).requester.module, k.records.get(filed.json.id).tier], ["other", 1]);
+  // Not a kind that doesn't list it, and not the listed kind for a module that isn't listed.
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "r" }, task: "TASK-1" }, "other-key")).status, 403);
+  assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-1" }, "third-key")).status, 401);
 });
 
 test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {
