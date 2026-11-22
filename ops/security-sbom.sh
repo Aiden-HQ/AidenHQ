@@ -36,7 +36,7 @@ next="$out/next"
 work="$out/.work"
 archives="$out/.archives"
 rm -rf "$next" "$work" "$archives"
-mkdir -p "$next" "$work"
+mkdir -p "$next" "$work" "$archives"
 : > "$next/targets.tsv"
 user="$(id -u):$(id -g)"
 sock_gid="$(stat -c %g /var/run/docker.sock)"
@@ -112,24 +112,158 @@ for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
 # container runs. On the containerd image store that is the tag's platform manifest, the id compose records on the
 # container as `com.docker.compose.image` (ops/compose-recreate.sh decides a recreate by the same comparison): the
 # top-level id is an image index and every build rewrites it, so comparing that would drop the target after any rebuild.
-# Containers without the label, and daemons where the top-level id is the content id, are compared by that id. Any other
-# container's image is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive.
-# A container whose tag has moved but which carries `com.docker.compose.image` is scanned from that platform manifest:
-# it is the image the container actually runs, and the top-level id `.Image` may already be gone. An image nothing can
-# read -- the store collected the id, the save failed, a daemon that won't answer -- is a line naming the id and the
-# error, so a short batch never looks like a complete one. A name only counts when it isn't an image id itself: syft
-# can't resolve a bare id, it would try to pull it. The enumeration and the inspect/save calls run under the host's
-# apply lock: between `docker compose build` and the recreate an apply leaves every rebuilt tag naming the new image
-# while its container still runs the old one, and a batch enumerated there is a half-applied snapshot.
+# Any other container's image is named by its own id, which is stable across passes, and syft reads it from a saved
+# archive. A running container's image is a target or a line, never a silent gap: a size inspect or save that fails
+# records the id and the error. A name only counts when it isn't an image id itself, because syft can't resolve a bare
+# id: it would try to pull it.
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
 }
-# The apply lock is data/apply.lock at a fixed path from this checkout root (ops/lib/apply-lock.sh); it is not the
-# data dir's .lock above, and not AIDENHQ_DATA_DIR, because ops/apply-config.sh opens exactly this file. Non-blocking:
-# while an apply holds it a batch would be a mid-apply snapshot, so it leaves current/ alone and skips, and the scanner
-# re-reads the previous complete batch. Only the container enumeration and the target list it decides run under it;
-# the scans do not, so an apply never waits on a forty-minute pass.
+ceil_gb() { echo $(( ($1 + 1073741823) / 1073741824 )); }
+# One Docker call with a deadline, so a daemon that stops answering can't hold the apply lock past it, and the whole
+# snapshot under one overall deadline so forty slow saves can't add up to an apply waiting for hours. Without a working
+# `timeout` the call fails rather than running unbounded.
+docker_call() {
+  local secs="$1"; shift
+  if [ -n "${SNAPSHOT_DEADLINE:-}" ]; then
+    local left=$(( SNAPSHOT_DEADLINE - SECONDS ))
+    [ "$left" -le 0 ] && { echo "security-sbom: snapshot deadline reached" >&2; return 124; }
+    [ "$secs" -gt "$left" ] && secs="$left"
+  fi
+  timeout "$secs" docker "$@"
+}
+# A tag's platform manifest as the daemon answers it, or its top-level id on a daemon without platform resolution.
+pin_of() { # <tag>
+  local id
+  id="$(docker_call 5 image inspect --platform "$platform" -f '{{.Id}}' "$1" 2>/dev/null)"
+  [ -n "$id" ] || id="$(docker_call 5 image inspect -f '{{.Id}}' "$1" 2>/dev/null)"
+  printf '%s' "$id"
+}
+# Export targets for a platform manifest: the container's index first, then every local tag. A platform manifest inside a
+# multi-platform index is not an image record of its own, so a bare digest names nothing to Docker; the index that holds
+# it does, and `docker save --platform` exports exactly the running platform from it.
+platform_refs() { # <platform manifest id> <container .Image>
+  local want="$1" image="$2" ref
+  # A single-platform store (or a plain daemon) may hold the manifest itself as an image record; try it first.
+  printf '%s\n' "$want"
+  [ -n "$image" ] && printf '%s\n' "$image"
+  while IFS= read -r ref; do
+    [ -n "$ref" ] && [ "$ref" != "<none>:<none>" ] && printf '%s\n' "$ref"
+  done < <(docker_call 10 image ls -a --no-trunc --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+}
+# The batch's images, decided from one snapshot of the containers, taken under the host's apply lock: between an apply's
+# `docker compose build` and its recreate every rebuilt tag names the new image while its container still runs the old
+# one, and a batch enumerated there is a half-applied snapshot. The lock is released before the scans, so an apply never
+# waits on one. Returns 1 when the enumeration itself failed: the caller keeps the previous batch rather than publish a
+# short one.
+plan_target=(); plan_source=(); plan_pin=()
+plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); }
+snapshot() {
+  local listing rows cid row image config label want raw size size_gb avail ref err saved candidate archive
+  local -A running=() tags=() manifests=()
+  SNAPSHOT_DEADLINE=$((SECONDS + 1800))
+  if ! listing="$(docker_call 10 ps -q 2>&1)"; then
+    echo "security-sbom: could not enumerate containers (${listing:-docker ps failed}); keeping the previous batch" >&2
+    return 1
+  fi
+  # One batched inspect, re-run per container if it fails so a container that exited between `ps` and the inspect is
+  # simply gone, not an enumeration error. A daemon that answers for none of them is an error: a batch with no images
+  # while containers run is exactly the silent gap this pass must not publish.
+  local -a cids=()
+  while IFS= read -r cid; do [ -n "$cid" ] && cids+=("$cid"); done <<< "$listing"
+  local -a missing=()
+  if ! rows="$(docker_call 15 inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' "${cids[@]}" 2>/dev/null)"; then
+    rows=""
+    for cid in "${cids[@]}"; do
+      if row="$(docker_call 10 inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' "$cid" 2>/dev/null)"; then
+        rows+="$row"$'\n'
+      else
+        missing+=("$cid")
+      fi
+    done
+  fi
+  # A container that exited between `ps` and the inspect is gone, not an error. One still listed after failing is the
+  # daemon not answering for a running container: no batch, so the previous one stays.
+  if [ "${#missing[@]}" -gt 0 ]; then
+    local still
+    still="$(docker_call 10 ps -q 2>/dev/null || true)"
+    for cid in "${missing[@]}"; do
+      if printf '%s\n' "$still" | grep -qxF -- "$cid"; then
+        echo "security-sbom: docker inspect failed for running container $cid; keeping the previous batch" >&2
+        return 1
+      fi
+    done
+  fi
+  if printf '%s\n' "$listing" | grep -q . && ! printf '%s\n' "$rows" | grep -q .; then
+    echo "security-sbom: docker inspect answered for no running container; keeping the previous batch" >&2
+    return 1
+  fi
+  while read -r cid image config label; do
+    [ -n "$cid" ] || continue
+    case "$config" in *anchore/syft*) continue ;; esac
+    running[$image]=1
+    if [ -n "$label" ]; then : "${manifests[$image]:=$label}"; fi
+    [ "${config#sha256:}" = "$config" ] || continue
+    { [ -n "$label" ] && [ "$(docker_call 5 image inspect --platform "$platform" -f '{{.Id}}' "$config" 2>/dev/null)" = "$label" ]; } \
+      || [ "$(docker_call 5 image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] || continue
+    { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; } || continue
+    tags[$image]="$config"
+  done <<< "$rows"
+  plan_target=(); plan_source=(); plan_pin=()
+  # Archives wait here, not in $work, which each scan empties. Space is budgeted across the whole plan: every archive
+  # stays on disk until its scan, so a later image must still fit beside the earlier ones above the floor.
+  avail=$(( $(free_gb) - min_free_gb ))
+  for image in $(printf '%s\n' "${!running[@]}" | sort); do
+    # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
+    # recorded, else the container's own top-level id.
+    want="${tags[$image]:-${manifests[$image]:-$image}}"
+    raw=""; saved=""
+    if raw="$(docker_call 5 image inspect -f '{{.Size}}' "$want" 2>&1)"; then saved=1
+    elif [ "$want" != "$image" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$image" 2>&1)"; then want="$image"; saved=1
+    fi
+    if [ -z "$saved" ]; then
+      plan_add "image:$want" "fail:docker image inspect: ${raw:-failed}" ""; continue
+    fi
+    # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged. A size
+    # nothing answers is unknown, not zero: an unknown demand can't be judged to fit, so the target is recorded.
+    size="$(printf '%s\n' "$raw" | tail -1)"
+    if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+      plan_add "image:$want" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" ""; continue
+    fi
+    size_gb="$(ceil_gb "$size")"
+    if [ "$want" = "${tags[$image]:-}" ]; then
+      # A tag that still names the running image is scanned through the daemon socket. Its platform manifest is pinned
+      # here, under the lock, and rechecked before the scan: a tag that moved since is a line, never another image's
+      # packages published under this target.
+      plan_add "image:$want" tag "$(pin_of "$want")"
+      continue
+    fi
+    # An image read from an archive needs its save to fit above the floor alongside every archive already planned; a
+    # save that would not fit is a line and writes no bytes.
+    if [ "$avail" -lt $(( size_gb * 2 )) ]; then
+      plan_add "image:$want" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" ""; continue
+    fi
+    # Save the platform the container runs, from a reference that exports it, so the scan is bound to this image: a tag
+    # that moves after the lock is released can't change what is measured.
+    ref=""
+    while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      [ "$(pin_of "$candidate")" = "$want" ] || continue
+      if err="$(docker_call 900 image save --platform "$platform" -o "$work/image.tar" "$candidate" 2>&1)"; then
+        archive="$archives/${#plan_target[@]}.tar"
+        mv "$work/image.tar" "$archive"; ref="$archive"; break
+      fi
+      rm -f "$work/image.tar"
+    done < <(platform_refs "$want" "$image")
+    if [ -n "$ref" ]; then
+      plan_add "image:$want" "archive:$ref" ""
+      avail=$(( avail - size_gb * 2 ))
+    else
+      plan_add "image:$want" "fail:docker save: ${err:-no local image exports $want}" ""
+    fi
+  done
+}
 # fd 9 is this pass's own .lock above, so the apply lock is taken on fd 8.
 # shellcheck source=ops/lib/apply-lock.sh
 . ops/lib/apply-lock.sh
@@ -137,90 +271,44 @@ mkdir -p "$(dirname "$APPLY_LOCK")"
 exec 8>>"$APPLY_LOCK"
 if ! flock -n 8; then
   echo "security-sbom: an apply holds the apply lock; skipping this pass" >&2
-  rm -rf "$next" "$work"
+  rm -rf "$next" "$work" "$archives"
   exit 0
 fi
-declare -A running=() tags=() manifests=()
-while read -r cid image config label; do
-  [ -n "$cid" ] || continue
-  case "$config" in *anchore/syft*) continue ;; esac
-  running[$image]=1
-  if [ -n "$label" ]; then : "${manifests[$image]:=$label}"; fi
-  [ "${config#sha256:}" = "$config" ] || continue
-  { [ -n "$label" ] && [ "$(docker image inspect --platform "$platform" -f '{{.Id}}' "$config" 2>/dev/null)" = "$label" ]; } \
-    || [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] || continue
-  { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; } || continue
-  tags[$image]="$config"
-done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' 2>/dev/null)"
-# The image targets, decided from that one enumeration while the apply lock is still held: the tag while it still names
-# what the container runs, else the platform manifest compose recorded on it, else the container's own top-level id. The
-# size inspect and the `docker save` run here too, so the image the batch will scan is the one the containers were
-# running. Only the syft scans run after the lock is released: an apply never waits on a forty-minute pass. Every image
-# is a target in the plan or a line saying why it can't be.
-mkdir -p "$archives"
-plan_kind=(); plan_target=(); plan_arg=()
-plan_add() { plan_kind+=("$1"); plan_target+=("$2"); plan_arg+=("$3"); }
-archives_n=0
-for image in $(printf '%s\n' "${!running[@]}" | sort); do
-  # The images to try, in the order the container's image is known best: the configured tag while it still names what
-  # the container runs, then the platform manifest compose recorded on it, then the container's own top-level id. A tag
-  # that moved names a different image; the manifest is what the container actually runs even when that top-level id is
-  # already collected. Only a candidate the daemon answers a size for is scanned, so the target is an image it holds.
-  tag="${tags[$image]:-}"
-  cands=()
-  if [ -n "$tag" ]; then cands+=("$tag"); fi
-  if [ -n "${manifests[$image]:-}" ] && [ "${manifests[$image]:-}" != "$tag" ]; then cands+=("${manifests[$image]}"); fi
-  if [ "$image" != "$tag" ] && [ "$image" != "${manifests[$image]:-}" ]; then cands+=("$image"); fi
-  # A tag that doesn't resolve has moved since the container was created, so the image is read from the platform
-  # manifest or the container's own id. A daemon that fails any other way is a line with its error, not a fallback:
-  # "No such image" is the only answer that means the image is not there to read.
-  ref=""; raw=""; err=""; have=""
-  for cand in "${cands[@]}"; do
-    ref="$cand"
-    if raw="$(docker image inspect -f '{{.Size}}' "$cand" 2>&1)"; then have=1; break; fi
-    err="$raw"
-    [[ "$raw" == *"No such image"* ]] || break
-  done
-  if [ -z "$have" ]; then
-    plan_add fail "image:$ref" "docker image inspect: ${err:-failed}"
-    continue
-  fi
-  # What one image costs: syft's daemon source runs its own `docker save` and unpacks every layer into $work, and the
-  # archive source does the same over the tar this script saved. Either way the target needs about twice the image's size,
-  # so an image that doesn't fit in half the room above the floor is refused up front rather than as a full disk mid-scan.
-  # A size the daemon won't give is unknown, not zero: an unknown demand can't be judged to fit. A target that can't be
-  # read or can't fit is a line naming it and the reason, never a silent gap in the batch. The template prints one
-  # number; a warning ahead of it is not the size, so the last line is what is judged.
-  size="$(printf '%s\n' "$raw" | tail -1)"
-  if [[ ! "$size" =~ ^[0-9]+$ ]]; then
-    plan_add fail "image:$ref" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"
-    continue
-  fi
-  size_gb=$(( (size + 1073741823) / 1073741824 ))
-  room_gb=$(( $(free_gb) - min_free_gb ))
-  if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
-    plan_add fail "image:$ref" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
-  elif [ -n "$tag" ] && [ "$ref" = "$tag" ]; then
-    # The daemon source only for a tag that resolved; a fallback to the manifest or the id is an archive target.
-    plan_add tag "image:$ref" "$ref"
-  elif err="$(docker save -o "$archives/$archives_n.tar" "$ref" 2>&1)"; then
-    # The archive lands under $out, not $work, which each scan empties; it is removed once its scan finishes.
-    plan_add archive "image:$ref" "$archives/$archives_n.tar"
-    archives_n=$((archives_n + 1))
-  else
-    # The store can collect an image between the size inspect and the save. That is still a running container's image,
-    # so it is a line naming the id and the error, never a silent gap; the pass carries on with the other targets.
-    plan_add fail "image:$ref" "docker save: ${err:-failed}"
-  fi
-done
-# From here the target list is fixed; let an apply run and scan. The archives are the images enumerated under the lock.
+if ! snapshot; then
+  exec 8>&-
+  rm -rf "$next" "$work" "$archives"
+  exit 0
+fi
+# From here the target list is fixed and the archives are the images measured under the lock; let an apply run and scan.
 exec 8>&-
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
-for i in "${!plan_kind[@]}"; do
-  case "${plan_kind[$i]}" in
-    tag) scan "${plan_target[$i]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${plan_arg[$i]}" ;;
-    archive) scan "${plan_target[$i]}" "" -v "${plan_arg[$i]}:/image.tar:ro" -- "docker-archive:/image.tar"; rm -f "${plan_arg[$i]}" ;;
-    fail) fail "${plan_target[$i]}" "${plan_arg[$i]}" ;;
+for i in "${!plan_target[@]}"; do
+  target="${plan_target[$i]}"; source="${plan_source[$i]}"
+  case "$source" in
+    tag)
+      # The image the tag named under the lock, rechecked now: a moved tag is a line, never the replacement's packages
+      # published under this target.
+      pin="${plan_pin[$i]}"
+      if [ -z "$pin" ]; then
+        fail "$target" "docker image inspect: could not read the tag under the apply lock"
+      elif [ "$(pin_of "${target#image:}")" != "$pin" ]; then
+        fail "$target" "skipped: the tag moved during this pass; not scanning a different image"
+      else
+        scan "$target" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${target#image:}"
+      fi ;;
+    fail:*) fail "$target" "${source#fail:}" ;;
+    archive:*)
+      # Recheck the image's workspace against free space now, with every archive still waiting on disk. The archive
+      # holds the image verified under the lock, so a tag that moved since can't change it.
+      archive="${source#archive:}"
+      if [ ! -f "$archive" ]; then fail "$target" "docker save: its archive is gone"; continue; fi
+      avail="$(free_gb)"; need="$(ceil_gb "$(stat -c %s "$archive")")"
+      if [ "$avail" -lt "$min_free_gb" ] || [ "$need" -gt $(( (avail - min_free_gb) / 2 )) ]; then
+        fail "$target" "skipped: ${need} GB image does not fit in the ${avail} GB free on $out above the ${min_free_gb} GB floor"
+        rm -f "$archive"; continue
+      fi
+      scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
+      rm -f "$archive" ;;
   esac
 done
 rm -rf "$archives"

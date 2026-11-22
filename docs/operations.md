@@ -408,15 +408,21 @@ the id and the error, never a silent gap), the product and instance checkouts an
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
 noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
 records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
-`src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` (each target's archive waits
-in `data/modules/security/sbom/.archives` until its scan), and one image costs about twice its size there: it empties the
-work dir after every target, keeps 30 GB free before it starts a target and refuses an image that needs more than half
-the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown demand
-can't be judged to fit), and a second pass started while one holds `.lock` skips rather than running two at once.
-The container enumeration and the image target list are taken under the host's apply lock (`data/apply.lock`), so a
-pass that lands between an apply's `docker compose build` and its recreate skips instead of recording a half-applied
-snapshot; the lock is released before the scans, so an apply never waits on them. On
-2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%. `AIDENHQ_SBOM_MIN_FREE_GB` can raise
+`src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` and keeps each target's
+archive in `data/modules/security/sbom/.archives` until its scan: one image costs about twice its size, and that space is
+budgeted across the whole batch before any `docker save` writes, so an image the batch cannot fit beside the others is a
+line, not a full disk. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
+than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
+demand can't be judged to fit). A second pass started while one holds `.lock` skips rather than running two at once.
+
+The container enumeration, the image target list and the `docker save`s are taken under the host's apply lock
+(`data/apply.lock`), each Docker call bounded by a timeout and the phase by an overall deadline, so an apply neither runs
+against a half-applied snapshot nor waits on an unresponsive daemon. A pass that cannot enumerate (a failing `ps`, or an
+inspect that fails for a still-running container) keeps the previous batch instead of publishing a short one. The lock is
+released before the syft scans; a tag scanned through the daemon is pinned to the platform manifest it named under the
+lock and rechecked immediately before its scan, so a tag that moved in between is a line rather than another build's
+packages under the old target. On 2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%.
+`AIDENHQ_SBOM_MIN_FREE_GB` can raise
 the floor for a smaller disk, never lower it: 30 GB is the least a pass runs with, and a value under it (or not a number) is
 ignored. The scanner matches a new batch within the hour (or daily anyway) and fires Security
 Watch's webhook when anything changed. On demand:
