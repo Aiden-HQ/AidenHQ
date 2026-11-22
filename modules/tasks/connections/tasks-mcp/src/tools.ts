@@ -830,9 +830,10 @@ const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;
 /**
  * Paperclip statuses to ask for, given the state filter: these are only the candidate superset, the kernel kind is the filter.
  * An idle row includes `history_expired` (its `task.created` fact pruned), whose Paperclip status can be any, done and
- * cancelled included; a waiting row's can be any open one. So either asks for every status, as does `done`.
+ * cancelled included; a waiting row's can be any open one. So either asks for every status, as does `done`, and `attention`
+ * (an expired closed task can still carry attention).
  */
-const statusesFor = (state: unknown) => (stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
+const statusesFor = (state: unknown, attention: unknown) => (attention || stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
 /** task_search's one-page query: done only when asked, as before the kind filter learned about idle and waiting. */
 const searchStatusesFor = (state: unknown) => (stateKinds(state).includes("done") ? ALL_STATUSES : OPEN_STATUSES);
 /** A `state`/`attention` argument as the kind list and the one attention, validated. */
@@ -859,6 +860,8 @@ async function withStates(list: Json[], state: unknown, attention: unknown) {
 }
 /** The most rows one Paperclip page (and one kernel state read) spans. */
 const PAGE = 200;
+/** A whole task_list scan's wall-clock budget: past it the list says so instead of running into the tool timeout. */
+const SCAN_MS = 120_000;
 /** A page advances half its length: rows shifted up by a task leaving the list are still on the next page. */
 const STEP = PAGE / 2;
 /**
@@ -958,7 +961,7 @@ const TOOLS: Record<string, Tool> = {
       if (!COMPANY()) throw new Error("no company for this agent");
       const { kinds, attention: one } = stateFilter(state, attention);
       const max = Math.max(1, Math.min(Math.floor(Number(limit) || 100), 200));
-      const q = new URLSearchParams({ status: statusesFor(state) });
+      const q = new URLSearchParams({ status: statusesFor(state, attention) });
       const me = mine ? grant().id : "";
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
@@ -967,9 +970,15 @@ const TOOLS: Record<string, Tool> = {
       // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; a walk
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
       // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
+      const deadline = Date.now() + SCAN_MS;
+      let complete = true;
       const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i) => {
         const kept: (readonly [Json, Json])[] = [];
         for await (const page of issuePages(query)) {
+          if (Date.now() > deadline) {
+            complete = false;
+            return kept;
+          }
           const ready = (await Promise.all(page.map(prepare))).filter(Boolean) as Json[];
           for (const [i, s] of await matchingStates(ready, kinds, one)) {
             kept.push([i, s]);
@@ -1002,8 +1011,9 @@ const TOOLS: Record<string, Tool> = {
           const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
           const aChat = async (row: Json) => {
             if (row.assigneeAgentId) return null;
-            // A chat deleted between the list read and this one is skipped: the rest of the list still answers.
-            const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`).catch(() => null) : row;
+            // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
+            // any other failure still surfaces rather than silently omitting the chat.
+            const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`).catch((err) => { if (err?.status === 404) return null; throw err; }) : row;
             return full && mark.test(full.description ?? "") ? full : null;
           };
           chats.push(...(await capped(theirs, aChat)));
@@ -1011,7 +1021,10 @@ const TOOLS: Record<string, Tool> = {
         // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
         out = deduped([...assigned, ...chats]).sort((a, b) => at(b) - at(a)).slice(0, max);
       }
-      return { tasks: await Promise.all(out.map(([i, s]) => brief(i, s))) };
+      return {
+        tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
+        ...(complete ? {} : { incomplete: "the scan ran past its time budget; some older tasks were not read" }),
+      };
     },
   },
   task_approvals: {
