@@ -6,11 +6,17 @@ Type=oneshot
 # Every deploy rebuilds images; old ones and the build cache filled the VM disk. Keep two days of images for rollbacks;
 # images a container still uses are never removed. Computer images are rebuilt by apply-config when missing. The build
 # cache is capped by size, least recently used first: an `until` filter freed nothing on the containerd image store
-# (104 GB of cache on the EX44, 2026-11-18).
+# (104 GB of cache on the EX44, 2026-11-18), so the size cap is the thing that has to hold.
 #
 # Each prune is independent: the `-` prefix makes systemd ignore that command's exit status, so a failed builder prune
 # (a buildx flag or plugin problem, a 20 s status timeout) never skips the image or container prune below.
+#
+# The cap is attempted in both flag forms because which one the CLI knows depends on whether the buildx plugin is
+# installed (2026-11-21: a deploy logged `buildx Docker CLI plugin not found: falling back to the classic builder`).
+# `--max-used-space` is buildx's; the classic fallback only knows `--keep-storage`. Where one is accepted it caps at
+# 20 GB and the other is a no-op (buildx's `--keep-storage` is its deprecated alias, a floor, never a wider retention).
 ExecStart=-/usr/bin/docker builder prune -f --max-used-space 20GB
+ExecStart=-/usr/bin/docker builder prune -f --keep-storage 20GB
 ExecStart=-/usr/bin/docker image prune -af --filter until=48h
 # A one-off that dies without --rm keeps its whole writable layer forever, and nothing pruned stopped containers. Only
 # containers that are stopped AND over a day old go; container prune never removes a volume, so no data is touched.

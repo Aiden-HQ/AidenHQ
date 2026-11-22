@@ -29,9 +29,12 @@ test("prune-docker.timer prunes every four hours, not once a night", () => {
 
 test("every prune ExecStart is `-`-prefixed, and stopped containers over a day old are pruned", () => {
   const execs = service.split("\n").filter((l) => l.startsWith("ExecStart=")).map((l) => l.slice("ExecStart=".length).trim());
-  assert.ok(execs.length >= 2, `prunes: ${execs.join(" | ")}`);
+  assert.ok(execs.length >= 3, `prunes: ${execs.join(" | ")}`);
   for (const e of execs) assert.ok(e.startsWith("-"), `not independent, a failing one skips the rest: ${e}`);
-  assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --max-used-space 20GB"), `build cache cap kept: ${execs.join(" | ")}`);
+  // The cache cap in both flag forms: buildx knows --max-used-space, the classic fallback only --keep-storage (a CLI
+  // without the buildx plugin fails the first with "unknown flag"), and each is a no-op where the other works.
+  assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --max-used-space 20GB"), `buildx cache cap: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
   assert.ok(execs.some((e) => e === "-/usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
   assert.ok(execs.some((e) => e === "-/usr/bin/docker container prune -f --filter until=24h"), `stopped-container reclaim: ${execs.join(" | ")}`);
   // No volume or data deletion: the prune units never take --volumes or prune volumes.
@@ -40,9 +43,10 @@ test("every prune ExecStart is `-`-prefixed, and stopped containers over a day o
 
 test("the apply-time prunes are independent too, and keep the same retention", () => {
   const lines = apply.split("\n").filter((l) => /^\s*docker (builder|image|container) prune/.test(l));
-  assert.ok(lines.length >= 2, lines.join("\n"));
+  assert.ok(lines.length >= 3, lines.join("\n"));
   for (const l of lines) assert.match(l, /\|\| true$/, `a failing one must not skip the rest: ${l}`);
   assert.ok(lines.some((l) => /docker builder prune -f --max-used-space 20GB\b/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /docker builder prune -f --keep-storage 20GB\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /docker image prune -af --filter until=48h\b/.test(l)), lines.join("\n"));
   assert.doesNotMatch(apply, /^\s*docker (system|volume) prune.*--volumes/m);
 });

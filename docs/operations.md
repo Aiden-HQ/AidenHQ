@@ -200,7 +200,8 @@ first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its night
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
 Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
-first); `prune-docker.timer` does the same every four hours on a host that hasn't applied, so the space peak between
+first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
+knows depends on the buildx plugin); `prune-docker.timer` does the same every four hours on a host that hasn't applied, so the space peak between
 prunes stays under the alert line, and also drops containers that have been stopped for over a day (their writable
 layers are never otherwise reclaimed; no volume is touched). Apply installs changed prune units.
 
