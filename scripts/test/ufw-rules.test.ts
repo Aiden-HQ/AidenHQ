@@ -80,6 +80,15 @@ test("ufw-rules: an explicit DENY or LIMIT is preserved and warned about, not re
   assert.deepEqual(r.calls, []);
   assert.match(r.err, /already has a DENY\/LIMIT\/REJECT rule for 10\.231\.0\.1 3130\/tcp on br\+/);
   assert.match(r.err, /sign-in may fail/);
+  // A preserved rule is not a missing one: the manual commands must not suggest replacing it.
+  assert.doesNotMatch(r.err, /sudo ufw allow/);
+});
+
+test("ufw-rules: the whole destination is matched, not a prefix of it", () => {
+  // "br+extra" is a different interface from "br+"; its allow must not skip the rule for br+.
+  const status = verbose(["10.231.0.1 3130/tcp on br+extra ALLOW IN Anywhere"]);
+  const r = run({ mode: "tailscale", status });
+  assert.ok(r.calls.includes("allow in on br+ to 10.231.0.1 port 3130 proto tcp comment AidenHQ containers to host services"));
 });
 
 test("ufw-rules: a rule it can't add warns that sign-in will fail, with the commands", () => {
@@ -87,6 +96,8 @@ test("ufw-rules: a rule it can't add warns that sign-in will fail, with the comm
   assert.equal(r.status, 0);
   assert.match(r.err, /cannot reach the kernel, and sign-in will fail/);
   assert.match(r.err, /ufw allow in on br\+ to 10\.231\.0\.1 port 3130 proto tcp/);
+  // Only the rules that failed are printed, not every rule: a prefix/whole match is covered above.
+  assert.equal(r.err.match(/sudo ufw allow in on/g)?.length, 4);
 });
 
 test("ufw-rules: a front door port it can't add is warned about too, without the container commands", () => {

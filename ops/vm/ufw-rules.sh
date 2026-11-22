@@ -29,12 +29,14 @@ fi
 case "$status" in *"Status: active"*) ;; *) exit 0 ;; esac
 
 failed= conflict= front_failed= front_conflict=
+failed_cmds=()
 # The state ufw already lists for one rule's address, port and interface: allow (it permits the traffic from Anywhere),
 # deny (an explicit DENY/LIMIT/REJECT, which must not be replaced), or none.
 state_of() {
   local where="$1" line after
   while IFS= read -r line; do
-    case "$line" in "$where"*) ;; *) continue ;; esac
+    # The whole destination, not a prefix: "10.231.0.1 8201/tcp on br+" is not the rule "10.231.0.1 8201/tcp on br+extra".
+    case "$line" in "$where"|"$where "*) ;; *) continue ;; esac
     after="${line#"$where"}"
     case "$after" in
       *"ALLOW IN"*"Anywhere"*) echo allow; return 0 ;;
@@ -51,14 +53,14 @@ apply() {
     allow) return 0 ;;
     deny)
       if [ "$bucket" = front ]; then front_conflict=1; else conflict=1; fi
-      echo "WARNING: ufw already has a DENY/LIMIT/REJECT rule for $where; leaving it in place: AidenHQ's containers may not reach the kernel, and sign-in may fail" >&2
+      echo "WARNING: ufw already has a DENY/LIMIT/REJECT rule for $where; leaving it in place (do not replace it): AidenHQ's containers may not reach the kernel, and sign-in may fail" >&2
       return 0 ;;
   esac
   read -r -a argv <<<"$args"
   if [ -n "$comment" ]; then
-    ufw allow "${argv[@]}" comment "$comment" || { if [ "$bucket" = front ]; then front_failed=1; else failed=1; fi; }
+    ufw allow "${argv[@]}" comment "$comment" || { if [ "$bucket" = front ]; then front_failed=1; else failed=1; failed_cmds+=("sudo ufw allow $args comment '$comment'"); fi; }
   else
-    ufw allow "${argv[@]}" || { if [ "$bucket" = front ]; then front_failed=1; else failed=1; fi; }
+    ufw allow "${argv[@]}" || { if [ "$bucket" = front ]; then front_failed=1; else failed=1; failed_cmds+=("sudo ufw allow $args"); fi; }
   fi
 }
 # comment | destination | port | interface | ufw allow arguments — the one table both the apply and the warning use.
@@ -79,11 +81,12 @@ if [ -n "$front_failed" ] || [ -n "$front_conflict" ]; then
   echo "WARNING: ufw is active but the HTTPS front door's ports could not be opened (443, 8446, 8447): the board and sign-in may not be reachable. Add them by hand:" >&2
   for port in 443 8446 8447; do echo "  sudo ufw allow $port/tcp" >&2; done
 fi
-if [ -n "$failed" ] || [ -n "$conflict" ]; then
+if [ -n "$failed" ]; then
   echo "WARNING: ufw is active but AidenHQ's rules could not be added: AidenHQ's containers cannot reach the kernel, and sign-in will fail. Add them by hand:" >&2
-  for rule in "${rules[@]}"; do
-    IFS='|' read -r comment _dest _port _iface args <<<"$rule"
-    echo "  sudo ufw allow $args comment '$comment'" >&2
-  done
+  for cmd in "${failed_cmds[@]}"; do echo "  $cmd" >&2; done
+fi
+if [ -n "$conflict" ]; then
+  # A preserved DENY/LIMIT/REJECT is not a missing rule: never print an `ufw allow` for it, which would replace it.
+  echo "WARNING: ufw keeps a DENY/LIMIT/REJECT rule where AidenHQ needs the containers to reach the kernel, and setup leaves it alone; sign-in may fail until the owner changes that rule" >&2
 fi
 exit 0
