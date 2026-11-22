@@ -15,13 +15,13 @@ description: How code is written, tested and published here, in any repository -
 - The AidenHQ product repository: skill `aidenhq-product`. UI for AidenHQ apps and the board, and every new app: skill
   `design-system`. Adding or bumping a dependency, image, action or tool: skill `supply-chain`. App code standards:
   `references/apps.md`.
-- Before your first commit, fetch the task's branch from origin (`git fetch origin <branch>`) and, when origin has it,
-  start from its remote head (`git switch --create <branch> --track origin/<branch>`): an earlier run of the same task
-  may already have pushed commits there, and yours go on top of them. If a local branch of that name already exists,
-  switch to it and fast-forward it (`git merge --ff-only origin/<branch>`); if that fails, stop and report rather than
-  reset or force the branch. If the fetch fails because origin has no such branch, start a new branch; any other fetch
-  failure stops the run. Never rebuild the branch's changes from your workspace history and force that copy over the
-  remote; rebasing the branch's existing commits is not rebuilding it.
+- Before your first commit, refresh the code host's branches with `aidenhq clone <org/repo>` (a plain `git fetch` does
+  not work through the workspace's remote) and, when `origin/<branch>` exists, start from its remote head: either
+  `git switch --create <branch> --track origin/<branch>`, or switch to an existing local branch of that name and
+  fast-forward it (`git merge --ff-only origin/<branch>`), which keeps its unpushed commits. When origin has no such
+  branch, start a new branch. If the local branch cannot be fast-forwarded, stop and report rather than reset or force
+  it, and when the refresh fails, stop the run. Never rebuild the branch's changes from your workspace history and
+  force that copy over the remote; rebasing the branch's existing commits is not rebuilding it.
 
 ## Work fast, in few big steps
 
