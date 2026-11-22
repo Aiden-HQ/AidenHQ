@@ -19,13 +19,13 @@ const CATALOG = [
 function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true } = {}) {
   let t = Date.parse("2026-11-22T10:00:00Z");
   const heads = { HEAD: sha("1") };
-  const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined };
+  const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined, asked: [] };
   const engine = createEngine({
     db, config: () => readConfig(JSON.stringify({ repos: [], lenses })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" } },
     poster: {},
-    codehost: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }), setupBranch: async () => branch.setup, setup: async (b) => (setups.push(b), { write: `w-${setups.length}` }) },
+    codehost: { tree: async (_r, ref) => ({ sha: ref === "HEAD" ? heads.HEAD : ref, paths: ["package.json", "src/a.ts"] }), setupBranch: async (_r, name) => (branch.asked.push(name), branch.setup), setup: async (b) => (setups.push(b), { pr_url: "https://github.com/acme/app/pull/1", branch: "aidenhq/setup-abcdef123456", tip: sha("7") }) },
     catalog: () => CATALOG,
     // Primer's publish record: approved on the next look, or refused (Primer not connected).
     publisher: { file: async (r) => (published.push(r), primer ? { state: "pending", write: `p-${published.length}` } : { state: "refused", write: "p-x", why: "Primer isn't connected" }),
@@ -133,13 +133,14 @@ test("deepsec's set-up files are asked for once as a setup PR through the code h
   const review = async () => { await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.deepsec"] }); await w.tick(); w.finish(w.started.length - 1, { setup: files }); await w.tick(); };
   await review();
   assert.equal(w.started[0].setup_files, undefined);
-  assert.deepEqual(w.setups.map((s) => [s.repo, s.branch, s.expected_tip, Object.keys(s.files)]), [[REPO, "aidenhq/deepsec-setup", null, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
+  assert.deepEqual(w.setups.map((s) => [s.repo, Object.keys(s.files)]), [[REPO, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
   await review(); // asked for, not on the code host yet: not asked again within the day
   assert.equal(w.setups.length, 1);
   w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app", ".deepsec/package-lock.json": "{}" } };
   w.later(2 * 24 * 3600_000);
   await review(); // the branch exists (its PR pending or open): scanned with, never asked again
   assert.equal(w.setups.length, 1);
+  assert.ok(w.branch.asked.length && w.branch.asked.every((b) => b === "aidenhq/setup-abcdef123456"), "reads the branch its PR is open on");
   assert.deepEqual(w.started[2].setup_files, { ".deepsec/data/app/INFO.md": "# app" });
 });
 

@@ -30,7 +30,7 @@ import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, REPO_DEFAULTS, ty
 import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror } from "./seams.ts";
 import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
-import { SETUP_BRANCH, SETUP_PATH } from "./adapters.ts";
+import { SETUP_PATH } from "./adapters.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
@@ -750,9 +750,14 @@ export function createEngine(d: EngineDeps) {
 
   /**
    * deepsec set the repo up in a run: its set-up files (deepsec's allowlisted `.deepsec/` files only) are asked for as one setup PR
-   * through the code host (github files and reviews its own write, on a branch from the default branch's head). Never while the
-   * setup branch exists (its PR is pending or open: runs scan with its files), and once a day at most while it doesn't yet.
+   * through the code host (github files and reviews its own write, on a new branch off the default branch's head; an earlier setup
+   * PR is closed). Never while the branch its last answer named exists (its PR is pending or open: runs scan with its files), and
+   * once a day at most while it doesn't yet.
    */
+  /** The branch the repo's last setup answer named (its PR is open on it), if any. */
+  function setupBranchOf(repo: string): string | undefined {
+    try { const b = JSON.parse(one<{ answer: string | null }>("SELECT answer FROM setups WHERE repo = ?", repo)?.answer ?? "").branch; return typeof b === "string" ? b : undefined; } catch { return undefined; }
+  }
   async function fileSetup(r: RunRow, raw: Record<string, string>) {
     const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
     if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
@@ -761,7 +766,7 @@ export function createEngine(d: EngineDeps) {
     // The slot is taken before the await (a request takes minutes), so a concurrent batch asks for no second PR.
     run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
     let answer: string;
-    try { answer = JSON.stringify(await d.codehost.setup({ repo: r.repo, branch: SETUP_BRANCH, expected_tip: null, files })).slice(0, 1000); } catch (e) {
+    try { answer = JSON.stringify(await d.codehost.setup({ repo: r.repo, files })).slice(0, 1000); } catch (e) {
       answer = `refused: ${String((e as Error).message).slice(0, 300)}`;
       log("deepsec setup PR not asked for", { repo: r.repo, err: answer });
     }
@@ -1715,7 +1720,7 @@ export function createEngine(d: EngineDeps) {
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
       // deepsec scans when the commit has any of its files; else a pending setup branch's files (its PR not merged yet) are scanned with.
       const deepsec = tree.paths.some((p) => p.startsWith(".deepsec/")) ? 1 : 0;
-      const pending = !deepsec && picked.some((o) => o.kind === "engine" && o.run.engine === "deepsec") ? await d.codehost.setupBranch(repo).catch((e) => void log("deepsec setup branch not read", { repo, err: String((e as Error).message).slice(0, 200) })) : undefined;
+      const pending = !deepsec && picked.some((o) => o.kind === "engine" && o.run.engine === "deepsec") && setupBranchOf(repo) ? await d.codehost.setupBranch(repo, setupBranchOf(repo)!).catch((e) => void log("deepsec setup branch not read", { repo, err: String((e as Error).message).slice(0, 200) })) : undefined;
       tx(() => {
         run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
         const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, full, due, created, author, batch, target, option, profile)

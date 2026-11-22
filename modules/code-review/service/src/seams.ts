@@ -165,10 +165,10 @@ export interface Poster {
 export interface CodeHost {
   /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
   tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
-  /** The deepsec setup branch's tip and its allowlisted files; undefined when there is no such branch. */
-  setupBranch(repo: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
-  /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, based on the default branch's head. */
-  setup(b: { repo: string; branch: string; expected_tip: string | null; files: Record<string, string> }): Promise<unknown>;
+  /** The files of a deepsec setup PR's branch (the one `setup` answered); undefined when that branch is gone. */
+  setupBranch(repo: string, branch: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
+  /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, on a new branch off the default branch's head, and closes an earlier setup PR. */
+  setup(b: { repo: string; files: Record<string, string> }): Promise<unknown>;
 }
 /** A report to Primer (a `primer.publish` write record): a new private document, or a version of `documentId`; filed, then its outcome. */
 export type ReportIn = { repo: string; title: string; content: string; documentId?: string; versionNote: string };

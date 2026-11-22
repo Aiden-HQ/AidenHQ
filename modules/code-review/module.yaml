@@ -18,7 +18,7 @@ roles:
 # A review run's snapshot of repo@head (and its base), read under this grant: any repo the owner's GitHub sign-in reaches.
 codehost:
   snapshot: { repos: [ "*/*" ] }
-  # A repo review's deepsec setup PR (POST /v1/codehost/setup): deepsec's own set-up files on aidenhq/deepsec-setup, branched from
+  # A repo review's deepsec setup PR (POST /v1/codehost/setup): deepsec's own set-up files on a new aidenhq/setup-<sha> branch, off
   # the default branch's head; github files and reviews its own Tier 1 write for it. Only these paths.
   setup:
     repos: [ "*/*" ]

@@ -23,9 +23,8 @@ export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
 export const STATUS_KIND = "code-review.status";
 export const REPLY_KIND = "code-review.reply";
-/** The one branch a deepsec setup PR is on, and the only files it may hold: what deepsec means to be committed (recipe/deepsec.ts
- * setupPath; module.yaml codehost.setup lists the same paths). */
-export const SETUP_BRANCH = "aidenhq/deepsec-setup";
+/** The only files a deepsec setup PR may hold: what deepsec means to be committed (recipe/deepsec.ts setupPath; module.yaml
+ * codehost.setup lists the same paths). */
 export const SETUP_PATH = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
@@ -301,10 +300,10 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, fetcher: 
       if (!s) throw Object.assign(new Error(`${repo} has no ${ref.slice(0, 40)}`), { status: 404 });
       return { sha: s.sha, paths: s.value };
     },
-    async setupBranch(repo) {
+    async setupBranch(repo, branch) {
       const dir = mkdtempSync(join(tmpdir(), "deepsec-setup-"));
       try {
-        const s = await snapshot(repo, SETUP_BRANCH, ["-xzf", "-", "-C", dir, "--no-same-owner", "--wildcards", ".deepsec/*"], () => undefined);
+        const s = await snapshot(repo, branch, ["-xzf", "-", "-C", dir, "--no-same-owner", "--wildcards", ".deepsec/*"], () => undefined);
         if (!s) return undefined;
         const files: Record<string, string> = {};
         const walk = (rel: string) => {
