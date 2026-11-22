@@ -17,3 +17,23 @@ export async function openPrs(local: () => Promise<OpenPr[]>, github: () => Prom
     return { prs: own, github_error: true };
   }
 }
+
+type Recorded = { repo: string; number: number };
+/** A row of the warehouse's `src_github.issues` for a recorded PR, open or not. */
+export type WarehousePr = OpenPr & { state: string };
+
+/**
+ * The open GitHub PRs among the ones the kernel recorded: state from the warehouse's row where it has one, else from the code host's
+ * list of the repo's open PRs (one call per repo; the warehouse syncs only the configured orgs, and lags by up to 15 minutes). A PR
+ * absent from that list is closed. The caller's own deadline covers every call.
+ */
+export async function recordedOpenPrs(ours: Recorded[], rows: WarehousePr[], listOpen: (repo: string) => Promise<{ number: number; draft?: boolean; created_at?: string | null }[]>): Promise<OpenPr[]> {
+  const key = (r: Recorded) => `${r.repo.toLowerCase()}#${r.number}`;
+  const known = new Set(rows.map(key));
+  const missing = new Map<string, Set<number>>();
+  for (const o of ours) if (!known.has(key(o))) missing.set(o.repo, (missing.get(o.repo) ?? new Set()).add(o.number));
+  const listed: OpenPr[] = [];
+  for (const [repo, numbers] of missing)
+    for (const p of await listOpen(repo)) if (numbers.has(p.number) && p.created_at) listed.push({ repo, number: p.number, opened_at: p.created_at, draft: !!p.draft });
+  return [...rows.filter((r) => r.state === "open").map(({ state: _state, ...r }) => r), ...listed];
+}

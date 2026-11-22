@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
-import { openPrs, type OpenPr } from "./open-prs.js";
+import { openPrs, recordedOpenPrs, type OpenPr, type WarehousePr } from "./open-prs.js";
 import { startPeople } from "./people.js";
 import { buildServer, refreshRegistry, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
@@ -289,15 +289,21 @@ async function fleetPrs(kernel: string, key: string): Promise<{ repo: string; nu
   });
 }
 
-/** The open GitHub PRs the kernel's records name: state from the warehouse's row, and `ready_at` from its last draft-to-ready change. A recorded PR the warehouse doesn't hold (a repo it doesn't sync, or not yet synced) has no state to check. */
+/** The open GitHub PRs the kernel's records name (open-prs.ts recordedOpenPrs): state from the warehouse's row, `ready_at` from its last draft-to-ready change, and the code host's list for a repo the warehouse doesn't hold. */
 async function githubOpenPrs(): Promise<OpenPr[]> {
   const ours = await fleetPrs(kernelUrl, serviceKey);
   if (!ours.length) return [];
-  const r = await p.warehouse().pool.query(
-    "SELECT i.repo, i.number, i.created_at_src AS opened_at, i.draft, (SELECT max(c.observed_at) FROM src_github.changes c WHERE c.entity = 'issue' AND c.field = 'draft' AND c.new_value = 'false' AND c.entity_id = i.repo || '/' || i.number) AS ready_at FROM src_github.issues i JOIN unnest($1::text[], $2::int[]) AS o(repo, number) ON lower(i.repo) = o.repo AND i.number = o.number WHERE i.kind = 'pr' AND i.state = 'open'",
-    [ours.map((o) => o.repo), ours.map((o) => o.number)],
-  );
-  return r.rows.map((x: OpenPr) => ({ ...x, ...previewOf(x.repo, x.number) }));
+  let rows: WarehousePr[] = [];
+  try {
+    const r = await p.warehouse().pool.query(
+      "SELECT i.repo, i.number, i.state, i.created_at_src AS opened_at, i.draft, (SELECT max(c.observed_at) FROM src_github.changes c WHERE c.entity = 'issue' AND c.field = 'draft' AND c.new_value = 'false' AND c.entity_id = i.repo || '/' || i.number) AS ready_at FROM src_github.issues i JOIN unnest($1::text[], $2::int[]) AS o(repo, number) ON lower(i.repo) = o.repo AND i.number = o.number WHERE i.kind = 'pr'",
+      [ours.map((o) => o.repo), ours.map((o) => o.number)],
+    );
+    rows = r.rows;
+  } catch (e) {
+    log.warn({ err: String(e) }, "open-prs: no warehouse rows for the fleet's PRs, asking the code host");
+  }
+  return (await recordedOpenPrs(ours, rows, (repo) => ops.read(repo, { kind: "prs" }))).map((x) => ({ ...x, ...previewOf(x.repo, x.number) }));
 }
 
 /** The URL of a running preview of `repo`'s change or PR `n`, as the board's open-PR rows show it. */
