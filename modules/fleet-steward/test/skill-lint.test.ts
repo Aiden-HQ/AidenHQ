@@ -79,8 +79,9 @@ test("fleet-check: the stale-PR nudge is a status write on the task that pushed 
 });
 
 test("fleet-check: the product-bug step opens with the filing ask and keeps the brief neutral", () => {
+  assert.ok(sections(fleetCheck).some((s) => /^## Reporting a product bug/.test(s)), "the product-bug section is present");
   assert.deepEqual(productBugProblems(fleetCheck), []);
-  assert.equal(productBugProblems("- **A product bug**: `task_create` with `assignee: maintainer` and evidence.").length, 1, "the lint bites");
+  assert.equal(productBugProblems("## Reporting a product bug\n`task_create` with `assignee: maintainer` and evidence.").length, 1, "the lint bites");
 });
 
 test("knowledge-daily: the memory-proposal step names the instance repository", () => {

@@ -10,7 +10,7 @@ Tools: `obsidian_*`, `knowledge_*`, `warehouse_query`, `person_identity_decide`,
 `task_propose_rule`, `coach_evidence`, `task_*`. The one note write is `meeting_note_correct`; any other fix goes in the
 weekly report under "Needs a tool". Without the notes tools, skip step 1.
 
-1. **Notes** new since yesterday: duplicates, contradictions, facts with no source and date. Fix a meeting note with
+1. **Notes** new or changed since yesterday: duplicates, contradictions, facts with no source and date. Fix a meeting note with
    `meeting_note_correct` only when its own transcript or a second dated source settles it; record the rest for the weekly report.
 2. **People:** `src_meta.people_identities` with `status = 'proposed'`. Confirm (`person_identity_decide`, evidence as
    reason) when the same email is on every linked source user and display names agree. Doubtful (different names, shared or role

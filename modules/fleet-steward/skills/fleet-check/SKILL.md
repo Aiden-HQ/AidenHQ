@@ -31,7 +31,7 @@ recovered item: one log line; if you alerted the owner, one `notify` (`kind: fyi
 Decide from the brief, its done condition, the delegator's task, the last comments and the PR's and cards' state, and verify
 the work landed before accepting it. A reviewer's or grader's note outside the brief doesn't hold the work: accept, and file
 the note as its own task. Unsure: take the call easiest to undo and log `deep-look` for the evening digest. A call truly the
-owner's (money past a limit, a credential, a security trade-off) is `owner-call` in the log.
+owner's (money past a limit, a credential, a security trade-off) is `owner-call` in the log, and goes to the chief of staff (`task_comment` on their task) when no card exists.
 
 ## Settling each kind
 
