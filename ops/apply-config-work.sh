@@ -27,9 +27,12 @@ main() {
   cd "$(dirname "${BASH_SOURCE[0]}")/.."
   local product_dir; product_dir="$(pwd)"
   requireApplyLock
-  # Sourced before any checkout: these functions stay whatever a checkout below does to the file.
+  # Sourced before any checkout: these functions stay whatever a checkout below does to the file. That is also what makes
+  # the runner-template gate safe on a rollback: a product from before ops/lib/ci-runner-enabled.sh has no such file, and
+  # sourcing it after the checkout would abort the switch (a failed source under errexit) instead of rolling back.
   . ops/lib/generations.sh
   . ops/lib/progress.sh
+  . ops/lib/ci-runner-enabled.sh
   local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -147,7 +150,10 @@ main() {
   # through the entry point, which re-takes the lock on fd 9 for the new process; the lock is held across the exec, so
   # no other apply can slip in between. Pinned to the instance commit just checked. A script that predates the hand-over
   # (a rollback) can't take `before`, so this one carries on instead.
-  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-enabled.sh \
+  # ops/lib/ci-runner-enabled.sh is deliberately not in this list: a product that predates the helper has a gate that
+  # reads list-unit-files (never true on a live host), and handing over to it during a pin rollback would leave the newer
+  # runner template installed. New products gate with this helper and are in the list through this script's own change.
+  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
     local again=("$want"); [ "$force" = 0 ] || again+=(--force)
@@ -807,13 +813,24 @@ switchOver() {
   # the instance declares runner units, so a host without them keeps nothing. An enabled instance has no unit file of its own:
   # systemd records it only as an install link under a target's `.wants`/`.requires` dir, which `list-unit-files` never lists
   # for the instance (only the template, as `indirect`), so this asks the same function the exporter does
-  # (ops/lib/ci-runner-enabled.sh), sourced here from the applied checkout.
-  # shellcheck source=ops/lib/ci-runner-enabled.sh
-  . ops/lib/ci-runner-enabled.sh
+  # (ops/lib/ci-runner-enabled.sh, sourced by main() before any checkout).
+  local runner_template="ops/units/aidenhq-ci-runner@.service"
+  local runner_reload_stamp="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/ci-runner-template.reloaded"
   if [ -n "$(ci_runner_enabled_units)" ]; then
-    if ! cmp -s ops/units/aidenhq-ci-runner@.service "$units/aidenhq-ci-runner@.service"; then
-      cp ops/units/aidenhq-ci-runner@.service "$units/"
-      systemctl --user daemon-reload && echo "ci runner unit template installed/updated"
+    # The stamp holds the sha of the template systemd has loaded. A copy whose reload failed is not the loaded one, so the
+    # next apply sees a mismatch and reloads again, though the file on disk already matches (`cmp` alone would skip it).
+    if ! cmp -s "$runner_template" "$units/aidenhq-ci-runner@.service" || [ "$(cat "$runner_reload_stamp" 2>/dev/null)" != "$(git hash-object "$runner_template")" ]; then
+      cp "$runner_template" "$units/"
+      # A failed reload is a failed switch: the copied template is not what systemd runs, and continuing would mark this
+      # generation good with a unit systemd never read (`cp && cmd && echo` would leave the failure unchecked under errexit).
+      if ! systemctl --user daemon-reload; then
+        rm -f "$runner_reload_stamp"
+        echo "ci runner unit template: daemon-reload failed" >&2
+        return 1
+      fi
+      mkdir -p "$(dirname "$runner_reload_stamp")"
+      git hash-object "$runner_template" > "$runner_reload_stamp.tmp" && mv -f "$runner_reload_stamp.tmp" "$runner_reload_stamp"
+      echo "ci runner unit template installed/updated"
     fi
   fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded
