@@ -39,6 +39,9 @@ function fake(opts: {
   const comments: { id: number; html_url: string; body: string }[] = [...(opts.comments ?? [])];
   // The owner's login is an admin collaborator: a label it adds counts, as any admin's does.
   const permissions: Record<string, string> = { owner1: "admin", ...(opts.permissions ?? {}) };
+  // Each issue's state, as a reader sees it after the writes so far; `edits` stamps the close/reopen events they add.
+  const stateOf: Record<number, string> = {};
+  let edits = 0;
   const fetchFn = (async (url: string, init: RequestInit) => {
     const u = new URL(url);
     const method = init.method ?? "GET";
@@ -74,12 +77,20 @@ function fake(opts: {
     if (one && method === "GET") {
       const n = Number(one[1]);
       const i = (opts.issues ?? []).find((x) => x.number === n);
-      return i ? json(200, { number: n, labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
+      // The issue's state is what the real API keeps: a landed PATCH changes it, and edits (reopen/close) land in the timeline.
+      return i ? json(200, { number: n, state: stateOf[n] ?? "open", labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
     }
     if (one && method === "PATCH") {
       const fail = opts.patch?.(body);
       if (fail) return fail;
       posted.push({ path: u.pathname, body });
+      const n = Number(one[1]);
+      if (body.state && stateOf[n] !== body.state) {
+        stateOf[n] = body.state;
+        const at = new Date(Date.parse("2026-01-02T00:00:00Z") + edits++).toISOString();
+        const events = (opts.timelines ??= {});
+        (events[n] ??= []).push({ event: body.state === "closed" ? "closed" : "reopened", created_at: at });
+      }
       return json(200, { state: body.state, state_reason: body.state_reason ?? null });
     }
     if (u.pathname.endsWith("/comments") && method === "POST") {
@@ -109,7 +120,7 @@ function fake(opts: {
     if (/^\/repos\/[^/]+\/[^/]+\/git\/trees\//.test(u.pathname)) return json(200, { tree: opts.tree ?? [], truncated: false });
     return json(404, { message: "Not Found" });
   }) as unknown as typeof fetch;
-  return { fetchFn, calls, posted, comments, permissions, opts };
+  return { fetchFn, calls, posted, comments, permissions, stateOf, opts };
 }
 
 /** AidenHQ's records, faked: every label write the owner's login made is the fleet's own, and the issues and PRs `ours` names. */
@@ -373,12 +384,52 @@ it("a new close after a reopen posts its note again: the record is this process'
 
 it("a repeated close whose state change did not land posts its note only once", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
-  // The fake's issue stays open, which hides the repeat; the record of the posted note still keeps it from going twice.
   const note = "Fixed by acme/product#7, merge 0ba0db1.";
   const m = maintainer(f);
   expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  // A repeat while the issue is already closed posts nothing: the note is on the issue and the state is what was asked.
   expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("a retry that reuses a posted note still reports that comment as this call's object", async () => {
+  let failPatch = true;
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    patch: () => (failPatch ? new Response(JSON.stringify({ message: "Validation Failed" }), { status: 422 }) : undefined),
+  });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e)).not.toBeInstanceOf(GitHubNeed);
+  failPatch = false;
+  // Posted by the first call, reused by the retry: it is still this call's own comment, so the kernel records its provenance.
+  const out = await m.state(PRODUCT, 1, "closed", "completed", note);
+  expect(out.objects).toEqual([`github:${PRODUCT}#1/comment/1`]);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("two overlapping closes of the same note post it once", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  const [a, b] = await Promise.all([m.state(PRODUCT, 1, "closed", "completed", note), m.state(PRODUCT, 1, "closed", "completed", note)]);
+  expect(a).toMatchObject({ state: "closed" });
+  expect(b).toMatchObject({ state: "closed" });
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("a close after a reopen that follows a landed close posts its own note, not the first one", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(await m.state(PRODUCT, 1, "open")).toMatchObject({ state: "open" });
+  const out = await m.state(PRODUCT, 1, "closed", "completed", note);
+  expect(out).toMatchObject({ state: "closed" });
+  // The second close posted its own comment (a new object), not the one the first call left behind.
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(2);
+  expect(out.objects).toEqual([`github:${PRODUCT}#1/comment/2`]);
 });
 
 it("a close whose note carries owner data rejects at the comment step, before the state is changed", async () => {
