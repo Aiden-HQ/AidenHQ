@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changeFiles, runEngine } from "../recipe/engines.ts";
+import { changeFiles, codexConfig, runEngine } from "../recipe/engines.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
@@ -58,4 +58,16 @@ test("a branch's .gitattributes can't hide a file's hunks from the file list", a
   const base = sh(dir, "rev-parse", "HEAD");
   writeFileSync(join(dir, "a.ts"), "2\n"); writeFileSync(join(dir, ".gitattributes"), "*.ts -diff\n"); sh(dir, "add", "."); sh(dir, "commit", "-qm", "hide");
   assert.deepEqual(changeFiles(dir, base)?.find((f) => f.path === "a.ts"), { path: "a.ts", hunks: true });
+});
+
+test("the git codex runs sees what the file list sees: a -diff attribute doesn't hide the hunk", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "attrs2-"));
+  sh(dir, "init", "-q"); sh(dir, "config", "user.email", "t@t"); sh(dir, "config", "user.name", "t");
+  writeFileSync(join(dir, "a.ts"), "1\n"); sh(dir, "add", "."); sh(dir, "commit", "-qm", "base");
+  const base = sh(dir, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "a.ts"), "2\n"); writeFileSync(join(dir, ".gitattributes"), "*.ts -diff\n"); sh(dir, "add", "."); sh(dir, "commit", "-qm", "hide");
+  // The environment codex's shell is given (shell_environment_policy.set), and nothing else.
+  const set = /^set = \{ (.*) \}$/m.exec(codexConfig({ model: "m", effort: "low", url: "http://x", instructions: "x" }))![1]!;
+  const env = Object.fromEntries([...set.matchAll(/(\w+) = ("(?:[^"\\]|\\.)*")/g)].map((m) => [m[1]!, JSON.parse(m[2]!)]));
+  assert.match(execFileSync("git", ["diff", base, "HEAD", "--", "a.ts"], { cwd: dir, encoding: "utf8", env }), /^@@ /m);
 });

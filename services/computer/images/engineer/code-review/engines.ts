@@ -413,7 +413,7 @@ include_instructions = false
 [shell_environment_policy]
 inherit = "none"
 exclude = ["CI_REVIEW_KEY", "*KEY*", "*TOKEN*", "*SECRET*"]
-set = { PATH = ${q(process.env.PATH)} }
+set = { ${Object.entries({ PATH: process.env.PATH, ...gitEnv() }).map(([k, v]) => `${k} = ${q(v)}`).join(", ")} }
 
 [analytics]
 enabled = false
@@ -427,12 +427,19 @@ args = [${[join(HERE, "review-tools.ts"), repo.root, repo.base].map(q).join(", "
 ` : ""}`;
 }
 
-/** git over a checkout whose branch wrote its own .gitattributes and config: attributes are read from the empty tree (never the work
- * tree's, which could mark a file -diff or set a filter or driver), no system or global config, no textconv or external diff. */
+/**
+ * The git environment for a checkout whose branch wrote its own .gitattributes and config, one definition for our git calls (gitSafe)
+ * and the shell codex runs git in (codexConfig), so the review and the coverage check see the same diff: attributes come from the empty
+ * tree (never the work tree's, which could mark a file -diff or set a filter or driver), no system or global config, no attributes file.
+ */
+export function gitEnv(): Record<string, string> {
+  const empty = execFileSync("git", ["hash-object", "-t", "tree", "/dev/null"], { encoding: "utf8" }).trim();
+  return { GIT_ATTR_SOURCE: empty, GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.attributesFile", GIT_CONFIG_VALUE_0: "/dev/null" };
+}
+/** git over such a checkout (gitEnv), without textconv or external diff drivers when diffing. */
 export function gitSafe(cwd: string, args: string[]) {
-  const empty = execFileSync("git", ["hash-object", "-t", "tree", "/dev/null"], { cwd, encoding: "utf8" }).trim();
-  const env = { ...process.env, GIT_ATTR_SOURCE: empty, GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
-  return execFileSync("git", ["-c", "core.attributesFile=/dev/null", ...args], { cwd, encoding: "utf8", maxBuffer: 1 << 28, env, stdio: ["ignore", "pipe", "ignore"] });
+  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv() }, stdio: ["ignore", "pipe", "ignore"] });
 }
 
 /** The files of the change from `base` that a review must see, renames as delete and add: the path and whether it has a hunk (a binary
