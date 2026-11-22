@@ -1817,3 +1817,21 @@ test("a gated repo with no mandatory on_push: a push needs no review of its own,
   assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
   assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason], [sha("4"), "pass"]);
 });
+
+test("no mandatory on_push: a mandatory opening run a push superseded is run again at the newest head; `always` adds no gate", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CLAUDE, MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick(); // the advice finished first
+  w.pr(2, sha("3")); await w.tick();
+  w.finish(1, NONE); await w.tick(); await w.tick(); // the mandatory run ends on the old head: superseded
+  assert.deepEqual(w.started.slice(2).filter((s) => s.mandatory).map((s) => [s.head, label(s)]), [[sha("3"), "codex/medium"]]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
+  for (let i = 2; i < w.started.length; i++) w.finish(i, NONE);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  w.later(1000); w.say(2, "alice", "aiden review always"); await w.tick();
+  const n = w.started.length;
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.ok(w.started.length > n && w.started.slice(n).every((s) => !s.mandatory), "the push is reviewed, as advice");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
+});

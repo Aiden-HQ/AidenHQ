@@ -432,14 +432,18 @@ export function createEngine(d: EngineDeps) {
 
   /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
    * combo (openOnly), the PR's opening review stands for every later head: its latest mandatory opening run per combo, at any head,
-   * with the mandatory runs at the head itself (a claim's recheck). */
+   * with the mandatory runs at the head itself (a claim's recheck) and any mandatory run of the PR still queued, running or on its
+   * first post (a recheck at an earlier head whose findings aren't posted yet). */
   const gateRuns = (cfg: Repo, repo: string, n: number, head: string) => {
     const at = reviewers(repo, n, head);
     if (!openOnly(cfg)) return at;
     const seen = new Set<string>();
     const opening = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' ORDER BY created DESC", repo, n)
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}`; return !seen.has(k) && !!seen.add(k); });
-    return [...opening, ...at.filter((r) => !opening.some((o) => o.id === r.id))];
+    const pending = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND (status IN ('queued', 'running') OR (status = 'done' AND posted = 'pending' AND post_tries = 0)) ORDER BY created DESC", repo, n);
+    const out = [...opening];
+    for (const r of [...at, ...pending]) if (!out.some((o) => o.id === r.id)) out.push(r);
+    return out;
   };
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
@@ -1255,6 +1259,8 @@ export function createEngine(d: EngineDeps) {
     // post as the owner can write a command, so no command lessens what gates a merge.
     if (row.mode === "stop") list = list.filter((c) => c.mandatory);
     if (row.mode === "always" && !list.length) list = cfg.on_push.length ? cfg.on_push : cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_push;
+    // With no mandatory on_push, a push's review is advice: `always` never adds a gate.
+    if (which === "push" && openOnly(cfg)) list = list.map((c) => ({ ...c, mandatory: false }));
     if (!list.length) return;
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
     if (p.fork && cfg.forks === "manual") {
@@ -1362,7 +1368,12 @@ export function createEngine(d: EngineDeps) {
   function missing(cfg: Repo, p: PullRequest) {
     const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
     // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
-    if (openOnly(cfg)) return void (!mandatory() && trigger(cfg, p, "open"));
+    if (openOnly(cfg)) {
+      // Its opening review lacks a mandatory run (a push superseded one): the newest head gets the opening review.
+      if (!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND status != 'skipped'", p.repo, p.number)
+        && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number)) trigger(cfg, p, "open");
+      return;
+    }
     if (!mandatory(p.head)) trigger(cfg, p, pushed(p) && mandatory() ? "push" : "open");
   }
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
@@ -1472,7 +1483,8 @@ export function createEngine(d: EngineDeps) {
     const code = v.reasons[0]?.code ?? (failed ? "failed" : "pass");
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
-    const partial = !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
+    const partial = cfg && openOnly(cfg) ? gateRuns(cfg, repo, n, head).some((r) => r.complete === 0)
+      : !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
     return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
   }
   /** Status writes GitHub or the kernel refused, by repo and head: tried again after STATUS_RETRY or once the verdict changes. */
