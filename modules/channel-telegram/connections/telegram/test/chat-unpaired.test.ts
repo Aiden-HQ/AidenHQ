@@ -2,7 +2,15 @@
 // inside the window, and a burst of chats can't put more notices in flight than the cap. Nothing on that path reaches the
 // kernel.
 import { describe, expect, it } from "vitest";
-import { UNPAIRED_NOTICE, UNPAIRED_NOTICE_MAX_INFLIGHT, UNPAIRED_NOTICE_MS, answerUnpaired, type UnpairedLimiter } from "../src/chat.js";
+import {
+  UNPAIRED_NOTICE,
+  UNPAIRED_NOTICE_MAX_INFLIGHT,
+  UNPAIRED_NOTICE_MAX_PER_MINUTE,
+  UNPAIRED_NOTICE_MS,
+  UNPAIRED_NOTICE_WINDOW_MS,
+  answerUnpaired,
+  type UnpairedLimiter,
+} from "../src/chat.js";
 
 const setup = () => {
   const lines: { fields: Record<string, unknown>; msg: string }[] = [];
@@ -15,7 +23,7 @@ const setup = () => {
   };
 };
 const privateText = (chatId: number, text = "hi") => ({ update_id: 1, message: { message_id: 3, text, chat: { id: chatId, type: "private" } } });
-const limiter = (): UnpairedLimiter => ({ sent: new Map<string, number>(), inflight: 0 });
+const limiter = (): UnpairedLimiter => ({ sent: new Map<string, number>(), inflight: 0, recent: [] });
 
 describe("an unpaired private message", () => {
   it("gets exactly one reply and one info log; a second one inside the window gets neither", async () => {
@@ -83,6 +91,19 @@ describe("an unpaired private message", () => {
     for (const release of held.splice(0)) release();
     expect(await taken).toBe(true);
     expect(at.inflight).toBe(0);
+  });
+
+  it("caps the whole bot's rate, so fast sends from many chats still can't use up the send quota", async () => {
+    const { sent, log, send } = setup();
+    const at = limiter();
+    // Each send answers at once: the in-flight cap never bites, only the per-minute budget does.
+    for (let n = 0; n < UNPAIRED_NOTICE_MAX_PER_MINUTE; n++) expect(await answerUnpaired(privateText(n), send, log, at, 1_000)).toBe(true);
+    expect(await answerUnpaired(privateText(99), send, log, at, 1_000)).toBe(false);
+    expect(sent).toHaveLength(UNPAIRED_NOTICE_MAX_PER_MINUTE);
+    // Inside the window it still refuses; once the window has passed, the next chat is told.
+    expect(await answerUnpaired(privateText(99), send, log, at, 1_000 + UNPAIRED_NOTICE_WINDOW_MS - 1)).toBe(false);
+    expect(await answerUnpaired(privateText(99), send, log, at, 1_000 + UNPAIRED_NOTICE_WINDOW_MS)).toBe(true);
+    expect(sent.map(([c]) => c)).toContain("99");
   });
 });
 
