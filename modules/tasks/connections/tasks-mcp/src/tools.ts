@@ -1084,7 +1084,7 @@ const TOOLS: Record<string, Tool> = {
         let [pa, pb] = await Promise.all([left.next(), right.next()]);
         let ia = 0, ib = 0;
         const seen = new Set<string>();
-        while (!pa.done || !pb.done) {
+        for (;;) {
           // Fetch the next page of whichever source is used up, before comparing heads.
           if (!pa.done && ia >= pa.value.rows.length) {
             pa = await left.next();
@@ -1095,15 +1095,29 @@ const TOOLS: Record<string, Tool> = {
             ib = 0;
           }
           if (pa.done && pb.done) return;
-          const rowsA = pa.done ? [] : pa.value.rows.slice(ia);
-          const rowsB = pb.done ? [] : pb.value.rows.slice(ib);
-          const headA = rowsA[0], headB = rowsB[0];
-          // A page can hold candidates that all fail the filter: it is not the source's end, so read on rather than stop.
+          const headA = pa.done ? undefined : pa.value.rows[ia];
+          const headB = pb.done ? undefined : pb.value.rows[ib];
           if (!headA && !headB) continue;
-          // A tie keeps the assigned (b) snapshot: the one read last.
-          const fromB = !headA || (Boolean(headB) && at(headB) >= at(headA));
-          const row = (fromB ? headB : headA)!;
-          if (fromB) ib++; else ia++;
+          // A page can hold only candidates that failed the filter: it does not end its source. Its `tail` bounds every row
+          // still unread behind it, so the other head is yielded only when nothing unread can be newer; otherwise the empty
+          // side is read on, and a match there comes first.
+          const safeB = Boolean(headB) && (pa.done || at(headB!) >= pa.value.tail);
+          const safeA = Boolean(headA) && (pb.done || at(headA!) >= pb.value.tail);
+          let row: readonly [Json, Json];
+          if (!headA) {
+            if (!safeB) continue;
+            row = headB!;
+            ib++;
+          } else if (!headB) {
+            if (!safeA) continue;
+            row = headA;
+            ia++;
+          } else {
+            // Both heads are known: a tie keeps the assigned (b) snapshot, the one read last.
+            const fromB = at(headB) >= at(headA);
+            row = fromB ? headB : headA;
+            if (fromB) ib++; else ia++;
+          }
           if (seen.has(row[0].id)) continue;
           seen.add(row[0].id);
           // Yielded before either source is read past it: a caller that stops at `limit` never reads on.

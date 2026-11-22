@@ -223,6 +223,19 @@ test("task_list(mine) reads past pages whose candidates all fail the filter", as
   assert.equal(out.out?.incomplete, undefined);
 });
 
+test("task_list(mine) does not yield an older chat while the assigned pages still hold a newer match", async () => {
+  // The assigned source opens with pages of work that is not waiting; the waiting task sits behind them but is newer than
+  // the owner chat, so with limit=1 the chat must not be returned before it.
+  const work = Array.from({ length: 400 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-06-01T00:00:00Z" }));
+  const wait = { ...row("waits-1", "todo"), assigneeAgentId: "me", createdAt: "2026-05-01T00:00:00Z" };
+  const chat = { ...row("chat-5", "todo"), assigneeUserId: "owner", createdAt: "2026-03-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const states = Object.fromEntries([...work, wait].map((r) => [r.id, noAttention(r.id === "waits-1" ? "waiting" : "working")]));
+  states["chat-5"] = noAttention("waiting");
+  const { call } = bridge({ handler: issueBoard({ rows: [...work, wait, chat] }), states });
+  const out = parse(await call("task_list", { mine: true, state: "waiting", limit: 1 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["waits-1"], JSON.stringify(out));
+});
+
 test("task_list(mine) caps both sources on Paperclip's own createdAt order, the order it returns", async () => {
   // The chat is newer by createdAt and only touched later on the assigned one: the list is Paperclip's newest-first, so the
   // newer chat is the one `limit: 1` keeps.
