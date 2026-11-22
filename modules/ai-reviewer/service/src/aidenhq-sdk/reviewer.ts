@@ -48,6 +48,24 @@ export interface ReviewRequest {
 }
 export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string }
 /**
+ * Whether a dotted quad is a version number rather than an address: `v1.2.3.4` after a `v`, or under a label that names one
+ * on the same line (`Affected versions: 1.2.3.4`) or on the line just above (`Affected versions:` then `1.2.3.4`). A bug
+ * report's version is not instance data, and the decoded scan below now sees a newline the JSON-escaped text used to hide, so
+ * the label is what tells the two apart. An address under a host or settings line is unaffected and still refused.
+ */
+function versionNumber(text: string, at: number): boolean {
+  if (/[vV]$/.test(text.slice(Math.max(0, at - 1), at))) return true;
+  const before = text.slice(0, at);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const label = /(?:^|[\s>*_-])[^:\n]{0,40}?\b(?:versions?|release|build|tag)\b[^:\n]{0,20}:\s*$/i;
+  if (label.test(before.slice(lineStart))) return true;
+  const above = lineStart > 0 ? before.slice(0, lineStart - 1).split("\n").pop() ?? "" : "";
+  // A label alone on the line above (`Affected versions`, or an argument's own key `version`, which the scan pushes as its own
+  // line before its value) names the number under it too.
+  return label.test(above) || /^\s*[*_>\s-]*(?:versions?|release|build|tag)\s*[*_]*\s*:?\s*$/i.test(above);
+}
+
+/**
  * Instance details in a GitHub write (a conn.tool card on the github connection: a comment, an issue, a review): a tailnet
  * host (*.ts.net), a home-directory path, or an IPv4 address other than loopback. A GitHub thread is outside the instance and
  * often public, and no issue or review needs these, so code refuses it itself: a model once approved a triage comment that
@@ -68,14 +86,23 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
     // argument object is the requester's to shape, so a deep one must not overflow the stack it is scanned on. A value seen
     // twice (a shared reference, or a cycle only a direct caller could build) is read once.
     const seen = new Set<unknown>();
-    const stack: unknown[] = [toolCall.arguments];
+    const stack: unknown[] = [];
+    // Each string is pushed right after its own key, so a value and the label it sits under stay on adjacent lines; a nested
+    // object's entries are queued on the same stack rather than recursed into.
+    const open = (v: unknown) => {
+      if (!v || typeof v !== "object" || seen.has(v)) return;
+      seen.add(v);
+      for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
+        parts.push(k);
+        if (typeof child === "string") parts.push(child);
+        else stack.push(child);
+      }
+    };
+    open(toolCall.arguments);
     while (stack.length) {
       const v = stack.pop();
       if (typeof v === "string") parts.push(v);
-      else if (v && typeof v === "object" && !seen.has(v)) {
-        seen.add(v);
-        for (const [k, child] of Object.entries(v as Record<string, unknown>)) { parts.push(k); stack.push(child); }
-      }
+      else open(v);
     }
   } else if (!/^tool: github\./.test(String(diff ?? ""))) return [];
   parts.push(String(diff ?? ""));
@@ -83,7 +110,8 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
   const found = [
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
-    ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)].filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0])),
+    ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
+      .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !versionNumber(text, m.index ?? 0)),
   ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
   return [...new Set(found)];
 }

@@ -229,3 +229,13 @@ test("a structured tool call's arguments are scanned without recursion, so a dee
   assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: cyclic }), ["/home/sam/logs"]);
   assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: { ok: "plain" } }), []);
 });
+
+test("a four-part version under a versions label is not an instance address, while a real one still is", async () => {
+  const { instanceDetails } = await import("../sdk/src/reviewer.ts");
+  const scan = (log: string) => instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "github_product_issue", arguments: { title: "t", fingerprint: "f", evidence: { module: "m", version: "1.2.3.4", reproduction: "r", log } } });
+  assert.deepEqual(scan("Affected versions:\n1.2.3.4"), [], "a version on the line under its label");
+  assert.deepEqual(scan("Affected versions: 1.2.3.4"), [], "a version on the label's own line");
+  assert.deepEqual(scan("running v1.2.3.4 from source"), [], "a v-prefixed version");
+  assert.deepEqual(scan("the agent ran on 10.0.0.7"), ["10.0.0.7"], "a real address is still refused");
+  assert.deepEqual(scan("Affected versions: 1.2.3.4, seen on 10.0.0.7"), ["10.0.0.7"], "the address beside a version too");
+});

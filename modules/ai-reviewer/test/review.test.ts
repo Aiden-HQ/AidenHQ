@@ -300,6 +300,26 @@ test("a call too wide for one line per argument is shown as its whole compact JS
   assert.equal(toolCallBlock(huge).whole, false);
 });
 
+test("a compact tool call is described as its own form, so a nested field is not reported missing", () => {
+  // The expanded form is one line per argument and a nested field is dotted; the compact form is one JSON object and a field is
+  // found by its path. A prompt that only described the expanded form told a reviewer to call `evidence.module` missing when it
+  // was there, nested, in the compact JSON: the same false-missing answer this patch removes for DIFF.
+  const wide: Record<string, unknown> = Object.fromEntries(Array.from({ length: 4000 }, (_, i) => [`k${i}`, "v"]));
+  const tc = { connection: "github", tool: "t", arguments: { averyveryverylongparentname: wide } };
+  const { system, user } = reviewPrompt({ card: { action: "conn.tool", target: "o/r", sentence: "s", reason: "r" }, diff: "", toolCall: tc, chain: "c", policy: "p" });
+  assert.match(user, /its whole JSON object instead/);
+  assert.match(user, /following their path through the object/);
+  assert.match(system, /in one of two forms/);
+  assert.match(system, /Resolve a dotted field in whichever form is shown/);
+  assert.doesNotMatch(system, /one line per argument named exactly as the tool takes it\. Judge/);
+  // The compact body really is the object, so the instruction matches what the reviewer is shown.
+  assert.deepEqual(JSON.parse(toolCallBlock(tc).text).arguments, tc.arguments);
+  // And the expanded form's own sentence still describes one line per argument.
+  const expanded = reviewPrompt({ card: { action: "conn.tool", target: "o/r", sentence: "s", reason: "r" }, diff: "", toolCall: { connection: "github", tool: "t", arguments: { evidence: { module: "m" } } }, chain: "c", policy: "p" });
+  assert.match(expanded.user, /one indented line per argument/);
+  assert.match(expanded.user, /evidence\.module/);
+});
+
 test("an unreadable or oversized call is code's refusal, never a malice blocklist", async () => {
   // The reviewer blocks only malice, and only a malice code refuses the same content again (kernel/src/tier.ts MALICE). A call
   // code could not read is the agent's to fix and refile, so its code must not be `malicious`/`secret_exfiltration`/
