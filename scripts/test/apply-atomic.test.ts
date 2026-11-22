@@ -358,7 +358,7 @@ test("a /healthz timeout names the curl exit, the unit's state and its journal t
   assert.ok(!g.reason.includes("\n"), "one line");
   assert.match(w.calls(), /systemctl --user show aidenhq-kernel\.service --property=ActiveState,Result,NRestarts/);
   // The unit is named by its field, which the owner's systemd-journal group can read after a full disk, not only by --user.
-  assert.match(w.calls(), /journalctl _SYSTEMD_USER_UNIT=aidenhq-kernel\.service -n 20 --no-pager -o cat/);
+  assert.match(w.calls(), /journalctl _SYSTEMD_USER_UNIT=aidenhq-kernel\.service _UID=\d+ -n 20 --no-pager -o cat/);
 
   // 28 is a request timeout, not a claim that anything accepted the connection (a dropped SYN times out the same way).
   const hangs = world();

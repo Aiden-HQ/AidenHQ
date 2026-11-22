@@ -840,8 +840,9 @@ kernelRead() { timeout 5 "$@"; }
 # What blocked the kernel when /healthz went unanswered at the deadline, from what the apply can read on the host: the
 # health request's curl exit, the unit's state and the tail of its journal (the journal is what says why the unit is not
 # answering). Both reads are bounded and best effort: a missing, failing or timed-out one marks its part unavailable and
-# the timeout itself stands. The journal query names the unit by its field, not through `--user`: after a full disk
-# journald writes to /run, where the per-user view misses new entries (docs/operations.md, "Logs and debugging a run").
+# the timeout itself stands. The journal query names the unit by its field and this apply's UID, not through `--user`:
+# after a full disk journald writes to /run, where the per-user view misses new entries, and the field alone would also
+# match another account's unit of the same name on a shared host (docs/operations.md, "Logs and debugging a run").
 kernelTimeoutWhy() {
   local rc="$1" unit="aidenhq-kernel.service" out src=0 why journal jsrc=0 budget
   # curl reports whether the exchange happened, not what is on the far side: no exit says a process was listening.
@@ -858,7 +859,7 @@ kernelTimeoutWhy() {
   elif [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
   elif [ -n "$out" ]; then why+="; unit $out"
   else why+="; unit state unavailable, systemctl printed nothing"; fi
-  journal="$(kernelRead journalctl "_SYSTEMD_USER_UNIT=$unit" -n 20 --no-pager -o cat 2>/dev/null)" || jsrc=$?
+  journal="$(kernelRead journalctl "_SYSTEMD_USER_UNIT=$unit" "_UID=$UID" -n 20 --no-pager -o cat 2>/dev/null)" || jsrc=$?
   journal="${journal//$'\n'/ | }"
   while [ "${journal%" | "}" != "$journal" ]; do journal="${journal%" | "}"; done
   # journalctl prints oldest first: a head cut would drop the error that says why nothing answers, so keep the newest.
