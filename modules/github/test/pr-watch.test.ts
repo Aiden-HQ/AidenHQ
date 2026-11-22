@@ -131,7 +131,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -145,7 +145,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   let open = [];
   const api = async (method, path, body) => {
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
-    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainBefore?.() ?? "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
     if (path.endsWith("/update-branch")) {
@@ -287,6 +287,22 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   for (let i = 0; i < 4; i++) await stuck.watch.tick();
   assert.equal(stuck.woke.length, 1, "a transient refusal that never clears wakes the task rather than waiting unseen");
   assert.match(stuck.woke[0].text ?? "", /Rebase the PR's branch/, "and the wake is the rebase ask");
+  // A 2xx from the update is answered success, not an unanswered call: the watcher must not back off and ask again after one.
+  const ok = await rig(t, { behind: 2, update: 201 });
+  ok.set([ok.agentPr(21, redPr(21))]);
+  for (let i = 0; i < 3; i++) await ok.watch.tick();
+  assert.equal(ok.gh.filter((g) => g === "PUT /repos/acme/app/pulls/21/update-branch rebase").length, 1, "a successful update is not called unanswered and re-asked");
+  assert.equal(ok.woke.length, 0, "and it wakes nobody");
+  // A refusal that never clears still adds up while main moves under it: the count is the PR head's, not the head of main's.
+  let main = "m1";
+  const moving = await rig(t, {
+    behind: 2,
+    mainBefore: () => main,
+    updateByMethod: { rebase: { status: 403, body: { message: "Resource not accessible by integration" } }, merge: { status: 422, body: { message: "Update branch is temporarily unavailable" } } },
+  });
+  moving.set([moving.agentPr(22, redPr(22))]);
+  for (let i = 0; i < 4; i++) { await moving.watch.tick(); main = `m${i + 2}`; }
+  assert.equal(moving.woke.length, 1, "main moving does not restart the stuck count");
   // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
   const conflict = await rig(t, { behind: 2, update: 422 });
   conflict.set([conflict.agentPr(13, redPr(13))]);

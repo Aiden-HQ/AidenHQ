@@ -9,7 +9,7 @@
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
 // refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
 // a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
-// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES); the asker is told once when it is capped. A conflict or no-rights update-branch refusal is final; a transient failure retries after five minutes without waking the task.
+// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES); the asker is told once when it is capped. A conflict, a 404, or a refusal the last method answers with no right to update is final; a transient failure retries every five minutes without waking the task, until a few retries at one head have all gone the same way, and then the task is woken to rebase it.
 // The CI breaker: after 3 red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on two
 // heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
 // with the failing checks and the last failure's summary fenced as data. A green head resets it.
@@ -138,7 +138,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
     state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" (GitHub updated it), "final" (a conflict or no right) or "retry:<time>" (a transient failure)
-    state.updateTries ??= {}; // `<pr url>:<head>:<main oid>` -> how many transient refusals the update has had, so one that never goes through wakes the task instead of retrying unseen
+    state.updateTries ??= {}; // `<pr url>:<head>` -> how many transient refusals the update has had (whatever head of main it was asked at), so one that never goes through wakes the task instead of retrying unseen
     state.wakes ??= {};      // PR url -> { head, n, escalated? }: wakes sent at this head, and whether the asker was told it is capped
     state.found ??= {};      // PR url -> `<head>:<digest of the findings text>` that woke its task: new findings at the same head wake it again, under the wake cap
     state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, told? }: red rounds since its last green head
@@ -252,12 +252,15 @@ export function startPrWatch(o: PrWatchOptions) {
      */
     async function updateBranch(pr: Json, base: string) {
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${base}`;
+      // The stuck count belongs to the PR's head, not to the head of main: main moves every few minutes, and a refusal that never
+      // clears must still add up across those moves rather than starting over at each one (and leaving its old key behind).
+      const tries = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
       const prior: string | undefined = state.updated[key];
       if (prior === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
       if (prior === "final") return false;
       // Still inside the backoff: no call this tick, but the polls spent backing off count too, so a refusal that never clears
       // ends as "stuck" here and wakes the task instead of waiting unseen forever.
-      if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return countTry(key);
+      if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return countTry(tries);
       // Permanent: a merge conflict, or no permission (or the PR/repo is gone: a 404 can't be fixed by asking again). A 403
       // worded as a rate limit is a slow-down, not a refusal, and a 422 worded as a conflict is the only 422 that is final.
       const permanent = (r: { status: number; body?: any }) => {
@@ -273,19 +276,22 @@ export function startPrWatch(o: PrWatchOptions) {
       let unanswered = false;
       let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
-        // A request that never answered (a timeout, a reset) is no answer at all: the branch's state is unknown, so the attempt
-        // backs off and asks again rather than spending the fallback on a race with the call that may still land.
+        // A request that never answered (a timeout, a reset) is no answer at all: the branch's state is unknown, and the fallback
+        // is not sent either, because it would race a call that may still land. The attempt backs off and asks again next tick.
         const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method })
           .catch((e: Error) => { log("branch update unanswered", { pr: pr.url, update_method, err: String(e?.message ?? e).slice(0, 200) }); return undefined; });
-        if (!r || !answered(r)) { unanswered = true; last = r; continue; }
+        if (!r) { unanswered = true; last = r; break; }
+        // A success answers about the branch too, and it is checked before the refusal classification: a 2xx is not one of the
+        // statuses `answered` names, so classifying first would record a real update as "unanswered" and retry it for ever.
         if (r.status < 300) {
-          delete state.updateTries[key];
+          delete state.updateTries[tries];
           state.updated[key] = "ok";
           await wake(pr, "");
           log("branch updated in code", { pr: pr.url, head: pr.headRefOid, base, update_method });
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
+        if (!answered(r)) unanswered = true;
         last = r;
       }
       // No answer on some method: retry after the backoff, never final for that head (a 5xx says nothing about whether asking
@@ -294,26 +300,26 @@ export function startPrWatch(o: PrWatchOptions) {
       // attempt, a "temporarily unavailable" or a rate limit there keeps it retryable, and a 403 with no right to update or a
       // 404 is the fallback's own refusal of this token and ends it. An earlier method's refusal never decides on its own: the
       // fallback is the method whose answer is about the branch as it now stands, and it is asked last for exactly that.
-      if (unanswered || !last || !permanent(last)) return retryLater(key);
-      delete state.updateTries[key];
+      if (unanswered || !last || !permanent(last)) return retryLater(key, tries);
+      delete state.updateTries[tries];
       state.updated[key] = "final";
       save();
       return false;
     }
     /**
      * A transient refusal: asked again in five minutes, and no task is woken meanwhile (the update owns this rebase until it is
-     * final). `"stuck"` once a few retries at this head and head of main have all gone the same way: a refusal that never clears
+     * final). `"stuck"` once a few retries at this PR head have all gone the same way: a refusal that never clears
      * is not a reason to wait unseen forever, so the watcher falls through to waking the task that opened the PR to rebase it,
      * and still asks GitHub again on the next backoff.
      */
-    function retryLater(key: string): "retry" | "stuck" {
+    function retryLater(key: string, tries: string): "retry" | "stuck" {
       state.updated[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
-      return countTry(key);
+      return countTry(tries);
     }
-    /** One more poll spent on the same unresolved refusal at this head and head of main: "retry", or "stuck" past the bound. */
-    function countTry(key: string): "retry" | "stuck" {
-      const n = (state.updateTries[key] ?? 0) + 1;
-      state.updateTries[key] = n;
+    /** One more poll spent on the same unresolved refusal at this PR head: "retry", or "stuck" past the bound. */
+    function countTry(tries: string): "retry" | "stuck" {
+      const n = (state.updateTries[tries] ?? 0) + 1;
+      state.updateTries[tries] = n;
       save();
       return n >= UPDATE_STUCK_AFTER ? "stuck" : "retry";
     }
