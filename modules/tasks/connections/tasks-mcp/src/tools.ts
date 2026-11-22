@@ -945,12 +945,14 @@ const TOOLS: Record<string, Tool> = {
       // (Paperclip's ranking order) or the results run out, so a filtered-out closed hit cannot consume a matching result's slot.
       const list: (readonly [Json, Json])[] = [];
       const seen = new Set<string>();
+      const deadline = Date.now() + SCAN_MS;
       let repeats = 0;
       for (let offset = 0; list.length < max; ) {
+        if (Date.now() > deadline) break;
         const p = new URLSearchParams(q);
         p.set("limit", String(PAGE));
         p.set("offset", String(offset));
-        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
+        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`).catch((err) => { if (Date.now() > deadline) return null; throw err; });
         if (!Array.isArray(page) || !page.length) break;
         // Every candidate is tracked, whether or not it matches: that catches a repeat even when none of the page matched.
         const fresh = page.filter((i: Json) => !seen.has(i.id));
@@ -958,6 +960,7 @@ const TOOLS: Record<string, Tool> = {
         // A ranking that ignores `offset` repeats its page: stop rather than search it forever.
         repeats = fresh.length ? 0 : repeats + 1;
         if (repeats > 1) break;
+        if (Date.now() > deadline) break;
         list.push(...(await matchingStates(fresh, kinds, one)));
         // Advance by what came back, not by what was asked: a server capping its page size would skip the rows between.
         offset += page.length;
@@ -997,24 +1000,29 @@ const TOOLS: Record<string, Tool> = {
       const deadline = Date.now() + SCAN_MS;
       const progress: { stalled?: boolean } = {};
       let complete = true;
+      // Reads at the budget's edge are abandoned, not failed: a slow page or kernel read leaves the matches collected so far
+      // with `incomplete`, and anything that fails before the deadline still surfaces.
+      const atEdge = async <T>(fn: () => Promise<T>, onEdge: () => T): Promise<T> => {
+        try {
+          return await fn();
+        } catch (err) {
+          if (Date.now() < deadline) throw err;
+          complete = false;
+          return onEdge();
+        }
+      };
       const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i) => {
         const kept: (readonly [Json, Json])[] = [];
-        for await (const page of issuePages(query, progress)) {
+        const pages = issuePages(query, progress)[Symbol.asyncIterator]();
+        for (;;) {
           if (Date.now() > deadline) {
             complete = false;
             return kept;
           }
-          const ready = (await Promise.all(page.map(prepare))).filter(Boolean) as Json[];
-          // The page's kernel read is bounded by the scan's remaining budget, so a slow read leaves the results collected so
-          // far with `incomplete` rather than failing the call.
-          let matches: (readonly [Json, Json])[];
-          try {
-            matches = await matchingStates(ready, kinds, one, deadline - Date.now());
-          } catch (err) {
-            if (Date.now() < deadline) throw err;
-            complete = false;
-            return kept;
-          }
+          const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }));
+          if (step.done) return kept;
+          const ready = (await atEdge(() => Promise.all(step.value.map(prepare)), () => [])).filter(Boolean) as Json[];
+          const matches = await atEdge(() => matchingStates(ready, kinds, one, deadline - Date.now()), () => [] as (readonly [Json, Json])[]);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > deadline) {
             complete = false;
@@ -1026,7 +1034,6 @@ const TOOLS: Record<string, Tool> = {
             if (kept.length >= max) return kept;
           }
         }
-        return kept;
       };
       // Paperclip's own newest-first order is by createdAt; both sources are merged on that one key, so the cap keeps the
       // same rows a single newest-first walk would.
@@ -1039,9 +1046,9 @@ const TOOLS: Record<string, Tool> = {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
         const mineOnly = async (i: Json) => (i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i) ? i : null);
-        const assigned = await capped(q, mineOnly);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         // Paperclip cuts a long description in a list, which can cut the marker off the end: read the full task then.
+        // They are read before the assigned history, whose pages can be long: a big open backlog never hides a recent chat.
         const owner = await ownerUserId();
         const chats: (readonly [Json, Json])[] = [];
         if (owner) {
@@ -1061,6 +1068,7 @@ const TOOLS: Record<string, Tool> = {
           };
           chats.push(...(await capped(theirs, aChat)));
         }
+        const assigned = await capped(q, mineOnly);
         // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
         out = deduped([...assigned, ...chats]).sort((a, b) => at(b) - at(a)).slice(0, max);
       }
