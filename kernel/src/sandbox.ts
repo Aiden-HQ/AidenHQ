@@ -3,7 +3,7 @@
 // registry (config/engines.json), an engine's state folder and the job credentials are here too.
 import { createHash } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -132,7 +132,10 @@ function ensureStateDir(p: string) {
  * configured in (a relative `state_dir` stays relative): the launcher compares it to `path.join(computers.json state_dir, …)`.
  */
 export function ensureStateDirs(stateDir: string, report?: (e: Error, episode: string) => void) {
-  const root = stateDir, logs = join(root, "logs");
+  // One form for validation, filesystem calls and the launcher's path comparison: `normalize` collapses `a/../b` lexically (as
+  // `path.join` does at the launcher), so a `..` after a symlink can't make the checked path differ from the one written. It is
+  // not made absolute, so a relative `state_dir` still matches the launcher's exact comparison.
+  const root = normalize(stateDir), logs = join(root, "logs");
   try {
     ensureStateDir(root);
     ensureStateDir(logs);

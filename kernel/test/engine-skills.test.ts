@@ -3,7 +3,7 @@
 // state folder as /codex-home.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { engineState, ensureStateDirs } from "../src/sandbox.ts";
@@ -117,6 +117,25 @@ test("a symlinked state root, or a symlinked ancestor of it, is refused and neve
   symlinkSync(tree, join(dir, "linked"));
   assert.throws(() => ensureStateDirs(join(dir, "linked", "state")), /ancestor .* is a symlink, which is never followed/);
   assert.equal(statSync(join(tree, "state")).mode & 0o777, 0o755);
+});
+
+test("a root with '..' is normalized once, so the path checked is the path written (never through a symlink to another tree)", () => {
+  const { dir } = setup();
+  const base = join(dir, "base");
+  const other = join(dir, "other", "tree");
+  mkdirSync(base, { recursive: true });
+  mkdirSync(other, { recursive: true });
+  chmodSync(other, 0o755);
+  symlinkSync(other, join(base, "linked"));
+  // Raw OS semantics would read `<base>/linked/../state` as `<other>/state`; `path.join` (the launcher's form) reads `<base>/state`.
+  const { root, logs } = ensureStateDirs(join(base, "linked", "..", "state"));
+  assert.equal(root, join(base, "state"));
+  assert.equal(logs, join(base, "state", "logs"));
+  assert.ok(statSync(root).isDirectory());
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  // The other tree was neither created in nor chmod'ed.
+  assert.equal(existsSync(join(dir, "other", "state")), false);
+  assert.equal(statSync(other).mode & 0o777, 0o755);
 });
 
 test("a relative state root keeps its form for the launcher's exact path comparison", () => {
