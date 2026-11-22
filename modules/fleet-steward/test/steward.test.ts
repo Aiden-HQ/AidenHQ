@@ -376,6 +376,20 @@ test("the connection's tools check the caller's signed roles", async () => {
   assert.match(forged.result.content[0].text, /Refused: no caller assertion/);
 });
 
+test("tools/list publishes the routing tools' nested shapes: weights' numbers, repos' open member map and revert's criterion", async () => {
+  const mcp = createMcp(fleetTools({ flow: async () => ({}), detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }), routing: async () => ({}) }));
+  const listed = (await mcp({ id: 1, method: "tools/list" }, async () => ({ agent: "a", key: "k", name: "k", roles: [], tool: "", call: "c", kind: "run" }))).result.tools;
+  const schema = (name) => listed.find((t) => t.name === name).inputSchema.properties;
+  for (const name of ["routing_replay", "routing_tune"]) {
+    assert.deepEqual(schema(name).weights.properties, { repo: { type: "number" }, continuity: { type: "number" }, load: { type: "number" } }, `${name} weights`);
+    assert.equal(schema(name).weights.additionalProperties, false, `${name} weights: no other key`);
+    assert.deepEqual(schema(name).repos.additionalProperties, { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] }, `${name} repos`);
+  }
+  assert.deepEqual(schema("routing_tune").revert.properties, { metric: { type: "string", enum: ["reopen_rate", "cycle_hours", "blocked_rate"] }, min_sample: { type: "number" }, threshold: { type: "number" }, deadline_days: { type: "number" } });
+  assert.deepEqual(schema("routing_tune").revert.required, ["metric", "min_sample", "threshold", "deadline_days"], "the kernel refuses a criterion missing any of the four");
+  assert.equal(schema("routing_tune").revert.additionalProperties, false, "the kernel refuses other revert keys");
+});
+
 test("/alerts and /metrics take only the monitoring module's token: no key or a wrong one is a 401 and files nothing", async (t) => {
   const { createStewardServer } = await import("../service/src/server.ts");
   const received = [];
