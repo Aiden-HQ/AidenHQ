@@ -96,10 +96,23 @@ it("status lines say what works and the one fix", () => {
   expect(lines.map((l) => [l.label, l.value, l.action?.label])).toEqual([
     ["Reads, issues, comments", "needs permission", "Reconnect"],
     ["Pull requests and merges", "needs permission", "Reconnect"],
+    ["Workflow files", "needs permission", "Reconnect"],
     ["Fleet repos", "in aidenhq-alpha", "Change"],
     ["CI runners", "needs permission", "Reconnect"],
     ["Projects boards", "needs permission", "Reconnect"],
   ]);
+});
+
+// A grant made before the sign-in asked for `workflow` (or with its box unticked) keeps its old scopes, so a push that touches
+// `.github/workflows/` is refused outright: the board names the gap on its own row, with the one fix, before any push.
+it("the workflow row reads working only when the sign-in's scopes cover workflow", () => {
+  const scoped = (scope: string): Auth => ({ ...auth(), status: () => ({ state: "ok", since: "", scope }) });
+  const row = (scope: string) => {
+    const line = createAccess({ auth: scoped(scope) }).status().lines.find((l) => l.label === "Workflow files");
+    return [line?.value, line?.state, line?.action?.label];
+  };
+  expect(row("repo, read:org, project")).toEqual(["needs permission", "warn", "Reconnect"]);
+  expect(row("repo, read:org, workflow, project")).toEqual(["working", "ok", undefined]);
 });
 
 it("content-creating writes go one at a time, a second apart; reads are not paced", async () => {
