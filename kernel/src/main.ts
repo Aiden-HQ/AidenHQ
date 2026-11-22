@@ -18,6 +18,7 @@ import { execFile } from "node:child_process";
 import http from "node:http";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import YAML from "yaml";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
 import { convert as convertGithubApp, removeApp as removeGithubApp, saveApp as saveGithubApp, type MadeApp } from "./github-app.ts";
@@ -412,6 +413,25 @@ once(() => void (localHost() ? localMerge() : Promise.resolve({ filed: [], resta
 // A kernel-admitted job's computer (boxes.ts): made below, once the gateway it needs is up; a job that ends releases it.
 let boxes: Boxes | undefined;
 const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
+/**
+ * The MCP servers the agent's compiled config declares (config/paperclip.yaml `agents.<key>.mcp_servers`, keyed by the grants
+ * entry's `key`): the launch compares them with the job's frozen authority, so a declared server is never silently absent.
+ * undefined (unknown agent, missing or unreadable config) skips the check; a parse failure is logged, never thrown.
+ */
+type CompiledConfig = { agents?: Record<string, { mcp_servers?: unknown }> };
+const declaredServers = (agentId: string): string[] | undefined => {
+  const key = grantsTable().agents?.[agentId]?.key;
+  if (!key) return undefined;
+  let compiled: CompiledConfig;
+  try {
+    compiled = (YAML.parse(readFileSync(path.join(configDir, "paperclip.yaml"), "utf8")) ?? {}) as CompiledConfig;
+  } catch (e) {
+    log("couldn't read the compiled config's MCP declarations", { err: String((e as Error).message ?? e).slice(0, 200) });
+    return undefined;
+  }
+  const declared = compiled.agents?.[key]?.mcp_servers;
+  return Array.isArray(declared) ? declared.filter((n): n is string => typeof n === "string") : undefined;
+};
 // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 const jobs = createJobs({
@@ -562,7 +582,7 @@ const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ??
 const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, orgs: modulesFile().repos?.orgs, maintained: modulesFile().repos?.maintained });
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
-  connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
+  connections: () => computers().connections ?? {}, declaredServers, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
   stateNeed: (e, episode) => warnStateNeed(e, episode),
   attachments: {
     list: async (task) => (await cpJson(`/api/issues/${encodeURIComponent(task)}/attachments`)) as { originalFilename?: string; byteSize?: number }[],

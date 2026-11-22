@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { admit, mcpBlock, stale } from "../lib.ts";
+import { admit, emitsServer, mcpBlock, stale, unemittedServers } from "../lib.ts";
 
 test("the box's Codex config lists only granted connections, through the gateway, keyed by the job token", () => {
   const conns = { apps: { tool_timeout_sec: 600 }, slack: { tool_timeout_sec: 300 }, paperclip_tasks: { tool_timeout_sec: 300 } };
@@ -15,6 +15,31 @@ test("the box's Codex config lists only granted connections, through the gateway
   // The tasks tools too: no stdio bridge in the box any more.
   assert.match(b, /\[mcp_servers\.paperclip_tasks\]\nurl = "http:\/\/10\.231\.2\.1:8200\/c\/paperclip_tasks\/mcp"/);
   assert.doesNotMatch(b, /slack|command/);
+});
+
+test("the shared rule: a declared server is emitted only with tools, a connection entry and a Codex-safe name", () => {
+  const conns = { apps: {}, github: {}, jira: {}, slack: {} };
+  const tools = { apps: ["app_list"], github: [] };
+  assert.deepEqual(unemittedServers(["apps"], tools, conns), []); // present: emitted
+  assert.deepEqual(unemittedServers(["github"], tools, conns), ["github"]); // an empty tools entry is no server
+  assert.deepEqual(unemittedServers(["jira"], tools, conns), ["jira"]); // no tools entry at all
+  assert.deepEqual(unemittedServers(["slack"], { slack: ["search"] }, conns), []); // present, tools in the frozen set
+  assert.deepEqual(unemittedServers(["slack"], { slack: ["search"] }, {}), ["slack"]); // no connection entry
+  assert.deepEqual(unemittedServers(["slack.mcp"], { "slack.mcp": ["search"] }, { "slack.mcp": {} }), ["slack.mcp"]); // a name Codex refuses
+  assert.deepEqual(unemittedServers(["apps", "github", "slack"], tools, conns), ["github", "slack"]);
+  // A name that only exists on Object.prototype is not a present server.
+  assert.deepEqual(unemittedServers(["toString"], {}, conns), ["toString"]);
+  assert.deepEqual(unemittedServers(["constructor"], { constructor: ["x"] }, conns), ["constructor"]);
+  assert.equal(emitsServer("toString", tools, conns), false);
+  // A null connection entry is no entry, exactly as `mcpBlock` treats it: the check and the renderer never disagree.
+  assert.deepEqual(unemittedServers(["slack"], { slack: ["search"] }, { slack: null }), ["slack"]);
+  assert.doesNotMatch(mcpBlock({ slack: ["search"] }, { slack: null }, "http://10.231.2.1:8200"), /\[mcp_servers\.slack\]/);
+  assert.equal(emitsServer("apps", tools, conns), true);
+  assert.equal(emitsServer("github", tools, conns), false);
+  // The block and the rule agree: a server it lists is one the predicate calls emitted.
+  const b = mcpBlock(tools, conns, "http://10.231.2.1:8200");
+  assert.match(b, /\[mcp_servers\.apps\]/);
+  assert.doesNotMatch(b, /\[mcp_servers\.github\]/);
 });
 
 test("admission: room → go; full → evict the least recently used idle box; all busy → wait; idle boxes are reaped", () => {
