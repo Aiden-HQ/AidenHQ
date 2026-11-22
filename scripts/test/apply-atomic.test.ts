@@ -9,8 +9,6 @@
 import assert from "node:assert/strict";
 import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -221,51 +219,6 @@ test("a first apply seeds the running pair as the last known good, validates, sw
   assert.match(board, /\/board:\/generations:ro$/, `the mirror's directory, not the file: ${board}`);
 });
 
-// Nothing changed = nothing rebuilt and no setup; an instance-only change sets up (its handbooks and config) without a build;
-// a product change builds only when it touches a build context and sets up only when it touches what setup reads; a missing
-// image builds again.
-});
-
-});
-
-// A fresh host has no kernel/node_modules: the pin is read with the kernel's own parser, so its deps are installed first.
-});
-
-// Lean-core 5e: the kernel the instance runs is its own fork (product_fork:) when that descends from the pin; else refused.
-});
-
-// The security module's SBOM timer runs the checkout this apply applied, not the one setup recorded: every apply writes the
-// unit's last EnvironmentFile= (AIDENHQ_DIR=realpath of the applied checkout) and installs/enables the timer; a module the
-// instance no longer has removes it. The unit's AIDENHQ_DIR is therefore the applied checkout even while
-// ~/.config/aidenhq-checkout.env still names the one setup installed from.
-// A unit's AIDENHQ_DIR as systemd resolves it: Environment= first, then each EnvironmentFile= in order (a later one wins).
-function resolvedAidenhqDir(unit, home) {
-  let dir;
-  for (const line of readFileSync(unit, "utf8").split("\n")) {
-    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
-    if (!m) continue;
-    const value = m[2].replaceAll("%h", home);
-    if (m[1] === "Environment") {
-      for (const kv of value.split(/\s+/)) if (kv.startsWith("AIDENHQ_DIR=")) dir = kv.slice("AIDENHQ_DIR=".length);
-    } else {
-      const file = value.replace(/^-/, "");
-      if (!existsSync(file)) continue;
-      const v = readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("AIDENHQ_DIR=")).at(-1);
-      if (v) dir = v.slice("AIDENHQ_DIR=".length);
-    }
-  }
-  return dir;
-}
-
-});
-
-});
-
-});
-
-// An older release's updater unit ran the apply as its child: the apply removes that unit only after its health verdict.
-});
-
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {
   const w = world();
   assert.equal((await w.run()).status, 0);
@@ -313,12 +266,6 @@ test("A14: a post-apply health failure reverts to the LKG's product, keeps what 
   assert.equal(git(w.d("inst"), "symbolic-ref", "--short", "HEAD"), "main");
 });
 
-// A failed auto-revert writes its own log: when the revert's switch fails, its generation names the file that holds the
-// failing step's output, not the log of the generation it reverted.
-});
-
-});
-
 const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
 
 /** Applies p2 and kills it mid-compose: the whole process group with SIGKILL (no trap runs, nothing is left holding the lock). */
@@ -362,51 +309,4 @@ test("an apply SIGKILLed mid-compose is reverted to the last known good by the n
   assert.equal(retry.status, 0, retry.out);
   assert.deepEqual([w.gens().at(-1).product, w.gens().at(-1).instance, w.gens().at(-1).health], [p2, i2, "good"]);
 });
-
 });
-
-});
-
-// The switch-over from the retired GitHub App's helper (#1104): while the org's OAuth App restriction keeps the owner's token
-// from the instance repo, the new script stops after the hand-over and puts both checkouts back where the running generation
-// has them; once GitHub lets the token read the repo, the next apply switches the helper and goes on.
-});
-});
-
-// The host-metrics timer runs the script of the checkout the apply applied, not the one ops/setup.sh recorded at install
-// time: the unit's last EnvironmentFile= (written every apply) names the applied checkout, and systemd reads it after
-// ~/.config/aidenhq-checkout.env.
-const OLD_HOST_METRICS_UNIT = `[Unit]
-Description=AidenHQ host metrics for the monitoring module: unit and container states as node-exporter textfiles (ops/host-metrics.sh)
-
-[Service]
-# The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
-Environment=AIDENHQ_DIR=%h/aidenhq
-EnvironmentFile=-%h/.config/aidenhq-checkout.env
-Type=oneshot
-ExecStart=/usr/bin/env bash \${AIDENHQ_DIR}/ops/host-metrics.sh
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-`;
-
-// What systemd does with the unit's environment: Environment= first, then each EnvironmentFile= in order (a later one
-// wins), then expand ${AIDENHQ_DIR} in ExecStart.
-function hostMetricsScript(unit, home) {
-  const env = {};
-  for (const line of readFileSync(unit, "utf8").split("\n")) {
-    const m = /^(Environment|EnvironmentFile)=(.*)$/.exec(line);
-    if (!m) continue;
-    const value = m[2].replaceAll("%h", home);
-    if (m[1] === "Environment") {
-      for (const kv of value.split(/\s+/)) { const [k, ...v] = kv.split("="); env[k] = v.join("="); }
-    } else {
-      const file = value.replace(/^-/, "");
-      if (!existsSync(file)) continue;
-      for (const l of readFileSync(file, "utf8").split("\n")) {
-        if (!l || l.startsWith("#")) continue;
-        const [k, ...v] = l.split("="); env[k] = v.join("=");
-      }
-    }
-  }
-  const exec = /^ExecStart=(.*)$/m.exec(readFileSync(unit, "utf8"))[1];
-  return exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? "").split(/\s+/).at(-1);
-}

@@ -30,12 +30,12 @@ test("a privileged module's folder is at least the reviewer's, in the modules re
 });
 
 test("both sides of a rename count, the highest entry wins, the owner-approval records are the owner's in any repo", () => {
-  assert.equal(pathRaise(inv, "product", [{ path: "docs/moved.md", from: "kernel/src/tier.ts" }]).rule, "gate-core");
+  assert.equal(pathRaise(inv, "product", [{ path: "docs/moved.md", from: "kernel/src/tier.ts" }]).rule, "reviewed-path");
   assert.equal(pathRaise(inv, "product", [{ path: "docs/a.md" }]), undefined);
   assert.equal(pathRaise(inv, "other", [{ path: ".github/supply-chain-source-exceptions.yaml" }]).tier, 2);
   assert.equal(pathRaise(inv, "product", [{ path: "modules/ai-reviewer/test/retired-cases.json" }]).tier, 2, "retiring a reviewer case is the owner's");
-  assert.equal(pathRaise(inv, "product", [{ path: ".github/supply-chain-source-exceptions.yaml" }, { path: "docs/a.md" }]).tier, 2, "2 beats the panel's .github/");
-  assert.equal(pathRaise(undefined, "product", [{ path: "docs/a.md" }]).rule, "gate-list-unknown", "no inventory: the owner's");
+  assert.equal(pathRaise(inv, "product", [{ path: ".github/supply-chain-source-exceptions.yaml" }, { path: "docs/a.md" }]).tier, 2, "2 beats .github/'s 1");
+  assert.equal(pathRaise(undefined, "product", [{ path: "docs/a.md" }]).rule, "gate-list-unknown", "no inventory: reviewed");
   assert.equal(pathRaise(inv, "product", undefined).rule, "unknown-files");
 });
 
@@ -70,13 +70,13 @@ test("a repository write (paths: true) is tiered by the files its plan read: the
   assert.deepEqual(await file([{ repo: "not a repo", files: [] }]), [1, "unknown-repos"]);
 });
 
-test("a repository write where the product repo isn't known is the panel's under full autonomy, whatever its files", async (t) => {
+test("a repository write where the product repo isn't known is the reviewer's, whatever its files", async (t) => {
   const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
   t.after(() => ex.s.close());
   const k = await kernel(t, { secrets: { acme_key: "acme-key" }, paths: inv, writes: { "acme.push": { module: "acme", floor: 1, paths: true, tools: [], executor: { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "acme_key" } } } });
   const handler = serveExecutor({ plan: async () => ({ args: {}, paths: [{ repo: "acme/aidenhq", files: [{ path: "kernel/src/tier.ts" }] }] }), execute: async () => ({ ok: true, text: "done" }) }, { key: "acme-key", kernelUrl: k.url });
   const r = await k.writes.request({ kind: "module", module: "acme", roles: [], tools: {} }, { kind: "acme.push", args: {}, task: "TASK-1" });
-  assert.deepEqual([r.tier, r.panel, r.rule], [1, true, "unknown-repos"]);
+  assert.deepEqual([r.tier, r.rule], [1, "unknown-repos"]);
 });
 
 test("every product entry of the inventory names a file, so a moved gate file shows up as a dead entry", () => {
