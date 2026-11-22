@@ -1081,3 +1081,58 @@ test("a custom hold reason is published as given", async (t) => {
   await handle.stepMerges();
   assert.deepEqual(waits.map((w) => w.reason), ["migrating the GitHub App: merges are held"]);
 });
+
+test("a queue written by the previous implementation republishes its reason on the first poll, not trusting an absent one", async () => {
+  // The old queue kept the reason per PR and never a `waitSent`. Its record may still carry a stale "code review: …" while CI
+  // holds the merge, so a queue loaded without the field must reconcile: unknown delivery, not "already cleared".
+  const dir = mkdtempSync(join(tmpdir(), "merges-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  const github = fakeGitHub(prs);
+  // What the old implementation left on disk: a running queue with a per-PR note and no `waitSent`.
+  writeFileSync(join(dir, "merges.json"), JSON.stringify({ queues: { "k-00000000000000d1": { id: "k-00000000000000d1", state: "running", startedAt: new Date().toISOString(), said: [], prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending", note: "code review: 1 important finding open" }] } } }));
+  const waits = [];
+  const merges = createMerges({
+    dir, gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: async () => undefined,
+  });
+  await merges.step();
+  // CI holds the merge now, so the stale review reason must be cleared rather than assumed already delivered.
+  assert.deepEqual(waits.map((w) => w.reason), [null], "the stale reason is cleared on the first poll after the upgrade");
+});
+
+test("a wait is recorded only after the kernel takes it: a restart mid-delivery republishes, never assumes it arrived", async () => {
+  // The save used to run before the call, so a restart between them left `waitSent` on disk for a reason the kernel never got and
+  // every later poll skipped it: a merge blocked indefinitely with no reason on its card. Read the file from inside the delivery —
+  // the moment a restart could land — and it must not yet say delivered.
+  const dir = mkdtempSync(join(tmpdir(), "merges-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const onDisk = [];
+  const waits = [];
+  let calls = 0;
+  const merges = createMerges({
+    dir, gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
+    report: async () => {},
+    waiting: async (id, reason) => {
+      calls++;
+      const q = JSON.parse(readFileSync(join(dir, "merges.json"), "utf8")).queues[id];
+      onDisk.push(q.waitSent);
+      // The first delivery is a process that dies mid-call: the kernel never got it.
+      if (calls === 1) throw new Error("process restarted mid-delivery");
+      waits.push({ id, reason });
+    },
+    reviewGate: async () => ({ wait: "code review: 1 important finding open" }),
+  });
+  void merges.enqueue("k-00000000000000d2", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  assert.deepEqual(onDisk, [null], "mid-delivery the file says the record has no wait, never that this one was delivered");
+  // The restart's next poll sends the same reason again: it was never recorded as delivered.
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open"], "a delivery that never landed is retried, not assumed delivered");
+  // And once the kernel took it, the file does say so (the next poll stays quiet).
+  const after = JSON.parse(readFileSync(join(dir, "merges.json"), "utf8")).queues["k-00000000000000d2"];
+  assert.equal(after.waitSent, "code review: 1 important finding open");
+  await merges.step();
+  assert.equal(waits.length, 1, "once acknowledged, the same reason is not re-posted");
+});
