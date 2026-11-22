@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { createApplyPlanner } from "../src/apply-tier.ts";
 import { fillMemory } from "../src/memory.ts";
-import { checkoutMain, checkoutTree, createSettingsChanges, skillSides } from "../src/settings-change.ts";
+import { checkoutMain, checkoutTree, createSettingsChanges, planFiles, skillSides } from "../src/settings-change.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
@@ -150,6 +150,15 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   await refused("chaser", [{ kind: "routine_def", key: "often", routine: { title: "Often", description: "Check, then close this task.", schedules: [{ cron: "*/5 * * * *", label: "x" }] } }], /it doesn't compile: .*at most hourly/);
   // The same change through a tool that isn't self_change is the setting path: refused.
   await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n" }], /tasks files settings changes only for its own agents/, "task_get");
+  // Roles are the live grants row's: Aiden's row loses fleet-admin after its job started, and its profile change is refused.
+  const g = JSON.parse(readFileSync(k.grantsFile, "utf8"));
+  g.agents[COS].roles = [];
+  writeFileSync(k.grantsFile, JSON.stringify(g));
+  await refused("aiden", [{ kind: "profile", text: "# Owner\n" }], /only fleet-admin \(Aiden\) changes the owner profile/);
   assert.deepEqual(branches(), before);
   assert.equal(applies().length, 2);
+  // A fresh install has no library module: the first skill writes its module.yaml too.
+  const fresh = planFiles([{ kind: "skill", name: "nudge", text: skillText }], { read: () => undefined, localOf: () => undefined, teamOf: () => undefined, moduleHandbook: () => undefined, bundle: [] });
+  assert.deepEqual([...fresh.keys()].sort(), ["modules/library/module.yaml", "modules/library/skills/nudge/SKILL.md"]);
+  assert.equal(fresh.get("modules/library/module.yaml"), "name: library\ndescription: The agents' own skills and routines.\n");
 });

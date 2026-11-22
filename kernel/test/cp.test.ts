@@ -101,7 +101,7 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   // direct reports and the Engineers, and the lead is refused for an agent that isn't its own.
   const give = (who, to) => act(who, "POST", "/api/companies/co/issues", { title: "Take this", assigneeAgentId: to, status: "todo" });
   for (const to of [BO, REP, ENG]) assert.equal((await give("cos", to)).status, 201);
-  for (const to of [REP, ENG]) assert.equal((await give("lead", to)).status, 201);
+  for (const to of [REP, ENG, COS]) assert.equal((await give("lead", to)).status, 201); // the chief of staff too: what only it changes is asked of it
   r = await give("lead", BO);
   assert.equal(r.status, 409);
   assert.match(r.json.error.message, /delegates to/);
