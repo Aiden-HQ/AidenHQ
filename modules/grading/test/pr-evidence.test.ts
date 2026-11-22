@@ -585,3 +585,11 @@ test("a rubric that names a merged PR another task opened is graded on that PR, 
   const now = await presentNow({ kind: "pr", ref: url(1301) }, { taskPrs: async () => [], taskMerged: async () => [], pr: deps.pr });
   assert.equal(now.present, true);
 });
+
+test("a named PR the task's own merge record holds keeps its identity check; a named PR that does not exist is missing", async () => {
+  const replaced = merged(1301, "d", "e");
+  const stale = await prEvidence([], url(1301), depsFor([replaced], { taskMerged: [{ repo: REPO, number: 1301, url: url(1301), sha: SHA("9") }] }));
+  assert.match(stale.awaiting, /now names a different change/);
+  const gone = await prEvidence([], url(1399), { ...depsFor([]), pr: async () => ({ repository: { pullRequest: null } }), taskMerged: async () => [] });
+  assert.equal(gone.missing, true);
+});

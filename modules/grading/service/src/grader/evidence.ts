@@ -431,8 +431,6 @@ export async function presentNow(deliverable: any, deps: any) {
   let unknown = false;
   if (kind === "pr") {
     let prs = byRef((await deps.taskPrs?.()) ?? [], deliverable.ref);
-    const byName = !prs.length && findPrs(deliverable.ref).length > 0;
-    if (byName) prs = findPrs(deliverable.ref);
     if (!prs.length && deps.taskMerged) {
       // No branch row names one: the runner's own records may. A records read that failed proves nothing about the PR, so it
       // is "could not be read" (unknown), never "the task has no PR": reading it as absent would let a versionless close land
@@ -441,6 +439,8 @@ export async function presentNow(deliverable: any, deps: any) {
       if (!records) return { present: false, unknown: true, facts: ["the runner's own merge records for this task could not be read just now"] };
       prs = byRef(records.rows, deliverable.ref);
     }
+    const byName = !prs.length && findPrs(deliverable.ref).length > 0;
+    if (byName) prs = findPrs(deliverable.ref);
     let merged: { repo: string; sha: string } | undefined;
     for (const p of prs.slice(0, 5)) {
       // A read that throws is no answer (unknown, wait); GitHub answering that the repository or the PR is gone is an answer,
@@ -553,14 +553,10 @@ const PR_TEXT_TOTAL = 20_000;
  */
 export async function prEvidence(prs: any[], ref: string, deps: any): Promise<any> {
   prs = byRef(prs, ref);
-  // The ref names a PR no branch row of this task holds (another task opened or merged it): the ref is that PR's identity, so
-  // it is read directly, graded by the same criteria as the task's own, and waits while it is not merged.
-  const byName = !prs.length && findPrs(ref).length > 0;
-  if (byName) prs = findPrs(ref);
   // No branch row names one: the runner's own records for the task (its merge queue and the merge cards it filed) still say
   // which PR delivered it, so they are read rather than reporting "no pull request yet" for a merge whose row a cleanup, a
   // prune or a state reset took away. Never a comment: its runner marker is text any writer can copy, so it proves nothing.
-  const byRecord = !byName && !prs.length && Boolean(deps.taskMerged);
+  const byRecord = !prs.length && Boolean(deps.taskMerged);
   if (byRecord) {
     // A records read that failed is evidence that could not be read, not "no pull request yet": the latter is a missing
     // deliverable that closes the task after MISSING_WAIT_MS, so a 502 on the kernel's own records would close a task whose
@@ -569,6 +565,10 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     if (!records) return { awaiting: "the runner's own merge records for this task could not be read just now" };
     prs = byRef(records.rows, ref);
   }
+  // Neither a branch row nor a merge record of this task holds the PR the ref names (another task opened or merged it): the
+  // ref is that PR's identity, so it is read directly, graded by the same criteria as the task's own, and waits while unmerged.
+  const byName = !prs.length && findPrs(ref).length > 0;
+  if (byName) prs = findPrs(ref);
   if (!prs.length) return { awaiting: "no pull request yet", missing: true };
   const facts: string[] = (prs as any).elsewhere ? [(prs as any).elsewhere] : [];
   const versions: string[] = [];
@@ -583,7 +583,10 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   // replaced, the merged PR is what landed the work and the closed one is not read at all.
   const states = new Map<string, any>();
   for (const p of candidates) {
-    const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
+    const answer = await deps.pr(p.repo, p.number);
+    const pr = answer?.repository?.pullRequest;
+    // GitHub answering that the named repository or PR does not exist is an answer, not an unread one.
+    if (byName && (answer?.repository === null || pr === null)) return { awaiting: `no pull request at ${p.url}`, missing: true };
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
     states.set(key(p), pr);
   }
