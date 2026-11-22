@@ -279,11 +279,18 @@ describe("identity gate", () => {
     expect(mergeScans([{ sockets: [t(false, "no")] }, { sockets: [{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0] }] }]).sockets).toEqual([{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0, 0], tls: "no" }]);
     // HTTP evidence is joined the same way: a later scan that owns the socket must not erase a status an earlier one got,
     // nor the plaintext look's HTTP/ reply. Either is a hard answer, so losing it could turn an HTTP listener into a skip.
-    const h = (listening: boolean, statuses: number[], raw?: "http" | "closed") => ({ port: 8080, host: "127.0.0.1", listening, statuses, ...(raw ? { raw } : {}) });
+    const h = (listening: boolean, statuses: number[], raw?: "http" | "closed" | "banner" | "refused") => ({ port: 8080, host: "127.0.0.1", listening, statuses, ...(raw ? { raw } : {}) });
     expect(mergeScans([{ sockets: [h(false, [401, 0])] }, { sockets: [h(true, [0, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 0] }]);
     expect(mergeScans([{ sockets: [h(true, [0, 0], "http")] }, { sockets: [h(false, [0, 0], "closed")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0, 0], raw: "http" }]);
     // Two answers at the same index keep the one that answered; no scan's "0" hides another's status.
     expect(mergeScans([{ sockets: [h(false, [0, 403])] }, { sockets: [h(true, [401, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 403] }]);
+    // The strongest answer wins, not the first non-zero: a 200 (the app served without the sign-in) must never be replaced
+    // by another scan's 401, or the hard "answers without the sign-in" finding would be lost.
+    expect(mergeScans([{ sockets: [h(false, [401])] }, { sockets: [h(true, [200])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [200] }]);
+    expect(mergeScans([{ sockets: [h(true, [200, 401])] }, { sockets: [h(false, [401, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [200, 401] }]);
+    // A plaintext look that hung up (hard) also outranks one that saw a banner (a skip), and a refusal is the weakest.
+    expect(mergeScans([{ sockets: [h(true, [0], "banner")] }, { sockets: [h(false, [0], "closed")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0], raw: "closed" }]);
+    expect(mergeScans([{ sockets: [h(false, [0], "refused")] }, { sockets: [h(true, [0], "banner")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0], raw: "banner" }]);
   });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {

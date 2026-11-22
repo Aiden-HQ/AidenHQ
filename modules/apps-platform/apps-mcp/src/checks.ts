@@ -418,10 +418,11 @@ export function processUids(top: string): number[] {
 /**
  * One container's scans, one per uid, merged. Any scan's evidence counts, whichever one attributed the listener: one uid can
  * read a socket another could not, so a later scan must never erase an earlier one's answer. A socket listens when any scan
- * attributed it; a process stays denied only when every scan was refused it. HTTP evidence is joined too — a probe that got
- * a status, or a plaintext look that saw `HTTP/`, is kept even if the scan that owns the socket got nothing — because an
- * HTTP listener must never be waved through as a skip. The TLS answer is `tls` if any scan saw a TLS record, `no` if any
- * answered `no`, and absent only when no scan answered; it is what decides the app-level skip (identityPorts).
+ * attributed it; a process stays denied only when every scan was refused it. Everything else is joined so evidence can only
+ * get stronger, never weaker: a probe's status keeps the answer that is strongest evidence of a problem (a served request
+ * first, then a refusal, then any other answer, then silence), `raw` keeps the strongest look (`http`, then a hang-up, then a
+ * banner, then a refusal), and the TLS answer is `tls` if any scan saw a TLS record, `no` if any answered `no`, and absent
+ * only when no scan answered. Losing any of these could turn an HTTP or TLS listener into a skip (identityPorts).
  */
 export function mergeScans(scans: { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; tls?: PortAnswers["tls"]; statuses: number[] }[]; denied?: string[] }[]) {
   const sockets = new Map<string, (typeof scans)[number]["sockets"][number]>();
@@ -430,20 +431,33 @@ export function mergeScans(scans: { sockets: { port: number; host: string; liste
     if (!had) { sockets.set(key, k); continue; }
     // The scan that attributed the listener keeps the socket's own fields; everything that is evidence is joined.
     const owner = k.listening && !had.listening ? k : had;
-    const raws = [had.raw, k.raw];
-    const raw = raws.includes("http") ? "http" : owner.raw ?? raws.find((r) => r !== undefined);
-    const statuses = (had.statuses.length > k.statuses.length ? had.statuses : k.statuses)
-      .map((_, i) => had.statuses[i] || k.statuses[i] || 0);
     sockets.set(key, {
       ...owner,
       listening: had.listening || k.listening,
-      ...(raw ? { raw } : {}),
-      statuses,
+      raw: strongestRaw([had.raw, k.raw]) ?? owner.raw,
+      statuses: Array.from({ length: Math.max(had.statuses.length, k.statuses.length) }, (_, i) => strongestStatus(had.statuses[i] ?? 0, k.statuses[i] ?? 0)),
       ...(had.tls || k.tls ? { tls: had.tls === "tls" || k.tls === "tls" ? "tls" : "no" } : {}),
     });
   }
   const denied = (scans[0]?.denied ?? []).filter((p) => scans.every((sc) => (sc.denied ?? []).includes(p)));
   return { sockets: [...sockets.values()], denied };
+}
+
+/**
+ * Which of two answers to the same probe is stronger evidence, never weaker: served (a status under 400, so the app may
+ * answer without the sign-in), then a refusal, then any other answer, then none. Keeping the first non-zero answer instead
+ * would let one scan's 401 hide another's 200.
+ */
+export function strongestStatus(a: number, b: number): number {
+  const rank = (s: number) => (s > 0 && s < 400 ? 4 : REFUSED.has(s) ? 3 : s > 0 ? 2 : 1);
+  return rank(a) >= rank(b) ? a : b;
+}
+
+/** The same, for the plaintext look: an HTTP reply, then a hang-up or silence, then a banner, then a refusal. `refused` is
+ * the weakest (nothing listens), so it must never win over a look that got an answer. */
+export function strongestRaw(seen: (PortAnswers["raw"] | undefined)[]): PortAnswers["raw"] | undefined {
+  const rank = (r: PortAnswers["raw"] | undefined) => (r === "http" ? 4 : r === "closed" || r === "silent" ? 3 : r === "banner" ? 2 : r === "refused" ? 1 : 0);
+  return seen.reduce<PortAnswers["raw"] | undefined>((best, r) => (rank(r) > rank(best) ? r : best), undefined);
 }
 
 /**
