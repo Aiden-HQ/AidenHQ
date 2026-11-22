@@ -12,9 +12,10 @@
 //                 is `pkg=version`. Distro packages installed before that ride on the base image's digest; a
 //                 distro package pinned anyway (`pkg=version`) is dated from its own base's distro (its stage's FROM
 //                 `debian:<codename>` or `ubuntu:<codename>`; the file's source entries first, then that distro's
-//                 pockets).
-//                 Where the base's codename can't be read (a host script, a local stage, scratch, FROM ${ARG}, another
-//                 image) the host's Ubuntu pockets are used. A host script pins per Ubuntu release in the arms of
+//                 pockets). A stage inherits the repositories a stage it extends (`FROM <stage>`) added, and neither
+//                 its own nor its siblings' additions leak into another stage.
+//                 Where the base's codename can't be read (a host script, scratch, FROM ${ARG}, another image) the
+//                 host's Ubuntu pockets are used. A host script pins per Ubuntu release in the arms of
 //                 `case "$codename" in <release>) …;; esac`: a pin in an arm is dated for that release only, any other
 //                 for every release the file names (noble when it names none).
 //   host pins     ops/vm/pins.json (read by ops/vm/setup.sh): `apt` for every release, `releases.<codename>.apt` for one;
@@ -169,10 +170,14 @@ function hostPins(path: string, text: string): { pins: Pin[]; problems: string[]
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
-  const state: State = { repoAdded: false, sources: [], releases: new Set() };
+  const fresh = (): State => ({ repoAdded: false, sources: [], releases: new Set() });
+  const clone = (s: State): State => ({ ...s, sources: [...s.sources], releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+  let state: State = fresh();
   const at = (n: number) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {
     const stages = new Set(["scratch"]);
+    // Each named stage's state as its RUN lines leave it, so a stage that extends it starts from the same filesystem.
+    const stageState = new Map<string, State>();
     const syntax = /^#\s*syntax\s*=\s*(\S+)/m.exec(text);
     if (syntax) DIGEST.test(syntax[1]!) ? pins.push(imagePin(syntax[1]!, at(1))) : problems.push(`${at(1)}: # syntax=${syntax[1]} has no digest`);
     for (const { n, text: l } of logical(text)) {
@@ -183,16 +188,16 @@ export function scanFile(path: string, text: string): { pins: Pin[]; problems: s
         DIGEST.test(ref) ? pins.push(imagePin(ref, at(n))) : problems.push(`${at(n)}: image ${ref} has no digest (name:tag@sha256:…)`);
       }
       if (from) {
-        // A stage's repositories and release arms are its own: a sources.list.d entry added in an earlier stage never
-        // dates this one's pins, nor makes its unpinned installs a problem.
-        state.repoAdded = false;
-        state.sources = [];
-        state.releases = new Set();
-        state.releaseCase = false;
-        state.arm = undefined;
-        state.base = from[1]!.includes("$") || stages.has(from[1]!.toLowerCase()) ? undefined : baseDistro(from[1]!);
+        // A stage starts from its own filesystem: a new image from scratch (its own distro, no repositories), a
+        // stage it extends from what that stage had when it finished. Either way the additions stay in this stage.
+        const ref = from[1]!, inherited = stages.has(ref.toLowerCase()) ? stageState.get(ref.toLowerCase()) : undefined;
+        state = inherited ? clone(inherited) : fresh();
+        state.base = ref.includes("$") ? undefined : inherited ? inherited.base : baseDistro(ref);
       }
-      if (from?.[2]) stages.add(from[2].toLowerCase());
+      if (from?.[2]) {
+        stages.add(from[2].toLowerCase());
+        stageState.set(from[2].toLowerCase(), state);
+      }
       if (/^\s*RUN\s/i.test(l)) commands(l, at(n), state, pins, problems);
     }
   } else if (COMPOSE.test(path) || WORKFLOW.test(path)) {
