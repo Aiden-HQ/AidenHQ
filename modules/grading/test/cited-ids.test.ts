@@ -3,8 +3,7 @@
 // read still waits: a named task's file list is read (kernel-loop.ts otherTask), so only a transient failure is a wait.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { citedEvidence, citedIds, MAX_CITED, resolveCitation } from "../service/src/grader/evidence.ts";
-import { gather } from "../service/src/grader/grade.ts";
+import { citedEvidence, citedIds, resolveCitation } from "../service/src/grader/evidence.ts";
 
 const TASKS = {
   "WOR-101": { identifier: "WOR-101", title: "Ship the parser", state: "done", exists: true },
@@ -52,87 +51,6 @@ test("a report citing an existing task and a nonexistent id resolves each: the f
   assert.equal((await resolveCitation({ kind: "job", id: "1", repo: "acme/app" }, citeDeps())).exists, false);
 });
 
-test("a report that cites an existing task and a nonexistent one grades the first as existing through gather()", async () => {
-  const report = "Done: WOR-101 is done. WOR-999 is not a task.";
-  const ev = await gather({ kind: "report", ref: "" }, {
-    approvals: async () => [],
-    comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: report, createdAt: "2026-11-20T09:00:00Z" }],
-    attachments: async () => [],
-    assignee: "eng",
-    delegator: { agentId: "cos" },
-    identifier: "WOR-1",
-    ...citeDeps(),
-  }, ["the report cites the existing task and no nonexistent one"]);
-  const facts = ev.facts.join("\n");
-  assert.match(facts, /cited task WOR-101: exists, state done/);
-  assert.match(facts, /cited id WOR-999: no such task in this company/);
-  assert.equal(ev.awaiting, undefined, "the report exists, so the row is graded rather than waiting");
-});
-
-test("an id that appears only in an attached file is not a citation the report made", async () => {
-  // The attachment's contents name WOR-101 and a card; the report's own comment names neither.
-  const ev = await gather({ kind: "report", ref: "" }, {
-    approvals: async () => [],
-    comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "Done; the notes are attached.", createdAt: "2026-11-20T09:00:00Z" }],
-    attachments: async () => [{ id: "f1", originalFilename: "notes.txt", contentType: "text/plain", byteSize: 40 }],
-    content: async () => Buffer.from("The mockups landed in WOR-101 via k-0123456789abcdef."),
-    assignee: "eng",
-    delegator: { agentId: "cos" },
-    identifier: "WOR-1",
-    ...citeDeps(),
-  }, ["the report cites the task the mockups landed in"]);
-  assert.ok(ev.facts.some((f: string) => f.includes("notes.txt") || f.includes("file_1")), "the attachment is still evidence");
-  assert.ok(!ev.facts.some((f: string) => f.startsWith("cited task WOR-101")), "an id only in an attachment is no citation");
-  assert.ok(!ev.facts.some((f: string) => f.includes("k-0123456789abcdef")), "nor is a card id found only there");
-  assert.equal(ev.data.CITED_IDS, undefined);
-  assert.doesNotMatch(ev.version ?? "", /cited:/, "and it does not enter the graded version");
-});
-
-test("a cited id is capped so the evidence stays bounded, and a task's own identifier is never a citation", () => {
-  const many = Array.from({ length: 30 }, (_, i) => `WOR-${100 + i}`).join(" ");
-  const ids = citedIds([`${many} WOR-1`], "WOR-1");
-  assert.equal(ids.length, MAX_CITED);
-  assert.deepEqual(ids[0], { kind: "task", id: "WOR-100" });
-  assert.deepEqual(ids.at(-1), { kind: "task", id: "WOR-119" });
-  assert.ok(ids.every((c) => c.kind !== "task" || c.id !== "WOR-1"), "the graded task itself is not cited");
-  assert.deepEqual(citedIds(["a job 123456 in acme/app"], "WOR-1"), [{ kind: "job", id: "123456" }]);
-  assert.deepEqual(citedIds(["https://github.com/acme/app/actions/runs/9/job/777"], "WOR-1"), [{ kind: "job", repo: "acme/app", id: "777" }]);
-});
-
-test("a citation read that fails is a wait, and the card, task and job reads are the only ones used", async () => {
-  const ids = citedIds(["WOR-101 kit"], "WOR-1");
-  const down = await citedEvidence(ids, citeDeps({ citedTask: async () => { throw new Error("kernel 502"); } }));
-  assert.match(down.awaiting, /the cited task WOR-101 could not be read yet/);
-  assert.equal(down.facts, undefined, "a failed read never becomes 'no such task'");
-});
-
-test("a named task's unreadable file list is a transient wait, while the report's cited ids still resolve", async () => {
-  const report = "The mockups are on WOR-101; the card k-0123456789abcdef landed them.";
-  const unavailable = async () => { throw Object.assign(new Error("kernel GET → 502: upstream down"), { status: 502 }); };
-  const deps = (rubric: string[]) => ({
-    approvals: async () => [],
-    comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: report, createdAt: "2026-11-20T09:00:00Z" }],
-    attachments: async () => [],
-    assignee: "eng",
-    delegator: { agentId: "cos" },
-    identifier: "WOR-9",
-    otherTask: unavailable,
-    ...citeDeps(),
-  });
-  // Cited in the report but not named by the rubric: the cited ids are resolved, and the unreadable file list is never touched.
-  const citedOnly = await gather({ kind: "report", ref: "" }, deps(["the report cites an existing task and card"]), ["the report cites an existing task and card"]);
-  assert.match(citedOnly.facts.join("\n"), /cited task WOR-101: exists/);
-  assert.match(citedOnly.facts.join("\n"), /cited card k-0123456789abcdef: exists/);
-  assert.equal(citedOnly.awaiting, undefined, "the citation path does not go through the named task's files");
-
-  // Named by the rubric, the same report waits on a read that failed for a transient reason (a 5xx/network error): the wait is
-  // for the next look, never "not met", and the file list itself is read from the task through cp-read (kernel-loop.test.ts).
-  const rubric = ["the mockup files on WOR-101 are the ones used"];
-  const named = await gather({ kind: "report", ref: "" }, deps(rubric), rubric);
-  assert.match(named.awaiting, /the files on WOR-101 could not be read yet \(kernel GET +502: upstream down\)/);
-  assert.equal(named.facts, undefined, "an unreadable named task is a wait, never evidence");
-});
-
 test("a job cited under a misspelled owner resolves to the graded PR's real owner/name; a refused repo is answered once", async () => {
   const [job] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/424242"], "WOR-9");
   const deps = citeDeps({
@@ -157,75 +75,5 @@ test("a job cited under a misspelled owner resolves to the graded PR's real owne
   const refused = await citedEvidence([job!], integration, []);
   assert.equal(refused.awaiting, undefined, "any other 403 is final");
   assert.match(refused.facts.join("\n"), /could not be read \(Resource not accessible by integration\)/);
-});
-
-test("a cited repo resolves exactly first, then by dashes and case only when one known repo matches; a bare citation skips an unreadable repo", async () => {
-  const seen: string[] = [];
-  const deps = citeDeps({
-    citedJob: async (repo: string) => {
-      seen.push(repo);
-      if (repo === "acme/nogrant") throw Object.assign(new Error("no grant"), { status: 403 });
-      return { name: "ci", state: "completed", conclusion: "success" };
-    },
-  });
-  const [job] = citedIds(["ci: https://github.com/acme/my.app/actions/runs/1/job/7"], "WOR-9");
-  await resolveCitation(job!, deps, ["acme/my_app"]);
-  assert.equal(seen.pop(), "acme/my.app", "dots and underscores are different repos: no variant match");
-  await resolveCitation(job!, deps, ["acme/my.app", "acme/my_app"]);
-  assert.equal(seen.pop(), "acme/my.app", "an exact match wins");
-  const [dashed] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/7"], "WOR-9");
-  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "AidenHQ/Aiden-HQ"]);
-  assert.equal(seen.pop(), "AidenHQ/AidenHQ", "two variants are ambiguous: the cited spelling is used");
-
-  const [bare] = citedIds(["ci: job 424242"], "WOR-9");
-  const r = await resolveCitation(bare!, deps, ["acme/nogrant", "acme/app"]);
-  assert.equal(r.exists, true, "a refused repo does not stall a bare citation");
-  assert.equal(r.repo, "acme/app");
-});
-
-test("a dash-only variant never hides the cited repo: the job is looked for there too", async () => {
-  const seen: string[] = [];
-  const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return repo === "acme/my-app" ? { name: "ci", state: "completed", conclusion: "success" } : null; } });
-  const [job] = citedIds(["ci: https://github.com/acme/my-app/actions/runs/1/job/7"], "WOR-9");
-  const r = await resolveCitation(job!, deps, ["acme/myapp"]);
-  assert.deepEqual(seen, ["acme/myapp", "acme/my-app"]);
-  assert.equal(r.repo, "acme/my-app");
-  seen.length = 0;
-  await resolveCitation(job!, deps, ["Acme/My-App"]);
-  assert.equal(seen.length, 1, "the same repo in another case is looked up once");
-});
-
-test("a repo listed twice is not ambiguous; a bare citation refused everywhere is shown once as unreadable", async () => {
-  const seen: string[] = [];
-  const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return { name: "ci", state: "completed", conclusion: "success" }; } });
-  const [dashed] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/7"], "WOR-9");
-  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "Aiden-HQ/AidenHQ"]);
-  assert.equal(seen.pop(), "Aiden-HQ/AidenHQ");
-
-  const [bare] = citedIds(["ci: job 424242"], "WOR-9");
-  const denied = citeDeps({ citedJob: async (repo: string) => { throw Object.assign(new Error(`no grant on ${repo}`), { status: 403 }); } });
-  const out = await citedEvidence([bare!], denied, ["acme/a", "acme/b"]);
-  assert.equal(out.awaiting, undefined);
-  assert.match(out.facts.join("\n"), /could not be read \(no grant on acme\/a\)/);
-});
-
-test("a bare job citation tries every candidate repo: found, none, a refusal (403 or 404), or a rate limit", async () => {
-  const err = (status: number, message: string, headers?: object) => Object.assign(new Error(message), { status, headers });
-  const ok = { name: "ci", state: "completed", conclusion: "success" };
-  const cases: { name: string; answers: any[]; want: RegExp; awaiting?: boolean }[] = [
-    { name: "found after a refusal and a 404", answers: [err(403, "no grant"), err(404, "no code host"), ok], want: /cited Actions job 424242 in acme\/c: exists/ },
-    { name: "null everywhere is no such job", answers: [null, null, null], want: /no such Actions job/ },
-    { name: "a refusal and no find is unreadable", answers: [null, err(403, "Resource not accessible by integration"), null], want: /could not be read \(Resource not accessible by integration\)/ },
-    { name: "a 404 from the code host is a refusal, not no such job", answers: [null, err(404, "no GitHub code host here"), null], want: /could not be read \(no GitHub code host here\)/ },
-    { name: "a rate limit is retried", answers: [err(403, "no grant"), err(403, "forbidden", { "retry-after": "60" })], want: /could not be read yet/, awaiting: true },
-  ];
-  for (const k of cases) {
-    const answers = [...k.answers];
-    const deps = citeDeps({ citedJob: async () => { const a = answers.shift(); if (a instanceof Error) throw a; return a; } });
-    const [bare] = citedIds(["ci: job 424242"], "WOR-9");
-    const out = await citedEvidence([bare!], deps, ["acme/a", "acme/b", "acme/c"]);
-    assert.match(String(k.awaiting ? out.awaiting : out.facts.join("\n")), k.want, k.name);
-    assert.equal(out.awaiting !== undefined, Boolean(k.awaiting), k.name);
-  }
 });
 

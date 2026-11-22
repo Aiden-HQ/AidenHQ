@@ -1,6 +1,6 @@
 // Pairing the owner chat: a board-minted code, used once, within 15 minutes, 5 wrong tries a minute per chat.
 import { describe, expect, it } from "vitest";
-import { CODE_TTL_MS, createPairing, handleStart, seedOwnerChat } from "../src/pair.js";
+import { createPairing, handleStart } from "../src/pair.js";
 import { openStore } from "../src/store.js";
 
 const setup = () => {

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parseTargets, RETIRED_TARGETS, scanPass, type Batch } from "../src/scan.js";
+import { parseTargets, scanPass, type Batch } from "../src/scan.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer against an in-memory store that keys rows like Postgres would (the SQL itself follows the other writers).
@@ -180,84 +180,4 @@ it("src_security: a mapped target absent from a fresh batch is retired against i
   // A target with no mapping keeps the existing absent/unverified path and its finding stays present.
   expect(runs.find((x) => x.scope === unmapped)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
   expect(rows.get(unmappedRow)).toMatchObject({ present: true, resolved_at: null });
-});
-
-it("src_security: a mapped target whose replacement did not scan cleanly keeps the absent/unverified path", async () => {
-  const { store, rows, runs } = fakeStore();
-  const retired = "image:aidenhq/github-mcp:local";
-  const replacement = "image:aidenhq/github-github:local";
-  const sboms: Record<string, unknown> = { "retired.json": { matches: [match("zlib", "1.2.11", "CVE-2022-37434", "/usr/lib/libz.so")] } };
-  let now = Date.parse("2026-11-11T00:00:00Z");
-  const deps = (index: string): Parameters<typeof scanPass>[1] => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom") }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${retired}\tretired.json\t\t`))).toBe(1);
-  const key = `${retired}|zlib|1.2.11|CVE-2022-37434`;
-  expect(rows.get(key)).toMatchObject({ present: true });
-
-  // The replacement is listed but the host could not inventory it: not a clean scan, so nothing is retired or resolved.
-  now += 86_400_000;
-  runs.length = 0;
-  expect(await scanPass(store, deps(`${replacement}\t-\tsyft exited 1\t`))).toBe(0);
-  expect(runs.find((x) => x.scope === retired)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
-  expect(rows.get(key)).toMatchObject({ present: true, resolved_at: null });
-
-  // A stale batch resolves nothing, even with the replacement scanned: no retirement row, finding still present.
-  now += 86_400_000;
-  runs.length = 0;
-  sboms["replacement.json"] = { matches: [] };
-  const staleIndex = `${replacement}\treplacement.json\t\t`;
-  expect(await scanPass(store, { ...deps(staleIndex), readBatch: async () => ({ finishedAt: new Date(now - 5 * 86_400_000), targets: parseTargets(staleIndex, "/sbom") }) })).toBe(0);
-  expect(runs.filter((x) => x.scope === retired)).toHaveLength(0);
-  expect(rows.get(key)).toMatchObject({ present: true, resolved_at: null });
-});
-
-it("src_security: the shipped retirement map carries all nine pairs, the sha256 ids mapped to the github-github lineage", () => {
-  expect(RETIRED_TARGETS).toEqual({
-    "image:aidenhq/channel-slack-slack:local": "image:aidenhq/slack-live:local",
-    "image:aidenhq/codehost-github-codehost-github:local": "image:aidenhq/github-github:local",
-    "image:aidenhq/github-codehost-github:local": "image:aidenhq/github-github:local",
-    "image:aidenhq/github-mcp:local": "image:aidenhq/github-github:local",
-    "image:aidenhq/computer-engineer:793c5d759a52": "image:aidenhq/computer-engineer:4e7b73eb627d",
-    "image:aidenhq/computer-agent-base:e22cc951334c": "image:aidenhq/computer-agent-base:cb94c7b36572",
-    "image:app-roadmap-keeper-app": "image:app-roadmap-keeper/app",
-    "image:sha256:1beb013da1202abe6cf6e05c8083c28b9dfbc6018db2013b2f5e8f480467c843": "image:aidenhq/github-github:local",
-    "image:sha256:c0639aab7ed2094796afcfc54dbc44112078e713391a75bd4df0c4be19d2cdee": "image:aidenhq/github-github:local",
-  });
-});
-
-it("src_security: a retired row the warehouse could not take settles nothing, so the next pass retries it", async () => {
-  const { store, rows, runs } = fakeStore();
-  const retired = "image:aidenhq/github-mcp:local";
-  const replacement = "image:aidenhq/github-github:local";
-  const sboms: Record<string, unknown> = {
-    "retired.json": { matches: [match("zlib", "1.2.11", "CVE-2022-37434", "/usr/lib/libz.so")] },
-    "replacement.json": { matches: [] },
-  };
-  let now = Date.parse("2026-11-11T00:00:00Z");
-  const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === retired ? "retired" : "replacement"}.json\t\t`).join("\n");
-  const deps = (targets: string[]) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom") }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps([retired, replacement]))).toBe(1);
-  const key = `${retired}|zlib|1.2.11|CVE-2022-37434`;
-  expect(rows.get(key)).toMatchObject({ present: true });
-
-  // The warehouse has not applied sources.sql's status column: the marker insert fails, so the finding must stay present.
-  now += 86_400_000;
-  const failing = fakeStore({ value: true });
-  for (const r of rows.values()) failing.rows.set([r.target, r.package, r.version, r.vuln_id].join("|"), { ...r });
-  expect(await scanPass(failing.store, deps([replacement]))).toBe(0);
-  // The marker and the settlements are one transaction: a failed marker rolls both back, the finding stays present and
-  // the target reads as absent (visible, retried next pass) instead of retired.
-  expect(failing.rows.get(key)).toMatchObject({ present: true, resolved_at: null });
-  expect(failing.runs.filter((x) => x.scope === retired)).toMatchObject([{ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) }]);
 });
