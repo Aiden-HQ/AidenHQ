@@ -644,6 +644,8 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
   // A racing write whose output we can't read may have left the earlier repository in place, so its URL is kept: the
   // pin is still dated against the vendor repository the first stage wrote.
   assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${D} > ${src} | true > ${src}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // A later write the scanner can't read but which certainly replaces the file (not a race) clears the earlier URL.
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${D} > ${src}\nRUN cat /tmp/vendor.list > ${src}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, []);
 });
 
 test("pins: a removal's reach ends at each install, not at any later ||", () => {
