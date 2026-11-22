@@ -209,9 +209,28 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         }
         else if (s.do === "block") await pc.block(task, s.note);
         else if (s.do === "tell") {
-          // The parent hears "done" only when the task is: another check can still hold it after the grading hold was
-          // resolved. The notice waits, queued, and never replays the close. A task the owner stopped after the close is
-          // resolved is not told as done at all.
+          // A notice that waited this long may describe a grade the row no longer holds: an amendment or a re-submission can
+          // land between the close and the deferred notice. It names the filing and round it was queued for, and is dropped
+          // when the row has moved past them — the pass that grades the new filing queues its own notice. A notice naming
+          // neither cannot be verified against anything, so it is not sent: telling a parent "graded against its rubric" on
+          // a row that may have been restarted since is worse than the notice being lost (the task is done either way).
+          if (!s.filing && typeof s.round !== "number") {
+            log("a deferred notice names no filing or round: dropped", { issue: task });
+            steps.length = 0;
+            state.set(`owed:${task}`, "");
+            return;
+          }
+          const still = await stillFiled(task, s.filing, s);
+          if (still.verdict === "unknown") return;
+          if (still.verdict === "stale") {
+            log("a deferred notice is stale: the filing or round moved on", { issue: task });
+            steps.length = 0;
+            state.set(`owed:${task}`, "");
+            return;
+          }
+          // The status is read after the round, not before it: the round read is an await of its own, and the owner can cancel
+          // or hand the task back in that window. The parent hears "done" only when the task is done now, and a task the owner
+          // stopped after the close is resolved is not told as done at all.
           const now = await pc.issue(task).then((i: Json) => i.status, () => "");
           if (now === "cancelled") {
             steps.length = 0;
@@ -219,20 +238,6 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
             return;
           }
           if (now !== "done") return;
-          // A notice that waited this long may describe a grade the row no longer holds: an amendment or a re-submission can
-          // land between the close and the deferred notice. It names the filing and round it was queued for, and is dropped
-          // when the row has moved past them — the pass that grades the new filing queues its own notice. A notice queued
-          // before steps carried a filing keeps the status-only check it always had.
-          if (s.filing || typeof s.round === "number") {
-            const still = await stillFiled(task, s.filing, s);
-            if (still.verdict === "unknown") return;
-            if (still.verdict === "stale") {
-              log("a deferred notice is stale: the filing or round moved on", { issue: task });
-              steps.length = 0;
-              state.set(`owed:${task}`, "");
-              return;
-            }
-          }
           if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
         }
       } catch (err: Json) {

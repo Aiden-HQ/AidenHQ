@@ -577,6 +577,53 @@ test("a graded close refused because the owner handed the task back is requeued,
   assert.deepEqual(grades.due().map((x) => x.issueId), ["t18"], "the next pass grades the handed-back work again");
 });
 
+test("a deferred notice naming no filing or round is not sent", async () => {
+  // A notice that names neither cannot be checked against the row, so it could describe a grade that was restarted since.
+  // Telling the parent "graded against its rubric" then is worse than the notice being lost: the task is done either way.
+  const issue = { id: "t22", identifier: "WOR-22", title: "report", description: "Report.", status: "done", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t22", filed, deliverable);
+  // The row is satisfied at revision 0, so a legacy-shaped step naming its rubric and deliverable would pass the old
+  // status-only check and be sent — even though it cannot name the round it reports.
+  grades.record("t22", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t22', ?)").run(JSON.stringify([{ do: "tell", issue: { id: "t22", parentId: "p1" }, kind: "done", who: "WOR-22 (Dana)", title: "report", identifier: "WOR-22", deliverable, rubric: filed }]));
+  await loop.runGrades();
+  assert.deepEqual(calls.wake, [], "an unverifiable notice is never sent");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t22'").get()?.v ?? "", "", "and it is not left owed");
+});
+
+test("a cancel landing after the round check stops the deferred notice", async () => {
+  // The round is read first, then the task: the owner can cancel in that window. The status read is what decides, and it comes
+  // after the round read, so a cancel there is not overwritten by a notice the close queued before it.
+  const issue = { id: "t23", identifier: "WOR-23", title: "report", description: "Report.", status: "done", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  const deliverable = { kind: "report", ref: "" };
+  grades.file("t23", filed, deliverable);
+  const g = grades.record("t23", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
+  let reads = 0;
+  const read = async (m, p, b) => {
+    const r = await runner(m, p, b);
+    // The round read is the first grade-state read; the owner cancels right after it.
+    if (m === "GET" && p === "/internal/grades/t23" && ++reads === 1) issue.status = "cancelled";
+    return r;
+  };
+  const loop = createKernelGradeLoop({ db, runner: read, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t23', ?)").run(JSON.stringify([{ do: "tell", issue: { id: "t23", parentId: "p1" }, kind: "done", who: "WOR-23 (Dana)", title: "report", identifier: "WOR-23", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
+  await loop.runGrades();
+  assert.deepEqual(calls.wake, [], "a task cancelled after the round check is not told as done");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t23'").get()?.v ?? "", "", "the notice is dropped");
+});
+
 test("a deferred notice is dropped when the row moved past the round it reports", async () => {
   // The close resolved, and the notice waited for the task to be done. While it waited, the assignee submitted again: the row
   // is `pending` on a new round. Telling the parent "done, graded against its rubric" would describe a grade the row no longer
@@ -649,7 +696,8 @@ test("the parent is told the task is done only once it actually is, and the clos
   const g = grades.record("t19", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, deliverable, 0) });
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel: held, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
   const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
-  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t19', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }, { do: "tell", issue: { id: "t19", parentId: "p1" }, kind: "done", who: "WOR-19 (Dana)", title: "report", identifier: "WOR-19" }]));
+  // The notice carries the same filing and round as the close, as the loop queues it: a notice naming neither is dropped.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t19', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }, { do: "tell", issue: { id: "t19", parentId: "p1" }, kind: "done", who: "WOR-19 (Dana)", title: "report", identifier: "WOR-19", round: g.round, deliverable, rubric: filed, filing: rubricHash(filed, deliverable, 0) }]));
   await loop.runGrades();
   assert.deepEqual(calls.resolve, ["ok"], "the close was accepted once");
   assert.deepEqual(calls.wake, [], "the parent is not told while another check still holds the task");
