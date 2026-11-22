@@ -39,6 +39,18 @@ rm -rf "$next" "$work" "$archives"
 mkdir -p "$next" "$work" "$archives"
 : > "$next/targets.tsv"
 user="$(id -u):$(id -g)"
+# The apply lock comes before any Docker probe: while an apply holds it, Docker may be mid-recreate and a probe that
+# fails must not abort the pass instead of reporting the normal mid-apply skip.
+# fd 9 is this pass's own .lock above, so the apply lock is taken on fd 8.
+# shellcheck source=ops/lib/apply-lock.sh
+. ops/lib/apply-lock.sh
+mkdir -p "$(dirname "$APPLY_LOCK")"
+exec 8>>"$APPLY_LOCK"
+if ! flock -n 8; then
+  echo "security-sbom: an apply holds the apply lock; skipping this pass" >&2
+  rm -rf "$next" "$work" "$archives"
+  exit 0
+fi
 sock_gid="$(stat -c %g /var/run/docker.sock)"
 platform="$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')"
 # The smallest free space a target may start with, in GB: syft writes a `docker save` archive and unpacks every layer under
@@ -160,7 +172,7 @@ platform_refs() { # <platform manifest id> <container .Image>
 plan_target=(); plan_source=(); plan_pin=()
 plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); }
 snapshot() {
-  local listing rows cid row image config label want raw size size_gb avail ref err saved candidate archive
+  local listing rows cid row image config label want key raw size size_gb avail ref err saved candidate archive
   local -A running=() tags=() manifests=()
   SNAPSHOT_DEADLINE=$((SECONDS + 1800))
   if ! listing="$(docker_call 10 ps -q 2>&1)"; then
@@ -216,33 +228,36 @@ snapshot() {
   avail=$(( $(free_gb) - min_free_gb ))
   for image in $(printf '%s\n' "${!running[@]}" | sort); do
     # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
-    # recorded, else the container's own top-level id.
+    # recorded (the export reference), else the container's own top-level id. The target stays `image:<container id>`
+    # when the tag has moved: the store reconciles findings by target name, so keying the same image by its manifest id
+    # would leave the findings already held under its id unverified beside the new ones.
     want="${tags[$image]:-${manifests[$image]:-$image}}"
+    key="${tags[$image]:-$image}"
     raw=""; saved=""
     if raw="$(docker_call 5 image inspect -f '{{.Size}}' "$want" 2>&1)"; then saved=1
     elif [ "$want" != "$image" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$image" 2>&1)"; then want="$image"; saved=1
     fi
     if [ -z "$saved" ]; then
-      plan_add "image:$want" "fail:docker image inspect: ${raw:-failed}" ""; continue
+      plan_add "image:$key" "fail:docker image inspect: ${raw:-failed}" ""; continue
     fi
     # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged. A size
     # nothing answers is unknown, not zero: an unknown demand can't be judged to fit, so the target is recorded.
     size="$(printf '%s\n' "$raw" | tail -1)"
     if [[ ! "$size" =~ ^[0-9]+$ ]]; then
-      plan_add "image:$want" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" ""; continue
+      plan_add "image:$key" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" ""; continue
     fi
     size_gb="$(ceil_gb "$size")"
     if [ "$want" = "${tags[$image]:-}" ]; then
       # A tag that still names the running image is scanned through the daemon socket. Its platform manifest is pinned
       # here, under the lock, and rechecked before the scan: a tag that moved since is a line, never another image's
       # packages published under this target.
-      plan_add "image:$want" tag "$(pin_of "$want")"
+      plan_add "image:$key" tag "$(pin_of "$want")"
       continue
     fi
     # An image read from an archive needs its save to fit above the floor alongside every archive already planned; a
     # save that would not fit is a line and writes no bytes.
     if [ "$avail" -lt $(( size_gb * 2 )) ]; then
-      plan_add "image:$want" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" ""; continue
+      plan_add "image:$key" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" ""; continue
     fi
     # Save the platform the container runs, from a reference that exports it, so the scan is bound to this image: a tag
     # that moves after the lock is released can't change what is measured.
@@ -257,23 +272,13 @@ snapshot() {
       rm -f "$work/image.tar"
     done < <(platform_refs "$want" "$image")
     if [ -n "$ref" ]; then
-      plan_add "image:$want" "archive:$ref" ""
+      plan_add "image:$key" "archive:$ref" ""
       avail=$(( avail - size_gb * 2 ))
     else
-      plan_add "image:$want" "fail:docker save: ${err:-no local image exports $want}" ""
+      plan_add "image:$key" "fail:docker save: ${err:-no local image exports $want}" ""
     fi
   done
 }
-# fd 9 is this pass's own .lock above, so the apply lock is taken on fd 8.
-# shellcheck source=ops/lib/apply-lock.sh
-. ops/lib/apply-lock.sh
-mkdir -p "$(dirname "$APPLY_LOCK")"
-exec 8>>"$APPLY_LOCK"
-if ! flock -n 8; then
-  echo "security-sbom: an apply holds the apply lock; skipping this pass" >&2
-  rm -rf "$next" "$work" "$archives"
-  exit 0
-fi
 if ! snapshot; then
   exec 8>&-
   rm -rf "$next" "$work" "$archives"

@@ -291,7 +291,8 @@ test("security-sbom: a running container whose image is gone is a line naming th
 
 test("security-sbom: a moved tag with the compose platform manifest is scanned from that manifest's archive", { skip: NOT_LINUX }, async () => {
   // The tag now names sha256:9999, the container runs sha256:1111 whose top-level id the store collected, and compose
-  // recorded sha256:2222 as the platform manifest the container actually runs.
+  // recorded sha256:2222 as the platform manifest the container actually runs. The target stays the container's id
+  // (findings reconcile by target name); the manifest only selects the archive.
   const { status, out, targets, calls } = await run({}, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
     tags: { "aidenhq/board:local": "sha256:9999" },
@@ -299,11 +300,12 @@ test("security-sbom: a moved tag with the compose platform manifest is scanned f
     held: ["sha256:2222"],
   });
   assert.equal(status, 0, out);
-  const scanned = targets.find((t) => t[0] === "image:sha256:2222");
-  assert.ok(scanned, `the manifest was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.notEqual(scanned[1], "-", "the manifest target reached syft");
+  const scanned = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", "the target reached syft");
+  assert.ok(!targets.some((t) => t[0] === "image:sha256:2222"), "the manifest id is not a second key for the same image");
   assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:2222")), `no save of the manifest id:\n${calls.join("\n")}`);
-  const call = syft(calls, "image:sha256:2222");
+  const call = syft(calls, "image:sha256:1111");
   assert.match(call.line, /docker-archive:\/image\.tar/, "scanned from the saved tar");
   assert.ok(!calls.some((c) => c.startsWith("run ") && / docker:sha256:/.test(c)), `never the daemon source for a bare id:\n${calls.join("\n")}`);
 });
@@ -320,11 +322,12 @@ test("security-sbom: a manifest with no image record of its own is exported from
     sizes: { "sha256:2222": 1024 },
   });
   assert.equal(status, 0, out);
-  const scanned = targets.find((t) => t[0] === "image:sha256:2222");
-  assert.ok(scanned, `the manifest was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.notEqual(scanned[1], "-", "the manifest target reached syft");
+  const scanned = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", "the target reached syft");
   assert.ok(calls.some((c) => c.startsWith("save ") && c.includes("sha256:index")), `nothing exported the holding index:\n${calls.join("\n")}`);
-  assert.match(syft(calls, "image:sha256:2222").line, /docker-archive:\/image\.tar/);
+  assert.match(syft(calls, "image:sha256:index").line, /docker-archive:\/image\.tar/);
+  assert.ok(!targets.some((t) => t[0] === "image:sha256:2222"), "the manifest id is not a second key for the same image");
 });
 
 test("security-sbom: an apply holding the lock skips the pass and leaves current/ untouched", { skip: NOT_LINUX }, async () => {
@@ -384,7 +387,7 @@ test("security-sbom: an image that cannot fit is a line, and no save is written 
     sizes: { "sha256:2222": 30 * 1024 ** 3 },
   });
   assert.equal(status, 0, out);
-  const line = targets.find((t) => t[0] === "image:sha256:2222");
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
   assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
   assert.equal(line[1], "-");
   assert.match(line[2], /does not fit/);

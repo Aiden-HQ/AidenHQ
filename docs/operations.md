@@ -400,9 +400,10 @@ exact email match only).
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
 runs pinned syft over the host packages, every running image (the image each container runs: by its configured tag
-while the tag's platform manifest is still the one the container records, else by its platform manifest when compose
-recorded one, else by its own id from a saved archive; an image the daemon no longer holds is a `targets.tsv` line naming
-the id and the error, never a silent gap), the product and instance checkouts and each app's deployed source, into
+while the tag's platform manifest is still the one the container records; otherwise by that compose-recorded platform
+manifest, exported with `docker save --platform` from a local image that contains it and keyed by the container's own id,
+so findings already held under that id reconcile; an image nothing can read or fit is a `targets.tsv` line naming the id
+and the error, never a silent gap), the product and instance checkouts and each app's deployed source, into
 `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
