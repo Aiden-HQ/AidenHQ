@@ -12,12 +12,16 @@ export function reviewAs({ file, app }: { file: string; app: Pick<GitHubApp, "sl
   let byRepo: Record<string, "owner" | "app"> = {};
   try { if (existsSync(file)) byRepo = JSON.parse(readFileSync(file, "utf8")) as typeof byRepo; } catch { byRepo = {}; }
   return {
+    /** Best effort: the card's record never fails a review, and a write that failed is tried again on the next one. */
     record(repo: string, identity: "owner" | "app"): void {
       const k = repo.toLowerCase();
       if (byRepo[k] === identity) return;
-      byRepo[k] = identity;
-      writeFileSync(`${file}.tmp`, JSON.stringify(byRepo));
-      renameSync(`${file}.tmp`, file);
+      const next = { ...byRepo, [k]: identity };
+      try {
+        writeFileSync(`${file}.tmp`, JSON.stringify(next));
+        renameSync(`${file}.tmp`, file);
+        byRepo = next;
+      } catch { /* the card shows the last saved record until a later write lands */ }
     },
     lines(): StatusLine[] {
       const slug = app.slug(), failure = app.failure();

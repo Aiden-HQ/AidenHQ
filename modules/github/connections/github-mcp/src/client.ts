@@ -253,7 +253,9 @@ export function createAccess(o: {
     if (res.status !== 403 && res.status !== 404 && res.status !== 429) return undefined;
     const message = String(body?.message ?? "");
     const retry = Number(res.headers.get("retry-after"));
-    if (res.status === 403 && SECONDARY.test(message)) {
+    // A secondary limit: its words, or a 429 that neither says when (Retry-After) nor has the primary quota used up.
+    const primaryOut = res.headers.get("x-ratelimit-remaining") === "0";
+    if ((res.status === 403 || res.status === 429) && (SECONDARY.test(message) || (res.status === 429 && !(Number.isFinite(retry) && retry > 0) && !primaryOut))) {
       const until = now() + (Number.isFinite(retry) && retry > 0 ? retry * 1000 : SECONDARY_BASE_MS * 2 ** Math.min(p.secondaryStreak, 6));
       p.secondaryStreak++;
       p.writeBlockedUntil = Math.max(p.writeBlockedUntil, until);
