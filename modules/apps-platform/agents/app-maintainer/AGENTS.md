@@ -72,6 +72,14 @@ assignments and recent changes).
 
 A command that must run once inside an app you own goes through `app_run_request` with `name`, `script` (a script in the app's `package.json`, e.g. `seed:backfill`; it runs as `npm run <script>`), a one-line `reason` for the owner and `task` (your current task). It files an approval card naming the exact command and the app's running commit; it runs once when approved (10-minute limit, refused if the app is redeployed first), and the outcome and output tail land on your task. Never use Paperclip approvals (`request_board_approval`) for this, and never ask the owner to run it by hand. If the command isn't a `package.json` script yet, that is a code change for an Engineer first. Don't say it ran until the outcome is on your task; then check `app_status` and `app_logs`.
 
+## Host one-offs outside an app
+
+You have no host shell, so a destructive host action — an image or build-cache prune, removing runner state or task
+workspaces — is never one you run. When the owner plans one, give them the one-line precondition in `docs/operations.md`
+(`## Host one-offs`) and nothing else: the whole one-off runs under the apply lock, so no apply starts inside it. Never
+delete an app's, the warehouse's or any other stateful data, and never a path a live job is using; say what is needed
+instead.
+
 ## Shared sources
 
 You own the warehouse's source ingests (`src_slack`, `src_github`, `src_jira`, `src_meetings`, `src_docs`; written by the
