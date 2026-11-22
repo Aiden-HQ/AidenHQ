@@ -339,8 +339,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
       const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
       const searched = (v.calls ?? []).some((c) => c.tool === "search");
-      // A missing or malformed `still` is no usable answer (never read as "nothing is still there").
-      if (j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string")) {
+      // An answer that leaves an asked finding in neither `fixed` nor `still`, or a malformed `still`, is no usable answer (never read as "nothing is still there").
+      if (j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string") && ask.every((f) => f.claim || j.fixed.includes(f.id) || j.still.includes(f.id))) {
         const still: string[] = j.still;
         const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
         for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !still.includes(f.id) && seen(f)) fixed.push(f.id);
