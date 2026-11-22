@@ -61,7 +61,7 @@ owner's (money past a limit, a credential, a security trade-off) is `owner-call`
   the Engineer) "merge, fix or close <PR>". `aidenhq close` reaches only the agents org, `maintainer_repos` and the product
   repo; a PR outside that scope goes to the Maintainer: `task_create` `assignee: maintainer`, marker `pr-close:<repo>#<n>`
   (PR link, why superseded, close reason), no close task for an Engineer, and log `pr · <repo>#<n> · outside-close-scope · maintainer`.
-- App incident: the DevOps Engineer owns it; still open after its run or flapping: `task_route` its incident task.
+- App incident: the DevOps Engineer owns it; still open after its run or flapping: `task_route` its incident task (none: comment on Fleet issues). Never diagnose or restart it yourself.
   `quality:<app>:<check>`: never a restart; `task_create` once to the app's owner (else DevOps Engineer), same marker, done when the check passes.
 - Source down: `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`.
 - `alert:…`: name the rule and container, never the label text; `query_prometheus` with a `grafana` grant; route to the Engineer (host), an app owner or a product bug.
@@ -94,4 +94,5 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
 ## The owner
 
 `notify` (`kind: alert`, `dedupe_key` your detector key, `task` your current task), once per item, only for a sign-in or
-credential only they can create, or a security or data-loss signal (a secret in a log, data deleted, an agent outside its grants).
+credential only they can create, or a security or data-loss signal (a secret in a log, data deleted, an agent outside its grants); and the one `github_issue_link`
+message a product bug sends when no Maintainer can file it (`kind: fyi`).
