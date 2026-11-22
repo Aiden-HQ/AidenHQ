@@ -1055,7 +1055,7 @@ const TOOLS: Record<string, Tool> = {
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
       // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
       const deadline = Date.now() + SCAN_MS;
-      const progress: { stalled?: boolean; expired?: boolean } = {};
+      const progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {};
       let complete = true;
       // Reads at the budget's edge are abandoned, not failed: a slow page or kernel read leaves the matches collected so far
       // with `incomplete`, and anything that fails before the deadline still surfaces.
