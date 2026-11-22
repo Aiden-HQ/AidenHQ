@@ -519,7 +519,7 @@ export function createEngine(d: EngineDeps) {
   }
   /** No carry while the baseline still owes something: a finding answered after its rechecking run started (what that run
    * rechecked was read as it started, so the claim waits for a mandatory recheck), or its review's first post still being decided (the verdict waits on that post at its own head only). */
-  const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > COALESCE((SELECT MAX(started) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done' AND recheck = 1), '')", r.repo, r.number, r.repo, r.number, from)
+  const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND (outcome IS NULL OR outcome_at > COALESCE((SELECT MAX(started) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done' AND recheck = 1), ''))", r.repo, r.number, r.repo, r.number, from)
     || reviewers(r.repo, r.number, from).some((x) => x.posted === "pending" && !x.post_tries);
   /** A bare rebase's run: done at no cost and nothing posted, its range from the baseline it carries (covered, and the PR's
    * baseline next). The PR's findings are the PR's, so they stay as they are. */
@@ -1662,7 +1662,7 @@ export function createEngine(d: EngineDeps) {
     const p = prRow(repo, n);
     if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
     const changed = tx(() => {
-      const c = run("UPDATE findings SET outcome = 'dismissed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), repo, n, id).changes;
+      const c = run("UPDATE findings SET outcome = 'dismissed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), repo, n, id).changes;
       if (c) dispose([id], p, "dismissed", b.reason as string, String(b.by ?? "owner").slice(0, 100));
       return c;
     });
