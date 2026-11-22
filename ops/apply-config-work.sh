@@ -805,8 +805,9 @@ switchOver() {
     echo "slack-live: $(node ops/slack-live-move.ts "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
   fi
   # Each agent's legacy memory file in the instance repo moves into the kernel's memory store once, before the kernel restarts and runtime
-  # memory writes start (resumable: an agent already imported is skipped). A failure stops the apply.
-  node ops/memory-move.ts "$data" "$inst"
+  # memory writes start (resumable: an agent already imported is skipped). A failure stops the apply. Only a product that ships
+  # it runs it: a rollback to an older product has no kernel memory store to move into.
+  if [ -f ops/memory-move.ts ]; then node ops/memory-move.ts "$data" "$inst"; fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn"
     systemctl --user daemon-reload
