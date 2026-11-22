@@ -195,3 +195,14 @@ test("a dangling runner enablement link is not declared", async () => {
   assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@/, "a link with no template behind it declares no runner");
   assert.doesNotMatch(text, /^aidenhq_unit_backoff\{/m);
 });
+
+// Only a symlink under a target's .wants dir enables an instance: systemd ignores a plain file with a unit name there (a
+// backup restored over the link, say) and reads that instance as disabled, so it must not be declared.
+test("a plain file in the wants dir is not a runner enablement link", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1"]);
+  writeFileSync(join(h.wants, "aidenhq-ci-runner@2.service"), "");
+  const text = await run(h);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a plain file does not enable an instance");
+});

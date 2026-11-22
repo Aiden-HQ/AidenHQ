@@ -69,14 +69,15 @@ write() { # name: atomic, so node-exporter never reads half a file
   # Enabling an instance of the runner template does not create a unit file: systemd records it as an install link
   # (`aidenhq-ci-runner@3.service` under `<target>.wants/` in a user unit dir), and `list-unit-files` lists only the
   # template (`aidenhq-ci-runner@.service`, indirectly enabled), never the instance. `systemd-analyze --user unit-paths`
-  # names the same dirs systemd loads, and a stopped instance keeps its link, so it still counts as enabled. A link whose
-  # template is gone is dangling (`systemctl is-enabled` reads that instance as not-found): it declares nothing, so it is
-  # skipped rather than alerting about a runner systemd can no longer load.
+  # names the same dirs systemd loads, and a stopped instance keeps its link, so it still counts as enabled. systemd reads
+  # only a symlink there whose target exists: a link whose template is gone is dangling (`is-enabled` reads the instance as
+  # not-found) and a plain file is not a link (`is-enabled` reads it as disabled). Neither declares a runner, so both are
+  # skipped rather than alerting about a unit systemd will not load.
   enabled_runner_units() { # one enabled runner instance per line
     local unit_dir link
     while read -r unit_dir; do
       for link in "$unit_dir"/*.wants/aidenhq-ci-runner@*.service; do
-        [ -e "$link" ] || continue
+        [ -L "$link" ] && [ -e "$link" ] || continue
         link="${link##*/}"
         [ "$link" = aidenhq-ci-runner@.service ] || printf '%s\n' "$link"
       done
