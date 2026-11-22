@@ -567,6 +567,23 @@ export function createService(o: Options) {
       const ident = String((r as { identifier?: unknown })?.identifier ?? "");
       return ident || undefined;
     },
+    // An already-merged PR's other link to its task: with no pr-tasks.json row (the push refused before the PR write noted it),
+    // the task's own planned write naming this repo and this exact commit is the attribution. Any state counts (`failed` is the
+    // #1281 push). A failed read throws, so the queue retries it rather than treating it as "no binding".
+    prBound: async (task, pr) => {
+      // A 4xx is the kernel's answer (a task it no longer holds): no binding, so the queue settles rather than retrying a
+      // permanent refusal forever. Any other failure is transient (the kernel restarting) and is retried by the next poll.
+      const r = await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`).catch((e: Error & { status?: number }) => {
+        if (e.status && e.status >= 400 && e.status < 500) return null;
+        throw e;
+      });
+      if (!r) return false;
+      const records = (r as { records?: unknown }).records;
+      // HTTP 200 with no whole body (a restart mid-response) is not "no records": the queue must ask again, not settle without it.
+      if (!Array.isArray(records)) throw new Error("the kernel's work read answered without its records");
+      return (records as { kind?: string; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
+        && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && b.sha === pr.head));
+    },
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => o.holdMerges?.() === true, holdReason: () => o.mergeHoldReason?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
