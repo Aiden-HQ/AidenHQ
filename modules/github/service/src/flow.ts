@@ -254,7 +254,8 @@ export function createFlow(d: FlowDeps) {
   }
   /**
    * One repo's new events, oldest first, to the kernel. Page one is a conditional read (its ETag); later pages run back to the
-   * cursor (the newest event sent). Without a cursor, or with one the feed no longer reaches, only page one is read: a logged gap.
+   * cursor (the newest event sent). A repo's first read (no cursor) sets the cursor at its newest event and sends nothing: a
+   * subscription starts from now. A cursor the feed no longer reaches reads page one only: a logged gap.
    * The cursor moves with each event the kernel answered 2xx (it does for skipped and dropped ones too); a 429, a 5xx or no answer
    * stops here and the next pass goes on. The ETag is kept only once every event of the read was sent.
    */
@@ -272,6 +273,10 @@ export function createFlow(d: FlowDeps) {
       const items: Json[] = Array.isArray(r.body) ? r.body : [];
       for (const e of items) { if (saved.cursor && BigInt(e.id) <= BigInt(saved.cursor)) { reached = true; break; } fresh.push(e); }
       if (!saved.cursor || items.length < 100) break;
+    }
+    if (!saved.cursor) {
+      writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { ...(fresh[0] ? { cursor: String(fresh[0].id) } : {}), ...(etag ? { etag } : {}) } });
+      return;
     }
     const batch = reached ? fresh : fresh.slice(0, 100);
     if (!reached) d.log("events: a gap in the feed; read its newest page only", { repo, cursor: saved.cursor ?? null });

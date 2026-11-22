@@ -67,7 +67,7 @@ import type { Executor } from "../sdk/src/executor.ts";
 import { createApply, hostApply } from "./apply.ts";
 import { checkoutMain, createSettingsChanges } from "./settings-change.ts";
 import { createMemory, fillMemory } from "./memory.ts";
-import { createEvents } from "./events.ts";
+import { createEvents, routineRun } from "./events.ts";
 import { createRouting } from "./routing-tune.ts";
 import { createBoardApi } from "./board-api.ts";
 import { hostPlanner } from "./apply-tier.ts";
@@ -125,15 +125,10 @@ const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // Agents' memory (memory.ts): one document per agent, filled into a job's handbook when it starts.
 const memory = createMemory({ dir: path.join(dataDir, "kernel", "memory") });
-// The event router (events.ts): source events become routine runs through Paperclip's own /run as the owner. The batch id is the
-// body's idempotencyKey (the header is ignored there) and its payload; a run counts only once it created its task.
+// The event router (events.ts): source events become routine runs through Paperclip's own /run as the owner (routineRun).
 const events = createEvents({
   db: records.db, grants: grantsTable as never, connections: connections as never, log,
-  run: async (id, key, payload) => {
-    const r = await cpApi(`/api/routines/${encodeURIComponent(id)}/run`, { method: "POST", body: JSON.stringify({ idempotencyKey: key, payload }) });
-    const run = (await r.json().catch(() => ({}))) as { status?: string; linkedIssueId?: string };
-    return { status: r.status, ...(run.status === "issue_created" && run.linkedIssueId ? { issue: run.linkedIssueId } : {}) };
-  },
+  run: routineRun(async (p, body) => { const r = await cpApi(p, { method: "POST", body: JSON.stringify(body) }); return { status: r.status, json: await r.json().catch(() => ({})) }; }),
   routine: async (id) => {
     const r = await cpApi(`/api/routines/${encodeURIComponent(id)}`);
     if (r.status === 404) return undefined;

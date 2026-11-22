@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createEvents, EventsError, PENDING_MAX } from "../src/events.ts";
+import { createEvents, EventsError, PENDING_MAX, routineRun } from "../src/events.ts";
 
 const R1 = "11111111-1111-4111-8111-111111111111", R2 = "22222222-2222-4222-8222-222222222222";
 const ev = (id: string, o: Record<string, unknown> = {}) => ({ connection: "slack", resource: "C1", id, kind: "message", author: "U1", text: `hello ${id}`, ...o });
@@ -149,4 +149,14 @@ test("the global cap and the pending cap: dropped and counted, still a 2xx answe
   for (let i = 0; i < PENDING_MAX; i++) p.events.ingest("slack", ev(`q${i}`));
   assert.deepEqual(p.events.ingest("slack", ev("over")), { dropped: 1, reason: "overflow" });
   assert.ok(p.logs.some(([m]) => m === "events: dropped on overflow"));
+});
+
+test("the /run call: the key and variables in the body; only issue_created with its linkedIssueId is a run", async () => {
+  const sent: [string, unknown][] = [];
+  let answer: { status: number; json: unknown } = { status: 202, json: { id: "run-1", status: "issue_created", linkedIssueId: "issue-1" } };
+  const run = routineRun(async (p, body) => { sent.push([p, body]); return answer; });
+  assert.deepEqual(await run(R1, "b-1", { batch: "b-1", count: "3" }), { status: 202, issue: "issue-1" });
+  assert.deepEqual(sent[0], [`/api/routines/${R1}/run`, { idempotencyKey: "b-1", variables: { batch: "b-1", count: "3" } }]);
+  answer = { status: 202, json: { id: "run-2", status: "failed", failureReason: "x" } };
+  assert.deepEqual(await run(R1, "b-2", { batch: "b-2", count: "1" }), { status: 202 });
 });

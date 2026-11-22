@@ -23,7 +23,7 @@ export type IngestResult = { queued: number } | { skipped: "invalid"; why: strin
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
 export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10;
-export const ROUTINE_HOURLY = 12, TOTAL_HOURLY = 120, PENDING_MAX = 2000, RETAINED_MAX = 5000, RETAINED_BYTES = 8 * 1024 * 1024;
+export const ROUTINE_HOURLY = 12, TOTAL_HOURLY = 120, PENDING_MAX = 2000;
 const FIRING_MS = 10 * 60_000, PENDING_RETRY_S = 10, BODY_MS = 24 * 3600_000, KEEP_MS = 7 * 24 * 3600_000, HOUR = 3600_000;
 
 export class EventsError extends Error {
@@ -58,6 +58,18 @@ function envelope(e: unknown): SourceEvent | string {
     ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}),
   };
 }
+
+/**
+ * Paperclip's `/run` of a routine as the owner (`post`: the control plane with the owner key). The batch id is the body's
+ * idempotencyKey (Paperclip ignores the header) and the run's `variables` (event routines declare `batch` and `count`). A run
+ * counts only once it created its task: status issue_created with its linkedIssueId; any other answer (a 202 that failed) is retried.
+ */
+export const routineRun = (post: (path: string, body: unknown) => Promise<{ status: number; json: unknown }>) =>
+  async (id: string, key: string, variables: { batch: string; count: string }): Promise<{ status: number; issue?: string }> => {
+    const r = await post(`/api/routines/${encodeURIComponent(id)}/run`, { idempotencyKey: key, variables });
+    const run = (r.json ?? {}) as { status?: string; linkedIssueId?: string };
+    return { status: r.status, ...(run.status === "issue_created" && run.linkedIssueId ? { issue: run.linkedIssueId } : {}) };
+  };
 
 export function createEvents(o: {
   db: DatabaseSync; grants: () => GrantsTable; connections: () => Record<string, EventsConnection>;
@@ -99,8 +111,8 @@ export function createEvents(o: {
       const targets = Object.entries(subs()).filter(([, s]) => s.connection === ev.connection && (s.resource === ev.resource || s.resource === "*") && reads(s.agent, s.connection) && matches(s.filter ?? {}, ev));
       if (!targets.length) return { queued: 0 };
       const pending = (db.prepare("SELECT count(*) AS n FROM event_queue q JOIN event_batches b ON b.id = q.batch WHERE b.state IN ('open', 'sealed', 'firing')").get() as { n: number }).n;
-      const kept = db.prepare("SELECT count(*) AS n, coalesce(sum(length(body)), 0) AS bytes FROM event_queue WHERE body IS NOT NULL").get() as { n: number; bytes: number };
-      if (pending >= PENDING_MAX || kept.n >= RETAINED_MAX || kept.bytes >= RETAINED_BYTES) { log("events: dropped on overflow", { module, pending, retained: kept.n, bytes: kept.bytes }); return { dropped: targets.length, reason: "overflow" }; }
+      // Only events not yet delivered count against intake; delivered bodies go with the 24 h retention.
+      if (pending >= PENDING_MAX) { log("events: dropped on overflow", { module, pending }); return { dropped: targets.length, reason: "overflow" }; }
       const { connection: _c, ...body } = ev;
       const t = now();
       let queued = 0;

@@ -1002,9 +1002,11 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
 ## Step-0 probe result (2026-11-23, pinned image 2026.1106.0) — binding for Tasks 8-10, 14
 
 - `POST /api/routines/:id/run` IGNORES the `Idempotency-Key` header. Send the key in the JSON body:
-  `{"idempotencyKey": "<sealed batch id>", "payload": {"batch": "<id>"}}` (body key, max 255 chars; a same-key retry
+  `{"idempotencyKey": "<sealed batch id>", "variables": {"batch": "<id>", "count": "<n>"}}` (body key, max 255 chars; a same-key retry
   returns the same run and issue). No bearer triggers.
-- Use `payload` (kept verbatim as `triggerPayload`), not `variables` (dropped unless the routine declares them).
+- Use `variables`, and declare `batch` and `count` as variables on every event routine (Task 14 compile): Paperclip drops
+  undeclared variables, and top-level `payload` keys become variables only for webhook runs, so `{{batch}}` in the
+  description interpolates only from declared variables (lead decision, 2026-11-23).
 - A 202 is not success: require `status === "issue_created"` and a `linkedIssueId` in the run; otherwise retry/fail.
 - `/run` runs paused routines (only archived gives 409): the kernel checks paused before calling (plan already drops).
 - Event routines compile with concurrency `always_enqueue` (default `coalesce_if_active` merges identical payloads).

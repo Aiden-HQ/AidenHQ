@@ -9,7 +9,7 @@ import { createFlow } from "../service/src/flow.ts";
 
 const issue = (id: number, title = `issue ${id}`) => ({ id: String(id), type: "IssuesEvent", actor: { login: "octo" }, payload: { action: "opened", issue: { title, body: "b", html_url: `https://github.com/acme/app/issues/${id}`, labels: [{ name: "bug" }] } } });
 
-test("a poll sends the ETag on page one, pages to the cursor, resets a lost cursor with a gap, and advances past a skipped event", async (t) => {
+test("a poll starts a new repo at its head, sends the ETag on page one, pages to the cursor, resets a lost cursor with a gap, and advances past a skipped event", async (t) => {
   const posted: { id: string; kind: string }[] = [];
   let refuse = "";
   const kernel = createServer(async (req, res) => {
@@ -34,15 +34,18 @@ test("a poll sends the ETag on page one, pages to the cursor, resets a lost curs
   const flow = createFlow({ kernelUrl: `http://127.0.0.1:${(kernel.address() as { port: number }).port}`, key: "k", cacheDir: mkdtempSync(join(tmpdir(), "ev-")), log: (m) => void logs.push(m), gh, repos: async () => [] });
   t.after(() => { flow.stop(); kernel.closeAllConnections(); kernel.close(); });
 
-  // No cursor: page one only, a logged gap, sent oldest first; a push and an opened issue go, a starred repo doesn't.
-  feed = [{ id: "3", type: "WatchEvent", payload: {} }, { id: "2", type: "PushEvent", actor: { login: "octo" }, payload: { head: "abc", commits: [{ message: "fix" }] } }, issue(1)];
+  // A new repo: the cursor starts at its newest event and nothing old is sent; nothing new then is a 304 to page one's ETag.
+  feed = [issue(1)];
   await flow.eventsPass();
-  assert.deepEqual(posted, [{ id: "1", kind: "issues.opened" }, { id: "2", kind: "push" }]);
-  assert.ok(logs.includes("events: a gap in the feed; read its newest page only"));
-  // Nothing new: page one answers 304 to its ETag.
+  assert.deepEqual(posted, []);
   calls.length = 0;
   await flow.eventsPass();
-  assert.deepEqual(calls, [{ path: "/repos/acme/app/events?per_page=100&page=1", etag: '"e3"' }]);
+  assert.deepEqual(calls, [{ path: "/repos/acme/app/events?per_page=100&page=1", etag: '"e1"' }]);
+  // New events go oldest first; a push and an opened issue go, a starred repo doesn't.
+  feed = [{ id: "3", type: "WatchEvent", payload: {} }, { id: "2", type: "PushEvent", actor: { login: "octo" }, payload: { head: "abc", commits: [{ message: "fix" }] } }, ...feed];
+  await flow.eventsPass();
+  assert.deepEqual(posted, [{ id: "2", kind: "push" }]);
+  assert.ok(!logs.includes("events: a gap in the feed; read its newest page only"));
 
   // 150 new events: page two is read back to the cursor; the kernel's skip of 7 still moves the cursor.
   posted.length = 0; logs.length = 0;
