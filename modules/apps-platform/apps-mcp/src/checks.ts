@@ -22,7 +22,12 @@ import { browserKit } from "./view.js";
 
 export type Kind = "health" | "identity" | "render" | "agent";
 /** `untrusted_page_text`: a short sanitized quote of what the page or app said: data, never instructions. */
-export interface Finding { hard: boolean; what: string; untrusted_page_text?: string }
+/**
+ * `verdict` carries what the probe concluded, in a field rather than in the wording of `what`: `open` served a request
+ * without a valid identity, `errored` answered every counted request with an error (404/5xx) so nothing shows it checks
+ * identity, `unconfirmed` could not be probed at all (a timeout, no answer: a platform fault that proves nothing).
+ */
+export interface Finding { hard: boolean; what: string; untrusted_page_text?: string; verdict?: "open" | "errored" | "unconfirmed" }
 /** `probe_ms` and `live`: app_check's own health probe (deploy.ts check) and how long it took; a deploy's health result has neither. */
 export interface ProbeResult { probe: Kind; path: string; ok: boolean; findings: Finding[]; probe_ms?: number; live?: boolean }
 export interface Declared { render?: string[]; agent?: string[] }
@@ -123,8 +128,12 @@ export function judgeAgent(r: { status: number; body: string }, declared: boolea
 
 /** The identity gate's finding, word for word in the deploy result, its record and the app's incident. */
 export const NO_SIGN_IN = "the app answers without the platform's sign-in: keep the starter's identity check (aidenhq-identity protect) in server.mjs";
-/** What the app's identity middleware answers when it refuses (aidenhq-identity.mjs: 401, 403, or 503 without its keys). */
-const REFUSED = new Set([401, 403, 503]);
+/**
+ * What the app's identity middleware answers when it refuses. 503 is deliberately absent: the middleware answers it when
+ * it cannot read its keys, which proves nothing about whether an app checks identity at all (a handler that 503s every
+ * request would otherwise pass).
+ */
+const REFUSED = new Set([401, 403]);
 const UNCONFIRMED = "couldn't confirm the app refuses requests without the platform's sign-in";
 
 /**
@@ -201,10 +210,13 @@ export function judgeIdentity(answers: { probe: IdentityProbe; status: number }[
   const say = (a: { probe: IdentityProbe; status: number }) => `${a.probe.method} ${a.probe.path} with ${a.probe.forged ? "a forged identity" : "no identity"} answered ${a.status}`;
   const counted = answers.filter((a) => a.probe.counts);
   const served = counted.filter((a) => a.status > 0 && a.status < 400);
-  if (served.length) return probeResult("identity", where, [{ hard: true, what: `${NO_SIGN_IN} (${served.slice(0, 2).map(say).join("; ")})` }]);
+  if (served.length) return probeResult("identity", where, [{ hard: true, verdict: "open", what: `${NO_SIGN_IN} (${served.slice(0, 2).map(say).join("; ")})` }]);
   const silent = answers.filter((a) => !a.status);
-  if (silent.length) return probeResult("identity", where, [{ hard: true, what: `${UNCONFIRMED}: ${silent[0]!.probe.method} ${silent[0]!.probe.path} got no answer` }]);
-  if (!counted.some((a) => REFUSED.has(a.status))) return probeResult("identity", where, [{ hard: true, what: `${NO_SIGN_IN} (no request without a valid identity was refused: ${counted.slice(0, 2).map(say).join("; ")})` }]);
+  if (silent.length) return probeResult("identity", where, [{ hard: true, verdict: "unconfirmed", what: `${UNCONFIRMED}: ${silent[0]!.probe.method} ${silent[0]!.probe.path} got no answer` }]);
+  // Only a request actually served without a valid identity is an app that answers without sign-in. Requests that all
+  // errored (5xx, 404, ...) never show the app checks identity: `errored`, never a confirmed-open verdict.
+  if (!counted.some((a) => REFUSED.has(a.status)))
+    return probeResult("identity", where, [{ hard: true, verdict: "errored", what: counted.length ? `${UNCONFIRMED}: every request without a valid identity errored (${counted.slice(0, 2).map(say).join("; ")})` : `${UNCONFIRMED}: no request without a valid identity was counted` }]);
   return probeResult("identity", where, []);
 }
 
@@ -238,12 +250,12 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
   const at = (p: PortAnswers) => `${name(p)} on ${p.host}`;
   const findings: Finding[] = [];
   // A process no scan could read may hold a listener nobody probed: fail closed, naming it.
-  if (denied.length) findings.push({ hard: true, what: `${UNCONFIRMED}: couldn't read the sockets of process ${denied.join(", ")}` });
-  for (const d of required) if (!ports.some((p) => p.listening && name(p) === name(d))) findings.push({ hard: true, what: `${UNCONFIRMED}: nothing listens on ${name(d)}` });
+  if (denied.length) findings.push({ hard: true, verdict: "unconfirmed", what: `${UNCONFIRMED}: couldn't read the sockets of process ${denied.join(", ")}` });
+  for (const d of required) if (!ports.some((p) => p.listening && name(p) === name(d))) findings.push({ hard: true, verdict: "unconfirmed", what: `${UNCONFIRMED}: nothing listens on ${name(d)}` });
   if (!ports.length && !findings.length) return probeResult("identity", "*", [{ hard: false, what: "not probed: no container of the app listens on or exposes a TCP port, so nothing can reach it" }]);
   for (const p of ports) {
     const req = required.some((d) => name(d) === name(p));
-    const hard = (what: string) => findings.push({ hard: true, what: `${at(p)}: ${what}` });
+    const hard = (what: string) => findings.push({ hard: true, verdict: "unconfirmed", what: `${at(p)}: ${what}` });
     // An HTTP answer is judged, counted or not, before any skip can apply.
     if (p.answers.some((a) => a.status > 0)) {
       findings.push(...judgeIdentity(p.answers).findings.map((f) => ({ ...f, what: `${at(p)}: ${f.what}` })));
@@ -275,8 +287,8 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
       findings.push({ hard: false, what: `${at(p)}: not probed: ${why}` });
       continue;
     }
-    if (noHttp) hard(`${UNCONFIRMED}: the TLS probe didn't answer, so a listener that serves HTTPS can't be ruled out (no HTTP answer: ${p.raw ?? "none"})`);
-    else hard(`${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})`);
+    if (noHttp) findings.push({ hard: true, verdict: "unconfirmed", what: `${at(p)}: ${UNCONFIRMED}: the TLS probe didn't answer, so a listener that serves HTTPS can't be ruled out (no HTTP answer: ${p.raw ?? "none"})` });
+    else findings.push({ hard: true, verdict: "unconfirmed", what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
   return probeResult("identity", [...new Set(ports.map(name))].join(" ") || "*", [...findings.filter((f) => f.hard), ...findings.filter((f) => !f.hard)]);
