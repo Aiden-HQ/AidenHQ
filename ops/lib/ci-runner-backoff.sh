@@ -14,9 +14,13 @@ CI_RUNNER_BACKOFF_STALE=900
 # shellcheck source=ops/lib/data-dir.sh
 . "$(dirname "${BASH_SOURCE[0]}")/data-dir.sh"
 
-# <data>/ci-runner/<id>.backoff, the id reduced to the characters a filename takes (an org id may hold more).
+# <data>/ci-runner/<id>.backoff, the id reduced to the characters a filename takes (an org id may hold more). The data dir is
+# resolved by aidenhq_data_dir (ops/lib/data-dir.sh), the one resolver ops/host-metrics.sh reads the marker with, so the file
+# written here and the `aidenhq_unit_backoff` series are the same path whatever the host sets.
 ci_runner_backoff_marker() {
-  printf '%s/ci-runner/%s.backoff' "$(aidenhq_data_dir)" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100)"
+  local data
+  data="$(aidenhq_data_dir)"
+  printf '%s/ci-runner/%s.backoff' "$data" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.@-' '_' | cut -c1-100)"
 }
 
 # The wait the last refusal left; nothing when there is no marker, it is unreadable or stale, or it is not a delay at all.

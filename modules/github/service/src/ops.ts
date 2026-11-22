@@ -154,8 +154,14 @@ const RUNNER_SCOPES = ["admin:org", "write:org", "manage_runners:org"];
  * A runner registration refused with no usable `X-Accepted-OAuth-Scopes` header (the client cannot name the scope from the
  * answer alone) is still a missing `admin:org` when the sign-in's own scopes say so: the owner's fix is the same one. GitHub
  * omits that header on some 403s, so the op derives the need from the known scopes instead of leaving a plain error.
+ *
+ * Only a known scope list can say a scope is absent: an empty one means the scopes could not be read (a failed grant lookup, a
+ * connection that is not signed in), and a 403 with nothing to compare is the plain error it was, never a guessed need.
  */
-const missingRunnerScope = (ctx: OpsContext) => !RUNNER_SCOPES.some((s) => ctx.access.scopes().includes(s));
+const missingRunnerScope = (ctx: OpsContext) => {
+  const scopes = ctx.access.scopes();
+  return scopes.length > 0 && !RUNNER_SCOPES.some((s) => scopes.includes(s));
+};
 
 /** One op's answer: a status, then a JSON body (or, for fetch, the bundle's open file stream in `json`). */
 export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<Answer> {

@@ -111,12 +111,7 @@ ids="$(docker ps -aq 2>/dev/null | sort -u)"
 } | write containers.prom
 
 # The newest finished apply (not an auto-revert's own line, not one still running). Rewritten every run, like the others.
-state="$(aidenhq_env_value AIDENHQ_STATE_DIR)"
-case "$state" in
-  "~") state="$HOME" ;; "~/"*) state="$HOME/${state#"~/"}" ;;
-esac
-state="${state//'${HOME}'/$HOME}"; state="${state//'$HOME'/$HOME}"
-[ -n "$state" ] || state="$HOME/.local/state/aidenhq"
+state="$(aidenhq_env_dir AIDENHQ_STATE_DIR "$HOME/.local/state/aidenhq")"
 gens="$state/generations.jsonl"
 {
   echo "# HELP aidenhq_apply_failed 1 when the newest apply failed its health check (reverted to the last known good) or was refused at validation."

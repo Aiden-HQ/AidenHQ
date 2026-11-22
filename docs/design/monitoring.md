@@ -74,9 +74,9 @@ the board not answering Prometheus, for 5 minutes, **critical**), `ApplyFailed` 
 check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerRestartLooping` (a runner unit that
 keeps dropping out of `active` and isn't staying up: `Restart=always` never makes `UnitFailed`, and a unit backing off a
 refused registration is `activating` rather than `active`, so the loop is named by unit; a refusal across every runner also
-empties `CiRunnersDown`'s active count), `CiRunnerBackoff` (a runner whose persisted wait has sat at the 60-second cap for
-ten minutes: the wait is the loop's own state, so it fires even when a scrape misses every brief active interval between
-backoffs), `CiRunnerUnitMissing` (a runner unit seen in
+empties `CiRunnersDown`'s active count), `CiRunnerBackoff` (a runner whose persisted wait is at the 60-second cap now and has
+sat there for ten minutes: the wait is the loop's own state, so it fires even when a scrape misses every brief active
+interval between backoffs, while a wait that has since been cleared raises nothing), `CiRunnerUnitMissing` (a runner unit seen in
 the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`, `CiReviewSpendNearCap` and `AppsCpuStarved` (an
 `app-*` container's own CPU pressure over 20% while the host's is over 15%; the alert names the app's project, and host
 pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `ApplyFailed` are critical.
@@ -84,7 +84,7 @@ pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `Ap
 The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only spike fires nothing, an `app-*` match carries its
 project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, one going
 job to job, or one whose fleet is draining, doesn't; a runner backing off at the cap fires `CiRunnerBackoff`, and a first
-refusal, a runner with no backoff and a drain do not). The `checks` job of `.github/workflows/ci.yml` runs `promtool check rules
+refusal, a backoff that has since cleared, a runner with no backoff and a drain do not). The `checks` job of `.github/workflows/ci.yml` runs `promtool check rules
 rules.yml` and `promtool test rules rules.test.yml` on every pull request head and push to main, with the image
 `modules/monitoring/prometheus/Dockerfile` pins at the commit the change is based on (a PR's base, main for a merge train,
 main's own tree on a push to main), never the head's: the step runs the image's code, so a PR that could choose the image

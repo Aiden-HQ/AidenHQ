@@ -270,6 +270,11 @@ test("runner_token derives the admin:org need from the known scopes when GitHub 
   assert.equal(missing.status, 403, JSON.stringify(missing.json));
   assert.deepEqual(missing.json.need, { cause: "scope", scope: "admin:org" }, "the owner-fixable need the kernel records");
   assert.match(missing.json.error, /admin:org/);
+  // Scopes that could not be read (an empty list) say nothing about admin:org: the refusal stays the plain error it was.
+  const unknownScopes = await setup(t, { scopes: () => [], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
+  const unread = await unknownScopes.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
+  assert.equal(unread.status, 502, "an unknown scope list is not a missing admin:org");
+  assert.equal(unread.json.need, undefined);
   const hasScope = await setup(t, { scopes: () => ["repo", "admin:org"], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
   const other = await hasScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
   assert.equal(other.status, 502, "a 403 the scopes do not explain is still a plain error");

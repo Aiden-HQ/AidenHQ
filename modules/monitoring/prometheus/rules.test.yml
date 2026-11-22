@@ -205,7 +205,24 @@ tests:
               scope: user
               unit: aidenhq-ci-runner@3.service
             exp_annotations:
-              summary: "CI runner unit aidenhq-ci-runner@3.service has been backing off a refused registration token for over 10 minutes: its sign-in is probably missing admin:org"
+              summary: "CI runner unit aidenhq-ci-runner@3.service has been backing off a refused registration token for over 10 minutes: the sign-in may be missing admin:org, or the code host is refusing for another reason (rate limit, outage)"
+
+  # A burst of refusals reached the cap and then the next token minted, taking the marker out of units.prom: the wait is not
+  # at the cap now. Checked six minutes after it cleared, while the 10-minute lookback still holds the cap long enough that a
+  # rule which only asks "was the cap seen in the window" has raised the alert; it must not fire on a runner that recovered.
+  - name: a backoff that has cleared does not fire on the past cap
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_backoff{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '60x20 _x31'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x51'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x51'
+    alert_rule_test:
+      - eval_time: 26m
+        alertname: CiRunnerBackoff
+        exp_alerts: []
 
   # The first refusals are a short delay (1s, 2s, 4s, ... below the cap): that is the backoff working, not a stuck sign-in.
   - name: a runner in the first seconds of backoff stays quiet

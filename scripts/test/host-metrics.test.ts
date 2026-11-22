@@ -52,21 +52,27 @@ test("a persisted runner backoff is a metric, and a stale or empty one is not", 
 });
 
 // The resolver the runner's marker and this exporter share (ops/lib/data-dir.sh): a `.env` value reaches both the same way, so
-// the marker a unit writes is the file this reads. `$HOME` expands as sourcing would, a trailing slash (even a lone `/`) is
-// kept meaningful, and a relative value is the checkout's.
+// the marker a unit writes is the file this reads. Quoting is honoured as sourcing would: `$HOME` expands in a double-quoted
+// or unquoted value and never inside single quotes, a leading `~` expands only unquoted, an `export NAME=` line counts, a
+// trailing slash (even a lone `/`) is kept meaningful, and a relative value is the checkout's.
 test("one data dir: the runner's marker and this exporter resolve a value the same way", async () => {
   const dir = mkdtempSync(join(tmpdir(), "data-dir-"));
   mkdirSync(join(dir, "ops/lib"), { recursive: true });
   writeFileSync(join(dir, "ops/lib/data-dir.sh"), readFileSync(join(repo, "ops/lib/data-dir.sh"), "utf8"));
-  const ask = (value: string, home: string) => new Promise<string>((resolve, reject) => {
-    writeFileSync(join(dir, ".env"), `AIDENHQ_DATA_DIR=${value}\n`);
+  const ask = (value: string, home: string, line = `AIDENHQ_DATA_DIR=${value}`) => new Promise<string>((resolve, reject) => {
+    writeFileSync(join(dir, ".env"), `${line}\n`);
     execFile("bash", ["-c", `. "${dir}/ops/lib/data-dir.sh"; aidenhq_data_dir`], { env: { PATH: "/usr/bin:/bin", HOME: home } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(out.trim())));
   });
   const home = join(dir, "home");
   assert.equal(await ask('"$HOME/aiden-data"', home), `${home}/aiden-data`, "a variable expands as sourcing it would");
+  assert.equal(await ask('"${HOME}/aiden-data"', home), `${home}/aiden-data`, "the braced form expands too");
+  assert.equal(await ask("'$HOME/aiden-data'", home), join(dir, "$HOME/aiden-data"), "single quotes keep the text literal, as the shell does");
+  assert.equal(await ask("~/aiden-data", home), `${home}/aiden-data`, "an unquoted ~ expands");
+  assert.equal(await ask('"~/aiden-data"', home), join(dir, "~/aiden-data"), "a ~ inside double quotes stays literal");
   assert.equal(await ask("./data", home), join(dir, "data"), "a relative value is the checkout's");
   assert.equal(await ask("/", home), "/", "a lone / stays the root");
   assert.equal(await ask("/srv/aidenhq/", home), "/srv/aidenhq", "a trailing slash is dropped, not the path");
+  assert.equal(await ask("", home, "export AIDENHQ_DATA_DIR=/srv/aidenhq-data"), "/srv/aidenhq-data", "an exported assignment counts");
 });
 
 // The exporter with no AIDENHQ_DATA_DIR in its environment at all: the checkout's `.env` names one through a variable, as
