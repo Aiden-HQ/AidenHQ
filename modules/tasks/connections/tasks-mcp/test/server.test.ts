@@ -48,3 +48,63 @@ test("two agents on one server: each its own run counts, its own task and its ow
   assert.equal((await as(B, "task_current", {})).out.task.id, "task-b");
   assert.equal((await as(A, "task_current", {})).out.task.id, "task-a");
 });
+
+// task_list filters on the kernel kind and attention while it pages: a match past the first page of candidates is found, and
+// no more than `limit` come back. Paperclip serves issues newest first, paged with `offset`.
+function issueBoard({ rows, me = "me" }) {
+  return async (req, res) => {
+    for await (const _ of req) void _;
+    const send = (x) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(x));
+    const url = new URL(req.url ?? "", "http://x");
+    const p = url.pathname;
+    if (p === "/api/agents/me") return send({ id: me, companyId: "co" });
+    if (p.endsWith("/companies/co/issues")) {
+      const status = new Set(String(url.searchParams.get("status") ?? "").split(",").filter(Boolean));
+      const offset = Number(url.searchParams.get("offset") ?? 0), limit = Number(url.searchParams.get("limit") ?? 100);
+      return send(rows.filter((r) => !status.size || status.has(r.status)).slice(offset, offset + limit));
+    }
+    if (p.endsWith("/companies/co/agents")) return send([]);
+    if (p === "/api/companies/co") return send({ id: "co", defaultResponsibleUserId: "owner" });
+    return send([]);
+  };
+}
+const row = (id, status) => ({ id, identifier: id.toUpperCase(), title: id, status, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+const state = (kind, attention = []) => ({ kind, reason: kind === "idle" ? "history_expired" : "job_running", since: "2026-01-01T00:00:00Z", holder: "me", attention });
+const noAttention = (kind) => state(kind);
+
+test("task_list(state=\"idle\") finds an idle row past the first page of non-matching candidates, and returns only it", async () => {
+  // A full first page of open, working rows; the idle row (a done Paperclip status, its history pruned) is on the second.
+  const rows = [...Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo")), row("idle-1", "done")];
+  const states = Object.fromEntries(rows.map((r) => [r.id, r.id === "idle-1" ? state("idle", [{ who: "agent", why: "history_expired", ref: "idle-1" }]) : noAttention("working")]));
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_list", { state: "idle", limit: 5 }));
+  assert.equal(out.out.tasks.length, 1);
+  assert.equal(out.out.tasks[0].id, "idle-1");
+  assert.equal(out.out.tasks[0].state.kind, "idle");
+});
+
+test("task_list(attention=\"any\") returns the rows with an attention entry, past the first page too", async () => {
+  const rows = [...Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo")), row("needs-1", "todo"), row("calm-1", "todo")];
+  const states = Object.fromEntries(rows.map((r) => [r.id, r.id === "needs-1" ? state("waiting", [{ who: "owner", why: "owner_wait", ref: "needs-1" }]) : noAttention(r.id === "calm-1" ? "working" : "idle")]));
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_list", { attention: "any", limit: 5 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["needs-1"]);
+  const owner = parse(await call("task_list", { attention: "owner", limit: 5 }));
+  assert.deepEqual(owner.out.tasks.map((t) => t.id), ["needs-1"]);
+});
+
+test("task_list(state=\"done\") returns a done row behind a first page of open rows", async () => {
+  const rows = [...Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo")), row("done-1", "done")];
+  const states = Object.fromEntries(rows.map((r) => [r.id, r.id === "done-1" ? noAttention("done") : noAttention("working")]));
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_list", { state: "done", limit: 5 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["done-1"]);
+});
+
+test("task_list with no state still returns only the not-done kinds", async () => {
+  const rows = [row("done-1", "done"), row("working-1", "todo"), row("waiting-1", "in_progress"), row("idle-1", "todo")];
+  const states = { "done-1": noAttention("done"), "working-1": noAttention("working"), "waiting-1": noAttention("waiting"), "idle-1": noAttention("idle") };
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_list", { limit: 10 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["working-1", "waiting-1", "idle-1"]);
+});

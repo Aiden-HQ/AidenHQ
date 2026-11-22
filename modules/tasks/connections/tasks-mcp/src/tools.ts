@@ -824,15 +824,53 @@ const STATE_PROPS = {
   state: { type: "string", description: `comma-separated kinds (${KINDS.join(", ")}); default: every task but done and cancelled ones` },
   attention: { type: "string", enum: ATTENTION, description: "only tasks someone must act on: any, or this one (the owner, an agent, a reviewer)" },
 };
-/** Paperclip statuses to ask for, given the state filter: done only when asked. */
-const statusesFor = (state: unknown) => (String(state ?? "").split(",").includes("done") ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES);
-/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`; a task with no row passes only without a filter. */
-async function withStates(list: Json[], state: unknown, attention: unknown) {
+/**
+ * Paperclip statuses to ask for, given the state filter: these are only the candidate superset, the kernel kind is the filter.
+ * An idle row includes `history_expired` (its `task.created` fact pruned), whose Paperclip status can be any, done and
+ * cancelled included; a waiting row's can be any open one. So either asks for every status.
+ */
+const statusesFor = (state: unknown) => (String(state ?? "").split(",").map((k) => k.trim()).some((k) => k === "done" || k === "idle" || k === "waiting") ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES);
+/** A `state`/`attention` argument as the kind list and the one attention, validated. */
+function stateFilter(state: unknown, attention: unknown) {
   const kinds = String(state ?? "").split(",").map((k) => k.trim()).filter(Boolean);
   const bad = kinds.filter((k) => !KINDS.includes(k));
-  if (bad.length || (attention && !ATTENTION.includes(String(attention)))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
+  const one = attention ? String(attention) : "";
+  if (bad.length || (one && !ATTENTION.includes(one))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
+  return { kinds, attention: one };
+}
+/** Whether a kernel row passes the filter; a task with no row passes only without a filter. */
+const matchesState = (s: Json | undefined, kinds: string[], attention: string) =>
+  (!kinds.length || (s && kinds.includes(s.kind))) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention)));
+/** `list` paired with its kernel rows that pass the filter, in Paperclip's order. */
+async function matchingStates(list: Json[], kinds: string[], attention: string) {
+  if (!list.length) return [] as (readonly [Json, Json])[];
   const rows = await stateRows(list.map((i) => i.id));
-  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => (!kinds.length || (s && kinds.includes(s.kind))) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention))));
+  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => matchesState(s, kinds, attention)) as (readonly [Json, Json])[];
+}
+/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`; a task with no row passes only without a filter. */
+async function withStates(list: Json[], state: unknown, attention: unknown) {
+  const { kinds, attention: one } = stateFilter(state, attention);
+  return matchingStates(list, kinds, one);
+}
+/** The most rows one Paperclip page (and one kernel state read) spans. */
+const PAGE = 200;
+/**
+ * A company's issues, newest first, one page at a time: Paperclip's `offset` paging, as scripts/modules.ts and the board
+ * read it. Stops at an empty page, or one repeating rows already read (a server that ignores `offset`).
+ */
+async function* issuePages(q: URLSearchParams) {
+  const seen = new Set<string>();
+  for (let offset = 0; ; ) {
+    const p = new URLSearchParams(q);
+    p.set("limit", String(PAGE));
+    p.set("offset", String(offset));
+    const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
+    if (!Array.isArray(page) || !page.length) return;
+    if (!page.some((i: Json) => !seen.has(i.id))) return;
+    for (const i of page) seen.add(i.id);
+    yield page;
+    offset += page.length;
+  }
 }
 
 interface Tool { description: string; inputSchema: Json; annotations: Json; run: (args: Args) => Promise<Json> | Json }
@@ -898,29 +936,43 @@ const TOOLS: Record<string, Tool> = {
       onlyArgs("task_list", args);
       const { mine, state, attention, label, updated_since, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const q = new URLSearchParams({ status: statusesFor(state), limit: String(Math.min(Number(limit) || 100, 200)) });
+      const { kinds, attention: one } = stateFilter(state, attention);
+      const max = Math.min(Number(limit) || 100, 200);
+      const q = new URLSearchParams({ status: statusesFor(state) });
       const me = mine ? grant().id : "";
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
       if (label) q.set("labelId", (await labelIds([String(label)]))[0]);
       if (updated_since) q.set("updatedSince", String(updated_since));
-      let list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-      if (me) {
+      // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; the
+      // walk stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
+      const out: (readonly [Json, Json])[] = [];
+      const collect = async (query: URLSearchParams, accept: (i: Json) => boolean = () => true) => {
+        for await (const page of issuePages(query)) {
+          for (const [i, s] of await matchingStates(page.filter(accept), kinds, one)) {
+            if (out.length >= max) return;
+            out.push([i, s]);
+          }
+        }
+      };
+      if (!me) await collect(q);
+      else {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
-        list = list.filter((i: Json) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i));
+        const mineOnly = (i: Json) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i);
+        await collect(q, mineOnly);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         const owner = await ownerUserId();
         if (owner) {
-          q.delete("assigneeAgentId");
-          q.set("assigneeUserId", owner);
-          q.set("excludeRoutineExecutions", "true");
+          const theirs = new URLSearchParams(q);
+          theirs.delete("assigneeAgentId");
+          theirs.set("assigneeUserId", owner);
+          theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          const theirs = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-          list.push(...theirs.filter((i: Json) => !i.assigneeAgentId && mark.test(i.description ?? "")));
+          await collect(theirs, (i: Json) => !i.assigneeAgentId && mark.test(i.description ?? ""));
         }
       }
-      return { tasks: await Promise.all((await withStates(list, state, attention)).map(([i, s]) => brief(i, s))) };
+      return { tasks: await Promise.all(out.map(([i, s]) => brief(i, s))) };
     },
   },
   task_approvals: {
