@@ -540,3 +540,14 @@ test("self-review prints a finding on a deleted file instead of dropping it", { 
     assert.match(out.stdout, /1 important finding/);
   } finally { model.close(); }
 });
+
+test("base-side placement is only for a file the change deletes, and only at a line the deletion removes", () => {
+  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "" : "one\ntwo\nthree\n") });
+  sh(repo, "rm", "-q", "--ignore-unmatch", "gone.txt"); sh(repo, "commit", "-q", "--allow-empty", "-m", "delete");
+  const head = sh(repo, "rev-parse", "HEAD");
+  const f = { severity: "important" as const, path: "gone.txt", line: 3, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "" };
+  assert.equal(place([f], repo, new Set(["gone.txt"]), undefined, undefined, head, base).length, 1, "the last line the deletion removes");
+  assert.equal(place([{ ...f, line: 4 }], repo, new Set(["gone.txt"]), undefined, undefined, head, base).length, 0, "the piece after the last newline is no line");
+  assert.equal(place([f], repo, new Set(["other.txt"]), undefined, undefined, head, base).length, 0, "a path that is not in the change stays dropped");
+  assert.equal(place([{ ...f, path: "typo.txt" }], repo, new Set(["gone.txt", "typo.txt"]), undefined, undefined, head, base).length, 0, "a path the base doesn't have stays dropped");
+});

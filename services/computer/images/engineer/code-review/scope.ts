@@ -76,7 +76,7 @@ function linesOf(root: string, path: string, reviewed: Set<string>, head?: strin
  * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
  * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
  * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
- * out (`left`) is dropped. `head`: read the files from that commit, not the work tree. `base`: where a file the change deletes is read from.
+ * out (`left`) is dropped. `head`: read the files from that commit, not the work tree. `base`: where a file the change deletes (one in `reviewed`, gone at the head) is read from.
  */
 export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>(), head?: string, base?: string) {
   const out: Placed[] = [];
@@ -84,7 +84,12 @@ export function place(findings: Cleaned[], root: string, reviewed: Set<string>, 
     if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
     let lines = linesOf(root, f.path, reviewed, head), deleted = false;
     // A file the change deletes has no lines at the head: a finding on it is validated against the base's file and says so.
-    if (!lines && base) { lines = linesAt(root, base, f.path); deleted = !!lines; }
+    // Only a file that is in the change (reviewed) and gone at the head is deleted by it: its whole base text is what the diff removes,
+    // so a finding on one of those lines (not the empty piece after the last newline) is at a removed line.
+    if (!lines && base && reviewed.has(f.path)) {
+      lines = linesAt(root, base, f.path);
+      if (lines) { deleted = true; if (lines.at(-1) === "") lines = lines.slice(0, -1); }
+    }
     if (!lines || f.line > lines.length) continue;
     const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
     const anchor = lines[f.line - 1]!.trim();
