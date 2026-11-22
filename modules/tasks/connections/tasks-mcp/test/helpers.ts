@@ -20,6 +20,8 @@ export const cpSeen = [];
 export const waits = [];
 /** Memory calls the tasks server forwarded to the kernel (POST /v1/memory/<op>), with the key and assertion they came with. */
 export const memorySeen = [];
+/** Batch reads the tasks server forwarded to the kernel (GET /v1/events/batch/<id>). */
+export const eventsSeen = [];
 
 const front = await listen(async (req, res) => {
   const u = req.url ?? "";
@@ -52,6 +54,10 @@ const kernel = await listen(async (req, res) => {
   if (u.startsWith("/v1/memory/") && req.method === "POST") {
     memorySeen.push({ op: u.slice("/v1/memory/".length), moduleKey, caller: req.headers["x-aidenhq-caller"], body: JSON.parse(await read(req)) });
     return send(200, { line: "- (2026-11-23, src: WOR-12) noted" });
+  }
+  if (u.startsWith("/v1/events/batch/") && req.method === "GET") {
+    eventsSeen.push({ path: u, moduleKey, caller: req.headers["x-aidenhq-caller"] });
+    return send(200, { count: 1, events: [{ resource: "C1", id: "e1", kind: "message", text: "hello" }] });
   }
   if (u.startsWith("/v1/cp/agent/")) {
     if (!moduleKey || !req.headers["x-aidenhq-caller"]) return send(401, {});

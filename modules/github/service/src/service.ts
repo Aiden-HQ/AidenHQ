@@ -579,7 +579,7 @@ export function createService(o: Options) {
     kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, exclude: o.churnExclude, now: o.now,
     // Signed out: no repos, so the passes call nothing (and tell the owner nothing) until GitHub is connected.
     repos: async () => (access.connected() ? managedRepos() : []),
-    gh: (method, path) => gh(method, path, undefined, { background: true }),
+    gh: (method, path, opts) => gh(method, path, undefined, { background: true, ...opts }),
     self: ownerLogin,
     ours,
     fetchDefault: async (repo) => {
