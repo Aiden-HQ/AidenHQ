@@ -63,9 +63,14 @@ write() { # name: atomic, so node-exporter never reads half a file
   # changes() can stay at zero; CiRunnerBackoff reads this instead and cannot miss a loop that is backing off.
   echo "# HELP aidenhq_unit_backoff The CI runner unit's wait after a refused registration token, in seconds (0 when there is none)."
   echo "# TYPE aidenhq_unit_backoff gauge"
-  # The runner units systemd still has enabled: a marker a retired unit left behind (disabled just after reaching the cap)
-  # must not keep CiRunnerBackoff pending for its 15-minute life when nothing is retrying any more.
-  declared_runners="$(systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | awk '{print $1}' | clean)"
+  # The runner units that are still in play: enabled, or live despite being disabled -- `systemctl --user disable` without
+  # `--now` leaves a runner running and retrying under its restart policy, so its wait is still the loop's own state. A marker
+  # a retired unit left behind (disabled and stopped just after reaching the cap) is not: it must not keep CiRunnerBackoff
+  # pending for its 15-minute life when nothing is retrying any more.
+  runners="$( {
+    systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' | awk '{print $1}'
+    systemctl --user list-units --all --plain --no-legend --no-pager 'aidenhq-ci-runner@*' | awk '$3 == "active" || $3 == "activating" || $3 == "reloading" {print $1}'
+  } 2>/dev/null | clean | sort -u)"
   for backoff_dir in "$data"/ci-runner; do
     [ -d "$backoff_dir" ] || continue
     for marker in "$backoff_dir"/*.backoff; do
@@ -78,8 +83,8 @@ write() { # name: atomic, so node-exporter never reads half a file
       # Not a delay this version writes (the cap): no series rather than a wait the runner itself would not serve.
       [ "$delay" -le 60 ] || continue
       unit_name="aidenhq-ci-runner@$(basename "$marker" .backoff).service"
-      # A runner systemd no longer declares has been retired: its marker is not a loop still running.
-      printf '%s\n' "$declared_runners" | grep -qxF -- "$unit_name" || continue
+      # A runner neither enabled nor live has been retired: its marker is not a loop still running.
+      printf '%s\n' "$runners" | grep -qxF -- "$unit_name" || continue
       echo "aidenhq_unit_backoff{scope=\"user\",unit=\"$unit_name\"} $delay"
     done
   done
