@@ -498,6 +498,8 @@ test("a code review post or reply whose comment text names an instance host, hom
   const post = (finding: Record<string, unknown>, coverage: Record<string, unknown> = {}) => check({ args: { repo: "acme/app", review: { coverage: { reviewed: [], excluded: [], incomplete: null, ...coverage }, findings: [{ path: "src/plan.ts", title: "t", ...finding }] } } }).verdict;
   assert.equal(reply("Looks fine: the retry bound is read before it is defaulted (src/plan.ts line 41)."), "ok");
   for (const leak of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log", "fd7a:115c:a1e0::5", "fd12::34", "fdaa::beef"]) assert.equal(reply(`seen on ${leak}`), "deny", leak);
+  for (const ok of ["00:1a:2b:3c:4d:5e", "de:ad:be:ef:00:01", "aa:bb:cc:dd", "12:30:45:10"]) assert.equal(reply(`mac ${ok}`), "ok", ok);
+  assert.equal(reply("full fd7a:115c:a1e0:ab12:4843:cd96:6200:1234"), "deny", "eight groups");
   assert.equal(reply("version 1.2.3.456 is not an address; at 12:30:45:10; loopback ::1"), "ok");
   assert.equal(post({ path: "src/plan.ts" }, { reviewed: ["fixtures/192.0.2.10.json"] }), "ok", "the reviewed list is never published");
   assert.equal(post({ path: "/home/runner/work/x.ts" }), "deny", "a finding's path is printed in the summary");
