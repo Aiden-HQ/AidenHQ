@@ -146,8 +146,24 @@ const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 // file as it was. `text` is the content when we can read it (a here-document's body). A file that ends up empty adds no
 // repository.
 interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string }
-const REDIRECT = /(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g;
-const stdoutRedirected = (text: string) => [...text.replace(/\d*>&\d+/g, " ").matchAll(REDIRECT)].some((m) => m[1] !== "2");
+// `>|` is bash's noclobber override: still a truncating write to the file it names.
+const REDIRECT = /(?:^|[^>])(\d*)(>>?\|?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g;
+// Only fd 1 (a bare `>` or `1>`) takes a command's stdout away; `2>` and `3>` name other descriptors.
+const takesStdout = (fd: string) => fd === "" || fd === "1";
+// A command's stdout as the shell leaves it, walked in order: a file redirect moves fd 1 to a file, and a duplication
+// (`3>&1`, then `1>&3`) can move it back to the pipe. Blanked duplications would hide that, so this reads the original.
+const STDOUT_REDIRECT = /(\d*)(>>?\|?|>&)\s*("[^"]*"|'[^']*'|[^\s;|&)]+)/g;
+const stdoutFeedsPipe = (text: string) => {
+  const target = new Map<number, "pipe" | "file">([[1, "pipe"]]);
+  const at = (fd: number) => target.get(fd) ?? (fd === 1 ? "pipe" : "file");
+  for (const m of text.matchAll(STDOUT_REDIRECT)) {
+    const fd = m[1] === "" ? 1 : Number(m[1]);
+    if (m[2] === ">&") target.set(fd, /^\d+$/.test(m[3]!) ? at(Number(m[3])) : "file");
+    else target.set(fd, "file");
+  }
+  return at(1) === "pipe";
+};
+const stdoutRedirected = (text: string) => !stdoutFeedsPipe(text);
 // A command's own words, with quoted text blanked: `echo '… rm /etc/apt/sources.list.d/x'` prints a message, it does
 // not remove anything.
 const unquoted = (s: string) => s.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
@@ -226,13 +242,16 @@ function writtenFiles(segment: string, body?: string): Written[] {
   });
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
-  const clean = code.replace(/\d*>&\d+/g, " ");
+  // Length-preserving, so an index into `clean` is the same index into `code`.
+  const clean = code.replace(/\d*>&\d+/g, (d: string) => " ".repeat(d.length));
   // The pipeline elements of the line, with the operator before each: one ends a chain (`;`), the next reads the previous
   // one's stdout (`|`).
   const parts: { text: string; start: number; end: number; op?: string }[] = [];
   let from = 0;
-  for (const m of clean.matchAll(/[|;]/g)) { parts.push({ text: clean.slice(from, m.index), start: from, end: m.index }); parts.at(-1)!.op = m[0]!; from = m.index! + 1; }
-  parts.push({ text: clean.slice(from), start: from, end: clean.length });
+  // Boundaries come from `clean` (its blanking is length-preserving), but each element's text is sliced from `code`:
+  // a descriptor duplication is what decides whether stdout still reaches the pipe.
+  for (const m of clean.matchAll(/[|;]/g)) { parts.push({ text: code.slice(from, m.index), start: from, end: m.index }); parts.at(-1)!.op = m[0]!; from = m.index! + 1; }
+  parts.push({ text: code.slice(from), start: from, end: clean.length });
   // A here-document's body is what the command reads, so a redirect or `tee` fed by it writes known content (a Deb822
   // `.sources` stanza, a `deb` line); an opener with no body wrote nothing. The masked `<<` is indistinguishable from
   // `<<<` (a here-string), so the operator is read from the masked code.
@@ -251,7 +270,7 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const piece = lastCommand(parts[i]!.text);
     // Its own stdout redirect sends the bytes elsewhere, whatever it reads: `tee /tmp/log >/dev/null | tee f` feeds f
     // nothing. Only fd 1 (a bare `>` or `1>`) takes it, though: `echo … 3> /tmp/log | tee f` still feeds f.
-    if ([...piece.replace(/\d*>&\d+/g, " ").matchAll(REDIRECT)].some((m) => m[1] === "" || m[1] === "1")) return { content: "empty" };
+    if (!stdoutFeedsPipe(piece)) return { content: "empty" };
     const tee = /\btee\b/.exec(piece);
     if (tee) {
       if (hereText) return hereText;
@@ -276,7 +295,7 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // starts another command, so `echo … > f | cat > /tmp/log` still writes its `deb` line to f (each command's stdout
     // is its own). Redirects before it truncate their file and get no bytes.
     const part = parts.findIndex((q) => m.index! >= q.start && m.index! < q.end);
-    const later = redirects.slice(i + 1).filter((n) => (n[1] === "" || n[1] === "1") && n.index! < (parts[part]?.end ?? clean.length));
+    const later = redirects.slice(i + 1).filter((n) => takesStdout(n[1]!) && n.index! < (parts[part]?.end ?? clean.length));
     // A pass-through (`cat > f`) writes what its pipeline element receives, so a producer that sent its own stdout
     // elsewhere leaves f empty rather than holding a `deb` line.
     const passThrough = /^\s*cat\s*$/.test(lastCommand((parts[part]?.text ?? clean).slice(0, m.index! - (parts[part]?.start ?? 0))));

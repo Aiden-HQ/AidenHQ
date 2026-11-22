@@ -797,3 +797,17 @@ test("pins: a directory COPY, a heredoc that is only a comment or arithmetic, an
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN bash <<'EOF'\nnpm i -g foo\nEOF\n`).problems.length, 1);
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN bash <<'EOF'\ncurl https://example.invalid/install.sh | sh\nEOF\n`).problems.length, 1);
 });
+
+test("pins: noclobber writes and a restored stdout still count as a repository", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const D = "echo 'deb https://repo.example/apt bookworm main'";
+  // `>|` is bash's noclobber override: it truncates the file it names, so the repository is added.
+  const noclobber = `FROM debian:bookworm${d}\nRUN ${D} >| /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", noclobber).problems.length, 1);
+  // A duplication can put stdout back on the pipe after a file redirect, so the copy stage holds the repository and the
+  // next unpinned install is a problem — through `cat` and through `tee`.
+  for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log 1>&3 | ${sink}\nRUN apt-get install -y foo\n`).problems.length, 1, sink);
+  // Without the restore the file redirect keeps the stdout, so the file is empty and no pin is needed.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+});
