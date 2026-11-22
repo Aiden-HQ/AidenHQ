@@ -35,22 +35,34 @@ before(async () => {
 });
 after(() => { server.close(); rmSync(dir, { recursive: true, force: true }); });
 
-it("a capped eval run reports the case as CAPPED, writes no PASS and records no receipt", async () => {
-  const result = join(dir, "result.json");
-  const env = { ...process.env, OPENROUTER_API_KEY: "sk-test", OPENROUTER_BASE_URL: base, EVAL_RESULT: result, XDG_STATE_HOME: join(dir, "state") };
-  const script = join(import.meta.dirname, "..", "scripts", "reviewer-eval.ts");
-  const run = await new Promise<{ status: number | null; stdout: string }>((done) => {
-    const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", script, CASE.replace(/\.json$/, "")], { env });
+/** Run the eval script with `env`, collecting its exit status and stdout. */
+const runEval = (env: Record<string, string>, args: string[] = []) =>
+  new Promise<{ status: number | null; stdout: string }>((done) => {
+    const script = join(import.meta.dirname, "..", "scripts", "reviewer-eval.ts");
+    const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", script, ...args], { env });
     let stdout = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", () => {});
     p.on("close", (status) => done({ status, stdout }));
   });
+
+it("a capped eval run reports the case as CAPPED, writes no PASS, and records no receipt", async () => {
+  const result = join(dir, "result.json");
+  const run = await runEval({ ...process.env, OPENROUTER_API_KEY: "sk-test", OPENROUTER_BASE_URL: base, EVAL_RESULT: result, XDG_STATE_HOME: join(dir, "state") }, [CASE.replace(/\.json$/, "")]);
   assert.equal(run.status, 1, "a capped run is not a pass");
   assert.match(run.stdout, /CAPPED \(not judged: review_cap\)/);
   assert.doesNotMatch(run.stdout, /PASS\b/, "never a PASS line, whatever the case expected");
   assert.doesNotMatch(run.stdout, /FAIL \(/, "a cap is not a scored miss either");
   const r = JSON.parse(readFileSync(result, "utf8"));
   assert.deepEqual([r.capped, r.failed, r.pass, r.capScope], [[CASE], [], false, "day"]);
-  assert.equal(existsSync(join(dir, "state")), false, "no passing receipt is recorded");
+});
+
+it("a capped whole run records no passing receipt for its content", async () => {
+  // A whole run with neither a case filter nor EVAL_RESULT is the one that would reuse and write a receipt: it must record
+  // nothing, or a later run of the same content would be served the cap as covered.
+  const state = join(dir, "state-whole");
+  const run = await runEval({ ...process.env, OPENROUTER_API_KEY: "sk-test", OPENROUTER_BASE_URL: base, XDG_STATE_HOME: state });
+  assert.equal(run.status, 1);
+  assert.match(run.stdout, /INCOMPLETE, not a pass/);
+  assert.equal(existsSync(join(state, "aidenhq/reviewer-eval-receipts.json")), false, "a capped run writes no receipt");
 });

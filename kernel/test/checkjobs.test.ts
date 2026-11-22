@@ -39,7 +39,9 @@ function setup(trees, judge = () => ({ failed: [] }), extra = {}, onRun, ledger 
     for (const [f, text] of Object.entries(trees[ref] ?? {})) (mkdirSync(dirname(join(into, f)), { recursive: true }), writeFileSync(join(into, f), text));
   };
   const db = new DatabaseSync(":memory:");
-  const checks = createChecks({ db, secret: () => "receipt-secret", recipes: () => ({ ...recipes(), ...extra }), box, snapshot: () => snapshot, modelToken: (component, o) => mintToken("job-secret", { kind: "check", component, ...o }), spent: () => 0.0123, refused: () => ledger.refused ?? [], gatewayUrl: "http://gw", workDir: dir, log: () => {} });
+  const checks = createChecks({ db, secret: () => "receipt-secret", recipes: () => ({ ...recipes(), ...extra }), box, snapshot: () => snapshot,
+    modelToken: (component, o) => { const t = mintToken("job-secret", { kind: "check", component, ...o }); ledger.token?.(t); return t; },
+    spent: (key) => ledger.spent?.(key) ?? 0.0123, refused: () => ledger.refused ?? [], gatewayUrl: "http://gw", workDir: dir, log: () => {} });
   const done = async (v) => { while (v.state === "running") v = await checks.get("github", v.id, { after: v.version, waitMs: 1000 }); return v; };
   return { checks, runs, done, db };
 }
@@ -293,6 +295,73 @@ test("checks: a judged run the gateway refused at a cap ends in error even when 
     assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "day"], `failed rows: ${failed.length}`);
     assert.match(v.error, /the install's daily spend limit reached; retry when it frees/);
   }
+});
+
+test("checks: a refused run whose box wrote no usable result still ends at the cap, not as a harness error", async () => {
+  // The gateway refused the eval's token, but the box timed out before writing result.json: the ledger is the cap event, so the
+  // check ends in error with the budget reason and the limit (not a generic "no usable result"), and asking again runs it again.
+  let runs = 0;
+  const { checks, done } = setup(evalTree(), undefined, {}, () => (runs++, ({ exit: null, out: "timed out", timedOut: true })), { refused: ["day"] });
+  const first = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([first.state, first.receipt, first.capped], ["error", null, "day"]);
+  assert.match(first.error, /^the install's daily spend limit reached; retry when it frees/);
+  assert.doesNotMatch(first.error, /wrote no usable result/);
+  // Its try is given back: the same head and spec runs again on a later ask.
+  await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.equal(runs, 2);
+});
+
+test("checks: a refused run that named no case reports no judged count, never every case as cut", async () => {
+  // An older harness passes all three cases after a cap-cut call returned the escalation it expected. The ledger proves the
+  // refusal, not which cases it took: the reason must not claim the reviewer judged none of them.
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length, pass: true, failed: [] }));
+    return { exit: 0, out: "", timedOut: false };
+  }, { refused: ["day"] });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "day"]);
+  assert.match(v.error, /stopped before it judged them all/);
+  assert.doesNotMatch(v.error, /judged 0 of/);
+  assert.doesNotMatch(v.error, /c0\.json/);
+});
+
+test("checks: the first pass's spend survives into the partial re-run's total", async () => {
+  // The row keeps one run key at a time: each pass mints its own, so the first pass's spend is banked into the row's cost before
+  // the second key replaces it. A cap on the re-run must report both passes' spend, not only the second's.
+  const spend = new Map();
+  let pass = 0;
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    // Pass 1 misses c0 (so the one partial re-run runs); pass 2 hits the cap before judging it.
+    if (pass++ === 0) writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: cases.length, passed: cases.length - 1, failed: [{ file: cases[0], want: "approve", got: "reject", reason: "said no" }], capped: [] }));
+    else writeFileSync(join(o.out, "result.json"), JSON.stringify({ total: 1, passed: 0, failed: [], capped: [cases[0]], capScope: "day" }));
+    return { exit: 0, out: "", timedOut: false };
+  }, { spent: (k) => spend.get(k) ?? 0, token: (t) => spend.set(createHash("sha256").update(t).digest("hex"), spend.size === 0 ? 1 : 0.1) });
+  const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "day"]);
+  assert.equal(v.billed_usd, 1.1, "the first pass's $1 and the re-run's $0.10");
+});
+
+test("checks: a judged verdict records the whole run's spend, not the earlier attempt's", async () => {
+  // A first attempt spends $1 and is cut at the cap; the later ask spends $2 and passes. Once the receipt is recorded the check is
+  // no longer running, so its billed spend must be the ledger's total (both attempts), not drop back to the first attempt's $1.
+  let cap = true;
+  const spend = new Map();
+  const { checks, done } = setup(evalTree(), undefined, {}, (o) => {
+    const cases = readdirSync(join(o.workspace, CASES)).sort();
+    writeFileSync(join(o.out, "result.json"), cap
+      ? JSON.stringify({ total: cases.length, passed: 0, failed: [], capped: cases, capScope: "day" })
+      : JSON.stringify({ total: cases.length, passed: cases.length, failed: [], capped: [] }));
+    return { exit: 0, out: "", timedOut: false };
+  }, { spent: (k) => spend.get(k) ?? 0, token: (t) => spend.set(createHash("sha256").update(t).digest("hex"), spend.size === 0 ? 1 : 2) });
+  const first = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([first.state, first.billed_usd], ["error", 1]);
+  cap = false;
+  const second = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
+  assert.deepEqual([second.state, second.receipt.verdict, second.billed_usd], ["done", "pass", 3]);
+  // Asked again: the same done check, its spend unchanged.
+  assert.equal(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }).billed_usd, 3);
 });
 
 test("checks: an uncapped run judged by an older harness that writes no capped list is still a verdict", async () => {
