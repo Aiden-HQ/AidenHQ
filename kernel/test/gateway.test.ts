@@ -8,7 +8,7 @@ import http from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGateway } from "../src/gateway/lib.ts";
+import { createGateway, usageTap } from "../src/gateway/lib.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { modelsList } from "./models-list.ts";
 
@@ -442,4 +442,15 @@ test("gateway: an answer that failed before any output is re-run once when its e
   rig.answers = [(res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(": OPENROUTER PROCESSING\n\n"); setTimeout(() => res.end(completed), 150); }];
   assert.match((await rig.call()).text, /^: OPENROUTER PROCESSING[\s\S]*response\.completed/);
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
+});
+
+test("usage tap: an echoed finish_reason is no finish, and completed usage outlives a later error chunk's", () => {
+  const sseOf = (...events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+  const echoed = usageTap(true);
+  echoed.feed(sseOf({ type: "response.created", response: { id: "gen-1", error: null, tools: [{ parameters: { example: { finish_reason: "stop" } } }] } }));
+  echoed.done();
+  assert.match(echoed.failure() ?? "", /no usage or finish/);
+  const completed = usageTap(true);
+  completed.feed(sseOf({ id: "gen-2", model: "m", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.02 } }, { id: "gen-2", error: { code: 500 }, usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } }));
+  assert.deepEqual([completed.done()?.output, completed.done()?.costUsd, completed.failure()], [5, 0.02, undefined]);
 });

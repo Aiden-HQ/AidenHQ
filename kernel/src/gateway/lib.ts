@@ -219,8 +219,16 @@ export function streamError(data: string): { reason: string; transient: boolean 
   } catch { return undefined; }
 }
 
-/** An SSE `data:` line that ends an answer: a chat chunk's finish_reason (but `error`), a response's completion, Anthropic's message_stop. */
+/** An SSE `data:` line that ends an answer: a chat chunk's finish_reason (but `error`), a response's completion, Anthropic's message_stop.
+ * The pattern is only a cheap filter: the parsed top-level fields decide (an echoed schema may contain the same words). */
 const FINISHED = /"finish_reason"\s*:\s*"(?!error")[^"]+"|"type"\s*:\s*"(?:response\.completed|response\.incomplete|message_stop)"/;
+function finishes(data: string): boolean {
+  if (!FINISHED.test(data)) return false;
+  try {
+    const j = JSON.parse(data) as { type?: unknown; choices?: { finish_reason?: unknown }[] } | null;
+    return ["response.completed", "response.incomplete", "message_stop"].includes(String(j?.type)) || (Array.isArray(j?.choices) && j.choices.some((c) => typeof c?.finish_reason === "string" && c.finish_reason !== "error"));
+  } catch { return false; }
+}
 /** An SSE `data` field's event type (its first `type`, a short word), or undefined (a chat chunk has none). */
 const eventType = (data: string) => /"type"\s*:\s*"([\w.]{1,60})"/.exec(data.slice(0, 200))?.[1];
 /** An SSE event's data: its `data` fields joined by newlines (empty for a comment-only event). */
@@ -251,10 +259,12 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
     if (data !== "[DONE]") last = eventType(data) ?? "chunk";
     const err = streamError(data);
     if (err) error ??= `error event: ${err.reason}`;
-    else if (FINISHED.test(data)) finished = true;
+    else if (finishes(data)) finished = true;
+    // Completed usage stays authoritative; an error event's usage is kept for billing only when the answer had none, and never counts as completion.
+    if (err && final) return;
     const was = final;
     take(data);
-    if (err) final = was; // a usage block on an error event is kept for billing, never taken as completion
+    if (err) final = was;
   };
   const field = (l: string) => {
     const d = sseData(l);
@@ -764,7 +774,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           const held = `gw:${randomUUID()}`;
           if ("over" in reserve(who, now(), held, body.model, 0, 0, 1)) break;
           rerun = true;
-          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), 0, 0, 0, 0, now() - t0, "stream_error", held);
+          // The discarded attempt keeps the token counts it reported, booked at $0.
+          const tk = usageTap(true);
+          tk.feed(peeked?.text ?? "");
+          const ku = tk.done();
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, 0, now() - t0, "stream_error", held);
         }
         const after = Number(up?.headers.get("retry-after"));
         const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
