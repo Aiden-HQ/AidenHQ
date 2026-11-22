@@ -82,6 +82,7 @@ settings:
   # Maintainer's watcher go through (kernel/sdk/src/maintained-repos.ts parses it).
   maintainer_repos:
     default: []
+    entry: repo
     pattern: '^[\w.-]+/[\w.-]+$'
     # Adding a repo, a duty switched on, or any change to a listed entry (its label, trusted roles, after_merge) is the owner's:
     # a repo can be listed as a bare "owner/name", which `*.repo` can't reach, so `*` covers every entry's own value too.

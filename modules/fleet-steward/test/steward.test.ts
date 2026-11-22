@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { dueList } from "../service/src/coach.ts";
-import { checks, detectorState, gateActivity, parseIgnoredRepos, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, gateActivity, parseIgnoredRepos, QUIET_MS, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -404,4 +404,25 @@ test("fleet_ops_ignored_repos: a listed repo's open PR is not raised, another re
   // The service reads the setting as comma-joined text: an empty value ignores nothing.
   assert.deepEqual(parseIgnoredRepos(""), []);
   assert.deepEqual(parseIgnoredRepos(" acme/probe , acme/other ,"), ["acme/probe", "acme/other"]);
+});
+
+test("an incident a setting now suppresses leaves the open set without a recovery note; a real recovery is still filed", async () => {
+  const kv = kvOf();
+  const pr = { key: "acme/probe#2", reason: "acme/probe#2 open 2 hours without merging" };
+  const other = { key: "acme/app#7", reason: "acme/app#7 open 2 hours without merging" };
+  const filed = [];
+  const file = async (b) => (filed.push(b), true);
+  const quietProbe = () => ["pr:acme/probe#2"];
+  const run = (rows, at, suppressed) => tick(kv, { pr: async () => rows }, file, async () => {}, new Date(at), QUIET_MS, true, undefined, undefined, suppressed);
+  await run([pr, other], NOW);
+  assert.deepEqual(filed.at(-1), { incidents: [{ key: "pr:acme/probe#2" }, { key: "pr:acme/app#7" }], recovered: [] });
+  // The repo is ignored while its PR is still open: its incident goes, with no recovery line.
+  await run([other], NOW + 31 * 60_000, quietProbe);
+  assert.equal(detectorState(kv).open["pr:acme/probe#2"], undefined);
+  assert.deepEqual(detectorState(kv).recovered, []);
+  assert.equal(filed.length, 1); // nothing new to file: no incident, and no recovery line for the suppressed PR
+  // The other PR merges: its recovery is filed as before.
+  await run([], NOW + 62 * 60_000, quietProbe);
+  assert.deepEqual(detectorState(kv).recovered.map((r) => r.key), ["pr:acme/app#7"]);
+  assert.deepEqual(filed.at(-1), { incidents: [], recovered: [{ key: "pr:acme/app#7" }] });
 });

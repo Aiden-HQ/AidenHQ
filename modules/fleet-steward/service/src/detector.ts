@@ -26,6 +26,11 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
 export function parseIgnoredRepos(raw: string | undefined): string[] {
   return (raw ?? "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
 }
+/** Whether an open `pr` incident's key (`<repo>#<n>`) names a repo `fleet_ops_ignored_repos` now ignores. */
+export const ignoredPr = (key: string, ignored: string[]) => {
+  const m = /^(.*)#\d+$/.exec(key);
+  return Boolean(m && new Set(ignored).has(m[1]!.toLowerCase()));
+};
 const PR_OPEN_MS = 60 * MIN; // a pull request of the agents org or the fleet's own open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
 type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; preview_url?: string };
@@ -133,6 +138,8 @@ export async function stewardOn(kernel: KernelClient, quiet: string | undefined)
 
 /** A check group: its incidents, or undefined when it couldn't be checked (its open incidents stay open). */
 type Check = () => Promise<Incident[] | undefined>;
+/** Incidents a setting now suppresses (a repo added to `fleet_ops_ignored_repos`, say): their keys leave the open set without a recovery note, since nothing came back. */
+type Suppressed = () => string[];
 
 /** The last filing, and the gap before a filing with nothing critical in it (60 check runs a day, most one line). */
 export const QUIET_MS = 30 * MIN;
@@ -143,8 +150,9 @@ export const QUIET_MS = 30 * MIN;
  * of the last filing only a new critical incident files; the rest wait (still unfiled) for a later tick. `jam`: a task for the
  * chief of staff naming the jammed gates' keys (the Steward didn't clear them), never the owner.
  */
-export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>): Promise<void> {
+export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>, suppressed?: Suppressed): Promise<void> {
   const s = detectorState(kv);
+  const quiet = new Set(suppressed?.() ?? []);
   const at = now.toISOString();
   // A retired check group (one this detector no longer runs, e.g. the old Tier 2 `card` reminders) leaves nothing open behind it.
   const groups = Object.keys(checks);
@@ -161,8 +169,9 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     for (const [key, o] of Object.entries(s.open)) {
       if (!key.startsWith(`${group}:`) || tripped.has(key)) continue;
       delete s.open[key];
+      // Suppressed by a setting (an ignored repo): not fixed, so no recovery note.
       // Never told anyone it was down: nothing to say about it coming back.
-      if (o.fired) s.recovered.push({ key, reason: o.reason, at, fired: false });
+      if (o.fired && !quiet.has(key)) s.recovered.push({ key, reason: o.reason, at, fired: false });
     }
   }
   // The owner hears only that the Steward itself can't be reached: a flag no task has carried for a day (one fixed line, never

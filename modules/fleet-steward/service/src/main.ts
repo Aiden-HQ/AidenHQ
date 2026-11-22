@@ -9,7 +9,7 @@ import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts";
 import { coachReads } from "./coach.ts";
-import { checks, detectorState, gateActivity, parseIgnoredRepos, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
+import { checks, detectorState, gateActivity, ignoredPr, parseIgnoredRepos, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
 import { isModule } from "./module-caller.ts";
 import { createStewardServer } from "./server.ts";
@@ -81,7 +81,10 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 const fileJam = (keys: string[]) => toChief(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${hashOf([...keys].sort().join(","))}`);
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, kv, ignoredRepos: parseIgnoredRepos(env.FLEET_OPS_IGNORED_REPOS), pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, owner: ownerNotice, gradeFailures, log });
+const ignoredRepos = parseIgnoredRepos(env.FLEET_OPS_IGNORED_REPOS);
+/** `pr:<repo>#<n>` incidents whose repo a setting now ignores: dropped from the open set, never filed as recovered (`ignoredPr` in detector.ts). */
+const suppressed = () => Object.keys(detectorState(kv).open).filter((k) => ignoredPr(k, ignoredRepos));
+const all = checks({ kernel, kv, ignoredRepos, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, owner: ownerNotice, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;
@@ -91,7 +94,7 @@ const run = async () => {
       const ok = await fileCheck(b).then(() => true, (e) => (log("check task not filed", { err: String(e.message ?? e) }), false));
       log("fleet check", { ok, incidents: b.incidents.map((i) => i.key), recovered: b.recovered.map((r) => r.key) });
       return ok;
-    }, ownerNotice, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false), gateActivity({ kernel }), (keys) => fileJam(keys));
+    }, ownerNotice, new Date(), QUIET_MS, await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START).catch(() => false), gateActivity({ kernel }), (keys) => fileJam(keys), suppressed);
   } catch (err) {
     log("detector failed", { err: String(err) });
   } finally {
