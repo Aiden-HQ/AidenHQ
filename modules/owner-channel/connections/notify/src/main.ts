@@ -119,6 +119,11 @@ const take = async () => {
   const done: number[] = [];
   try {
     for (const m of await kernel.take()) {
+      // A connection line the old kernel queued for the digest (`batch`): acknowledged, never routed; the digest pulls what is broken now.
+      if (m.batch === true) {
+        if (Number.isInteger(m.id)) done.push(m.id);
+        continue;
+      }
       const r = await notify(d, { kind: (KINDS.includes(m.kind) ? m.kind : "alert") as Kind, text: String(m.text ?? ""), ...(m.task ? { task: String(m.task) } : {}), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}), ...(m.reply ? { relay: { via: m.reply.via === "slack" ? ("slack" as const) : ("telegram" as const), agentName: String(m.reply.agent), issueId: String(m.reply.issue) } } : {}), ...(m.head ? { head: { agentName: String(m.head.agent), issueId: String(m.head.issue) } } : {}), ...(m.asker ? { asker: { id: String(m.asker.id), key: String(m.asker.key), roles: Array.isArray(m.asker.roles) ? m.asker.roles.map(String) : [] } } : {}) });
       if (!r.sent) log.warn({ kind: m.kind, reason: r.reason }, "an owner message reached nobody");
       // notify() threw inside (its bare "error"): not routed, so the kernel hands it over again.

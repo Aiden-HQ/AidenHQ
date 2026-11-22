@@ -159,7 +159,9 @@ export function createConnectionState(o: {
       }
       const asked = c && ownerWroteAt(c.root, c.comments) !== undefined;
       if (!c || !asked) {
-        // Background: the row is the record; tick() reports it once it has lasted.
+        // Background: the row is the record; the digest lists it once it has lasted. A row the owner was told of whose wait is gone
+        // (abandoned) and that fails again from background work becomes a background need again, from now.
+        q("UPDATE connection_state SET told = 0, since = ? WHERE key = ? AND told = 1 AND NOT EXISTS (SELECT 1 FROM connection_waits w WHERE w.need = ?)").run(t, key, key);
         log("connection need", { connection, cause: n.cause, to: "digest later" });
         return background;
       }
@@ -182,7 +184,7 @@ export function createConnectionState(o: {
           });
       });
       // Registered before the wait is armed, so a Connect that lands while it is being armed still finds and wakes this task.
-      q("INSERT INTO connection_waits (module, account, task, agent, at, full, need) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(module, account, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = MAX(full, excluded.full), need = excluded.need").run(connection, n.account ?? "", who.task!, who.agent!, t, full ? 1 : 0, key);
+      q("INSERT INTO connection_waits (module, account, task, agent, at, full, need) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(module, account, task) DO UPDATE SET agent = excluded.agent, at = excluded.at, full = excluded.full, need = excluded.need").run(connection, n.account ?? "", who.task!, who.agent!, t, full ? 1 : 0, key);
       try {
         await o.idle.wait({ agent: who.agent!, key: who.key ?? "", task: who.task! }, { reason: `waiting for the ${label} connection`, on: `${connection} connection`, ...(full ? { until: iso(t + FULL_WAIT) } : {}) });
       } catch (e) {

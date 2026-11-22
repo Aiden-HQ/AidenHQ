@@ -143,6 +143,26 @@ test("every account the owner was told about is listed, and the digest line name
   assert.deepEqual(w.s.downFor("a1").map((d) => d.account), ["a@x.com", "b@x.com"]);
   assert.deepEqual(w.s.needs().map((l) => /\((.+)\) isn't connected/.exec(l)?.[1]), ["a@x.com", "b@x.com"]);
 });
+test("a task that moves from an expired sign-in to a missing permission waits as a partial need (25ceead8)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "github", { cause: "expired", detail: "" });
+  await w.s.hit(w.who("w3"), "github", { cause: "scope", scope: "admin:org", detail: "" });
+  assert.equal(w.db.prepare("SELECT full FROM connection_waits WHERE task = 'w3'").get()!.full, 0);
+  assert.equal(w.s.ok("github", { fullOnly: true }), 0, "a sign-in does not wake a task that waits on a permission");
+});
+
+test("an abandoned owner-asked need that fails again from background work is listed again (04e22da8)", async () => {
+  const w = world({ ...ownerChain(), r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } }, { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "github", { cause: "expired", detail: "" });
+  w.tick(8 * DAY);
+  w.s.tick(); // the wait ended
+  assert.deepEqual(w.s.needs(), []);
+  await w.s.hit(w.who("r1"), "github", { cause: "expired", detail: "" }); // a routine keeps hitting it
+  assert.deepEqual(w.s.needs(), [], "not yet 10 minutes");
+  w.tick(LASTED);
+  assert.equal(w.s.needs().length, 1);
+});
+
 test("a wait keeps only its own need listed: a scope wait does not keep an expired sign-in listed (b9249a74)", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "github", { cause: "expired", detail: "" });

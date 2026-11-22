@@ -58,7 +58,8 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 
 /** One digest message stays under every transport's limit (Telegram cuts at 3,500 characters). */
 const DIGEST_MAX = 3000;
-const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`;
+/** A connection line carries its reconnect link whole: clipping would cut off the URL the owner needs. */
+const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${i.id?.startsWith("need:") ? i.text : clip(i.text, 300)}`;
 /** Consecutive pieces of `items`, each rendering under DIGEST_MAX. */
 function chunks<T>(items: T[], render: (t: T) => string): T[][] {
   const out: T[][] = [];

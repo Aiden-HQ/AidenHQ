@@ -149,3 +149,13 @@ it("the daily connections message is split under the transport limit; a failed c
   for (const l of lines) expect(all.split(l).length - 1).toBe(1);
   expect(await flushNeeds(store, cfg, async () => true, day + 86400_000, async () => [...lines].reverse())).toBe(false);
 });
+
+it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", async () => {
+  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const link = `https://github.com/orgs/acme/sso?${"q".repeat(450)}`;
+  const store = openStore(":memory:");
+  queueDigest(store, { agent: "Worker", text: "other" }, Date.UTC(2026, 10, 17, 8));
+  let out = "";
+  await flushDigest(store, cfg, async (t) => ((out = t), true), Date.UTC(2026, 10, 17, 9), async () => [`GitHub isn't connected (acme needs SSO authorization): ${link}`]);
+  expect(out).toContain(link);
+});
