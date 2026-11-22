@@ -445,6 +445,16 @@ test("a mandatory run is never skipped for budget; the owner dismisses an open f
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
 });
 
+test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick({ github: false });
+  assert.deepEqual([w.statuses.at(-1).reason, w.statuses.at(-1).important], ["findings", 1]);
+  w.engine.dismiss({ repo: REPO, number: 2, id: "f1", reason: "intended", by: "owner" });
+  await w.tick({ github: false });
+  assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason, w.statuses.at(-1).important], [sha("2"), "pass", 0]);
+});
+
 test("an answer on a gating finding's thread closes it: fixed, disputed, by design or won't fix with a reason, from the PR's author or a writer, on a thread code review posted", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));

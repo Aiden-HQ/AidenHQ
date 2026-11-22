@@ -937,6 +937,7 @@ export function createEngine(d: EngineDeps) {
       return c;
     });
     if (!changed) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
+    mirrorDue = true;
     return { dismissed: id };
   }
 
