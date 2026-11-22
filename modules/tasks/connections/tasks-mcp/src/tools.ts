@@ -871,7 +871,7 @@ const STEP = PAGE / 2;
  * The list moves under the read, and the offset is not a stable cursor: a task inserted ahead of it repeats a row (dropped
  * by `seen`), and one removed or leaving the status set pulls every later row up, which a plain next-page offset would skip.
  * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
- * empty page, at the last partial page, or at a page with nothing new (a server that ignores `offset`).
+ * empty page, or at repeated pages (a server that ignores `offset`, reported as stalled).
  */
 async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } = {}) {
   const seen = new Set<string>();
@@ -895,7 +895,8 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } =
     repeats = 0;
     for (const i of fresh) seen.add(i.id);
     yield fresh;
-    if (page.length < PAGE) return;
+    // A page shorter than asked for may be the list's end, or a server capping its page size: the next read decides (an
+    // empty page ends it, a repeated one is caught as stalled above).
   }
 }
 
