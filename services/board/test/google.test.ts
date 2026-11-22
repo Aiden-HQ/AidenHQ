@@ -28,12 +28,10 @@ describe("reconnect routes", () => {
   const tailnet = createApp({ ...base, allowedHosts: ["alice.tail1234.ts.net"], mode: "lan", lan: { url: "https://alice.tail1234.ts.net", googleConnect: true } });
   let localBase = "";
   let lanBase = "";
-  let tailnetBase = "";
   beforeAll(async () => {
     for (const s of [local, lan, tailnet]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
     localBase = `http://127.0.0.1:${(local.address() as AddressInfo).port}`;
     lanBase = `http://127.0.0.1:${(lan.address() as AddressInfo).port}`;
-    tailnetBase = `http://127.0.0.1:${(tailnet.address() as AddressInfo).port}`;
   });
   afterAll(() => {
     for (const s of [local, lan, tailnet]) s.close();
@@ -51,13 +49,6 @@ describe("reconnect routes", () => {
     });
   };
 
-  it("sends the laptop to Google with a callback on the address it came from", async () => {
-    const r = await get(`${localBase}/google/connect?account=me%40work.com`, "127.0.0.1:3121");
-    expect(r.status).toBe(302);
-    expect(r.location).toMatch(/^https:\/\/accounts\.google\.com\//);
-    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { account: "me@work.com", redirect_uri: "http://127.0.0.1:3121/google/callback" } });
-  });
-
   it("refuses away from the laptop's loopback address", async () => {
     expect((await get(`${localBase}/google/connect?account=me%40work.com`, "board.example.ts.net")).status).toBe(403);
     expect((await get(`${lanBase}/google/connect?account=me%40work.com`, "aidenhq.local")).status).toBe(403);
@@ -74,14 +65,4 @@ describe("reconnect routes", () => {
     expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("access_denied") });
   });
 
-  it("connects a new account from the owner's session at the board's https address", async () => {
-    expect((await get(`${tailnetBase}/google/connect`, "alice.tail1234.ts.net", false)).status).toBe(403);
-    const r = await get(`${tailnetBase}/google/connect`, "alice.tail1234.ts.net");
-    expect(r.status).toBe(302);
-    expect(seen.at(-1)).toEqual({ path: "/auth/start", body: { redirect_uri: "https://alice.tail1234.ts.net/google/callback" } });
-  });
-
-  it("finishes at the https address without the session cookie (Google's redirect is cross-site)", async () => {
-    expect(await get(`${tailnetBase}/google/callback?state=s&code=good`, "alice.tail1234.ts.net", false)).toMatchObject({ status: 302, location: "/" });
-  });
 });

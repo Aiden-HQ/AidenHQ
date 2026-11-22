@@ -526,7 +526,7 @@ not the boundary: the org's runner group is. To serve the product org:
 
 **The public Aiden-HQ repos (AidenHQ, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
 In the product's ci.yml the first job (`checks`) counts the hosted jobs this repo's other runs hold (queued or running) and
-sends the heavy jobs (packages, runner-unit, runner-flows, board) to `[self-hosted, aidenhq]` only when that count is 12 or
+sends the heavy jobs (the packages shards and board) to `[self-hosted, aidenhq]` only when that count is 12 or
 more (the free plan runs ~20 at once), the repository variable `CI_SELF_HOSTED` is `true`, and the run is a push to main or
 a same-repo PR (never a merge train: it holds PRs that may come from forks); any API error keeps them hosted. That routing
 lives in the workflow file the run carries, so it is no boundary. The boundaries are: *Require approval for all outside
@@ -539,8 +539,8 @@ runner starts the hook with an environment of its own (the github and runner con
 job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
 Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
 `settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
-aidenhq-ci-runner@Aiden-HQ-1 aidenhq-ci-runner@Aiden-HQ-2` (up to 4, or move existing fleet-org units); then the repo
-variable (Settings -> Secrets and variables -> Actions -> Variables). Unset it to go back to hosted only.
+aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-6` (six run today, owner 2026-11-22); then the repo variables
+(Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 6). Unset it to go back to hosted only.
 aidenhq-distro can adopt the same routing in its ci.yml later.
 
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly

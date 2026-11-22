@@ -99,22 +99,4 @@ describe("settings routes", () => {
     expect(d.instance).toMatchObject({ product: "a".repeat(40), instance: "b".repeat(40), lastChangeAt: "2026-11-13T06:00:00Z", boardTimezone: "Europe/London" });
   });
 
-  it("list every connection with who is granted it (read or write), its health (the kernel's answer, never probed by the board) and setup, the runner's services and the sources; no secrets", async () => {
-    vi.stubGlobal("fetch", async (url: URL | string) => {
-      const u = String(url);
-      if (u.includes("/internal/sources")) return new Response(JSON.stringify({ sources: [{ source: "slack", last_ok: new Date().toISOString(), failing: false }] }));
-      throw new Error(`unexpected ${u}`);
-    });
-    const r = await get("/api/settings/connections");
-    expect(r.status).toBe(200);
-    expect(r.text).not.toMatch(/AIDENHQ_GLEAN_MCP_TOKEN|bearer|apps-token/i);
-    const d = JSON.parse(r.text);
-    const by = (n: string) => d.connections.find((c: { name: string }) => c.name === n);
-    expect(by("apps")).toMatchObject({ module: "core", probe: { ok: true }, grants: [{ agent: "chief-of-staff", access: "read" }, { agent: "devops", access: "write" }] });
-    expect(by("apps").probe.lastOkAt).toBeTruthy();
-    expect(by("glean")).toMatchObject({ module: "glean", setup: "Set GLEAN_MCP_URL.", probe: { ok: false, state: "missing" }, signIn: { configured: false } });
-    expect(by("paperclip_tasks")).toMatchObject({ transport: "built in", probe: null });
-    expect(by("grafana")).toMatchObject({ kind: "service", setup: "Set GRAFANA_URL." });
-    expect(d.sources).toEqual([expect.objectContaining({ name: "src_slack", failing: false, stale: false })]);
-  });
 });

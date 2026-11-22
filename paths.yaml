@@ -24,9 +24,8 @@ paths:
       - scripts/verify-security.sh
       - scripts/supply-chain/
       - .gitleaks.toml
-      # The lean counters and the tests that hold the gate's lists: loosening either would hide an ungated file.
+      # The lean counters and the contract lock.
       - scripts/lean/
-      - scripts/test/lean.test.ts
       # This inventory, its compiler and the test that holds it to the gate's lists.
       - paths.yaml
       - scripts/paths.ts

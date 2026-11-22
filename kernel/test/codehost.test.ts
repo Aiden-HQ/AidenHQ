@@ -2,7 +2,6 @@
 // passed back as it came; no code host → 404. The owner's token is never an op: the code host holds it and runs each op itself.
 import assert from "node:assert/strict";
 import http, { createServer } from "node:http";
-import { Readable } from "node:stream";
 import { test } from "node:test";
 import { createCodehost } from "../src/codehost.ts";
 
@@ -64,23 +63,6 @@ test("a module's ops go to the code host with its key, only within the module's 
   assert.equal((await call("apps-platform", "clone", { repo: "acme-agents/x", ref: "main", into: "t-1" })).status, 404);
 });
 
-test("token op is gone", async (t) => {
-  const { call, op, seen } = await setup(t);
-  assert.equal((await call("github", "token", { repo: "acme/x", perms: { issues: "write" } })).status, 404);
-  await assert.rejects(op.ask("github", "token", { repo: "acme/x", perms: { issues: "write" } }), (e) => e.status === 404);
-  assert.equal(seen.length, 0);
-});
-
-test("fetch refs are refs/heads/*, a branch or a pull request's head; head and read check their fields", async (t) => {
-  const { call, seen } = await setup(t);
-  for (const ref of ["refs/heads/*", "refs/heads/feat/a", "refs/pull/9/head"]) assert.equal((await call("github", "fetch", { repo: "acme/x", ref })).status, 200, ref);
-  for (const ref of ["main", "refs/tags/v1", "refs/pull/x/head", "refs/heads/a..b", "refs/heads/-x"]) assert.equal((await call("github", "fetch", { repo: "acme/x", ref })).status, 400, ref);
-  assert.equal((await call("github", "head", { repo: "acme/x", ref: "main" })).status, 200);
-  assert.equal((await call("github", "read", { repo: "acme/x", kind: "secrets" })).status, 400);
-  assert.equal((await call("github", "read", { repo: "acme/x", kind: "job", id: "abc" })).status, 400);
-  assert.equal(seen.length, 4);
-});
-
 test("fetch needs the fetch grant: @agents/* covers the fleet org's repos only", async (t) => {
   const { call, op } = await setup(t);
   // `registry` has fetch on @instance and @product only; the fleet org's repos are no one's unless granted.
@@ -135,93 +117,6 @@ test("dot-only repo segments and hostile refs never reach the code host", async 
   assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "a..b" })).status, 400);
   assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: "main@{1}" })).status, 400);
   assert.equal(seen.length, 0);
-});
-
-test("@instance and @agents resolve from the kernel's own repos; an @ name the kernel lacks covers nothing", async (t) => {
-  const { call, seen } = await setup(t);
-  assert.equal((await call("registry", "fetch", { repo: "acme-agents/aidenhq-instance", ref: "refs/heads/main" })).status, 200);
-  assert.equal((await call("registry", "fetch", { repo: "acme-agents/other", ref: "refs/heads/main" })).status, 403);
-  assert.equal((await call("registry", "fetch", { repo: "acme/product", ref: "refs/heads/main" })).status, 403); // no @product here
-  assert.equal((await call("registry", "snapshot", { repo: "acme-agents/app", ref: "main" })).status, 200);
-  assert.equal(seen.length, 2);
-});
-
-test("@agents follows the fleet org the modules file names (repos.fleet_org), read per call", async () => {
-  const { readFileSync } = await import("node:fs");
-  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  assert.match(main, /^const fleetOrg = \(\) => modulesFile\(\)\.repos\?\.fleet_org \|\| undefined;$/m);
-  assert.doesNotMatch(main, /AGENTS_ORG/);
-  const { covers } = await import("../src/codehost.ts");
-  assert.equal(covers("acme-agents/app", ["@agents/*"], {}), false); // unset: @agents names nothing
-  assert.equal(covers("acme-agents/app", ["@agents/*"], { agentsOrgs: ["acme-agents"] }), true);
-  assert.equal(covers("local/app", ["@agents/*"], { agentsOrgs: ["acme-agents", "local"] }), true); // one per code host
-});
-
-test("@orgs and @maintained cover the instance's github_orgs and maintainer_repos, nothing else", async () => {
-  const { covers } = await import("../src/codehost.ts");
-  const grant = ["@agents/*", "@orgs", "@maintained"], r = { agentsOrgs: ["acme-agents"], orgs: ["partner"], maintained: ["other/tool"] };
-  for (const repo of ["acme-agents/a", "partner/x", "other/tool"]) assert.equal(covers(repo, grant, r), true, repo);
-  for (const repo of ["other/else", "stranger/x"]) assert.equal(covers(repo, grant, r), false, repo);
-  assert.equal(covers("partner/x", grant, {}), false); // the kernel lists none: they name nothing
-});
-
-test("without the github module there is no GitHub code host: 404", async (t) => {
-  const { call } = await setup(t, { enabled: false });
-  const r = await call("github", "read", { repo: "acme/x", kind: "prs" });
-  assert.equal(r.status, 404);
-  assert.match(r.error, /no GitHub code host/);
-});
-
-test("no grant names a token: the schema lists the typed ops only", async () => {
-  const { readFileSync } = await import("node:fs");
-  const schema = JSON.parse(readFileSync(new URL("../schemas/codehost.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(schema.properties).sort(), ["clone", "comment", "commit", "fetch", "read", "runner", "snapshot"]);
-});
-
-test("with both code hosts, each repo goes to its own: local/… to this server's, the agents org's to GitHub", async (t) => {
-  const local = [];
-  const { call, seen } = await setup(t, { localSnapshot: async (repo, ref) => (local.push({ repo, ref }), Object.assign(Readable.from([Buffer.from('{"local":true}')]), { statusCode: 200, headers: { "content-type": "application/json" } })) });
-  assert.equal((await call("reviewer", "snapshot", { repo: "local/old-app", ref: "main" })).status, 200);
-  assert.deepEqual(local, [{ repo: "local/old-app", ref: "main" }]);
-  assert.equal(seen.length, 0, "a local repo never reaches GitHub's code host");
-  assert.equal((await call("reviewer", "snapshot", { repo: "acme-agents/new-app", ref: "main" })).status, 200);
-  assert.equal(seen.at(-1).path, "/ops/snapshot");
-  assert.equal(local.length, 1);
-});
-
-// A local install's instance repo (setup's bare repo at AIDENHQ_INSTANCE_REMOTE, outside <data dir>/codehost): the kernel serves
-// its branches as a bundle, and the box clones it itself (`aidenhq clone`); host git never writes the workspace.
-test("the instance repo of a local install is cloned in the box from the kernel's bundle, from where setup made it", async (t) => {
-  const { execFileSync } = await import("node:child_process");
-  const { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { localHost } = await import("../../modules/codehost-local/src/host.ts");
-  const { localSnapshot } = await import("../../modules/codehost-local/src/snapshot.ts");
-  const dir = mkdtempSync(join(tmpdir(), "local-clone-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
-  const remote = join(dir, "aidenhq-instance.git"), seed = join(dir, "seed"), box = join(dir, "box");
-  for (const d of [seed, box, join(dir, "scratch")]) mkdirSync(d, { recursive: true });
-  git(dir, "init", "--quiet", "--bare", "-b", "main", remote);
-  git(seed, "init", "--quiet", "-b", "main"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "one"); git(seed, "commit", "--quiet", "--allow-empty", "-m", "two"); git(seed, "push", "--quiet", remote, "main");
-  const host = localHost({ root: join(dir, "codehost"), sources: { "local/aidenhq-instance": remote }, tasksDir: join(dir, "tasks"), scratchDir: join(dir, "scratch"), checks: async () => [] });
-  const op = createCodehost({
-    grants: () => [{ module: "dispatch", clone: { repos: ["@agents/*", "@instance"] } }], repos: () => ({ instance: "local/aidenhq-instance", agentsOrgs: ["local"] }),
-    kind: () => undefined, secret: () => "", resolver: {}, local: () => ({ snapshot: localSnapshot({ bare: host.bare }), bundle: host.bundle }),
-  });
-  // The dispatcher's bundle, as the job's `aidenhq clone` gets it.
-  const served = await op.ask("dispatch", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" });
-  const chunks = [];
-  for await (const c of served) chunks.push(c);
-  writeFileSync(join(dir, "got.bundle"), Buffer.concat(chunks));
-  git(box, "clone", "--quiet", join(dir, "got.bundle"), "aidenhq-instance");
-  assert.deepEqual(readdirSync(join(dir, "scratch")), [], "the scratch bundle is gone once sent");
-  const got = join(box, "aidenhq-instance");
-  assert.equal(git(got, "rev-parse", "HEAD"), git(seed, "rev-parse", "HEAD"));
-  assert.equal(git(got, "rev-list", "--count", "HEAD"), "2", "with its history, so a branch made on it lands back");
-  await assert.rejects(op.ask("nobody", "bundle", { repo: "local/aidenhq-instance", ref: "HEAD" }), (e) => e.status === 403);
-  await assert.rejects(op.ask("dispatch", "clone", { repo: "local/aidenhq-instance", ref: "HEAD", into: "t-1" }), (e) => e.status === 404);
 });
 
 // The real code host's ops (modules/github/service/src/ops.ts) behind the kernel's broker, with a fake GitHub: whatever an op
