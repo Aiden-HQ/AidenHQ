@@ -185,3 +185,12 @@ test("task_list stops when the issues endpoint ignores offset and repeats a page
   assert.deepEqual(out.out.tasks, []);
   assert.match(out.out.incomplete, /stopped advancing/, "a scan that could not page past its first page says so");
 });
+
+test("task_search's state filter is applied over pages of ranked hits, not just the first", async () => {
+  // 200 higher-ranked hits that do not match state, then the waiting one.
+  const hits = [...Array.from({ length: 200 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open" })), { ...row("hit-waiting", "todo"), description: "invoice open" }];
+  const states = Object.fromEntries(hits.map((r) => [r.id, noAttention(r.id === "hit-waiting" ? "waiting" : "working")]));
+  const { call } = bridge({ handler: issueBoard({ rows: hits }), states });
+  const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 2 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["hit-waiting"]);
+});

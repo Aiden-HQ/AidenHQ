@@ -937,10 +937,27 @@ const TOOLS: Record<string, Tool> = {
       onlyArgs("task_search", args);
       const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
+      const { kinds, attention: one } = stateFilter(state, attention);
+      const max = Math.min(Number(limit) || 10, 25);
+      const q = new URLSearchParams({ q: String(query).slice(0, 200), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state, attention));
-      const list = await withStates(await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`), state, attention);
-      return { tasks: await Promise.all(list.map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
+      // as with task_list, the kernel kind/attention filter runs per page: search candidates are paged until `limit` matches
+      // (Paperclip's ranking order) or the results run out, so a filtered-out closed hit cannot consume a matching result's slot.
+      const list: (readonly [Json, Json])[] = [];
+      for (let offset = 0, repeats = 0; list.length < max; ) {
+        const p = new URLSearchParams(q);
+        p.set("limit", String(PAGE));
+        p.set("offset", String(offset));
+        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
+        if (!Array.isArray(page) || !page.length) break;
+        list.push(...(await matchingStates(page, kinds, one)));
+        // A ranking that ignores `offset` repeats its page: stop rather than search it forever.
+        const known = new Set(list.map(([i]) => i.id));
+        repeats = page.every((i: Json) => known.has(i.id)) ? repeats + 1 : 0;
+        if (repeats > 1) break;
+        offset += PAGE;
+      }
+      return { tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
     },
   },
   task_list: {
