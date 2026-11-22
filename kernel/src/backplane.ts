@@ -81,6 +81,8 @@
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/connections/:module/ok  (the board's key) a sign-in or setup flow of that module finished: its down state clears and
 //                              the tasks waiting on it wake -> {woken} (connection-state.ts); 404 for a module with no connection
+//   POST /v1/connections/need  (a module with role kernel.owner-notice) {connection, need}: its own call (not a tool call through the proxy)
+//                              that only the owner can fix, recorded as that connection's need (needs.ts) and routed like a tool call's -> {ok}
 //   GET  /v1/connections/down?agent=  (a module with role kernel.jobs) the agent's granted connections that are down ->
 //                              {down: [{connection, module, cause, since}]}: names, causes and dates only (the dispatch preamble)
 //   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/{decide,update}, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
@@ -120,6 +122,7 @@ import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
 import type { ConnectionState } from "./connection-state.ts";
+import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
@@ -200,6 +203,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/connections/:module/ok", auth: "board" },
+  { method: "POST", path: "/v1/connections/need", auth: "module" },
   { method: "GET", path: "/v1/connections/down", auth: "module" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/validate", auth: "board" },
@@ -334,7 +338,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
-  connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "has">;
+  connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "has" | "report">;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
@@ -541,6 +545,16 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!connectionState) throw fail(503, "unavailable", "connection state is off");
           if (!connectionState.has(m[0]!)) throw fail(404, "not_found", `no connection of module ${m[0]}`);
           return send(res, 200, { woken: connectionState.okModule(m[0]!) });
+        }
+        case "POST /v1/connections/need": {
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.owner-notice")) throw fail(403, "forbidden", `${w.module} may not report a connection need (role kernel.owner-notice)`);
+          if (!connectionState) throw fail(503, "unavailable", "connection state is off");
+          const b = await json(req);
+          const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: b?.need } });
+          if (typeof b?.connection !== "string" || !need || !OWNER_CAUSES.includes(b.need?.cause)) throw fail(400, "bad_request", "send {connection, need: {cause, detail, …}}");
+          await connectionState.report(w.module!, b.connection, need).catch((e: Error & { code?: string }) => { throw e.code === "unknown_connection" ? fail(400, "bad_request", e.message) : e; });
+          return send(res, 200, { ok: true });
         }
         case "GET /v1/connections/down": {
           const w = await moduleOf(req);
