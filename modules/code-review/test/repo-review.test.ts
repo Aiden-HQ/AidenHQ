@@ -45,7 +45,7 @@ test("repo reviews are off until lenses is on; options must fit the tree", async
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO } });
   // Recommended and fitting the tree: knip (package.json), gitleaks and the Cloudflare skill; never vulture (no Python).
-  assert.deepEqual(b.options, ["maint.knip", "sec.gitleaks", "sec.cloudflare"]);
+  assert.deepEqual(b.options, ["maint.knip", "sec.cloudflare", "sec.gitleaks"]);
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["maint.vulture"] }), /not offered for acme\/app: maint.vulture/);
 });
 
@@ -261,4 +261,16 @@ test("an option gone from the catalog while queued fails that run, and the repor
   assert.match(w.db.prepare("SELECT why FROM runs WHERE option = 'sec.cloudflare'").get().why, /isn't in the option catalog/);
   assert.equal(w.engine.batches({})[0].status, "done");
   assert.equal(w.engine.batches({})[0].published, true);
+});
+
+test("the same options in another order are one review; a run the spend limit refused ends failed with its reason and the report still comes", async () => {
+  const w = world();
+  const a = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "maint.knip"] });
+  assert.equal((await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] })).batch, a.batch);
+  await w.tick();
+  w.results.set("c-1", { state: "failed", why: "spend limit reached: the install's day limit", billed_usd: 0 });
+  await w.tick(); await w.tick();
+  assert.equal(w.db.prepare("SELECT status FROM runs WHERE profile = 'code-review-tools'").get().status, "failed");
+  assert.equal(w.engine.batches({})[0].status, "done");
+  assert.match(w.engine.report(a.batch), /spend limit reached/);
 });

@@ -619,9 +619,10 @@ export function createEngine(d: EngineDeps) {
     if (res.state === "failed") {
       // A spend limit the gateway refused waits for it (the owner raises it, or the day or month turns), its attempt not counted;
       // its why is kept for the verdict while it waits. Otherwise again, unless it never started or the result was a wrong one.
-      const capped = SPEND_LIMIT.test(res.why);
+      // A repo review run the spend limit refused ends failed with that reason (its batch then reports it): waiting for the limit would hold the whole review.
+      const limited = SPEND_LIMIT.test(res.why), tree = r.target === "tree", capped = limited && !tree;
       if (capped) run("UPDATE runs SET attempts = attempts - 1 WHERE id = ?", r.id);
-      if ((capped || r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS)) && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
+      if ((capped || (r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS) && !(limited && tree))) && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying again", { run: r.id, attempt: r.attempts, why: res.why.slice(0, 200) });
         run("UPDATE runs SET billed_prior = ?, bills = ?, why = ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", charge(r, res.billed_usd), JSON.stringify(bills(r, res.billed_usd)), res.why.slice(0, 500), now() + (capped ? CAP_WAIT : RUN_RETRY), r.id);
         // A one-off the install's spend limit holds is told now: its batch's summary would otherwise wait on a run that can't
@@ -1786,7 +1787,8 @@ export function createEngine(d: EngineDeps) {
       if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length <= 50 && b.options.every((o) => typeof o === "string"))) throw new RequestError("options lists catalog option ids");
       const { repo, tree } = await readTree(t.repo, t.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
-      const ids = [...new Set((b.options as string[] | undefined) ?? recommended)];
+      // Sorted: the same set in another order is the same review (what is stored and what a duplicate is looked up by).
+      const ids = [...new Set((b.options as string[] | undefined) ?? recommended)].sort();
       const unknown = ids.filter((id) => !available.some((o) => o.id === id));
       if (unknown.length) throw new RequestError(`not offered for ${repo}: ${unknown.join(", ").slice(0, 300)} (GET /catalog lists what its tree fits)`);
       if (!ids.length) throw new RequestError(`pick at least one option for ${repo}`);
