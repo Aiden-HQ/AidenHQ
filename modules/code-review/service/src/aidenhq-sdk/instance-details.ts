@@ -7,7 +7,7 @@ export function instanceDetailsIn(text: string, versions = new Set<string>()): s
   const found = [
     // An IPv6 address (a tailnet's fd7a:...): a real IPv6 shape only: eight groups (with a hex letter, so never a MAC address, six groups, or a clock time) or a
     // compressed one with a digit or a four-letter group (`fd12::34`, `fdaa::beef`; never a short scoped name like `db::add`); loopback (`::1`) is not.
-    ...[...text.matchAll(/(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?![\w:])/gi)].filter((m) => /::|[a-f]/i.test(m[0]) && (!m[0].includes("::") || /\d|\b[0-9a-f]{4}\b/i.test(m[0])) && !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0])),
+    ...[...text.matchAll(/(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?!\w|:[\w:])/gi)].filter((m) => /::|[a-f]/i.test(m[0]) && (!m[0].includes("::") || /\d|\b[0-9a-f]{4}\b/i.test(m[0])) && !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0])),
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
