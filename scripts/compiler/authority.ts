@@ -42,7 +42,7 @@ const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
  * prompts). Others are new authority. */
-const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial", "skills", "engines"]);
+const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "skills", "engines"]);
 /** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
 const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env", "secrets", "port", "healthcheck", "cpus", "memory", "pids", "tmp", "on_demand"]);
 /** What each kernel role a module requests opens (kinds.ts KERNEL_ROLES, backplane.ts), as its line on the card says. */

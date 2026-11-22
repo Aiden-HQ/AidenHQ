@@ -231,7 +231,7 @@ function agentBody(key: string, a: Obj) {
     // An Engineer (runnerEngine): the board's picker and the tasks tools' engineer list. `brief: true`: its handbook is the
     // brief its delegators read. maxParallel: its parallel jobs (`max_parallel`).
     metadata: {
-      setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, profile: a.profile, engine: a.engine, ...(a.model ? { model: a.model } : {}), ...(a.trial ? { trial: true } : {}),
+      setupKey: `aidenhq:${key}`, module: a.module, tier: a.tier, isolation: a.isolation, profile: a.profile, engine: a.engine, ...(a.model ? { model: a.model } : {}),
       ...(engineer ? { runnerEngine: true, ...(a.image ? { box: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a)!.trim() } : {}) } : {}),
       ...display(key, a),
     },
@@ -391,8 +391,8 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
     const drift = routine ? routineDrift(body, routine, r.schedules ?? []) : ["new"];
     let webhook;
     if (r.webhook) {
-      // Webhooks come from modules only: an instance agent (writable through apply) could otherwise take another routine's secret.
-      if (cfg.agents?.[r.agent]?.module === "instance") fail(`routine ${key}: an instance agent's routine can't have a webhook`);
+      // Webhooks come from product modules only: a local routine (writable through apply) could otherwise take another routine's secret.
+      if (r.tier === "local") fail(`routine ${key}: a local routine can't have a webhook`);
       if (r.secrets_prefix != null && !/^[a-z0-9_]+$/.test(r.secrets_prefix)) fail(`routine ${key}: secrets_prefix must be lowercase letters, digits and _`);
       // Secret files: <secrets_prefix>_url / _secret (default meeting_webhook, the transcript watcher).
       const prefix = r.secrets_prefix ?? "meeting_webhook";
@@ -524,7 +524,7 @@ function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, str
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // A member's roles are its team record's, given at admission: the record alone holds them, so role lookups find the team.
-  const table: Obj = { autonomy: cfg.autonomy ?? "off", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
+  const table: Obj = { autonomy: cfg.autonomy ?? "off", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
   if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routine_keys = { ...routineKeys };

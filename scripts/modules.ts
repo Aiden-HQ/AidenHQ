@@ -13,7 +13,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
-import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
+import { current, MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
 import type { Fetch } from "./compiler/sources.ts";
 import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
 import { effective } from "./compiler/release.ts";
@@ -36,25 +36,20 @@ const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kerne
 const KERNEL_SETTINGS = kernelJson("settings.json");
 const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
-// Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
-// write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
-// An instance agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
+// Local modules (the instance repo's modules/<name>/: module.yaml, agents/<key>/AGENTS.md, skills/): the owner's and the
+// agents' own. A closed allowlist of manifest keys (no roles, services, connections, apps or privileged), the fields one of
+// their agents may set (identity included: a local AGENTS.md has no frontmatter), and the fields one of their routines may set.
+export const LOCAL_MODULE_KEYS = ["name", "description", "agents", "routines"];
+const LOCAL_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "max_parallel", "image", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
+// A local agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
 export const CHAT_DEFAULTS = { model: "~z-ai/glm-flash-latest", reasoning: "low", deadline_s: 8, telegram: false };
-const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model"];
-// paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
-// the caller's own source cursor.
-export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_block", "task_cancel"], apps: ["source_ack"] };
-// The writes a trial agent may declare in `trial_writes:`: the channel and lane ones (creating its own background task, a
-// reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
-// its own tasks (TRIAL_WRITES).
-export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wake_at", "chat_lane.chat_send", "owner_channel.notify"];
+const LOCAL_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "agent", "model", "event"];
 // A tool whose name says it deletes (Jira's camelCase too) must be tagged `destructive`, never plain write or read: the
 // `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
-/** A connection's write tools, destructive included (trial, untrusted and handbook checks treat both as writes). */
+/** A connection's write tools, destructive included (untrusted and handbook checks treat both as writes). */
 export const writeTools = (c: Obj) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
 /** A connection's tools a read shorthand reaches: its `read` tools, less the ones it also tags `named` (a grant must name those). */
 export const readTools = (c: Obj) => (c?.tools?.read ?? []).filter((t: string) => !(c?.tools?.named ?? []).includes(t));
@@ -226,22 +221,6 @@ export function jobcapEntries(name: string, def: Obj) {
   return out;
 }
 
-/**
- * A trial agent's `trial_writes:` list, checked: a list of writes it may use in trial, each one of TRIAL_WRITE_ALLOWED and
- * granted by the definition, written connection.tool as its grants name it. Returns the names; errors name the agent and tool.
- */
-export function trialWrites(key: string, list: string[], tools: Obj) {
-  if (!Array.isArray(list)) fail(`agent ${key}: trial_writes must be a list of tools, written connection.tool`);
-  for (const raw of list) {
-    const parts = typeof raw === "string" ? raw.split(".") : [];
-    if (parts.length !== 2 || !parts[0] || !parts[1]) fail(`agent ${key}: trial_writes names ${JSON.stringify(raw)}, not a tool written connection.tool`);
-    const [conn, tool] = parts as [string, string];
-    if (!TRIAL_WRITE_ALLOWED.includes(raw)) fail(`agent ${key}: trial_writes names ${raw}, which it may not use in trial (only ${TRIAL_WRITE_ALLOWED.join(", ")})`);
-    if (!(tools[conn] ?? []).includes(tool)) fail(`agent ${key}: trial_writes names ${raw}, which the definition does not grant`);
-  }
-  return [...new Set(list)];
-}
-
 /** `---\nkey: value\n---\nbody` → { meta, body }. */
 export function frontmatter(text: string) {
   const m = /^---\n([\s\S]*?)\n---\n?/.exec(text);
@@ -317,10 +296,11 @@ export function readMarketplace(productDir: string) {
 }
 
 /**
- * Every module of modules/marketplace.json and every module instance.yaml installs from a third-party marketplace, as
- * { name, root, def, marketplace, tier, sha? }, in name order. Names are unique across marketplaces. module.yaml is strict.
+ * Every module of modules/marketplace.json, every module instance.yaml installs from a third-party marketplace, and every
+ * local module (the instance's modules/<name>/module.yaml, tier `local`), as { name, root, def, marketplace, tier, sha? }, in
+ * name order. Names are unique across all of them. module.yaml is strict; a local one is a closed allowlist (LOCAL_MODULE_KEYS).
  */
-function discover(productDir: string, instance: Obj, fetch: Fetch) {
+function discover(productDir: string, instance: Obj, fetch: Fetch, instanceDir: string) {
   const dir = join(productDir, "modules");
   const plugins = readMarketplace(productDir).plugins;
   const listed = new Set(plugins.map((p: Obj) => p.name));
@@ -358,6 +338,17 @@ function discover(productDir: string, instance: Obj, fetch: Fetch) {
     if (def.apps != null || Object.values(def.services?.run ?? {}).some((s: any) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
     const pinned = pinsOf(instance).find((p) => p.name === r.name && p.marketplace === r.marketplace)?.sha;
     out.set(r.name, { name: r.name, root: r.root, def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path }, ...(pinned ? { pinned } : {}) });
+  }
+  const local = join(instanceDir, "modules");
+  for (const name of existsSync(local) ? readdirSync(local).sort() : []) {
+    const file = join(local, name, "module.yaml");
+    if (!existsSync(file)) continue;
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) fail(`modules/${name}: a local module's folder name is lowercase letters, digits and -`);
+    if (out.has(name)) fail(`local module ${name}: a module named ${name} is already installed from ${out.get(name)!.marketplace}`);
+    const def = readYaml(file) ?? {};
+    for (const k of Object.keys(def)) if (!LOCAL_MODULE_KEYS.includes(k)) fail(`local module ${name}: ${k} isn't allowed`);
+    if (def.name !== name) fail(`modules/${name}/module.yaml: name is ${def.name}, expected ${name}`);
+    out.set(name, { name, root: join(local, name), def, marketplace: "local", tier: "local" });
   }
   for (const m of out.values()) {
     const unknown = Object.keys(m.def).filter((k) => !MANIFEST_KEYS.has(k) && k !== "compose");
@@ -624,7 +615,7 @@ export function linkPairServices(flows: Obj, compose: Obj, serviceModule: Obj, n
 /**
  * compile(productDir, instanceDir, { revision }) → { paperclip, apps, compose, catalog, warnings, edge }.
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
- * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
+ * agent's handbook, agents/<key>/AGENTS.md handbook forks, and modules/<name>/ local modules: the instance's own agents.
  */
 /**
  * The host's work_dir and state_dir (config/runner.yaml, else ~/aidenhq-work and ~/.local/state/aidenhq-runner; ~ is the user's
@@ -642,7 +633,13 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
-  const all = discover(productDir, instance, fetch);
+  // Owner-built agents were agents/<key>/agent.yaml; they are local modules now, and the old folder is refused (no second path).
+  for (const key of existsSync(join(instanceDir, "agents")) ? readdirSync(join(instanceDir, "agents")).sort() : []) {
+    if (existsSync(join(instanceDir, "agents", key, "agent.yaml"))) fail(`agents/${key}/agent.yaml: an owner-built agent is a local module now (modules/<name>/module.yaml + agents/<key>/AGENTS.md)`);
+  }
+  const all = discover(productDir, instance, fetch, instanceDir);
+  const locals = [...all.values()].filter((m) => m.tier === "local").map((m) => m.name);
+  for (const n of [...(instance.modules ?? []), ...(instance.modules_removed ?? [])].map(moduleName)) if (locals.includes(n)) fail(`${n} is a local module: enabled by its folder`);
   const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   if (problems.length) fail(problems.join("; "));
   // Members the default bundle gained since this host last compiled reach the instance here, in memory (an apply never writes
@@ -662,7 +659,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     if (missing.length) console.warn(`module ${n} is not enabled yet: set ${missing.join(", ")} first`);
     return !missing.length;
   });
-  const chosen = current([...(instance.modules ?? []), ...added], known);
+  const chosen = current([...(instance.modules ?? []), ...added, ...locals], known);
   const enabled = resolveEnabled(all, chosen);
   const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n)!.def]));
   const conflicts = conflictProblems(enabledDefs);
@@ -835,24 +832,44 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const src = join(root, "connections", /^http:\/\/([a-z][a-z0-9-]*):/.exec(String(x.status_url))?.[1] ?? "-", "src");
       if (existsSync(src) && !existsSync(join(src, "vendor", "proxy.ts")) && !readdirSync(src, { recursive: true }).some((f) => /\.ts$/.test(String(f)) && readFileSync(join(src, String(f)), "utf8").includes("/auth/check"))) fail(`module ${name}: signin ${x.id}: its service must answer GET /auth/check (build it on the SDK vendor proxy, or implement the route)`);
     }
+    const { tier } = all.get(name)!;
     for (const [key, a] of Object.entries<Obj>(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
-      if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
+      if (!existsSync(file)) fail(`agent ${key}: missing ${tier === "local" ? `modules/${name}/agents/${key}/AGENTS.md` : relative(productDir, file)}`);
       const { meta } = frontmatter(readFileSync(file, "utf8"));
       const extra = join(instanceDir, "agents", `${key}.md`);
+      if (tier === "local") {
+        // A local agent: its identity and reporting line come from module.yaml only, so a handbook-only edit can't move anything.
+        if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) fail(`local module ${name}: agent key ${key} is lowercase letters, digits and -`);
+        if (Object.keys(meta).length || /^---\n/.test(readFileSync(file, "utf8"))) fail(`${key}: a local agent's AGENTS.md has no frontmatter: identity is in module.yaml`);
+        if (existsSync(extra)) fail(`${key} is a local agent: its rules are its own AGENTS.md`);
+        if (a?.budget != null) fail(`agent ${key}: budget ${SPEND_GONE}`);
+        for (const f of Object.keys(a ?? {})) if (!LOCAL_AGENT_FIELDS.includes(f)) fail(`agent ${key}: ${f === "roles" ? "a local agent may not have roles" : `unknown field ${f} (known: ${LOCAL_AGENT_FIELDS.join(", ")})`}`);
+        for (const f of ["name", "description", "model"]) if (a?.[f] == null || a[f] === "") fail(`agent ${key}: ${f} is required`);
+        if (a.max_parallel != null && !(Number.isInteger(a.max_parallel) && a.max_parallel >= 1 && a.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
+        const description = String(a.description).trim();
+        put(paperclip.agents, key, { ...a, title: description, description, instructions: file, module: name, tier, isolation: "trusted" }, "agent");
+        continue;
+      }
       put(paperclip.agents, key, {
         name: meta.name, title: meta.title, ...(meta.description ? { description: String(meta.description).trim() } : {}), ...(meta.avatar ? { avatar: meta.avatar } : {}), ...(meta.reportsTo ? { reports_to: meta.reportsTo } : {}), instructions: file,
-        ...a, module: name, isolation: isolationOf(a.isolation ?? def.isolation, `agent ${key}`),
+        ...a, module: name, tier, isolation: isolationOf(a.isolation ?? def.isolation, `agent ${key}`),
         ...(existsSync(extra) ? { instructions_extra: extra } : {}),
       }, "agent");
     }
     for (const [key, { when, ...r }] of Object.entries<Obj>(def.routines ?? {})) {
-      if (routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
+      if (tier === "local") {
+        // A local routine: schedules (and, with the event router, an event) only; webhooks and their secrets come from product modules.
+        if (when != null) fail(`routine ${key}: when isn't allowed`);
+        for (const f of Object.keys(r)) if (!LOCAL_ROUTINE_FIELDS.includes(f)) fail(`routine ${key}: ${f} isn't allowed (known: ${LOCAL_ROUTINE_FIELDS.join(", ")})`);
+        if (typeof r.agent !== "string" || !r.agent) fail(`routine ${key}: agent is required (the agent it runs as)`);
+      }
+      if (!r.title || routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
       routineTitles.add(r.title);
       // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); no routine, and no run, otherwise.
       if (when != null && JSON.stringify(when) !== '{"forks":true}') fail(`routine ${key}: when must be { forks: true }`);
       if (when && !forksOf(instance).length) continue;
-      put(paperclip.routines, key, r, "routine");
+      put(paperclip.routines, key, { ...r, tier }, "routine");
     }
     for (const app of def.apps ?? []) {
       const { isolation: iso, ...rest } = app;
@@ -937,7 +954,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
 
-  instanceAgents(instanceDir, settings, paperclip, routineTitles);
   expandTeams(instance, paperclip);
 
   // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
@@ -979,11 +995,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Grants: `connection: read | write | [tools]` resolve to tool lists (Codex scoping and the grants table setup writes).
   // A grant to a connection that isn't enabled fails, unless marked optional as `name?`.
   // The instance's grants override (overrides.agents.<key>.connections): per connection over the module's grants, before they
-  // resolve (a key replaces the module's optional `key?` too). An instance agent's grants are its agent.yaml's.
+  // resolve (a key replaces the module's optional `key?` too). A local agent's grants are its module.yaml's.
   for (const [key, o] of Object.entries<Obj>(instance.overrides?.agents ?? {})) {
     if (o?.connections == null) continue;
     const a = paperclip.agents[key] ?? fail(`unknown agent: ${key}`);
-    if (a.module === "instance") fail(`override overrides.agents.${key}.connections: an instance agent's grants are in agents/${key}/agent.yaml`);
+    if (a.tier === "local") fail(`override overrides.agents.${key}.connections: a local agent's grants are in modules/${a.module}/module.yaml`);
     if (typeof o.connections !== "object" || Array.isArray(o.connections)) fail(`override overrides.agents.${key}.connections: a map of connection: read | write | [tools]`);
     const conns: Obj = { ...(a.connections ?? {}) };
     for (const [c, g] of Object.entries(o.connections)) {
@@ -1015,7 +1031,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!tools[name].length) delete tools[name];
     }
     // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. owner_channel.notify
-    // for every crew agent out of trial and untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
+    // for every crew agent outside untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
     // An agent without `profile:` is crew (as its grant entry says). They honour `upstream` too: this loop runs after the one above,
     // and a default grant naming an upstream tool would otherwise put back what `upstream: off` stripped.
     for (const g of defaultGrants) if (promptApplies(g, { ...a, profile: a.profile ?? "crew", enabled_tools: tools }, enabled)) for (const t of g.tools) {
@@ -1042,33 +1058,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!roleOwner[r]) fail(`${key}: unknown role ${r} (declared: ${Object.keys(roleOwner).join(", ")})`);
       if (roleOwner[r] !== a.module && !rolesOf(a.module).requests.includes(r)) fail(`${key}: module ${a.module} may not grant ${r} (declare it, or list it under roles.requests)`);
     }
-    // In trial (tap 1): read-only but for reporting on its own tasks, and reporting to the Agent Architect, which reviews its
-    // work. A definition may also declare `trial_writes:`, the channel and lane writes it keeps before tap 2. The agent then gets
-    // exactly those writes and the trial ones; every other write it grants is withheld (trial_withheld) and refused by name
-    // until tap 2 (the tool isn't offered, and the grants table lacks it). Without a list, today's rule: no write tools
-    // beyond TRIAL_WRITES, or the build fails.
-    if (a.trial) {
-      if (a.reports_to !== "architect") fail(`${key}: an agent in trial reports to architect (got ${a.reports_to ?? "nobody"})`);
-      const declared = a.trial_writes == null ? [] : trialWrites(key, a.trial_writes, tools);
-      if (!declared.length) {
-        for (const [name, list] of Object.entries<Obj>(tools)) {
-          const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name as keyof typeof TRIAL_WRITES] ?? []).includes(t));
-          if (writes.length) fail(`${key}: an agent in trial may not have ${name} write tools (${writes.join(", ")}); they come with tap 2`);
-        }
-      } else {
-        const withheld: string[] = [];
-        for (const [name, list] of Object.entries<Obj>(tools)) {
-          const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name as keyof typeof TRIAL_WRITES] ?? []).includes(t));
-          for (const t of writes) if (!declared.includes(`${name}.${t}`)) withheld.push(`${name}.${t}`);
-          tools[name] = list.filter((t: string) => !writes.includes(t) || declared.includes(`${name}.${t}`));
-          if (!tools[name].length) delete tools[name];
-        }
-        a.enabled_tools = tools;
-        a.mcp_servers = Object.keys(tools);
-        // What it granted but keeps out of trial: the handbook check doesn't warn about these (it intends them for tap 2).
-        if (withheld.length) a.trial_withheld = withheld; else delete a.trial_withheld;
-      }
-    } else if (a.trial_writes != null) fail(`${key}: trial_writes is for an agent in trial (add trial: true, or grant the tools plainly)`);
     // The module's own isolation counts too: an agent can't opt itself out of an untrusted module.
     if (a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted") {
       if (a.roles.length) fail(`${key}: an untrusted module's agent may not have roles`);
@@ -1086,9 +1075,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
     a.delegate_to = a.delegate_to.map((k: string) => k.replace(/\?$/, "")).filter((k: string) => k === "app-owners" || paperclip.agents[k]);
   }
-  // Quiet start (docs/design/quiet-start.md): a module's scheduled routines start paused until an override turns one on
-  // (before the heartbeats, which quiet start leaves off unless the instance turned one on).
-  if (settings.quiet_start === "on") for (const r of Object.values<Obj>(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
+  // Quiet start (docs/design/quiet-start.md): a product module's scheduled routines start paused until an override turns one on
+  // (before the heartbeats, which quiet start leaves off unless the instance turned one on). A local module's routines are the
+  // owner's and the agents' own, whichever agent they run as: they start active.
+  if (settings.quiet_start === "on") for (const r of Object.values<Obj>(paperclip.routines)) if (r.schedules?.length && r.tier !== "local") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
@@ -1102,7 +1092,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (!OVERRIDABLE[kind as keyof typeof OVERRIDABLE].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
         if (kind === "agents" && f === "connections") continue; // merged before grants resolved, above
         if (kind === "agents" && f === "handbook_fork") {
-          if (target.module === "instance") fail(`override agents.${key}.handbook_fork: an instance agent's handbook is already the instance's`);
+          if (target.tier === "local") fail(`${key} is a local agent: its rules are its own AGENTS.md`);
           if (!/^[0-9a-f]{40}$/.test(String(v))) fail(`override agents.${key}.handbook_fork must be the module blob sha it was copied from`);
           const fork = join(instanceDir, "agents", key, "AGENTS.md");
           if (!existsSync(fork)) fail(`override agents.${key}.handbook_fork: missing agents/${key}/AGENTS.md`);
@@ -1116,6 +1106,13 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
     for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone; // else Paperclip runs it in UTC
+    // A local routine (the owner's or an agent's own), checked as it ends up after the overrides: at most hourly, as one
+    // schedule whose cron minute is a single literal number (no cron parser; events cover anything faster).
+    if (r.tier === "local") {
+      if (!Array.isArray(r.schedules ?? []) || (r.schedules ?? []).length > 1) fail(`routine ${key}: a local routine has at most one schedule`);
+      const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
+      if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
+    }
   }
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
@@ -1230,7 +1227,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
-  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([, a]) => a.module === "instance")) });
+  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const setup = setupSecrets(enabledDefs, generatedSecrets);
@@ -1622,38 +1619,6 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
 }
 
 /**
- * The instance's own agents: each folder agents/<key>/ with agent.yaml and AGENTS.md. Module "instance", which the roles
- * registry allows nothing. Name and reporting line come from agent.yaml only (the handbook's frontmatter is ignored), so
- * a handbook-only edit can't move anything. A key a module already uses fails (an instance can't redefine `architect`).
- */
-function instanceAgents(instanceDir: string, settings: Obj, paperclip: Obj, routineTitles: Set<string>) {
-  const dir = join(instanceDir, "agents");
-  for (const key of existsSync(dir) ? readdirSync(dir).sort() : []) {
-    const file = join(dir, key, "agent.yaml");
-    if (!existsSync(file)) continue;
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) fail(`agents/${key}: the folder name is the agent's key (lowercase letters, digits and -)`);
-    const handbook = join(dir, key, "AGENTS.md");
-    if (!existsSync(handbook)) fail(`agent ${key}: missing agents/${key}/AGENTS.md`);
-    const def = substitute(readYaml(file), settings);
-    if (def.budget != null) fail(`agent ${key}: budget ${SPEND_GONE}`);
-    for (const f of Object.keys(def)) if (!INSTANCE_AGENT_FIELDS.includes(f)) fail(`agent ${key}: ${f === "roles" ? "an instance agent may not have roles" : `unknown field ${f} (known: ${INSTANCE_AGENT_FIELDS.join(", ")})`}`);
-    for (const f of ["name", "description", "model"]) if (def[f] == null || def[f] === "") fail(`agent ${key}: ${f} is required`);
-    if (def.max_parallel != null && !(Number.isInteger(def.max_parallel) && def.max_parallel >= 1 && def.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
-    if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
-    const { description, routines, ...rest } = def;
-    put(paperclip.agents, key, { ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
-    for (const [rk, r] of Object.entries<Obj>(routines ?? {})) {
-      // Schedules only: webhooks and their secrets (webhook, webhook_base, secrets_prefix) come from modules.
-      for (const f of Object.keys(r ?? {})) if (!INSTANCE_ROUTINE_FIELDS.includes(f)) fail(`agent ${key}: routine ${rk}: ${f} isn't allowed (known: ${INSTANCE_ROUTINE_FIELDS.join(", ")})`);
-      if (r.agent && r.agent !== key) fail(`agent ${key}: routine ${rk} must run as ${key}`);
-      if (!r.title || routineTitles.has(r.title)) fail(`agent ${key}: routine ${rk} needs a title no other routine has`);
-      routineTitles.add(r.title);
-      put(paperclip.routines, `${key}-${rk}`, { ...r, agent: key }, "routine");
-    }
-  }
-}
-
-/**
  * Teams (instance.yaml `teams.<name>`, schema in kernel/src/team-routing.ts): the template agent (`<module>.<agent>`, any
  * enabled module agent) becomes the team record, which keeps its key, roles, routines and description (one address for
  * delegation, routines and role filing) and never runs; each member becomes a real agent with a permanent key, a copy of the
@@ -1700,7 +1665,7 @@ function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, r
   if (!HEARTBEAT_HOURS.includes(every)) fail(`settings.heartbeat_hours: one of ${HEARTBEAT_HOURS.join(", ")}`);
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     // Quiet start: a module agent's heartbeat counts only once the instance turns it on (overrides.agents.<key>.heartbeat).
-    if (settings.quiet_start === "on" && a.module !== "instance" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;
+    if (settings.quiet_start === "on" && a.tier !== "local" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;
     const hb = agentOverrides[key]?.heartbeat ?? a.heartbeat;
     if (hb == null || hb === false) continue;
     const hours = hb === true ? every : hb;

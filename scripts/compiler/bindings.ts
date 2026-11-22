@@ -5,7 +5,7 @@
 
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
-export type InstanceDef = { reviewer?: unknown; writes?: unknown; agents?: Record<string, unknown> };
+export type InstanceDef = { reviewer?: unknown; writes?: unknown };
 export type Dangling = { binding: string; owner: string; missing: string };
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
@@ -69,7 +69,7 @@ export function danglingBindings(enabled: Record<string, ModuleDef>, instance: I
   // optional: held only while its module is enabled.
   const role = (r: string) => r.startsWith("kernel.") || roles.has(r);
 
-  const agents: [string, Dict][] = [...Object.values(enabled).flatMap((d) => Object.entries(map(d.agents))), ...Object.entries(instance.agents ?? {})].map(([k, a]) => [k, map(a)]);
+  const agents: [string, Dict][] = Object.values(enabled).flatMap((d) => Object.entries(map(d.agents))).map(([k, a]) => [k, map(a)]);
   for (const [key, a] of agents) {
     if (a.engine != null && !engines.has(String(a.engine))) add("agent engine", `agent ${key}`, `engine ${a.engine}`);
     for (const c of Object.keys(map(a.connections))) if (!c.endsWith("?") && !connections.has(c)) add("agent connections", `agent ${key}`, `connection ${c}`);

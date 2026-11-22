@@ -22,11 +22,11 @@ export function readInside(dir: string, path: unknown, what: string) {
  * plus the instance's agents/<key>.md under "## Instance rules" when there is one.
  */
 export function readInstructions(cfg: Obj, a: Obj, { repo, instanceDir = "" }: { repo: string; instanceDir?: string }) {
-  // An instance agent's handbook is its folder's AGENTS.md in the instance repo (agents/<key>/AGENTS.md).
-  // A forked module agent's (handbook_fork) is the instance's agents/<key>/AGENTS.md too.
+  // A local agent's handbook is its local module's agents/<key>/AGENTS.md in the instance repo.
+  // A forked module agent's (handbook_fork) is the instance's agents/<key>/AGENTS.md.
   // A module read from the sources cache (a per-module pin, a third-party module) has its handbook in the fetched tree.
   const trees = join(defaultCache(), "trees");
-  const mod = a.module === "instance" || a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
+  const mod = a.tier === "local" ? join(instanceDir, "modules", a.module, "agents") : a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
   // Handbooks say "the owner"; one line names them.
   const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
   // Where agent-built repos live: handbooks say "the agents org", one per enabled code host (compile's agents_orgs).

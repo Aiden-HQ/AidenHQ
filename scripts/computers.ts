@@ -9,7 +9,7 @@ import { join } from "node:path";
  * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
 export const COMPUTER_IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
 /** The fields of a compiled agent that this file reads. */
-export interface ComputerAgent { image?: string | null; profile?: string; enabled_tools?: Record<string, string[]>; trial?: unknown; roles?: string[] }
+export interface ComputerAgent { image?: string | null; profile?: string; enabled_tools?: Record<string, string[]>; roles?: string[] }
 
 /** The images an agent may name. */
 const AGENT_IMAGES = ["agent-base", "engineer"];
@@ -56,8 +56,6 @@ export function validateImages(agents: Record<string, ComputerAgent>) {
       if (a.image !== "engineer") throw new Error(`${key}: an Engineer gets a computer only with image: engineer`);
       continue;
     }
-    // Until the tasks bridge runs on the host, a trial agent's limits would run inside a box it controls.
-    if (a.trial) throw new Error(`${key}: an agent in trial doesn't get a computer yet (its limits would run inside the box)`);
     // notify from a box is fine: its chat reply lands through the kernel's /v1/cp/agent (the launcher's /cp, as the run itself).
   }
 }

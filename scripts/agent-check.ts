@@ -2,8 +2,7 @@
 // The pre-launch agent check (wave 2, item 7): what can be known about each agent before it runs.
 //
 // At compile (scripts/compile.ts calls staticCheck on the compiled config; errors fail the build):
-//   - every model id an agent or its routines name is an OpenRouter id (gateway grants are built from them: grantEntry);
-//   - an agent in trial has no write tools beyond the trial ones (modules.ts enforces it too; this is the second lock).
+//   - every model id an agent or its routines name is an OpenRouter id (gateway grants are built from them: grantEntry).
 // Advisory (warnings in the compile and apply output, never a failure): every tool the agent's handbook names in
 // backticks (scripts/handbook-tools.ts) is granted to it, and every routine of the agent says when it is done (closes or
 // finishes its task). Heuristics: handbooks legitimately name other agents' tools ("hand it to the DevOps Engineer, who
@@ -25,7 +24,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { knownTools, namedTools } from "./handbook-tools.ts";
-import { TRIAL_WRITE_ALLOWED, TRIAL_WRITES, writeTools } from "./modules.ts";
 
 /** An OpenRouter model id: vendor/model, optionally `~` (latest alias) and the `openrouter/` engine prefix. */
 const MODEL_ID = /^(openrouter\/)?~?[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][\w.:-]*$/;
@@ -33,7 +31,7 @@ const MODEL_ID = /^(openrouter\/)?~?[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][\w.:-]*$/;
 const DONE = /\b(close|closes|finish|finishes|task_finish|done when|done once)\b/i;
 
 /** The fields of a compiled config (config/paperclip.yaml) that these checks read. */
-export interface AgentCfg { model?: unknown; models?: unknown[]; enabled_tools?: Record<string, string[]>; trial?: boolean; trial_writes?: string[] | null; trial_withheld?: string[]; instructions?: string; instructions_extra?: string; mcp_servers?: string[] }
+export interface AgentCfg { model?: unknown; models?: unknown[]; enabled_tools?: Record<string, string[]>; instructions?: string; instructions_extra?: string; mcp_servers?: string[] }
 export interface Cfg { mcp_servers?: Record<string, any>; routines?: Record<string, { agent?: string; model?: unknown; description?: unknown }>; agents?: Record<string, AgentCfg> }
 interface Health { ok: boolean; state?: string; detail?: string; idle?: boolean }
 
@@ -50,36 +48,13 @@ export function staticCheck(cfg: Cfg, { read = readText }: { read?: (f?: string)
   const known = knownTools(servers);
   const routines = Object.entries(cfg.routines ?? {});
   for (const [key, a] of Object.entries(cfg.agents ?? {})) {
-    const flag = (msg: string) => warnings.push(`${key}${a.trial === true ? " (in trial)" : ""}: ${msg}`);
+    const flag = (msg: string) => warnings.push(`${key}: ${msg}`);
     for (const m of [a.model, ...(a.models ?? []), ...routines.filter(([, r]) => r.agent === key).map(([, r]) => r.model)]) {
       if (m != null && !(typeof m === "string" && MODEL_ID.test(m))) errors.push(`${key}: model ${JSON.stringify(m)} isn't an OpenRouter model id (vendor/model)`);
     }
     const granted = new Set(Object.values(a.enabled_tools ?? {}).flat());
-    // A trial agent's writes: the trial ones, and (with a `trial_writes:` list) the channel and lane ones it names, and nothing
-    // else. This is the second lock on the compile's rules, on a hand-written or compiled config alike.
-    const trialWrites = a.trial_writes == null ? [] : a.trial_writes;
-    if (a.trial === true) {
-      if (a.trial_writes != null && !Array.isArray(a.trial_writes)) errors.push(`${key} (in trial): trial_writes must be a list of tools, written connection.tool`);
-      else {
-        for (const raw of trialWrites) {
-          const parts = typeof raw === "string" ? raw.split(".") : [];
-          if (parts.length !== 2 || !parts[0] || !parts[1]) errors.push(`${key} (in trial): trial_writes names ${JSON.stringify(raw)}, not a tool written connection.tool`);
-          else if (!TRIAL_WRITE_ALLOWED.includes(raw)) errors.push(`${key} (in trial): trial_writes names ${raw}, which it may not use in trial (only ${TRIAL_WRITE_ALLOWED.join(", ")})`);
-          else if (!(a.enabled_tools?.[parts[0]] ?? []).includes(parts[1])) errors.push(`${key} (in trial): trial_writes names ${raw}, which the definition does not grant`);
-        }
-        // Every write it is still given must be a trial write or one it names: compile trims the rest out of a compiled
-        // config (and records them in trial_withheld), so this rejects a hand-written config that kept one.
-        for (const [name, list] of Object.entries(a.enabled_tools ?? {})) {
-          const writes = list.filter((t) => writeTools(servers[name]).includes(t) && !((TRIAL_WRITES as Record<string, string[]>)[name] ?? []).includes(t) && !trialWrites.includes(`${name}.${t}`));
-          if (writes.length) errors.push(`${key} (in trial): has ${name} write tools (${writes.join(", ")}); an agent in trial is read-only`);
-        }
-      }
-    } else if (a.trial_writes != null) errors.push(`${key}: trial_writes is for an agent in trial (add trial: true, or grant the tools plainly)`);
     const text = [a.instructions, a.instructions_extra].map(read).join("\n");
-    // A write the definition grants but withholds from trial by design (compile's trial_withheld) doesn't warn: the handbook
-    // says it comes after trial, and the agent can't call it until then.
-    const withheld = new Set((a.trial_withheld ?? []).map((t: string) => t.split(".").slice(1).join(".")));
-    const missing = (namedTools(text, known) as string[]).filter((t) => !granted.has(t) && !withheld.has(t));
+    const missing = (namedTools(text, known) as string[]).filter((t) => !granted.has(t));
     if (missing.length) flag(`its handbook names ${missing.map((t) => `\`${t}\``).join(", ")}, not granted to it (grant it, or don't name it)`);
     for (const [rk, r] of routines) if (r.agent === key && !DONE.test(String(r.description ?? ""))) flag(`routine ${rk} doesn't say when it is done (e.g. "then close this task with one line")`);
   }
