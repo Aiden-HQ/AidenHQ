@@ -7,7 +7,7 @@
 // record never fails the others (a record that can't be shaped is skipped and counted; a database error is rethrown).
 // HubSpot sends no delete signal, so a record deleted there stays here. No LLM.
 import type { Logger } from "pino";
-import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, searchPage, SETTING_OBJECTS, WINDOW, withAssociations, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
+import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 
 const CONTACT: Table = {
@@ -91,19 +91,22 @@ COMMENT ON TABLE src_hubspot.users IS 'HubSpot owners (the people records are as
 GRANT SELECT ON src_hubspot.contacts, src_hubspot.companies, src_hubspot.deals, src_hubspot.activities, src_hubspot.changes, src_hubspot.users TO agents_open;`;
 
 export const DAY = 86_400_000;
+/** How far before a caught-up cursor the next pass starts. */
+const OVERLAP_MS = 10 * 60_000;
 /** A pass stops starting new work after this long (shared across the types); the next pass resumes from each type's cursor. */
 export const PASS_BUDGET_MS = 5 * 60_000;
+/** The reference data's own share, so a slow owner scan can't take the object types' time. */
+const REFERENCE_BUDGET_MS = 60_000;
 const text = (v: unknown, cap?: number) => capText(v == null || v === "" ? null : String(v), cap);
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
-const ids = (r: CrmRecord, k: string) => [...new Set(r.associations?.[k] ?? [])].sort();
 const link = (portal: string | undefined, kind: string, id: string) => (portal ? `https://app.hubspot.com/contacts/${portal}/${kind}/${id}` : null);
 
-/** Row builders: one record's columns. TODO(probe): the portal id for links (get_user_details?); null until known. */
+/** Row builders: one record's columns. The portal id for links is not known yet: url is null. */
 export function contactRow(r: CrmRecord, portal?: string): Row {
   const p = r.properties;
   return {
     contact_id: r.id, email: p.email ?? null, first_name: p.firstname ?? null, last_name: p.lastname ?? null, job_title: p.jobtitle ?? null,
-    lifecycle_stage: p.lifecyclestage ?? null, lead_status: p.hs_lead_status ?? null, owner_id: p.hubspot_owner_id ?? null, company_ids: ids(r, "companies"),
+    lifecycle_stage: p.lifecyclestage ?? null, lead_status: p.hs_lead_status ?? null, owner_id: p.hubspot_owner_id ?? null, company_ids: [],
     created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.lastmodifieddate), url: link(portal, "contact", r.id),
   };
 }
@@ -119,7 +122,7 @@ export function dealRow(r: CrmRecord, portal?: string): Row {
   const p = r.properties;
   return {
     deal_id: r.id, name: text(p.dealname).text, pipeline: p.pipeline ?? null, stage: p.dealstage ?? null, amount: num(p.amount), currency: p.deal_currency_code ?? null,
-    close_date: isoOf(p.closedate), owner_id: p.hubspot_owner_id ?? null, company_ids: ids(r, "companies"), contact_ids: ids(r, "contacts"),
+    close_date: isoOf(p.closedate), owner_id: p.hubspot_owner_id ?? null, company_ids: [], contact_ids: [],
     created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "deal", r.id),
   };
 }
@@ -138,7 +141,7 @@ export function activityRow(type: string, r: CrmRecord, portal?: string): Row {
   return {
     activity_id: `${type}:${r.id}`, type: type.slice(0, -1), subject: text(k.subject && p[k.subject]).text, body: b.text, body_truncated: b.truncated,
     direction: (k.direction && p[k.direction]) || null, status: (k.status && p[k.status]) || null, owner_id: p.hubspot_owner_id ?? null,
-    occurred_at: isoOf(p.hs_timestamp), contact_ids: ids(r, "contacts"), company_ids: ids(r, "companies"), deal_ids: ids(r, "deals"),
+    occurred_at: isoOf(p.hs_timestamp), contact_ids: [], company_ids: [], deal_ids: [],
     created_at_src: isoOf(p.hs_createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "record/" + type, r.id),
   };
 }
@@ -151,28 +154,50 @@ export function selected(setting: string[]): string[] {
   return [...want].flatMap((s) => (s === "activities" ? [...ACTIVITY_TYPES] : [s]));
 }
 
-/** Records modified since `sinceIso`, oldest first, paging and restarting windows past HubSpot's 10,000-result search cap. */
-async function* records(call: CallHubSpot, def: ObjectDef, sinceIso: string, state: { ended: boolean }, deadline: number): AsyncGenerator<CrmRecord> {
-  let since = Date.parse(sinceIso);
+/**
+ * Records modified since `sinceIso`, oldest first, a page of the oldest at a time: the next page starts at the last time seen
+ * (rows at that time are read again: unchanged rows are no-ops), so a record edited meanwhile can't shift another out of a page.
+ * A time shared by more than one page of records (a bulk edit) can't be passed that way, so it is read by id instead (`afterId`
+ * resumes inside it): `state.tieId` is the id read last (undefined outside such a time) and `state.doneMs` the latest such time
+ * read whole.
+ */
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string; doneMs?: number }, deadline: number): AsyncGenerator<CrmRecord> {
+  let since = Date.parse(from.sinceIso);
+  let afterId = from.afterId;
   for (;;) {
-    let after: string | undefined;
-    let seen = 0;
-    let last = since;
-    do {
-      const page = await searchPage(call, def, since, after);
-      const recs = await withAssociations(call, def, page.records);
-      for (const r of recs) {
+    if (afterId === undefined) {
+      const page = await searchPage(call, def, since);
+      let last = since;
+      for (const r of page) {
         yield r;
         const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
         if (t > last) last = t;
       }
-      seen += recs.length;
-      after = page.next;
-      if (after && Date.now() >= deadline) return void (state.ended = false);
-    } while (after && seen < WINDOW);
-    if (!after) return void (state.ended = true);
-    if (last <= since) throw new Error(`${def.objectType}: more than ${WINDOW} records share one modified time; can't page past them`);
-    since = last; // overlap at the edge: unchanged rows are no-ops
+      if (page.length < SEARCH_LIMIT) return void (state.ended = true);
+      if (last > since) {
+        since = last;
+        if (Date.now() >= deadline) return void (state.ended = false);
+        continue;
+      }
+      afterId = "0";
+      state.tieId = afterId; // saved with the cursor, so a spent budget still switches the next pass to id paging
+      if (Date.now() >= deadline) return void (state.ended = false);
+    }
+    let id = afterId;
+    for (;;) {
+      const page = await searchTie(call, def, since, id);
+      for (const r of page) {
+        id = r.id;
+        state.tieId = id;
+        yield r;
+      }
+      if (page.length < SEARCH_LIMIT) break;
+      if (Date.now() >= deadline) return void (state.ended = false);
+    }
+    state.tieId = undefined;
+    state.doneMs = since;
+    since += 1;
+    afterId = undefined;
   }
 }
 
@@ -187,10 +212,14 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   let written = 0, skipped = 0;
   const st = await store.scope(scope);
   const baseline = !st.baselined;
-  let newest = st.cursor ?? new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
-  const state = { ended: false };
+  // The cursor is a time, plus "#<id>" while a bulk-edit time is being read by id.
+  const [cursorTime, cursorId] = (st.cursor ?? "").split("#");
+  let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
+  const from = newest;
+  let tieId = cursorId || undefined;
+  const state: { ended: boolean; tieId?: string; doneMs?: number } = { ended: false };
   try {
-    for await (const r of records(call, def, newest, state, o.deadline)) {
+    for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
       try {
         row = build(r);
@@ -203,20 +232,32 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
       if ((await store.upsert(table, row, { baseline })) !== "same") written++;
       const u = row.source_updated_at as string | null;
       if (u && Date.parse(u) > Date.parse(newest)) newest = u;
+      tieId = state.tieId;
     }
+    tieId = state.tieId;
+    // A bulk-edit time read whole is the newest the cursor must pass, even when no later record came.
+    if (state.doneMs !== undefined && state.doneMs >= Date.parse(newest)) newest = new Date(state.doneMs + 1).toISOString();
   } finally {
     // The cursor moves with what was written, and the type is baselined only when its search ended.
-    await store.saveScope(scope, newest, state.ended);
+    // A search that ended has caught up: the next pass starts a little before, so records HubSpot indexed late (bulk edits)
+    // aren't left behind a cursor that already passed their time.
+    const now = o.now ?? Date.now();
+    const back = state.ended && !tieId && Date.parse(newest) > now - OVERLAP_MS ? new Date(Math.max(Date.parse(newest) - OVERLAP_MS, Date.parse(from))).toISOString() : newest;
+    await store.saveScope(scope, tieId ? `${newest}#${tieId}` : back, state.ended);
   }
   if (skipped) o.log?.warn({ kind, skipped }, "src_hubspot: records skipped");
   return written;
 }
 
 /** Owners (the people records are assigned to) and deal stage labels: small, so each pass reads them whole. */
-export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[]): Promise<number> {
+export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[], deadline = Infinity): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
-  for (const o of await listOwners(call)) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, ...(o.email ? { email: o.email } : {}), is_bot: false }, { baseline: false })) !== "same") written++;
+  // The owner scan resumes where the last pass's budget ran out (its cursor is the next offset; empty once it reached the end).
+  const from = (await store.scope("owners")).cursor || undefined;
+  const { owners, next } = await listOwners(call, deadline, from === undefined ? undefined : Number(from));
+  for (const o of owners) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
+  await store.saveScope("owners", next === undefined ? "" : String(next));
   if (kinds.includes("deals"))
     for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
@@ -227,7 +268,7 @@ export function startSync(store: SourceStore, call: CallHubSpot, kinds: string[]
   const tick = async () => {
     const passEnd = Date.now() + PASS_BUDGET_MS;
     const slice = Math.max(30_000, PASS_BUDGET_MS / Math.max(1, kinds.length)); // each type's share, so a long baseline never starves the others
-    await store.run("hubspot", "reference", () => syncReference(store, call, kinds)).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_hubspot reference failed"));
+    await store.run("hubspot", "reference", () => syncReference(store, call, kinds, Date.now() + REFERENCE_BUDGET_MS)).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_hubspot reference failed"));
     for (const kind of kinds) {
       if (Date.now() >= passEnd) break;
       try {

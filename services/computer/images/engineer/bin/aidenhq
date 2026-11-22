@@ -8,7 +8,8 @@
 //   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]...
 //                                                    push each branch at its commit in this workspace's clone and open (or
 //                                                    update) its PR (a change request on this server): one codehost.pr write each;
-//                                                    --fixes adds a `Fixes <owner/repo#n>` line to the body for each issue the PR closes
+//                                                    --fixes adds a `Fixes <owner/repo#n>` line to the body for each issue the PR closes,
+//                                                    and needs --body-file: no body file means the existing description is kept
 //   aidenhq review <org/repo> <branch>... [--title <title>] [--body-file <file>]
 //                                                    what the AI reviewer would say of publishing these branches, before
 //                                                    publishing: nothing is filed; up to 3 a job (each is a reviewer call)
@@ -188,13 +189,13 @@ const needSelfReview = (repo, branch) => {
     seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), `self-review-${createHash("sha256").update(branch).digest("hex")}.json`), "utf8")).head;
   } catch {}
   checked.set(`${repo} ${branch}`, sha);
-  if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
+  if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published; skill \`publish\` has the steps)`, 2);
 };
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
-/** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */
+/** The subject of the branch's first commit (the oldest one no other remote branch has, so a republish keeps it), the one a squash merge would carry. */
 const firstSubject = (repo, branch) => {
   const dir = cloneOf(repo).have;
-  return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", "--remotes"], { encoding: "utf8" }).split("\n")[0];
+  return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", `--exclude=origin/${branch}`, "--remotes"], { encoding: "utf8" }).split("\n")[0];
 };
 /** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
 async function tool(name, args) {
@@ -235,7 +236,11 @@ function withFixes(body, issues) {
 const lines = [];
 if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
-  const body = withFixes(flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "", fixes);
+  // A publish without --body-file names no description: an existing PR keeps its own (never a body generated here), so
+  // --fixes (whose whole output is generated text) needs the body file that carries the whole description it belongs in.
+  const supplied = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "";
+  if (fixes.length && !supplied.trim()) fail(`--fixes needs --body-file: a publish without one keeps the existing description, so pass the whole body with its Fixes line (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
+  const body = withFixes(supplied, fixes);
   if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
@@ -253,7 +258,8 @@ if (command === "publish" || command === "review") {
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);
-    const args = { only: [{ repo, branch, sha }], text: { title, body } };
+    // No --body-file (and no --fixes line): the PR's text carries no body, so an existing description is kept, never blanked.
+    const args = { only: [{ repo, branch, sha }], text: { title, ...(body ? { body } : {}) } };
     if (command === "publish") lines.push(`${repo} ${branch}: ${(await write("codehost.pr", args))}`);
     else {
       // The reviewer's verdict on the PR this would publish, filed by nothing; its reason is a model's words, shown as data.

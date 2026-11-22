@@ -1555,6 +1555,36 @@ test("a corrected answer closes a finding that carries a fixed claim, and a rech
   assert.deepEqual(v.engine.verdict(REPO, 2, sha("3")).reasons, [], "reported again by a review that started before the correction: still closed");
 });
 
+test("a pending fixed the latest recheck called still there says so in the wait reason and the open-findings list", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
+  assert.doesNotMatch(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /still there/, "no recheck yet: nothing to say");
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [], still: ["f1"] }); await w.tick();
+  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons.at(-1).text, /id f1: the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
+  assert.match(w.engine.openFindings(REPO, 2)[0].note, /still there/);
+});
+
+test("a fixed claim recorded after its head's recheck started gets exactly one more recheck of that head, which can clear it", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "the new head's recheck is running");
+  w.later(1000);
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
+  await w.tick();
+  assert.equal(w.started.length, 2, "not while the head's own run is still going");
+  w.finish(1, { findings: [] }); await w.tick(); await w.tick();
+  assert.deepEqual(w.started.map((x) => x.head).slice(1), [sha("3"), sha("3")], "one more recheck, at the same head");
+  assert.deepEqual(w.started[2].previous.map((x) => x.id), ["f1"], "it reads the claim's finding");
+  w.finish(2, { findings: [], cleared: ["f1"] }); await w.tick(); await w.tick();
+  assert.equal(w.started.length, 3, "no loop: the claim is closed and gets no more");
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+});
+
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));
@@ -1765,4 +1795,43 @@ test("a reply on a finding's thread posted before the service recorded its threa
   await w.tick();
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()", "bob's answer counts; mallory (no write access) still doesn't");
   assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"], "a thread reply's fixed is a claim too");
+});
+
+test("a gated repo with no mandatory on_push: a push needs no review of its own, so the PR merges once nothing is open; a fixed claim is still rechecked at the pushed head", async () => {
+  assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] })).errors, []);
+  assert.match(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [MUST_PUSH] }] })).errors[0], /needs a mandatory on_open one/);
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick(); // f1 open, gating
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 1, "no review of the push");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the opening review stands; its open finding still holds the merge");
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" });
+  await w.tick();
+  assert.deepEqual(w.started.slice(1).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"]], "the claim's recheck, on the on_open mandatory combo at low effort");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running", "findings"]);
+  w.finish(1, { findings: [], cleared: ["f1"] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "a later push runs nothing");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
+  assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason], [sha("4"), "pass"]);
+});
+
+test("no mandatory on_push: a mandatory opening run a push superseded is run again at the newest head; `always` adds no gate", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CLAUDE, MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick(); // the advice finished first
+  w.pr(2, sha("3")); await w.tick();
+  w.finish(1, NONE); await w.tick(); await w.tick(); // the mandatory run ends on the old head: superseded
+  assert.deepEqual(w.started.slice(2).filter((s) => s.mandatory).map((s) => [s.head, label(s)]), [[sha("3"), "codex/medium"]]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
+  for (let i = 2; i < w.started.length; i++) w.finish(i, NONE);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  w.later(1000); w.say(2, "alice", "aiden review always"); await w.tick();
+  const n = w.started.length;
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.ok(w.started.length > n && w.started.slice(n).every((s) => !s.mandatory), "the push is reviewed, as advice");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
 });

@@ -14,7 +14,7 @@ Nothing to connect. It needs a code host (`codehost-local` or `github`), an engi
 - It reads apps (`app_list`, `app_status`, `app_view`, `app_check`, `web_view`), GitHub when connected, and uses the task
   tools `task_file_upload`, `task_finish` and `task_wait`. Pushes, PRs and merges go through the code host's reviewed
   write kinds, not tools.
-- Holds the `platform-engineer` role. Skills: `engineering.write-code` and `engineering.supply-chain`.
+- Holds the `platform-engineer` role. Skills: `engineering.write-code`, `engineering.publish` and `engineering.supply-chain`.
 
 ## New installs
 

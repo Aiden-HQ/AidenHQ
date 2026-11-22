@@ -150,10 +150,12 @@ main() {
   # through the entry point, which re-takes the lock on fd 9 for the new process; the lock is held across the exec, so
   # no other apply can slip in between. Pinned to the instance commit just checked. A script that predates the hand-over
   # (a rollback) can't take `before`, so this one carries on instead.
-  # ops/lib/ci-runner-enabled.sh is deliberately not in this list: a product that predates the helper has a gate that
-  # reads list-unit-files (never true on a live host), and handing over to it during a pin rollback would leave the newer
-  # runner template installed. New products gate with this helper and are in the list through this script's own change.
-  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh \
+  # A product that predates ops/lib/ci-runner-enabled.sh cannot gate the runner template (its gate reads list-unit-files,
+  # never true on a live host), so hand over only when the target has the helper. Hammering its scripts while it is the
+  # running product leaves the newer template in place; the next apply from a product that has the helper fixes it, and
+  # because this script itself differs the direct upgrade still hands over (the helper is in the list too).
+  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && git cat-file -e "$product:ops/lib/ci-runner-enabled.sh" 2>/dev/null \
+     && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-enabled.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
     local again=("$want"); [ "$force" = 0 ] || again+=(--force)
@@ -273,6 +275,95 @@ retireUnits() {
   [ -z "$ended" ] || { systemctl --user stop $ended && echo "ended apply units removed: $(echo $ended | wc -w)"; } || true
 }
 
+# Put the runner template the re-applied generation carries back in place. The child that re-applies a generation is the
+# generation's own product (`bash ops/apply-config-work.sh --generation`), so when that product predates the runner helper it
+# gates with list-unit-files (never true on a live host) and leaves the failed generation's template installed: a newer
+# ExecStartPre naming a script the older product may not have, on the very units it is bringing back. The switch that failed
+# did the same copy, so the template is not reloaded on the way back unless the file changed (the unload-reload window
+# auto-revert exists to avoid). Returns 1 when the template is this generation's but systemd never read it.
+# Put the product's runner template in the user unit dir, atomically, unless the template itself is masked (`/dev/null`, by
+# the operator or a product): a mask is their decision, and writing over it would start runners they stopped. A rename into
+# place means a kill never leaves the unit dir with no template at all, which would make the instances `not-found` and hide
+# them from the next apply's own gate. The one installer both the switch and the auto-revert use.
+installRunnerTemplate() {
+  local src="$1" units="$HOME/.config/systemd/user" tmp
+  local stamp="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/ci-runner-template.reloaded"
+  # A mask is a link to /dev/null or an empty file (systemd reads both as masked); either is the operator's decision. A
+  # runtime mask (`systemctl --user mask --runtime`, /run/systemd/user) sits outside this dir and hides this file after a
+  # reload, so is-enabled names it too: writing here would make a runner the operator masked startable again.
+  if [ "$(readlink -f "$units/aidenhq-ci-runner@.service" 2>/dev/null)" = /dev/null ] \
+     || { [ -f "$units/aidenhq-ci-runner@.service" ] && [ ! -s "$units/aidenhq-ci-runner@.service" ]; } \
+     || case "$(systemctl --user is-enabled aidenhq-ci-runner@.service 2>/dev/null)" in masked|masked-runtime) true ;; *) false ;; esac; then
+    echo "ci runner unit template is masked: left as it is"
+    return 2
+  fi
+  mkdir -p "$units"
+  # A fresh name, so a leftover directory at a fixed `.tmp` name can't take the copy and then be renamed into place.
+  tmp="$(mktemp "$units/.aidenhq-ci-runner@.service.XXXXXX")" || return 1
+  # The stamp is dropped first: from this rename until the reload below succeeds, the file on disk is not the one systemd
+  # has loaded, and a kill in between must not leave a stamp that claims it is.
+  rm -f "$stamp"
+  # -T: the destination is the exact path. Without it `mv` into a directory (a template path that became one, or a symlink to
+  # one) moves the file inside and succeeds, so the switch would record a template that was never installed.
+  cp "$src" "$tmp" && mv -fT "$tmp" "$units/aidenhq-ci-runner@.service" || { rm -f "$tmp"; return 1; }
+}
+
+# daemon-reload, then record the sha of the template systemd now has loaded. One checked step: a stamp that could not be
+# written leaves no record, so the next apply reloads again instead of trusting a reload nothing confirms. Returns 1 on
+# either failure (the caller fails the switch or the revert).
+reloadRunnerTemplate() {
+  local src="$1" stamp="$2" sha
+  systemctl --user daemon-reload || return 1
+  sha="$(git hash-object "$src")" || return 1
+  mkdir -p "$(dirname "$stamp")" || return 1
+  # -T: the stamp is the exact path; `mv` into a directory the stamp path became would report success with no stamp there.
+  printf '%s\n' "$sha" > "$stamp.tmp" && mv -fT "$stamp.tmp" "$stamp" || return 1
+}
+
+restoreRunnerTemplate() {
+  local product="${1:-$(git rev-parse HEAD)}" units="$HOME/.config/systemd/user" tmp sha
+  local stamp="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/ci-runner-template.reloaded"
+  [ -n "$product" ] || return 0
+  # The normal install's own decision, from the one definition (ops/lib/ci-runner-enabled.sh, sourced by main() before any
+  # checkout): a host with no enabled runner instance keeps its template as it is, masks and precedence included. A second,
+  # weaker copy of that test here is exactly how the two drift.
+  [ -n "$(ci_runner_enabled_units)" ] || return 0
+  # On its own line: `tmp="$(mktemp)"` as the left side of `||` would not stop the script on failure, and the next redirect
+  # into an empty name would read as "this generation has no template" and report a good revert it never made.
+  tmp="$(mktemp)" || return 1
+  if ! git cat-file -e "$product:ops/units/aidenhq-ci-runner@.service" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  # It exists, so a failed read or write is a failed restore, not "this generation had none".
+  git show "$product:ops/units/aidenhq-ci-runner@.service" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  sha="$(git hash-object "$tmp")"
+  mkdir -p "$units"
+  if ! cmp -s "$tmp" "$units/aidenhq-ci-runner@.service"; then
+    installRunnerTemplate "$tmp"; case $? in 0) ;; 2) rm -f "$tmp"; return 0 ;; *) rm -f "$tmp"; return 1 ;; esac
+    reloadRunnerTemplate "$tmp" "$stamp" || { rm -f "$tmp"; echo "ci runner unit template: daemon-reload or its reload stamp failed on the way back" >&2; return 1; }
+    echo "ci runner unit template restored to this generation's"
+  elif [ "$(cat "$stamp" 2>/dev/null)" != "$sha" ]; then
+    # The failed switch copied this same file and systemd never read it: the switch failed before the reload, or at it.
+    reloadRunnerTemplate "$tmp" "$stamp" || { rm -f "$tmp"; echo "ci runner unit template: daemon-reload or its reload stamp failed on the way back" >&2; return 1; }
+    echo "ci runner unit template reloaded for this generation"
+  fi
+  rm -f "$tmp"
+}
+
+# Whether the runner template systemd has loaded is <product>'s: nothing enabled, a product that carries none, or an
+# operator's mask all count as nothing to put back, exactly as restoreRunnerTemplate decides it; otherwise the file and the
+# reload stamp are both that product's template. What the revert is judged by after its child has run.
+runnerTemplateMatches() {
+  local product="$1" units="$HOME/.config/systemd/user" sha
+  local stamp="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/ci-runner-template.reloaded"
+  [ -n "$(ci_runner_enabled_units)" ] || return 0
+  git cat-file -e "$product:ops/units/aidenhq-ci-runner@.service" 2>/dev/null || return 0
+  if [ "$(readlink -f "$units/aidenhq-ci-runner@.service" 2>/dev/null)" = /dev/null ] \
+     || { [ -f "$units/aidenhq-ci-runner@.service" ] && [ ! -s "$units/aidenhq-ci-runner@.service" ]; } \
+     || case "$(systemctl --user is-enabled aidenhq-ci-runner@.service 2>/dev/null)" in masked|masked-runtime) true ;; *) false ;; esac; then return 0; fi
+  sha="$(git rev-parse "$product:ops/units/aidenhq-ci-runner@.service" 2>/dev/null)" || return 1
+  [ "$(git hash-object "$units/aidenhq-ci-runner@.service" 2>/dev/null)" = "$sha" ] || return 1
+  [ "$(cat "$stamp" 2>/dev/null)" = "$sha" ]
+}
+
 # Generation n failed (marked so already): its whole snapshot put back, then the last known good's product re-applied by a
 # child in --generation mode (it never reverts), on the instance revertInstance makes. Data first, so the older code never
 # starts on data it doesn't know. Returns 1.
@@ -295,7 +386,33 @@ revertTo() {
   done
   echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12)) on instance ${target:0:12}: $what"
   base="$GEN_DIR/apply-$n.baseline"; [ -f "$base" ] || base=""
-  AIDENHQ_APPLY_BEFORE="$(genGet "$n" product)" AIDENHQ_REVERT_OF="$n" AIDENHQ_REVERT_INSTANCE="$target" AIDENHQ_HEALTH_BASELINE="$base" bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
+  # Put the generation being brought back's template in place here, before the child runs. The child is that generation's
+  # own tree, and a product that predates the helper can't gate the template at all (its gate reads list-unit-files, never
+  # true on a live host), so it would leave the failed generation's template on the units it is bringing back. A tree that
+  # has the helper installs the same file again in its own switch (cmp makes that a no-op). A restore that fails is a failed
+  # revert: systemd would keep the failed generation's template while this reports the revert as good.
+  # The generation being brought back's own template, before the child runs: the child is that generation's tree, and a
+  # product that predates the helper cannot gate or install the template at all, so it would leave the failed generation's
+  # template on the units it is about to start. A tree that has the helper installs the same file again in its own switch
+  # (cmp makes that a no-op). A restore that fails is a failed revert, not a warning.
+  restoreRunnerTemplate "$(genGet "$lkg" product)" || echo "apply alert: the runner template could not be put back for generation $lkg; the revert's own switch gets the next try; log $log" >&2
+  AIDENHQ_APPLY_BEFORE="$(genGet "$n" product)" AIDENHQ_REVERT_OF="$n" AIDENHQ_REVERT_INSTANCE="$target" AIDENHQ_HEALTH_BASELINE="$base" AIDENHQ_REVERT_VERIFY=1 bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
+  # The child records its own generation, and it may be a worker that predates this restore (a pin rollback) or one whose
+  # switch reloaded systemd for a unit of its own after this restore's failed reload. So the revert is judged by what systemd
+  # has now, not by that attempt: a template that is not the last known good's gets one checked restore here (its file may
+  # already be in place, and then only the reload and stamp are redone), and only a template still not the last known good's
+  # fails the revert, its line marked failed so the ledger and this alert agree (a later apply does not revert it again).
+  if [ "$rrc" -eq 0 ] && ! runnerTemplateMatches "$(genGet "$lkg" product)"; then
+    restoreRunnerTemplate "$(genGet "$lkg" product)" || echo "apply alert: the runner template could not be put back for generation $lkg after the revert; log $log" >&2
+  fi
+  if [ "$rrc" -eq 0 ] && ! runnerTemplateMatches "$(genGet "$lkg" product)"; then
+    echo "apply alert: the runner template is still not generation $lkg's; log $log" >&2
+    genMark "$(genJs last)" failed "the runner template could not be put back"
+    rrc=1
+  fi
+  # The revert's own line was left pending for this check: it is good only now, when both its health check passed and the
+  # template systemd has is the returning generation's.
+  if [ "$rrc" -eq 0 ]; then genMark "$(genJs last)" good; fi
   if [ "$rrc" -eq 0 ]; then
     echo "apply alert: generation $n failed ($why) and was reverted to generation $lkg ($what; the instance's main is unchanged); this host stays there until the instance's main moves; log $log"
   else
@@ -407,6 +524,10 @@ applyGeneration() {
   git merge-base --is-ancestor "$pin" origin/main || { rm -f "$file"; echo "refusing: generation $gen's product $pin is not on origin/main" >&2; exit 1; }
   [ "$(kernelRun "$file" "$pin")" = "$product" ] || { rm -f "$file"; echo "refusing: generation $gen's product $product is not what its instance commit runs" >&2; exit 1; }
   rm -f "$file"
+  # The functions this re-apply needs stay whatever the checkouts below do to the tree: a generation from before
+  # ops/lib/ci-runner-enabled.sh has no such file, and sourcing it after the checkout would abort the re-apply rather than
+  # restore its runner template (main() sources it the same way, before any checkout).
+  . ops/lib/ci-runner-enabled.sh
   # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel comes back.
   local before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
@@ -440,7 +561,13 @@ applyGeneration() {
   if [ "$rc" -ne 0 ]; then HEALTH_WHY="the switch failed (exit $rc)"; elif health "${AIDENHQ_HEALTH_BASELINE:-}" "$prev_config"; then ok=1; fi
   rm -f "$prev_config"
   echo "apply timing: total $(apply_secs "$apply_t0")s"
-  if [ "$ok" = 1 ]; then genMark "$m" good; echo "generation $m is good"; return 0; fi
+  if [ "$ok" = 1 ]; then
+    # The auto-revert's own line stays pending until the parent has checked that the template systemd ends with is the
+    # generation being returned to: a parent killed in between leaves it unsettled, and the next recovery reverts again
+    # rather than reading a revert as good with the failed generation's template still loaded (AIDENHQ_REVERT_VERIFY).
+    if [ -n "${AIDENHQ_REVERT_VERIFY:-}" ]; then echo "generation $m passed its health check; the revert's template check decides it"; return 0; fi
+    genMark "$m" good; echo "generation $m is good"; return 0
+  fi
   genMark "$m" failed "$HEALTH_WHY" "$log"
   echo "generation $m failed: $HEALTH_WHY"
   return 1
@@ -820,17 +947,23 @@ switchOver() {
     # The stamp holds the sha of the template systemd has loaded. A copy whose reload failed is not the loaded one, so the
     # next apply sees a mismatch and reloads again, though the file on disk already matches (`cmp` alone would skip it).
     if ! cmp -s "$runner_template" "$units/aidenhq-ci-runner@.service" || [ "$(cat "$runner_reload_stamp" 2>/dev/null)" != "$(git hash-object "$runner_template")" ]; then
-      cp "$runner_template" "$units/"
-      # A failed reload is a failed switch: the copied template is not what systemd runs, and continuing would mark this
-      # generation good with a unit systemd never read (`cp && cmd && echo` would leave the failure unchecked under errexit).
-      if ! systemctl --user daemon-reload; then
-        rm -f "$runner_reload_stamp"
-        echo "ci runner unit template: daemon-reload failed" >&2
+      local irc=0
+      installRunnerTemplate "$runner_template" || irc=$?
+      if [ "$irc" -ne 0 ] && [ "$irc" -ne 2 ]; then
+        echo "ci runner unit template: could not be written to $units" >&2
         return 1
       fi
-      mkdir -p "$(dirname "$runner_reload_stamp")"
-      git hash-object "$runner_template" > "$runner_reload_stamp.tmp" && mv -f "$runner_reload_stamp.tmp" "$runner_reload_stamp"
-      echo "ci runner unit template installed/updated"
+      # Masked: systemd runs nothing from this file, so there is nothing to reload and no loaded sha to record.
+      if [ "$irc" != 2 ]; then
+        # A failed reload is a failed switch: the copied template is not what systemd runs, and continuing would mark this
+        # generation good with a unit systemd never read (`cp && cmd && echo` would leave the failure unchecked under errexit).
+        if ! reloadRunnerTemplate "$runner_template" "$runner_reload_stamp"; then
+          rm -f "$runner_reload_stamp"
+          echo "ci runner unit template: daemon-reload or its reload stamp failed" >&2
+          return 1
+        fi
+        echo "ci runner unit template installed/updated"
+      fi
     fi
   fi
   # The CI runner units the config declares (the instances systemd has enabled) that are failed, and the ones a recorded

@@ -47,8 +47,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "title",
-        "body"
+        "title"
       ],
       "properties": {
         "title": {

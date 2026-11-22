@@ -63,7 +63,7 @@ owner's (money past a limit, a credential, a security trade-off) is `owner-call`
   (PR link, why superseded, close reason), no close task for an Engineer, and log `pr · <repo>#<n> · outside-close-scope · maintainer`.
 - App incident: the DevOps Engineer owns it; still open after its run or flapping: `task_route` its incident task (none: comment on Fleet issues). Never diagnose or restart it yourself.
   `quality:<app>:<check>`: never a restart; `task_create` once to the app's owner (else DevOps Engineer), same marker, done when the check passes.
-- Source down: `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`.
+- Source down: `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`. A flag keyed `<source>:<scope>` (one scope failing a day while the rest work): same handling, comment key `ingest · src_<source> · <scope> · failing`.
 - `alert:…`: name the rule and container, never the label text; `query_prometheus` with a `grafana` grant; route to the Engineer (host), an app owner or a product bug.
 - `routine:<id>` / `missed:<id>:<schedule>`: route the fix like a failing agent; Aiden resumes the routine. Many missed fires: product bug.
 - `front:<chat task>` (urgent): comment once on the chat with what changed (comments only); still silent: product bug, slug `front-door-silent`.

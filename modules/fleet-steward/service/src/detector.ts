@@ -22,6 +22,18 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
     .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
+/** Sources whose scope is one scanned target and whose error column carries that target's finding ("image not inventoried"), not a failed pass. */
+const PER_TARGET_ERRORS = new Set(["security"]);
+type FailingScope = { source: string; scope: string; error: string; since: string | null };
+/**
+ * Scopes still running whose every pass for a day has failed: a source with one working scope looks fine to staleSources
+ * (its last good pass is fresh), so a scope failing alone, like one org's boards, would go unnoticed for good. The error is
+ * the ingest's own text, which can quote GitHub or a site, so it reaches the Steward only fenced.
+ */
+export function failingScopes(rows: FailingScope[]): { key: string; reason: string }[] {
+  return rows.filter((x) => !PER_TARGET_ERRORS.has(x.source)).map((x) => ({ key: `${x.source}:${x.scope}`, reason: `source src_${x.source}, scope ${x.scope}: every pass has failed since ${x.since ? `its last good pass at ${x.since}` : "it started"}; the latest error:\n${fence(x.error, "ingest.error")}` }));
+}
+
 const PR_OPEN_MS = 60 * MIN; // a pull request the fleet published open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
 type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; ready_at?: string | null; preview_url?: string };
@@ -891,10 +903,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       return down > DOWN_MS ? [{ key: "apps-mcp", critical: true, reason: `apps-mcp (the apps platform) not answering for ${mins(down)}` }] : [];
     },
     async source() {
-      const r = await d.apps<{ sources?: SourceRow[] }>("/internal/sources");
+      const r = await d.apps<{ sources?: SourceRow[]; failing_scopes?: FailingScope[] }>("/internal/sources");
       if (!r.sources) return undefined; // the warehouse isn't set up
-      // Which source and since when only: the agent reads the error itself with warehouse_query.
-      return staleSources(r.sources, now());
+      return [...staleSources(r.sources, now()), ...failingScopes(r.failing_scopes ?? [])];
     },
     // Monitoring alerts (alerts.ts): one incident per firing alert, recovered when it resolves.
     alert: d.alerts,

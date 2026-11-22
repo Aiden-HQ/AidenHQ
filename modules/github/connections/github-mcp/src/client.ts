@@ -20,8 +20,8 @@ export type Need =
   | { cause: "not_connected" }
   | { cause: "expired" }
   | { cause: "scope"; scope: string }
-  | { cause: "sso"; org: string; url: string }
-  | { cause: "restricted"; org: string; url: string }
+  | { cause: "sso"; org: string; url: string; /** GitHub's own words, in full, when it gave them (a GraphQL refusal). */ message?: string }
+  | { cause: "restricted"; org: string; url: string; message?: string }
   | { cause: "unreachable"; repo: string }
   | { cause: "rate_limited"; until: string }
   | { cause: "write_busy" };
@@ -74,7 +74,7 @@ export type StatusLine = { label: string; value: string; time?: string; state: "
 export type GitHubStatus = {
   login?: string;
   scopes: string[];
-  problems: { org: string; cause: "sso" | "restricted"; url: string }[];
+  problems: { org: string; cause: "sso" | "restricted"; url: string; message?: string }[];
   rate?: { remaining: number; limit: number; reset: string };
   /** The card's rows; empty while not connected. */
   lines: StatusLine[];
@@ -202,7 +202,8 @@ export function createAccess(o: {
   let granted: string[] | undefined;
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
-  const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string }>();
+  /** `at`: when a GraphQL refusal last came (those warnings expire, see PROBLEM_TTL_MS); REST's are cleared by an org call that works. */
+  const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string; at?: number }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
@@ -215,9 +216,9 @@ export function createAccess(o: {
     return t;
   }
 
-  function fail(n: Need): never {
-    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url });
-    throw new GitHubNeed(n);
+  function fail(n: Need, refusedAt?: number): never {
+    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}), ...(refusedAt ? { at: refusedAt } : {}) });
+    throw new GitHubNeed(n, (n.cause === "sso" || n.cause === "restricted") && n.message ? `${needText(n)}. GitHub said: ${n.message}` : undefined);
   }
 
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
@@ -399,7 +400,7 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path)) problems.delete(ownerOf(path)!.toLowerCase());
+    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && problems.get(ownerOf(path)!.toLowerCase())?.at === undefined) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -421,7 +422,21 @@ export function createAccess(o: {
     token: () => token(),
     scopes,
     rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as),
-    graphql: async (query, variables, opts = {}) => (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as)).body,
+    graphql: async (query, variables, opts = {}) => {
+      const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
+      const body = res.body;
+      if (opts.as) return body;
+      // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
+      if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
+      const org = typeof variables.org === "string" ? variables.org : "";
+      // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content (an
+      // issue of another org) is recorded but leaves the rest of the board readable. The warning stays while refusals keep coming.
+      for (const { need, fatal } of graphqlNeeds(body?.errors, org, o.clientId)) {
+        if (fatal) fail(need, now());
+        problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
+      }
+      return body;
+    },
     async identity() {
       const t = await token();
       if (me?.for === t) return { login: me.login, name: me.name, email: me.email };
@@ -435,7 +450,8 @@ export function createAccess(o: {
       const core = owner.rates.get("core");
       const have = scopes();
       const rate = core ? { remaining: core.remaining, limit: core.limit, reset: new Date(core.reset).toISOString() } : undefined;
-      const list = [...problems.values()];
+      for (const [k, p] of problems) if (p.at !== undefined && now() - p.at > PROBLEM_TTL_MS) problems.delete(k);
+      const list = [...problems.values()].map(({ at: _at, ...p }) => p);
       const env = o.env ?? process.env;
       return {
         ...(me ? { login: me.login } : {}),
@@ -447,6 +463,30 @@ export function createAccess(o: {
     },
   };
 }
+
+/**
+ * The need a GraphQL `FORBIDDEN` error means: single sign-on (GitHub flags it), or an org that restricts OAuth apps (its message
+ * opens "Although you appear to have the correct authorization credentials"; an IP allow list sets its own flag and is no
+ * sign-in problem). The org is the one the message names (as REST's classifier reads it), else the one asked about. Any other
+ * error is just an error. The full message is kept. `fatal`: the refusal hit the read itself, not one item's `content`.
+ */
+function graphqlNeeds(errors: unknown, org: string, clientId?: string): { need: Extract<Need, { cause: "sso" | "restricted" }>; fatal: boolean }[] {
+  const out: { need: Extract<Need, { cause: "sso" | "restricted" }>; fatal: boolean }[] = [];
+  for (const e of Array.isArray(errors) ? errors : []) {
+    if (e?.type !== "FORBIDDEN") continue;
+    const message = String(e.message ?? "").slice(0, 1000);
+    const named = /the [`'"]?([A-Za-z0-9-]+)[`'"]? organization/i.exec(message)?.[1];
+    const fatal = !(Array.isArray(e.path) && e.path.includes("content"));
+    const who = named ?? (fatal ? org : ""); // an item's own refusal that names no org can't be pinned to the board's
+    if (!who) continue;
+    if (e.extensions?.saml_failure === true) out.push({ need: { cause: "sso", org: who, url: `https://github.com/orgs/${who}/sso`, message }, fatal });
+    else if (e.extensions?.ip_allow_list_failure !== true && /OAuth App|authorization credentials/i.test(message)) out.push({ need: { cause: "restricted", org: who, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message }, fatal });
+  }
+  return out;
+}
+
+/** A GraphQL refusal's warning goes when its org has had none for this long: two board reads (a board's items are read hourly). */
+const PROBLEM_TTL_MS = 2 * 60 * 60_000;
 
 const RECONNECT = { label: "Reconnect", reconnect: true } as const;
 
@@ -462,7 +502,7 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
     { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/modules/github/settings" } },
     ...(ci ? [needs("CI runners", "admin:org")] : []),
     needs("Projects boards", "project"),
-    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: "the org restricts OAuth apps", state: "warn", action: { label: "Grant access", href: p.url } })),
+    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: p.message ? `GitHub needs you to authorize single sign-on: ${p.message.slice(0, 300)}` : "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: p.message ? `the org restricts OAuth apps: ${p.message.slice(0, 300)}` : "the org restricts OAuth apps", state: "warn", action: { label: "Grant access", href: p.url } })),
   ];
   if (rate) {
     lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets`, time: new Date(rate.reset).toISOString(), state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });
