@@ -761,6 +761,10 @@ test("security-sbom: two containers running one index on different platforms are
   assert.equal(status, 0, out);
   const images = targets.filter((t) => t[0].startsWith("image:"));
   assert.equal(images.length, 2, `one target per running variant:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  // The variant on the daemon's own platform keeps the plain tag key, so target names do not move when a variant comes or
+  // goes; only the other variant is suffixed.
+  assert.ok(images.some((t) => t[0] === "image:board:local"), `the native variant kept the plain key:\n${images.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(images.some((t) => t[0] === "image:board:local@linux/arm64/v8"), `the emulated variant got its own key:\n${images.map((t) => t.join("\t")).join("\n")}`);
   const saves = calls.filter((c) => c.startsWith("save "));
   assert.equal(saves.length, 2, `one archive per variant:\n${calls.join("\n")}\ntargets:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.ok(saves.some((c) => /--platform linux\/amd64 /.test(c)), saves.join("\n"));
@@ -821,4 +825,24 @@ test("security-sbom: a daemon older than API 1.48 exports without --platform ins
   const save = calls.find((c) => c.startsWith("save "));
   assert.ok(save, calls.join("\n"));
   assert.doesNotMatch(save, /--platform/, `a plain save was not used:\n${save}`);
+});
+
+test("security-sbom: a later scan's space is measured with the archives its predecessors freed", { skip: NOT_LINUX }, async () => {
+  // 50 GB free, a 30 GB floor: 19 GB of room (free is in KiB, so 52,000,000). Three 4 GB archives are 12 GB, and scanning the largest first unpacks 4 GB
+  // beside all 12 GB once; after that the scanned archive is gone, so later scans need less. Refusing the third because
+  // "every archive twice over" would scan fewer images than the disk can hold.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "52000000" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:aa11" },
+      { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:bb22" },
+      { id: "c3", image: "sha256:5555", config: "tasks-mcp:local", label: "sha256:cc33" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9991", "gate:local": "sha256:9992", "tasks-mcp:local": "sha256:9993" },
+    held: ["sha256:aa11", "sha256:bb22", "sha256:cc33"],
+    sizes: { "sha256:aa11": 4 * 1024 ** 3, "sha256:bb22": 4 * 1024 ** 3, "sha256:cc33": 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.filter((t) => t[0].startsWith("image:") && t[1] !== "-");
+  assert.equal(scanned.length, 3, `all three archives fit and scan:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 3);
 });

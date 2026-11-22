@@ -383,7 +383,11 @@ snapshot() {
     # store reconciles findings by target name, so keying the same image by its manifest id would leave the findings
     # already held under its id unverified beside the new ones. Two containers on one index are different variants, so
     # each is keyed by its own reference and platform instead of sharing the other's target.
-    if [ "${variant_count[$image]:-0}" -le 1 ]; then key="${u_tag[$unit]:-$image}"
+    # The variant on the daemon's own platform keeps the plain key (the tag, or the image id), so a target's name does not
+    # change when an emulated variant appears or goes away. Only the other variants are suffixed with their platform, and
+    # an image with a single variant is always plain. Findings reconcile by target name, so a stable name is what keeps
+    # them verified.
+    if [ "${variant_count[$image]:-0}" -le 1 ] || [ "$plat" = "$platform" ]; then key="${u_tag[$unit]:-$image}"
     elif [ -n "${u_tag[$unit]:-}" ]; then key="${u_tag[$unit]}@${plat}"
     else key="${man:-$image}@${plat}"; fi
     want="${u_tag[$unit]:-${u_label[$unit]:-$image}}"
@@ -416,9 +420,11 @@ snapshot() {
     p_key+=("$key"); p_want+=("$want"); p_pin+=("$pin"); p_ref+=("$ref")
     p_image+=("$image"); p_plat+=("$plat"); p_size+=("$(ceil_gb "$size")")
   done
-  # Admit smallest first, keeping `archives + largest admitted` inside the room above the floor: at the scan of the
-  # largest admitted image every admitted archive is still on disk, and unpacking it needs its own size again as
-  # workspace. An image that does not fit is a line and no bytes are written for it.
+  # Admit smallest first while `archives + largest admitted` fits above the floor, and scan largest first. At the first
+  # scan every admitted archive is on disk and that image is unpacked beside them; each later scan has already had its
+  # predecessors' archives deleted, so those peaks are lower. Scanning smallest first would instead keep the largest
+  # archive beside a larger and larger set, which is the case this accounting exists to rule out. An image that does not
+  # fit is a line and no bytes are written for it.
   room=$(( $(free_gb) - min_free_gb ))
   [ "$room" -lt 0 ] && room=0
   local -A admit=()
@@ -430,11 +436,15 @@ snapshot() {
     [ -n "$idx" ] || continue
     top=$(( sz > biggest ? sz : biggest ))
     if [ $(( total + sz + top )) -le "$room" ]; then
-      admit[$idx]=1; order+=("$idx"); total=$(( total + sz )); if [ "$sz" -gt "$biggest" ]; then biggest="$sz"; fi
+      admit[$idx]=1; total=$(( total + sz )); if [ "$sz" -gt "$biggest" ]; then biggest="$sz"; fi
     else
       admit[$idx]=0
     fi
   done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
+  # Largest first: see the accounting above.
+  while IFS=$'\t' read -r sz idx; do
+    [ "${admit[$idx]:-0}" = 1 ] && order+=("$idx")
+  done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -rn)
   for idx in "${!p_size[@]}"; do
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
     if [ "${admit[$idx]:-0}" != 1 ]; then
