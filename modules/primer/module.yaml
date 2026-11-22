@@ -171,6 +171,9 @@ writes:
   publish:
     args: schemas/publish.json
     floor: 1
+    # Code review files its repo reports here (private: true, one document per repo_key, only the owner can read it): its
+    # container can't reach primer-mcp, and the record is still read by the AI reviewer.
+    filed_by: [ code-review ]
     tools: [ primer_create_document, primer_add_version ]
     card:
       sentence: "Publish {{what}} on Primer."

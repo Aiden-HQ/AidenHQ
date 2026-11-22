@@ -826,7 +826,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
-    Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes));
+    Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes, [...all.keys()]));
     for (const [run, r] of Object.entries(checkJobs(name, def, root))) { if (checkJobTable[run]) fail(`two modules declare check job ${run}: ${checkJobTable[run].module} and ${name}`); checkJobTable[run] = r; }
     Object.assign(checks, checkEntries(name, def));
     // Every sign-in's service answers GET /auth/check (the board's Test button): built on the SDK's vendor proxy, which does, or
@@ -1587,7 +1587,7 @@ function moduleRev(root: string) {
  * templates, the args schema, its executor (`providers.executor`) and the tools routed into it (`connection.tool`): write or
  * destructive tools of the module's own connections, each in at most one kind.
  */
-export function writeKinds(name: string, def: Obj, root: string, instanceWrites: Obj = {}, taken: Obj = {}) {
+export function writeKinds(name: string, def: Obj, root: string, instanceWrites: Obj = {}, taken: Obj = {}, modules: string[] = []) {
   const out: Obj = {};
   const entries = Object.entries<Obj>(def.writes ?? {});
   if (!entries.length) return out;
@@ -1598,11 +1598,13 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
-    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "paths", "binds", "card", "tools"].includes(f));
+    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "paths", "binds", "card", "tools", "filed_by"].includes(f));
     if (extra.length) fail(`write kind ${id}: unknown field ${extra.join(", ")} (kernel/schemas/writes.json)`);
     if (![0, 1, 2].includes(w.floor)) fail(`write kind ${id}: floor is 0, 1 or 2`);
     if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
     if (w.paths != null && w.paths !== true) fail(`write kind ${id}: paths is true (a repository write: its plan returns the files it changes)`);
+    // The owner of the kind consents to other modules filing it; a module file only a kind it names, never a kernel kind.
+    if (w.filed_by != null && (!Array.isArray(w.filed_by) || !w.filed_by.length || w.filed_by.some((m: unknown) => typeof m !== "string" || m === name || m === "kernel" || !modules.includes(m)))) fail(`write kind ${id}: filed_by lists other modules by name (${modules.filter((m) => m !== name).slice(0, 4).join(", ")}…), never kernel or itself`);
     const binds = Array.isArray(w.binds) ? [...new Set(w.binds)] as string[] : undefined;
     if (w.binds != null && (!binds || !binds.length || binds.some((f) => !["repo", "ref", "commit"].includes(f)))) fail(`write kind ${id}: binds is a list of target fields it acts on (repo, ref, commit)`);
     const card = w.card ?? {};
@@ -1622,7 +1624,7 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(w.paths ? { paths: true } : {}), ...(binds ? { binds } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(w.paths ? { paths: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
   }
   return out;
 }

@@ -14,6 +14,10 @@
 //                whether such a path is there)
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
+//   setup        {repo, files, title, body, task} → {pr_url, branch, tip}: files the code host's own Tier 1 `github.setup` write
+//                (the AI reviewer reads the files), which runs only once approved: one commit adding the missing allowlisted files off the
+//                default branch's head, on a new aidenhq/setup-<sha> branch no one else has moved, and its PR (an earlier setup PR is
+//                closed). Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
@@ -58,9 +62,9 @@ export type Answer = Readable & { statusCode?: number; headers: http.IncomingHtt
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the owner's account reaches), or
 // @instance, @product, @agents/<name|*> (in the fleet org: github_fleet_org), @orgs (every repo of each owner the instance allows,
 // github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
-// repos), never from a module's settings. A commit grant names the paths it writes, an evidence grant the files it reads; a
+// repos), never from a module's settings. A commit grant names the paths it writes (a setup grant the same, where a `*` stands for one path segment), an evidence grant the files it reads; a
 // runner grant, the orgs.
-export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; exists?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
+export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; exists?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; setup?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
 
 const SLUG = /^([\w.-]+)\/([\w.-]+|\*)$/;
 const DOTS = /^\.+$/;
@@ -100,8 +104,8 @@ export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}):
 
 const NO_HOST = "no GitHub code host here (the github module isn't enabled)";
 /** Each op's grant: the key of the module's `codehost:` it needs. */
-const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "comment" | "commit" | "runner"> = {
-  snapshot: "snapshot", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", runner_token: "runner",
+const GRANT_KEY: Record<string, "snapshot" | "clone" | "fetch" | "read" | "comment" | "commit" | "setup" | "runner"> = {
+  snapshot: "snapshot", bundle: "clone", fetch: "fetch", head: "fetch", read: "read", comment: "comment", commit: "commit", setup: "setup", runner_token: "runner",
 };
 const FETCH_REF = /^(refs\/heads\/\*|refs\/heads\/(?!-)(?!.*\.\.)(?!.*@\{)[\w./-]{1,200}|refs\/pull\/\d{1,9}\/head)$/;
 /** How much of a refusal's answer is read to find its need; a bigger body streams through unread (no need is that big). */
@@ -138,7 +142,7 @@ const text = (v: unknown, what: string, max: number) => {
   return v;
 };
 /** The body the code host gets for a GitHub-only op: only the fields the op names, each checked here, never the caller's object. */
-function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Record<string, unknown> {
+function shape(op: string, b: Record<string, unknown>, paths: string[] = [], setupPaths: string[] = []): Record<string, unknown> {
   if (op === "fetch") {
     const ref = String(b.ref ?? "");
     if (!FETCH_REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not refs/heads/*, a branch ref or a pull request's head`);
@@ -169,6 +173,22 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = []): Re
     return { kind, number: int(b.number, "number") };
   }
   if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }) };
+  if (op === "setup") {
+    const entries = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? Object.entries(b.files as Record<string, unknown>) : [];
+    if (!entries.length || entries.length > 8) throw fail(400, "files is 1 to 8 paths");
+    const allowed = setupPaths.map((g) => new RegExp(`^${g.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[\\w.-]+")}$`));
+    const files: Record<string, string> = {};
+    for (const [path, content] of entries) {
+      if (!/^[\w.][\w./-]{0,499}$/.test(path) || path.split("/").some((x) => DOTS.test(x)) || !allowed.some((re) => re.test(path))) throw fail(403, `the setup grant doesn't list ${path.slice(0, 200)}`);
+      if (typeof content !== "string") throw fail(400, `${path}: content must be a string`);
+      files[path] = content;
+    }
+    // The code host's executor reads at most 1 MB a request, the record around these args included (github setup.ts SETUP_BYTES).
+    if (Buffer.byteLength(JSON.stringify(files)) > 800_000) throw fail(413, "the setup files are at most 800,000 bytes in all");
+    const task = String(b.task ?? "");
+    if (!/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "task is the id of the task the setup's approval belongs to");
+    return { files, allow: setupPaths, title: text(b.title, "title", 200), body: text(b.body, "body", 20_000), task };
+  }
   // commit
   const path = text(b.path, "path", 500), branch = String(b.branch ?? ""), parent = String(b.parent ?? "");
   if (!REF.test(branch)) throw fail(400, `${branch.slice(0, 100)} is not a branch`);
@@ -241,7 +261,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       out.ref = ref;
     } else {
-      out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths) };
+      out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths, (g as OpsGrant).setup?.paths) };
       // A `file` read names its path here too: the evidence grant lists the exact ones it may read, never a prefix.
       if (op === "read" && String(b?.kind) === "file" && !(g as OpsGrant).evidence?.paths.includes(String(out.path ?? ""))) throw fail(403, `the evidence grant doesn't list ${String(out.path ?? "").slice(0, 200)}`);
     }

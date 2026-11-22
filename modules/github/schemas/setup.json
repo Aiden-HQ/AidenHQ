@@ -1,0 +1,22 @@
+{
+  "title": "github.setup: add these setup files on a new aidenhq/setup-<sha> branch and open its PR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "files", "allow", "title", "body"],
+  "properties": {
+    "repo": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
+    "base": { "type": "string", "pattern": "^[\\w./-]{1,255}$", "description": "The default branch the setup was reviewed against (the plan binds it)." },
+    "supersede": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["number", "head"], "properties": { "number": { "type": "integer", "minimum": 1 }, "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" } } }, "description": "The earlier setup PRs (and their head commits) the reviewer saw; only these are closed." },
+    "base_head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "propertyNames": { "pattern": "^[\\w.][\\w./-]{0,499}$" },
+      "additionalProperties": { "type": "string", "maxLength": 1000000 }
+    },
+    "allow": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "string", "pattern": "^[\\w.][\\w./*-]{0,499}$" } },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "body": { "type": "string", "minLength": 1, "maxLength": 20000 }
+  }
+}
