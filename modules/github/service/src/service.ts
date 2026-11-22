@@ -29,7 +29,7 @@ import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
-import { createMerges } from "./merges.ts";
+import { MIGRATION_WAIT, createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
@@ -63,6 +63,8 @@ export type Options = {
   access: GitHubAccess; remoteUrl?: (slug: string) => string;
   /** True while the merge queue must hold (the App migration, migrate.ts): approved merges wait like a disconnect. */
   holdMerges?: () => boolean;
+  /** Why merges are held while GitHub is connected (the App migration): the record's own reason, never the reconnect's. */
+  mergeHoldReason?: () => string | null | undefined;
   /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
    * here with the owner's token and never answering it; unset: those ops answer 404. */
   ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
@@ -557,7 +559,7 @@ export function createService(o: Options) {
       return ident || undefined;
     },
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
-    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
+    dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => (access.connected() && o.holdMerges?.() ? o.mergeHoldReason?.() ?? MIGRATION_WAIT : undefined),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,
     reviewGate: o.reviewGate,

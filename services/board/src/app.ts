@@ -1453,13 +1453,13 @@ export function createApp(opts: AppOptions): Server {
       handle: async () => {
         const names = await bylines();
         // Live records (`approved`, and `claimed` ones an executor holds) are read apart from the capped history, in their own
-        // read with no tier filter (a Tier 0 merge held on review is claimed too): a hundred newer writes must never push a
-        // blocked merge out of the list the owner watches. The wider recent list adds the ended Tier 0 audit rows.
+        // read with no tier filter (a Tier 0 merge held on review is claimed too), paged to the last one: a hundred newer writes
+        // must never push a blocked merge out of the list the owner watches, and neither may the kernel's own page size. The
+        // wider recent list adds the ended Tier 0 audit rows.
         const [cards, all, live] = await Promise.all([
           cardsOf("recent", { limit: 100 }),
           cardsOf("recent", { limit: 100, tier0: true }),
-          // The kernel's cap is 1000 records per read: every live record, whatever its tier, is always in this one.
-          cardsOf("approved", { limit: 1000, tier0: true }),
+          records.live().then((rows) => Promise.all(rows.map(named))),
         ]);
         const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
         const seen = new Set(cards.map((c) => c.id));

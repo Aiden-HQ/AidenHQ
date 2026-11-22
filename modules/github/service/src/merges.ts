@@ -30,6 +30,11 @@ const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() ===
 const KEEP_MS = 7 * 24 * 3600_000;
 /** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
 const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect it";
+/** The same while the App migration holds merges (migrate.ts): reconnecting GitHub cannot lift it, so it never claims a sign-out. */
+export const MIGRATION_WAIT = "GitHub App migration in progress: merges are held until it finishes";
+/** The record-level reasons the queue itself sets and clears (never a PR's own wait or a failure's note). */
+const HOLD_WAITS = [CONNECTED_WAIT, MIGRATION_WAIT];
+const isHoldWait = (note?: string) => note !== undefined && HOLD_WAITS.includes(note);
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
 export const MERGED_LINE = "merged-prs: ";
@@ -41,6 +46,11 @@ export function createMerges(d: {
   gh: Gh;
   /** Whether GitHub is connected: while it isn't, every pending PR waits (work.waiting reason github) and nothing is called. */
   connected?: () => boolean;
+  /**
+   * Why merges are held although GitHub is connected (the App migration, migrate.ts): its own reason on the record, never the
+   * reconnect's, because reconnecting cannot lift it. Null or unset: nothing holds them.
+   */
+  hold?: () => string | null | undefined;
   fleetOrg: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
@@ -352,13 +362,15 @@ export function createMerges(d: {
     if (busy) return;
     busy = true;
     try {
-      // Signed out: every pending PR waits for the reconnect (reason github; its other wait starts over), and GitHub isn't called.
-      if (d.connected && !d.connected()) {
+      // Held (signed out, or the App migration): every pending PR waits (reason github; its other wait starts over) and GitHub
+      // isn't called. The two are told apart: only a sign-out can be lifted by reconnecting, so the migration has its own reason.
+      const held = d.hold?.() ?? ((d.connected && !d.connected()) ? CONNECTED_WAIT : undefined);
+      if (held) {
         for (const [id, q] of Object.entries(s.queues)) if (q.state === "running" && !q.outcome) for (const p of q.prs) if (p.status === "pending") {
-          // The record's card shows why it cannot move: the reconnect, once, and only while GitHub stays signed out.
-          if (p.note !== CONNECTED_WAIT) {
-            p.note = CONNECTED_WAIT;
-            await d.waiting?.(id, CONNECTED_WAIT).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
+          // The record's card shows why it cannot move: the hold's reason, once, and only while it stays held.
+          if (p.note !== held) {
+            p.note = held;
+            await d.waiting?.(id, held).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
           }
           delete p.wait;
           timeWait(p, "github");
@@ -368,9 +380,9 @@ export function createMerges(d: {
       const merged = new Set<string>();
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
-        // Signed in again: the signed-out reason ends with the first poll that reads GitHub, so it is cleared before anything else.
-        if (q.prs.some((p) => p.note === CONNECTED_WAIT)) {
-          for (const p of q.prs) if (p.note === CONNECTED_WAIT) delete p.note;
+        // Not held any more: the hold's reason ends with the first poll that reads GitHub, so it is cleared before anything else.
+        if (q.prs.some((p) => isHoldWait(p.note))) {
+          for (const p of q.prs) if (isHoldWait(p.note)) delete p.note;
           await d.waiting?.(id, null).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
         }
         // A queue written before this process kept the task's identifier has only the record's task id, and a running queue is

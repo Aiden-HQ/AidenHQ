@@ -634,3 +634,21 @@ test("a conn.tool call naming no task stays on the job's own task", async (t) =>
   const rec = k.records.get(p.approval);
   assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["HB-1", "HB-1", "HB-1"]);
 });
+
+test("GET /v1/writes pages with `after`: a live read walks past the page cap instead of treating it as the whole set", async (t) => {
+  const { k } = await twin(t);
+  const card = { sentence: "s", changes: "", reads: "", cost: "", details: "" };
+  const filed = Array.from({ length: 5 }, (_, i) => k.records.file({ kind: "github.merge", module: "github", args: { n: i }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "approved" }));
+  const read = (q: string) => k.v1("GET", `/v1/writes?state=approved&tier0=1${q}`).then((r) => r.json.records.map((r) => r.id));
+  // Page size 2: 3 pages, newest first, each starting after the last page's last record, every record once.
+  const page1 = await read("&limit=2");
+  const page2 = await read(`&limit=2&after=${page1.at(-1)}`);
+  const page3 = await read(`&limit=2&after=${page2.at(-1)}`);
+  assert.deepEqual([page1.length, page2.length, page3.length], [2, 2, 1]);
+  assert.deepEqual([...page1, ...page2, ...page3], [...filed].reverse().map((r) => r.id), "every record once, newest first");
+  // `after` names a record this state no longer lists (it ended): the cursor is that record's place, not a lost page.
+  assert.equal(k.records.claim(page1[0]!), true);
+  assert.equal(k.records.finish(page1[0]!, true, "merged"), true);
+  const next = await read(`&limit=2&after=${page1[0]}`);
+  assert.deepEqual(next, [filed[3]!.id, filed[2]!.id], "the page after an ended record is the page that follows its place, not a repeat or a skip");
+});

@@ -97,7 +97,13 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string }): Promise<Approval[]>;
+  /**
+   * Every live record (`approved`, and `claimed` ones an executor holds), whatever its tier: the kernel's page size is its own
+   * cap, so this walks the pages (`after`) rather than treating the largest one as the whole set. A Tier 0 merge held on review
+   * ages out of no list this way, however many newer writes follow it.
+   */
+  live(): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -121,10 +127,10 @@ const neverConnected = (c?: Cause): boolean => !!c && (c.errors?.length ? c.erro
 
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
-  const list: Records["list"] = async (state, { task, limit, tier0, strict } = {}) => {
+  const list: Records["list"] = async (state, { task, limit, tier0, strict, after } = {}) => {
     if (!k) return [];
     try {
-      const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+      const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
       const { records } = (await res.json()) as { records: KernelRecord[] };
       down = false;
@@ -135,6 +141,26 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
       if (strict) throw err;
       return [];
     }
+  };
+  /** The page size the kernel honours: its own cap (backplane.ts GET /v1/writes). */
+  const PAGE = 1000;
+  /** Hard bound on pages walked in one read: 1,000 pages is a million live records, past any real queue. */
+  const PAGES_MAX = 1000;
+  const live: Records["live"] = async () => {
+    const all: Approval[] = [];
+    const seen = new Set<string>();
+    let after = "";
+    for (let i = 0; i < PAGES_MAX; i++) {
+      const page = await list("approved", { limit: PAGE, tier0: true, ...(after ? { after } : {}) });
+      const fresh = page.filter((a) => !seen.has(a.id));
+      for (const a of fresh) seen.add(a.id);
+      all.push(...fresh);
+      // A short page is the last one; a full page that adds nothing new means the kernel ignored the cursor, so stop rather than
+      // read the same page again.
+      if (page.length < PAGE || !fresh.length) break;
+      after = page[page.length - 1]!.id;
+    }
+    return all;
   };
   const advisories = async (): Promise<Advisory[]> => {
     if (!k) return [];
@@ -175,5 +201,5 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
+  return { list, live, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
 }

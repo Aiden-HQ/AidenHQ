@@ -70,7 +70,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, hold, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const waits = [];
   const taken = new Set();
@@ -105,7 +105,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined,
+    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined, ...(hold ? { holdMerges: () => hold.on } : {}),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -958,4 +958,38 @@ test("a bypass recorded on a merge confirmed by a later poll (the PUT went unans
   assert.equal(github.merges().length, 1, "the confirmation poll sends no second merge PUT");
   await merges.step();
   assert.equal(bypassed.length, 1, "not emitted again");
+});
+
+test("a migration hold says so, and never claims GitHub is signed out", async (t) => {
+  // An App migration holds merges while GitHub is connected (migrate.ts, service.ts holdMerges): reconnecting cannot lift it, so
+  // the card's reason must be the migration's, never the reconnect's — the owner cannot act on a sign-out that isn't one.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const hold = { on: true };
+  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, hold });
+  await merge("k-00000000000000ba", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges(), [], "nothing merges while the migration holds");
+  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000ba", "GitHub App migration in progress: merges are held until it finishes"]]);
+  assert.ok(!waits.some((w) => /signed out/i.test(String(w.reason))), "a migration hold is never published as a sign-out");
+  // The same reason is not posted again on the next poll.
+  await handle.stepMerges();
+  assert.equal(waits.length, 1, "a repeat of the same hold is not re-posted");
+  // The hold lifts: the reason is cleared before anything else, and the merge proceeds.
+  hold.on = false;
+  await handle.stepMerges();
+  assert.equal(waits.length, 2, "the migration reason is cleared once merges are no longer held");
+  assert.equal(waits[1].reason, null);
+  assert.equal(github.merges().length, 1, "merged once the migration finished");
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+test("a sign-out still says signed out, and is cleared when GitHub reconnects", async (t) => {
+  // The other half of the split: `connected` false with no hold is a real sign-out, and its reason is the reconnect's.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const connected = { on: false };
+  const { handle, merge, waits } = await setup(t, { prs, connected });
+  await merge("k-00000000000000bb", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(waits.map((w) => w.reason), ["GitHub is signed out: waiting for the owner to reconnect it"]);
 });

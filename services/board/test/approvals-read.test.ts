@@ -52,7 +52,8 @@ it("shows the kernel's records read from /v1/writes, and Tier 0 runs after the f
     }).on("error", reject).end();
   });
   expect(json.error).toBeUndefined();
-  // The live read names `tier0=1`: a Tier 0 record in flight is a running card too, and no tier filter may hide it.
+  // The live read names `tier0=1`: a Tier 0 record in flight is a running card too, and no tier filter may hide it. It is also
+  // paged (`live`, below): a short first page is the whole set, so no `after` follows it.
   expect(seen.sort()).toEqual([`Bearer ${KEY} /v1/writes?state=approved&limit=1000&tier0=1`, `Bearer ${KEY} /v1/writes?state=recent&limit=100`, `Bearer ${KEY} /v1/writes?state=recent&limit=100&tier0=1`]);
   expect(json.approvals).toEqual([
     expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest }),
@@ -108,4 +109,34 @@ it("a long wait is kept whole for change detection, and clipped on the wire the 
   expect(shown!.startsWith("the reviewer is still checking this change:")).toBe(true);
   // A short reason is untouched.
   expect(shownWait(recordApproval({ ...live, wait: "code review: 1 important finding open" } as never).wait)).toBe("code review: 1 important finding open");
+});
+
+it("pages the live read: the kernel's page limit is not the whole set, so an old claimed record is still listed", async () => {
+  // A kernel that honours at most PAGE records per read, as the real one does (backplane.ts caps `limit` at 1000), with the
+  // oldest live record only on a later page: reading one page would lose it, and with it the card the owner watches.
+  const PAGE = 1000;
+  const total = PAGE + 5;
+  const many = Array.from({ length: total }, (_, i) => ({ ...live, id: `k-${String(i).padStart(16, "0")}`, card: { ...live.card, sentence: `Merge acme/widget#${i}` } }));
+  const asked: string[] = [];
+  const at = (n: number) => new Date(Date.parse("2026-11-20T00:00:00.000Z") + n * 1000).toISOString();
+  many.forEach((r, i) => { (r as { created_at: string }).created_at = at(total - i); });
+  const paging = createServer((req, res) => {
+    const url = new URL(req.url!, "http://kernel");
+    asked.push(url.search);
+    const after = url.searchParams.get("after");
+    const from = after ? many.findIndex((r) => r.id === after) + 1 : 0;
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records: many.slice(from, from + PAGE) }));
+  });
+  await new Promise<void>((r) => paging.listen(0, "127.0.0.1", r));
+  try {
+    const records = kernelRecords({ url: `http://127.0.0.1:${(paging.address() as AddressInfo).port}`, token: KEY });
+    const all = await records.live();
+    expect(all).toHaveLength(total);
+    // The oldest one (only on the second page) is there, and the walk stopped at the short page.
+    expect(all.at(-1)!.id).toBe(many.at(-1)!.id);
+    expect(asked.filter((q) => q.includes("state=approved"))).toHaveLength(2);
+    expect(asked.some((q) => q.includes(`after=${many[PAGE - 1]!.id}`))).toBe(true);
+  } finally {
+    paging.close();
+  }
 });

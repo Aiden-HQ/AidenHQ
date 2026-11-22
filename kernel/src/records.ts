@@ -191,11 +191,15 @@ export function openRecords(file: string, now = () => new Date()) {
      * Newest first; `reviewed`: only records that went to the reviewer or the owner (Tier 1 and 2), `task`: only that task's.
      * `limit: null` reads every record that matches: a guard that must see all of a task's records (the release train's close)
      * never reads a capped page, where an older foreign record could be cut off.
+     * `after`: the next page past that record in this same order (keyset, not an offset: a record filed between two reads never
+     * shifts a page, and nothing is skipped or repeated). A reader that must see every matching record (the board's live list)
+     * pages with it instead of treating the largest page as the whole set.
      */
-    list(states: State[], limit: number | null = 100, { reviewed = false, task, kinds }: { reviewed?: boolean; task?: string; kinds?: string[] } = {}): Rec[] {
+    list(states: State[], limit: number | null = 100, { reviewed = false, task, kinds, after }: { reviewed?: boolean; task?: string; kinds?: string[]; after?: string } = {}): Rec[] {
       expire();
-      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
-        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), ...(limit === null ? [] : [limit])));
+      const keyset = after ? " AND (created_at, rowid) < (SELECT created_at, rowid FROM records WHERE id = ?)" : "";
+      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""}${keyset} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
+        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), ...(after ? [after] : []), ...(limit === null ? [] : [limit])));
     },
     /** Records filed or decided since then, oldest first (the daily digest). */
     since: (at: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE (created_at > ? OR decided_at > ?) AND tier > 0 ORDER BY created_at").all(at, at)),

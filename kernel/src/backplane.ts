@@ -13,7 +13,7 @@
 //   POST /v1/writes/:id/wait (the kind's executor module) {reason}: why its claimed record is still running
 //   POST /v1/merges            (a code host module, for its own kind) {task, repo, number, head, branch}: a green PR's merge, filed
 //                              as the agent whose approved PR record on the task pushed that head (writes.fileOwnMerge), or {skip}
-//   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too)
+//   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too; `after=<id>`: the next page)
 //   GET  /v1/writes/:id/chain  (the board's key) what the record's task asks, as the AI reviewer reads it (review-loop.ts requestChain)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
 //                              with decision tokens, a token spent, the owner's words (channels.ts)
@@ -918,7 +918,10 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             // The reviewed ones only (every Tier 0 write is a record too, and would crowd the cards out), unless `tier0=1`
             // asks for every record (the board's history shows Tier 0 runs after the fact); the review list says which wait out a
             // failed review's backoff.
-            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}) });
+            // `after=<record id>` is the next page in the same order (keyset): a reader that must see every matching record
+            // (the board's live list) walks the pages instead of treating the largest one as the whole set.
+            const after = p.get("after") || undefined;
+            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(after ? { after } : {}) });
             // An open record's card shows the whole diff the reviewer reads (context.diff), so the owner decides on all of it; the
             // reviewer's other input (the files' text) stays in the kernel.
             return send(res, 200, { records: rows.map(({ context, ...r }) => ({ ...r, card: context?.diff ? { ...r.card, details: context.diff } : r.card, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });

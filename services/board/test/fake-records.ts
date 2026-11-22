@@ -15,5 +15,7 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
       // As the kernel's reads: `tier0` adds the Tier 0 rows, and leaving it off drops them.
       .filter((a) => tier0 || a.tier !== 0)
       .slice(0, limit);
-  return { cards, settings, list, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
+  // The paged live read (records.ts `live`): every approved or running card, whatever its tier, in one page here.
+  const live: Records["live"] = async () => cards.filter((a) => a.state === "approved" || a.state === "running");
+  return { cards, settings, list, live, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

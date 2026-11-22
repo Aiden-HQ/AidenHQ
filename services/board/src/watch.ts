@@ -62,7 +62,7 @@ export function startWatch(o: {
   states: TaskStates;
   events: Events;
   /** The kernel's records: a card filed, decided or finished announces `approvals`. */
-  records?: Pick<Records, "list">;
+  records?: Pick<Records, "list" | "live">;
   log: Logger;
   session?: (agentId: string, startedAt: string | null) => Promise<SessionActivity | null>;
   everyMs?: number;
@@ -154,12 +154,12 @@ export function startWatch(o: {
         }
       }
       if (o.records) {
-        // The cards Approvals can show: the newest reads, and every live record in its own uncapped, any-tier read (a Tier 0 record
-        // in flight is `running` too, and a blocked merge must not fall out of the newest 100). A live record's wait reason changes
-        // nothing else about it, so it is in the key too: an open view refetches when the reason does (a merge entering or leaving
-        // code review's wait), not a minute later. The record's own reason is compared whole (`records.list`, before the wire's
-        // display cap), so a change past the cap still refreshes.
-        const [recent, live] = await Promise.all([o.records.list("recent", { limit: 100 }), o.records.list("approved", { limit: 1000, tier0: true })]);
+        // The cards Approvals can show: the newest reads, and every live record in its own uncapped, any-tier read paged to the
+        // last one (a Tier 0 record in flight is `running` too, and neither the newest 100 nor the kernel's page size may drop a
+        // blocked merge). A live record's wait reason changes nothing else about it, so it is in the key too: an open view refetches
+        // when the reason does (a merge entering or leaving code review's wait), not a minute later. The record's own reason is
+        // compared whole (`records.list`, before the wire's display cap), so a change past the cap still refreshes.
+        const [recent, live] = await Promise.all([o.records.list("recent", { limit: 100 }), o.records.live()]);
         const seen = new Set(recent.map((a) => a.id));
         const held = live.filter((a) => isLive(a.state) && !seen.has(a.id) && (seen.add(a.id), true));
         const now = [...recent, ...held].map((a) => `${a.id}|${a.state}|${a.outcome ?? ""}|${hashOf(a.wait ?? "")}`).join();
