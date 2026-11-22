@@ -36,6 +36,10 @@ export interface SetupFlowPoint {
   advanced?: AdvancedFlow;
 }
 
+/** A saved secret's services are still being recreated: the board's pairing waits on this, not on every module 409. */
+const RESTARTING = (module: string) => `setup_restarting:${module}`;
+export const RESTART_MS = 5 * 60_000;
+
 /** A module's advanced flow (compile nests it in the basic one): what it unlocks, its steps, secrets and pairing. */
 export interface AdvancedFlow {
   title: string;
@@ -129,9 +133,14 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
     // A module pairs once: on its basic flow, or on its advanced one.
     const url = f.pair_url ?? f.advanced?.pair_url;
     if (!url || !f.token) throw new AccountError(404, "this module has no pairing");
-    const res = await doFetch(url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(15_000) });
+    // While a saved secret's service is being recreated, the fetch itself can fail. That is "not reachable yet", which the
+    // page may wait out only when the save said the service is restarting; it is not a 502 application failure.
+    const res = await doFetch(url, { method, headers: { authorization: `Bearer ${f.token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => null);
+    if (!res) throw new AccountError(503, `${f.module} isn't reachable yet`);
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) throw new AccountError(502, String(data.error ?? `${f.module} answered ${res.status}`));
+    // 409 is the module's conflict (for pairing, a token it does not have yet): keep it, so the page can decide whether a
+    // reported restart makes it retryable. Every other refusal is the board's 502.
+    if (!res.ok) throw new AccountError(res.status === 409 ? 409 : 502, String(data.error ?? `${f.module} answered ${res.status}`));
     return data;
   };
   const chosenOf = (module: string): string | null => d.store.meta(`setup_choice:${module}`) ?? null;
@@ -186,7 +195,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
             const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
-            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module) };
+            const restartingUntil = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
+            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module), restarting: restartingUntil > Date.now() };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -202,7 +212,12 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         if (!parsed.success) throw new AccountError(400, "secret and value are required");
         const { secret, value } = parsed.data;
         if (!f.secrets?.includes(secret) && !f.advanced?.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
-        return d.accounts.call("save_secret", who, { module: f.module, secret, value });
+        const saved = await d.accounts.call<{ ok: boolean; restarted?: string[] }>("save_secret", who, { module: f.module, secret, value });
+        // The kernel recreates those services after answering; remember it briefly, so the page (and a reload) can wait for
+        // them instead of treating the module's own "not ready" answer as a failure. No reported restart clears the marker.
+        if (saved.restarted?.length) d.store.setMeta(RESTARTING(f.module), String(Date.now() + RESTART_MS));
+        else d.store.delMeta(RESTARTING(f.module));
+        return saved;
       },
     },
     {

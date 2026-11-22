@@ -3,7 +3,7 @@
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { GoogleAuth } from "../src/google.js";
 import { createKernelAuth } from "../src/kernel-auth.js";
@@ -28,9 +28,13 @@ const google = {
   start: async (_account: string | undefined, redirectUri: string) => (googleStarts.push(redirectUri), { url: "https://accounts.example.com/o/oauth2" }),
 } as unknown as GoogleAuth;
 let paired = false;
+let pairRefusal: { status: number; error: string } | null = null;
+let pairUnreachable = false;
 const pairCalls: { method: string; auth: string }[] = [];
 const fakePair = (async (_url: string, init: RequestInit) => {
   pairCalls.push({ method: String(init.method), auth: String((init.headers as Record<string, string>).authorization) });
+  if (pairUnreachable) throw new TypeError("fetch failed");
+  if (init.method === "POST" && pairRefusal) return new Response(JSON.stringify({ error: pairRefusal.error }), { status: pairRefusal.status });
   return new Response(JSON.stringify(init.method === "POST" ? { code: "ABCD-1234", link: "https://t.me/bot?start=ABCD" } : { paired, ...(paired ? { paired_at: "2026-11-17T10:00:00.000Z" } : {}) }), { status: 200 });
 }) as unknown as typeof fetch;
 
@@ -54,6 +58,12 @@ describe("setup flows", () => {
   afterAll(() => {
     app.close();
     kernel.close();
+  });
+  afterEach(() => {
+    pairRefusal = null;
+    pairUnreachable = false;
+    paired = false;
+    googleOk = false;
   });
 
   function as(account: FakeAccount) {
@@ -142,5 +152,26 @@ describe("setup flows", () => {
     expect(r.json).toEqual({ code: "ABCD-1234", link: "https://t.me/bot?start=ABCD", minted_at: expect.any(Number), expires_in: 900 });
     expect(pairCalls.at(-1)).toEqual({ method: "POST", auth: "Bearer pair-secret" });
     expect((await admin("GET", "/api/setup-flows/phone/pair")).json).toEqual({ paired: false });
+  });
+
+  it("a module still restarting answers 409, and any other refusal is a 502", async () => {
+    pairRefusal = { status: 409, error: "Save the bot token first." };
+    expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 409, json: { error: "Save the bot token first." } });
+    pairRefusal = { status: 500, error: "the bot is broken" };
+    expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 502, json: { error: "the bot is broken" } });
+  });
+
+  it("a module between containers is 503, not a 500 or a 502", async () => {
+    pairUnreachable = true;
+    expect(await admin("GET", "/api/setup-flows/phone/pair")).toMatchObject({ status: 503, json: { error: "phone isn't reachable yet" } });
+    expect(await admin("POST", "/api/setup-flows/phone/pair")).toMatchObject({ status: 503, json: { error: "phone isn't reachable yet" } });
+  });
+
+  it("a save that restarted the service marks the flow as restarting, also after a reload", async () => {
+    store.delMeta("setup_restarting:phone");
+    const flow = async () => (await admin("GET", "/api/setup-flows")).json.flows.find((f: { module: string }) => f.module === "phone");
+    expect(await flow()).toMatchObject({ restarting: false });
+    expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json).toMatchObject({ ok: true });
+    expect(await flow()).toMatchObject({ restarting: true, present: { phone_bot_token: true } });
   });
 });
