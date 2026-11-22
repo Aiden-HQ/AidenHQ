@@ -66,10 +66,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     }
     if (!row) return "unknown";
     if (filing) return !row.filing || row.filing === filing ? "ok" : "stale";
-    // A step saved before steps carried a filing names none. The row it settled is the only proof it is still current: a
-    // satisfied row holding the same rubric and deliverable is that row, and anything else (restarted, amended, still open)
-    // means the filing it closed is gone, so it is not replayed.
-    if (row.state !== "satisfied") return "stale";
+    // A step saved before steps carried a filing names none. The row it settled is the only proof it is still current, and the
+    // rubric's words are not enough: a row amended A→B→A holds A again, so the pass that closed the first A would read as
+    // current. The revision is what tells them apart, and a step from before filings can only be the row's first filing: a
+    // satisfied row at revision 0 whose rubric and deliverable still match is that row; anything restarted or amended is not.
+    if (row.state !== "satisfied" || (row.revision ?? 0) !== 0) return "stale";
     return JSON.stringify(row.rubric) === JSON.stringify(step?.rubric) && JSON.stringify(row.deliverable) === JSON.stringify(step?.deliverable) ? "ok" : "stale";
   }
   /**
@@ -164,6 +165,17 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
             if (gaveUp) {
               for (const x of steps) if (x.do === "tell") x.ungraded = unreadable;
               state.set(`owed:${task}`, JSON.stringify(steps));
+            }
+            // The checks above take time (evidence, presence, children, cards): an amendment can land between the first look and
+            // the close. The filing is read once more, immediately before the close, so the task is not closed on a rubric that
+            // was replaced while this pass was deciding.
+            const still = await stillFiled(task, s.filing, s);
+            if (still === "unknown") return;
+            if (still === "stale") {
+              log("a satisfied verdict is stale: the filing was replaced before the close", { issue: task });
+              steps.length = 0;
+              state.set(`owed:${task}`, "");
+              return;
             }
             await pc.setStatus(task, "done", why);
           }

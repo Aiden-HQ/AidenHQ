@@ -185,6 +185,58 @@ test("a close queued before filings were named still lands when its row is the s
   assert.equal(issue.status, "done", "the close lands on the row it was queued for");
 });
 
+test("a filing-less close is dropped when the rubric was amended away and back", async () => {
+  // The words cannot tell the filings apart: A→B→A leaves the row holding A, so only the revision shows the close is stale.
+  const issue = { id: "t12", identifier: "WOR-12", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t12", filed, { kind: "report", ref: "" });
+  grades.amend("t12", ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"], { by: "agent:cos", delegator: "agent:cos" });
+  grades.amend("t12", filed, { by: "agent:cos", delegator: "agent:cos" });
+  assert.equal(grades.get("t12").revision, 2);
+  grades.record("t12", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, { kind: "report", ref: "" }, 2) });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  // A close from before filings were named: same words, but the row is at revision 2, so it is not that close.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t12', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", deliverable: { kind: "report", ref: "" }, rubric: filed }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the close from the first A does not land on the row amended back to A");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'owed:t12'").get()?.v ?? "", "", "the stale steps are dropped");
+});
+
+test("an amendment landing between the checks and the close stops the close", async () => {
+  // The close's checks (evidence, presence, children) take time, and an amendment can land inside it. The filing is read once
+  // more immediately before the close, so the task is not closed on a rubric replaced while the pass was deciding.
+  const issue = { id: "t13", identifier: "WOR-13", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t13", filed, { kind: "report", ref: "" });
+  grades.record("t13", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, { kind: "report", ref: "" }, 0) });
+  // The amendment lands on the second row read of the close (the one just before it): the first read still matches.
+  let reads = 0, amended = false;
+  const loop = createKernelGradeLoop({ db, runner: async (m, p, b) => {
+    if (m === "GET" && /^\/internal\/grades\/[^/]+$/.test(p)) {
+      reads++;
+      if (reads === 2 && !amended) {
+        amended = true;
+        grades.amend("t13", ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"], { by: "agent:cos", delegator: "agent:cos" });
+      }
+    }
+    return runner(m, p, b);
+  }, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t13', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", deliverable: { kind: "report", ref: "" }, rubric: filed, filing: rubricHash(filed, { kind: "report", ref: "" }, 0) }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the close does not land after an amendment mid-check");
+  assert.deepEqual(calls.resolve, [], "no close is sent");
+});
+
 test("a wake for missing evidence is not applied to a row amended while the pass ran", async (t) => {
   // The wake moves the task back to todo, so it is the same staleness as a verdict: only the filing the pass read may wake it.
   // An app deliverable that is not deployed awaits evidence, so the pass reaches the wake path.
