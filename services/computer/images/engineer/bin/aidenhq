@@ -161,7 +161,10 @@ const bundle = (repo, branch, sha) => {
   const tmp = join(out, `${sha}.${process.pid}.tmp`);
   try {
     if (execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { encoding: "utf8" }).trim() !== sha) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
-    execFileSync("git", ["-C", dir, "update-ref", pub, sha]);
+    try { execFileSync("git", ["-C", dir, "update-ref", pub, sha], { stdio: "ignore" }); } catch (e) { // a parallel bundle of this sha may hold the ref's lock
+      const now = (() => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", pub], { encoding: "utf8" }).trim(); } catch { return ""; } })();
+      if (now !== sha) throw e;
+    }
     execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", tmp, pub], { stdio: ["ignore", "ignore", "inherit"] });
     const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" }).split("\n").filter(Boolean);
     if (heads.length !== 1 || heads[0] !== `${sha} ${pub}`) throw new Error(`the bundle of ${branch} doesn't hold ${sha.slice(0, 12)}`);
