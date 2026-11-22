@@ -118,7 +118,10 @@ task done with an "ungraded: <reason>" note, and you hear it as done. Reopen it 
 - **Reachable evidence.** The grader sees the work as it stands, runs no tests and calls no API. Name the CI check and a
   test in the diff ("the tests check is green on the PR's head"), and behaviour as a page at a path; what happens after a
   deploy or over later runs is refused by the tools. Each criterion is a concrete, observable fact ("the totals page
-  shows the VAT line", "a test covers the empty cart"). Name a branch or PR rather than a sha (it goes stale). A merge
+  shows the VAT line", "a test covers the empty cart"). Never assert a token is absent from a file ("contains no `X`", "has no
+  `X`"): the grader sees the diff, not the resulting files, so no diff can show it; name the diff instead ("the diff removes
+  every `X` line from docs/a.md"). If a filed criterion turns out unsatisfiable, `task_amend_rubric` replaces the filed
+  rubric in place while the grade is unsettled. Name a branch or PR rather than a sha (it goes stale). A merge
   commit's own changes are outside the PR's diff, a merged commit has no checks when the workflow runs only on
   `pull_request`, and a file in another repository can't be read: name the in-scope equivalent (the PR merged into its
   base; "deployed at the merged commit"), or ask the owner for that evidence.

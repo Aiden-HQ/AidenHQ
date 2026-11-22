@@ -11,12 +11,12 @@ Nothing to connect.
 
 ## What agents get
 
-The `paperclip_tasks` connection (17 read, 20 write).
+The `paperclip_tasks` connection (17 read, 21 write).
 
 - Read: `task_current`, `task_get`, `task_search`, `task_list`, `task_team`, `task_comments`, `task_files`,
   `task_approvals`, `fleet_status`, `fleet_costs`, `fleet_catalog`, `handbook_read`, `advisor_ask`, `fanout_map`,
   `memory_note` and more.
-- Write: `task_create`, `task_delegate`, `task_comment`, `task_update`, `task_finish`, `task_wait`, `task_block`,
+- Write: `task_create`, `task_delegate`, `task_comment`, `task_update`, `task_amend_rubric`, `task_finish`, `task_wait`, `task_block`,
   `task_cancel`, `task_schedule`, `task_recurring`, `fleet_control` and more.
 - By default crew agents hold `task_wait`, `advisor_ask` (with `model-tools`) and `memory_note` (with `memory`); agents in
   trial get their writes after the owner's second tap.
