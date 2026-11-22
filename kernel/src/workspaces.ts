@@ -82,7 +82,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
         gone: (u: Use) => fresh(u, kind),
       })),
     ];
-    let removed = 0;
+    let removed = 0, unreachable = false;
     for (const { root, use, busy, gone } of roots) {
       const trash = join(root, ".trash");
       let names: string[];
@@ -109,8 +109,11 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
         let d = decide();
         if (d?.why === "closed") {
           // The facts log can lag a reopen: the control plane confirms every task is still closed, then the step runs again.
+          // One failed lookup ends the closed rule for this pass, so an unreachable control plane never spends the pass's
+          // budget: idle folders and the later roots are still swept.
+          if (unreachable) continue;
           const tasks = [...new Set(d.u!.pairs.map((p) => p.task))];
-          if (!(await Promise.all(tasks.map((t) => stillClosed(t).catch(() => false)))).every(Boolean)) continue;
+          if (!(await Promise.all(tasks.map((t) => stillClosed(t).catch(() => (unreachable = true, false))))).every(Boolean)) continue;
           if (stopping()) break; // drained while it waited: the next kernel's sweep decides
           d = decide();
         }
