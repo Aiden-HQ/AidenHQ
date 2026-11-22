@@ -40,7 +40,7 @@ exit 0`);
   mkdirSync(wants, { recursive: true });
   mkdirSync(requires, { recursive: true });
   // systemd enables an instance by linking the template into a target's .wants (or .requires) dir; the instance has no unit
-  // file of its own. `mask` adds the instance to $MASKED, which the fake's is-enabled reports as masked.
+  // file of its own. $MASKED names the instances the fake's is-enabled reports masked.
   writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "");
   const enable = (units) => {
     for (const entry of readdirSync(wants)) unlinkSync(join(wants, entry));
@@ -108,6 +108,7 @@ test("the exporter's data dir comes from the unit environment, not a checkout .e
   mkdirSync(join(root, "ops/lib"), { recursive: true });
   writeFileSync(join(root, "ops/host-metrics.sh"), readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"));
   writeFileSync(join(root, "ops/lib/data-dir.sh"), readFileSync(join(repo, "ops/lib/data-dir.sh"), "utf8"));
+  writeFileSync(join(root, "ops/lib/ci-runner-enabled.sh"), readFileSync(join(repo, "ops/lib/ci-runner-enabled.sh"), "utf8"));
   // A .env that would point elsewhere: it must not be read.
   writeFileSync(join(root, ".env"), 'AIDENHQ_DATA_DIR=/srv/elsewhere\n');
   const home = join(root, "home");

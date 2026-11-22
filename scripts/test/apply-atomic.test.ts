@@ -11,7 +11,7 @@ import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,7 @@ import YAML from "yaml";
 const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -110,9 +110,13 @@ const [cmd, ...rest] = a.slice(i + 1);
 process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process.env, ...env } }).status ?? 1);
 `,
   df: `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 999999999 1%% /\\n'\n`,
-  // list-unit-files is empty unless ctrl/runners names a count: then the CI runner template is enabled (the apply keeps it in
-  // step with the checkout). `show` is what health() reads on a /healthz timeout; journalctl tails the journal.
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
+  // systemd's shape for the runner template: `list-unit-files` lists only the template, whose state is `indirect` (the
+  // preset column says `enabled`, which is not the state), so even `--state=enabled` leaves it out; an enabled instance is
+  // an install link in a target's .wants dir (the tests write it) and only `is-enabled` names it. ctrl/runners lists the
+  // instance names is-enabled reports enabled; ctrl/masked the ones it reports masked. `show` is what health() reads on a
+  // /healthz timeout; journalctl tails the journal.
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*) exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
+  // The user unit dir systemd loads, where enablement links live: HOME is the world's temporary home.\n  "systemd-analyze": `#!/usr/bin/env bash\nprintf 'systemd-analyze %s\\n' "$*" >> "$CALLS"\ncase "$*" in *--user*unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
   // it (the read's inner `timeout -k` would kill it a second later).
@@ -280,33 +284,75 @@ function resolvedAidenhqDir(unit, home) {
 
 // The runner template the enabled units run is the checkout's, kept in step by the apply: a rollout lands the ExecStartPre
 // backoff with the scripts it calls, and an installed copy from another product is replaced (rollback included) rather than
-// left calling a helper this checkout may not have. A host with no runner unit enabled keeps the template it has.
+// left calling a helper this checkout may not have. An enabled instance has no unit file: systemd records it only as an
+// install link in a target's .wants dir, and list-unit-files lists only the template (as indirect), so the gate must read
+// the links. A host with no enabled runner instance keeps the template it has.
 test("the CI runner unit template follows the applied checkout, only while runner units are declared", async () => {
   const w = world();
   const units = w.d("home/.config/systemd/user");
-  mkdirSync(units, { recursive: true });
-  // An enabled runner instance (queue) and a template an older product installed.
-  writeFileSync(w.d("ctrl/runners"), "");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  // The template an older product installed, plus an instance's own unit file (nothing systemd installs, never touched).
   writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\nExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i\n");
   writeFileSync(join(units, "aidenhq-ci-runner@1.service"), "[Unit]\n");
-  const r = await w.run();
+  const enable = (name) => {
+    symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, `${name}.service`));
+    writeFileSync(w.d("ctrl/runners"), `${name}.service\n`);
+  };
+  const retired = () => rmSync(w.d("ctrl/runners"), { force: true });
+  const template = () => readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8");
+  const product = readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8");
+  const old = () => writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\n");
+
+  // Only the template in list-unit-files (as `indirect enabled`, which --state=enabled filters out) and an install link:
+  // the old gate saw neither and never installed the template, so this fails on main and passes here.
+  enable("aidenhq-ci-runner@3");
+  let r = await w.run();
   assert.equal(r.status, 0, r.out);
-  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template is the product's");
-  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /ops\/ci-runner-backoff\.sh %i/, "and carries the ExecStartPre backoff");
+  assert.equal(template(), product, "an enabled instance's install link makes the apply install the template");
+  assert.match(template(), /ops\/ci-runner-backoff\.sh %i/, "and it carries the ExecStartPre backoff");
   assert.equal(readFileSync(join(units, "aidenhq-ci-runner@1.service"), "utf8"), "[Unit]\n", "the instance's own unit is untouched");
   // The data dir the unit's scripts resolve (they read no .env themselves) comes from this env file, which the apply writes
   // from the host's settings; the template reads it last, so it wins.
-  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
+  assert.match(template(), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
   assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
   // Nothing changed: no rewrite, no reload.
   const before = w.calls();
   assert.equal((await w.run()).status, 0);
   assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
-  // Runners retired from the config: the installed template stays as the operator left it.
-  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=kept\n");
-  rmSync(w.d("ctrl/runners"));
-  assert.equal((await w.run()).status, 0);
-  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=kept\n", "no runner units declared: the apply leaves the template alone");
+
+  // A masked instance keeps its link but systemd will not start it: it declares no runner.
+  writeFileSync(w.d("ctrl/masked"), "aidenhq-ci-runner@3.service\n");
+  old();
+  const masked = await w.run();
+  assert.equal(masked.status, 0, masked.out);
+  assert.equal(template(), "[Unit]\nDescription=old\n", "a masked instance's link installs nothing");
+  rmSync(w.d("ctrl/masked"));
+
+  // A plain file in .wants is not a link systemd reads.
+  rmSync(join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(join(wants, "aidenhq-ci-runner@3.service"), "");
+  old();
+  const plain = await w.run();
+  assert.equal(plain.status, 0, plain.out);
+  assert.equal(template(), "[Unit]\nDescription=old\n", "a plain file under .wants is not an enablement link");
+  rmSync(join(wants, "aidenhq-ci-runner@3.service"));
+
+  // Dangling: the link's target is gone, so systemd reads the instance as not-found.
+  symlinkSync(join(units, "gone@.service"), join(wants, "aidenhq-ci-runner@4.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@4.service\n");
+  old();
+  const dangling = await w.run();
+  assert.equal(dangling.status, 0, dangling.out);
+  assert.equal(template(), "[Unit]\nDescription=old\n", "a dangling install link installs nothing");
+
+  // A disabled instance (its link removed) leaves the template as the operator has it.
+  rmSync(join(wants, "aidenhq-ci-runner@4.service"));
+  retired();
+  old();
+  const disabled = await w.run();
+  assert.equal(disabled.status, 0, disabled.out);
+  assert.equal(template(), "[Unit]\nDescription=old\n", "no enabled runner instance: the apply leaves the template alone");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {

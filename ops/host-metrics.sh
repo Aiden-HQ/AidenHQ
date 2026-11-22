@@ -21,6 +21,10 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # the file this exports. This script reads no `.env` itself; a relative value is the checkout's and `~` is the home dir.
 # shellcheck source=ops/lib/data-dir.sh
 . "$repo/ops/lib/data-dir.sh"
+# The enabled runner instances (the .wants/.requires install links systemd reads), shared with the apply's runner-template
+# gate: one definition, so the exporter's declared set and the template the apply installs never disagree.
+# shellcheck source=ops/lib/ci-runner-enabled.sh
+. "$repo/ops/lib/ci-runner-enabled.sh"
 data="$(aidenhq_data_dir)"
 dir="$data/modules/monitoring/textfile"
 [ -d "$dir" ] || exit 0
@@ -66,26 +70,9 @@ write() { # name: atomic, so node-exporter never reads half a file
   # changes() can stay at zero; CiRunnerBackoff reads this instead and cannot miss a loop that is backing off.
   echo "# HELP aidenhq_unit_backoff The CI runner unit's wait after a refused registration token, in seconds (0 when there is none)."
   echo "# TYPE aidenhq_unit_backoff gauge"
-  # Enabling an instance of the runner template does not create a unit file: systemd records it as an install link
-  # (`aidenhq-ci-runner@3.service` in a target's `.wants/` or `.requires/` dir in a user unit dir), and `list-unit-files`
-  # lists only the template (`aidenhq-ci-runner@.service`, indirectly enabled), never the instance. `systemd-analyze --user
-  # unit-paths` names the same dirs systemd loads, and a stopped instance keeps its link, so it still counts as enabled.
-  # systemd reads only a symlink there whose target exists: a link whose template is gone is dangling (`is-enabled` reads
-  # the instance as not-found) and a plain file is not a link (`is-enabled` reads it as disabled). A masked instance keeps
-  # its link but will not start, so `is-enabled`'s masked state drops it too. None of those declare a runner.
-  enabled_runner_units() { # one enabled runner instance per line
-    local unit_dir link
-    while read -r unit_dir; do
-      for link in "$unit_dir"/*.wants/aidenhq-ci-runner@*.service "$unit_dir"/*.requires/aidenhq-ci-runner@*.service; do
-        [ -L "$link" ] && [ -e "$link" ] || continue
-        link="${link##*/}"
-        [ "$link" = aidenhq-ci-runner@.service ] && continue
-        case "$(systemctl --user is-enabled "$link" 2>/dev/null)" in masked|masked-runtime) continue ;; esac
-        printf '%s\n' "$link"
-      done
-    done < <(systemd-analyze --user unit-paths 2>/dev/null)
-  }
-  enabled_runners="$(enabled_runner_units | clean | sort -u)"
+  # The enabled runner instances are the install links systemd reads (ops/lib/ci-runner-enabled.sh, the same function the
+  # apply's runner-template gate calls); the template itself declares no runner.
+  enabled_runners="$(ci_runner_enabled_units | clean | sort -u)"
   # The runner units that are still in play: enabled, or live despite being disabled -- `systemctl --user disable` without
   # `--now` leaves a runner running and retrying under its restart policy, so its wait is still the loop's own state. A marker
   # a retired unit left behind (disabled and stopped just after reaching the cap) is not: it must not keep CiRunnerBackoff
