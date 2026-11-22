@@ -118,7 +118,7 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   journalctl: `#!/usr/bin/env bash
 printf 'journalctl %s\\n' "$*" >> "$CALLS"
 [ -f "$CTRL/fail-journal" ] && { echo "Failed to open journal: Permission denied" >&2; exit 1; }
-[ -f "$CTRL/stuck-journal" ] && { sleep 30; exit 124; }
+[ -f "$CTRL/stuck-journal" ] && { trap '' TERM; sleep 30; exit 124; }
 if [ -f "$CTRL/big-journal" ]; then
   for i in $(seq 1 20); do echo "Nov 22 06:19:0$((i % 10)) acme-host aidenhq-kernel[812]: kernel: routine startup line $i $(printf 'x%.0s' $(seq 1 40))"; done
 fi
@@ -406,6 +406,7 @@ test("a /healthz timeout bounds a stalled journal read and still records the rea
   writeFileSync(w.d("ctrl/stuck-journal"), "");
   const started = Date.now();
   const g = await timedOut(w);
+  // The fake ignores SIGTERM, so only the kill the bound sends ends it: the read stays well under the stall.
   assert.ok(Date.now() - started < 25000, "the bounded read did not wait out the stall");
   assert.match(g.reason, /unit ActiveState=activating Result=exit-code NRestarts=2/);
   assert.match(g.reason, /last journal unavailable, journalctl timed out/);

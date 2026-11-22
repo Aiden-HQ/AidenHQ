@@ -834,8 +834,9 @@ switchOver() {
 }
 
 # A read the timeout branch makes while it holds the apply lock: a query stalled on storage must not hold the lock or delay
-# the automatic rollback, so it is bounded; a read that runs out reports 124.
-kernelRead() { timeout 5 "$@"; }
+# the automatic rollback, so it is bounded; a read that runs out reports 124, or 137 when the kill was needed. SIGKILL
+# follows SIGTERM two seconds later, so a journalctl that is blocked (and so does not take its signal) still ends.
+kernelRead() { timeout -k 2 5 "$@"; }
 
 # What blocked the kernel when /healthz went unanswered at the deadline, from what the apply can read on the host: the
 # health request's curl exit, the unit's state and the tail of its journal (the journal is what says why the unit is not
@@ -855,7 +856,7 @@ kernelTimeoutWhy() {
   esac
   out="$(kernelRead systemctl --user show "$unit" --property=ActiveState,Result,NRestarts 2>/dev/null)" || src=$?
   out="${out//$'\n'/ }"; out="${out% }"
-  if [ "$src" -eq 124 ]; then why+="; unit state unavailable, systemctl timed out"
+  if [ "$src" -eq 124 ] || [ "$src" -eq 137 ]; then why+="; unit state unavailable, systemctl timed out"
   elif [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
   elif [ -n "$out" ]; then why+="; unit $out"
   else why+="; unit state unavailable, systemctl printed nothing"; fi
@@ -867,7 +868,7 @@ kernelTimeoutWhy() {
   budget=$(( 400 - ${#why} - 16 ))
   [ "$budget" -lt 100 ] && budget=100
   [ "${#journal}" -le "$budget" ] || journal="...${journal: -$((budget - 3))}"
-  if [ "$jsrc" -eq 124 ]; then why+="; last journal unavailable, journalctl timed out"
+  if [ "$jsrc" -eq 124 ] || [ "$jsrc" -eq 137 ]; then why+="; last journal unavailable, journalctl timed out"
   elif [ -n "$journal" ]; then why+="; last journal: $journal"
   else why+="; last journal empty or unavailable"; fi
   printf '%s' "$why"
