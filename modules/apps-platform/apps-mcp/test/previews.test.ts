@@ -115,8 +115,13 @@ describe("PR previews", () => {
     s.d.github.comment = async () => { throw new Error("502"); };
     s.store.putPreview({ ...s.store.previews()[0]!, comment_id: null });
     await previewTick(s.d);
-    s.d.github.comment = comment;
     expect(s.store.previews()[0]!.reason).toBe("its build failed: exit 1");
+    // A retry that goes through posts the stored reason, not the generic message, and keeps it on the row.
+    s.d.github.comment = comment;
+    s.comments.length = 0;
+    await previewTick(s.d);
+    expect(s.comments.map((c) => c.body)).toEqual([expect.stringContaining("its build failed: exit 1")]);
+    expect(s.store.previews()[0]).toMatchObject({ comment_id: 104, reason: "its build failed: exit 1" });
     // Teardown's `removing` row keeps it too, so a reader sees why until the row is dropped.
     const written: { status: string; reason: string | null }[] = [];
     const put = s.store.putPreview;

@@ -99,6 +99,8 @@ export interface PreviewDeps {
 const eligible = (d: PreviewDeps, a: App): boolean => d.agentsRepo(a.repo) && !a.module && a.host === "local" && !!a.port && !!d.url(a);
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).replace(/\s+/g, " ").slice(0, 200);
+/** The default when a failed preview's engine call gives no reason. */
+const NO_REASON = "it didn't build, start or get healthy";
 const body = (app: App, pr: OpenPr, url: string | undefined, why?: string) =>
   why
     ? `**Preview** of \`${pr.sha.slice(0, 12)}\` didn't come up: ${why}. The next push tries again. Nothing waits on it.`
@@ -139,7 +141,7 @@ async function deployOne(d: PreviewDeps, app: App, pr: OpenPr): Promise<void> {
   const row = rows.find((r) => r.name === name);
   if (row && row.sha === pr.sha && (row.status === "healthy" || row.status === "failed")) {
     // This head is done; a comment that didn't go through is said now, with the failure's recorded reason.
-    if (row.comment_id === null) await say(d, app, pr, row, row.status === "failed" ? (row.reason ?? "it didn't build, start or get healthy") : undefined);
+    if (row.comment_id === null) await say(d, app, pr, row, row.status === "failed" ? (row.reason ?? NO_REASON) : undefined);
     return;
   }
   const port = row?.port ?? freePort(d, rows);
@@ -155,11 +157,11 @@ async function deployOne(d: PreviewDeps, app: App, pr: OpenPr): Promise<void> {
   } catch (e) {
     r = { ok: false, why: `it couldn't be prepared (${short(e)})` };
   }
-  const done: PreviewRow = { ...base, status: r.ok ? "healthy" : "failed", reason: r.ok ? null : (r.why ?? "it didn't build, start or get healthy") };
+  const done: PreviewRow = { ...base, status: r.ok ? "healthy" : "failed", reason: r.ok ? null : (r.why ?? NO_REASON) };
   d.store.putPreview(done);
   if (r.ok || row?.status === "healthy") await sync(d);
   d.log.info({ app: app.name, pr: pr.number, sha: pr.sha, ok: r.ok }, "preview deployed");
-  await say(d, app, pr, done, r.why);
+  await say(d, app, pr, done, done.reason ?? undefined);
 }
 
 /** Removes one preview and everything it had; its row goes last, so a failure is retried next tick. */
