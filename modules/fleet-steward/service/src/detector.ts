@@ -591,6 +591,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
           d.kv.set("routine_paused_at", JSON.stringify(since));
           mine.add(routine);
           justPaused.add(routine);
+          // Kept at once, beside the cutoff: a later failure in this check must not lose whose pause it is.
+          d.kv.set("routine_paused_by_detector", JSON.stringify([...mine]));
           // Its id only: a routine's title is an agent's words, and this text is the chief of staff's instruction. Owed until told: a
           // failed filing (quiet start, the kernel down) is tried again below on each check while it stays paused.
           d.kv.set("routine_notice_owed", JSON.stringify({ ...owed(), [routine]: failures }));
