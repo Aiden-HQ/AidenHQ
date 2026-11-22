@@ -798,3 +798,39 @@ test("test user: a kernel-signed session for a named app signs in as that member
     for (const s of [app2, g]) { s.close(); s.closeAllConnections(); }
   }
 });
+
+test("test user: a full replay cache refuses new sessions and never forgets a live one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-test-user-full-"));
+  ensureIdentityKeys(dir);
+  const testKey = signingKey(join(dir, "identity", "test.pem"))();
+  const email = "probe@example.com";
+  writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [{ email, role: "user", disabled: false }], apps: { roadmap: { default: "member" } } }));
+  const app2 = createServer((q, r) => r.writeHead(200, { "content-type": "application/json" }).end("{}"));
+  const appPort = await listen(app2);
+  const cfg = {
+    login: "header-jwt", identity: { header: "x-depoly-identity", issuer: "https://idp.invalid", jwks_url: "http://127.0.0.1:1/jwks" },
+    accounts_file: join(dir, "accounts.json"), identity_key_file: join(dir, "identity", "gate.pem"), owner_email: "boss@example.com",
+    my_apps: { host: "apps.example.com" }, test_keys_file: join(dir, "identity", "keys.json"),
+    test_user: { email, apps: ["roadmap"] }, hosts: { "roadmap.example.com": { app: "roadmap", port: appPort, aud: "aud-roadmap" } },
+  };
+  const g = createGate({ config: () => cfg, log: () => {}, testSessions: true, testSeenMax: 2 });
+  const port = await listen(g);
+  const send = (h) => new Promise((resolve) => request({ host: "127.0.0.1", port, path: "/", method: "POST", headers: { host: "roadmap.example.com", origin: "https://roadmap.example.com", "content-type": "application/json", ...h } }, (r) => { let body = ""; r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, body })); }).end("{}"));
+  const now = () => Math.floor(Date.now() / 1000);
+  const session = (jti) => {
+    const t = now();
+    const body = `${b64({ alg: "EdDSA", kid: testKey.kid, typ: "JWT" })}.${b64({ iss: "aidenhq-test", aud: "roadmap.example.com", app: "roadmap", sub: subOf(email), email, jti, iat: t, exp: t + 60 })}`;
+    return `${body}.${sign(null, Buffer.from(body), testKey.key).toString("base64url")}`;
+  };
+  const first = session("a".repeat(32));
+  try {
+    assert.equal((await send({ "x-aidenhq-test-session": first })).status, 200);
+    assert.equal((await send({ "x-aidenhq-test-session": session("b".repeat(32)) })).status, 200);
+    // Full: a third, fresh session is refused rather than evicting a live jti.
+    assert.equal((await send({ "x-aidenhq-test-session": session("c".repeat(32)) })).status, 503);
+    // And the first session is still remembered: a replay of it is refused, never accepted again.
+    assert.equal((await send({ "x-aidenhq-test-session": first })).status, 403);
+  } finally {
+    for (const s of [app2, g]) { s.close(); s.closeAllConnections(); }
+  }
+});

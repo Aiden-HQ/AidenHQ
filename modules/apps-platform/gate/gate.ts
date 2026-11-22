@@ -456,7 +456,7 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
  * fromTunnel: this server listens on cloudflared's socket (main.ts), so CF-Connecting-IP names the visitor.
  */
-export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false, testSessions = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean; testSessions?: boolean }): Server {
+export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false, testSessions = false, testSeenMax = TEST_SEEN_MAX }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean; testSessions?: boolean; testSeenMax?: number }): Server {
   const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
   const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
   const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)
@@ -589,7 +589,12 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       if (!int(c.iat) || !int(c.exp) || c.exp <= c.iat || c.exp - c.iat > TEST_TTL_S || c.iat > nowS + 5 || nowS >= c.exp) throw new Error("expired");
       for (const [k, exp] of seenTest) if (exp <= now()) seenTest.delete(k);
       if (seenTest.has(c.jti)) throw new Error("replayed");
-      if (seenTest.size >= TEST_SEEN_MAX) seenTest.clear();
+      // A full cache is a capacity limit, not a reason to forget a live jti: forgetting one would let that session be replayed. Refuse
+      // the new session instead (all entries expire within the 60-second TTL, so this clears by itself).
+      if (seenTest.size >= testSeenMax) {
+        log({ msg: "test replay cache full", host, size: seenTest.size });
+        return { status: 503, msg: "unavailable: too many test sign-ins in flight" };
+      }
       seenTest.set(c.jti, c.exp * 1000);
       return { email, jti: c.jti };
     } catch (e) {

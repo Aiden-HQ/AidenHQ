@@ -279,7 +279,8 @@ not an answer. The test user is the one identity an agent may use, for the apps 
   `jti`).
 - **What the gate does with it.** On the loopback listener only (`createGate({ testSessions: true })`; the front and
   tunnel listeners refuse it) the gate verifies the token: EdDSA, a known `aidenhq-test` key, `iss`/`aud`/`app`, a
-  signature, 60 seconds, the configured email and its `sub`, one use per `jti`. It then runs the same `authorize()` as a
+  signature, 60 seconds, the configured email and its `sub`, one use per `jti` (a full replay cache refuses a new session
+  instead of evicting a live one, so a sign-in is never accepted twice). It then runs the same `authorize()` as a
   browser's session: the account must exist and be enabled, the role is the app's role resolution, `blocked` is 403,
   `sameOrigin` holds for writes, and the normal `X-AidenHQ-Identity` is minted. The configured email must be a non-admin
   account, and its role on the named app must not be `admin` (either one is refused), so a mistake in the setting can never
