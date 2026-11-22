@@ -245,11 +245,16 @@ export function createConnectionState(o: {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
         const module = moduleOf(r.module);
-        // The marker and its notice commit together: a failed insert leaves the need for the next tick.
-        inTx(db, "connection_digest", () => {
-          if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) return;
-          o.queue({ kind: "digest", batch: true, text: `${o.label(module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(module, r.url)}`, dedupe_key: `connect:${r.key}` });
-        });
+        // The marker and its notice commit together: a failed insert leaves the need for the next tick. It is logged, never
+        // thrown: tick runs from a timer callback, where one locked database would take the whole kernel down.
+        try {
+          inTx(db, "connection_digest", () => {
+            if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) return;
+            o.queue({ kind: "digest", batch: true, text: `${o.label(module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(module, r.url)}`, dedupe_key: `connect:${r.key}` });
+          });
+        } catch (e) {
+          log("connection digest: the notice wasn't queued; the next tick retries it", { connection: r.module, key: r.key, err: (e as Error).message });
+        }
       }
     },
   };

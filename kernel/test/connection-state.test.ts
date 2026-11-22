@@ -281,7 +281,8 @@ test("tick's digest line and its marker commit together: a failed notice is retr
   w.db.prepare("UPDATE connection_state SET reported_day = NULL").run();
   w.queued.length = 0;
   w.state.failQueue = true;
-  assert.throws(() => w.s.tick(), /owner_notify is locked/);
+  // tick runs from a timer: a locked insert must not throw out of it, and the rolled-back marker stays unset.
+  assert.doesNotThrow(() => w.s.tick());
   assert.equal((w.db.prepare("SELECT reported_day FROM connection_state").get() as { reported_day: string | null }).reported_day, null, "the marker rolled back with the notice");
   w.state.failQueue = false;
   w.s.tick();
