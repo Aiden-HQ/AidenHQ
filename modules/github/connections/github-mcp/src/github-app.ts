@@ -3,7 +3,7 @@
 // a new App works without a restart. Without them, or on a repo it isn't installed on, code review posts as the owner. The JWT and
 // installation tokens never leave this process (restored from #1134's service/src/github-app.ts, cut to what review writes need).
 import { createSign } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const API = "https://api.github.com";
@@ -97,6 +97,8 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
     /** Why the App is failing: its saved files, or its last failure since a write as it last worked. */
     failure: (): string | undefined => {
       let c;
+      // A vault dir that is there but can't be read looks like no App to existsSync: say so on the card.
+      try { readdirSync(dir); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return `the GitHub App's saved files can't be read (${(e as NodeJS.ErrnoException).code})`; }
       try { c = creds(); } catch (e) { return (e as Error).message; }
       return c && failed?.for === c.id ? failed.why : undefined;
     },
