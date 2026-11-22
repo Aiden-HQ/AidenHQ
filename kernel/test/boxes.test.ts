@@ -177,11 +177,15 @@ test("a check-profile job is exempt: its authority has no tools by design", asyn
   h.grants["agent-1"].profile = "check";
   h.declared["agent-1"] = ["slack", "tasks"];
   const job = await h.admit("task-1");
-  assert.equal(job.state, "running");
-  assert.equal(h.calls.filter((c) => c.route === "/job").length, 1);
-  assert.doesNotMatch(h.calls.find((c) => c.route === "/job").body.mcp, /\[mcp_servers\./);
-  h.release(); // let the fake engine finish, so the box is released rather than held to the end
-  await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
+  // The fake engine waits for the release file: let it finish even when an assertion below fails, or the file hangs to the timeout.
+  try {
+    assert.equal(job.state, "running");
+    assert.equal(h.calls.filter((c) => c.route === "/job").length, 1);
+    assert.doesNotMatch(h.calls.find((c) => c.route === "/job").body.mcp, /\[mcp_servers\./);
+  } finally {
+    h.release();
+    await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
+  }
 });
 
 test("a job resumes only a session its engine ran in: never one from before the kernel admitted jobs, never one whose resume died at start", async (t) => {
