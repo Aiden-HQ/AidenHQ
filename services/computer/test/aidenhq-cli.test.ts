@@ -82,8 +82,11 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "--help"), "A help-named body.");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file=--help");
   assert.equal(seen.at(-1).body.args.text.body, "A help-named body.");
-  // `-h` after a command is still help.
+  // `-h` after a command is still help, and so is a standalone `--help` where a value would go: never a publish.
   assert.match(await aidenhq("publish", "acme/app", "fix-login", "-h"), /^usage: aidenhq publish/);
+  const filed = seen.length;
+  assert.match(await aidenhq("publish", "acme/app", "fix-login", "--body-file", "--help"), /^usage: aidenhq publish/);
+  assert.equal(seen.length, filed, "help files nothing");
   // An explicitly empty body file is refused too: it would leave a stale description behind a new head.
   writeFileSync(join(ws, "empty.md"), " \n");
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "empty.md")), (e) => e.code === 2 && /is empty/.test(e.stderr));

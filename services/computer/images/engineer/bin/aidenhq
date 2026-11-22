@@ -72,6 +72,11 @@ const allowed = (opt) => (TAKES[command] ?? []).includes(opt);
 const OPTION = /^(--fixes|--title|--body-file|--file|--keep)(=|$)/;
 const value = (i) => {
   const v = rest[i + 1];
+  // A standalone help flag is help wherever it stands, never a filename: a file named --help is named with `=`.
+  if (v === "-h" || v === "--help") {
+    console.log(usage);
+    process.exit(0);
+  }
   if (v === undefined || OPTION.test(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
   return v;
 };
