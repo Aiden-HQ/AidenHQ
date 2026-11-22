@@ -100,6 +100,24 @@ test("the base commit is the recorded base ref commit, not the base branch's mov
   assert.doesNotMatch(fact, new RegExp(`base commit ${SHA("7")}`), "the base branch's tip is not passed off as the base commit");
 });
 
+// The base commit is part of the graded version: a criterion about it is judged from the value, so a PR that keeps its head and
+// description but is re-based onto another commit is a new version to grade, not the same one rejected again.
+test("the graded version changes when the PR's recorded base commit changes", async () => {
+  const onBase = (base) => prEvidence([{ repo: REPO, number: 610, url: url(610), heads: ["branch-3"] }], "", depsFor([merged(610, "3", "4", base)]));
+  const a = await onBase("2"), b = await onBase("5");
+  assert.notEqual(a.version, b.version, "another base commit is another version");
+  assert.match(a.version, new RegExp(`\\.${SHA("2")}$`), "the version names the base commit it graded");
+  assert.equal((await onBase("2")).version, a.version, "the same base and head and text is the same version");
+});
+
+// A PR that is not merged yet still carries its recorded base commit: the fact states it rather than claiming nothing is known.
+test("an open PR's fact names its recorded base commit too", async () => {
+  const open = { ...merged(611, "5", "0", "2"), state: "OPEN", mergedAt: null, mergeCommit: null };
+  const ev = await prEvidence([{ repo: REPO, number: 611, url: url(611), heads: ["branch-5"] }], "", depsFor([open]));
+  const fact = ev.facts.find((f) => f.startsWith(`${url(611)}: open`));
+  assert.equal(/base commit ([0-9a-f]{40})/.exec(fact)?.[1], SHA("2"), "the recorded base ref commit is named before the merge");
+});
+
 test("a read with no base ref commit, or one that is not a commit id, establishes nothing", async () => {
   for (const [label, pr] of Object.entries({
     "no base ref commit": { ...merged(602, "3", "4"), baseRefOid: undefined },

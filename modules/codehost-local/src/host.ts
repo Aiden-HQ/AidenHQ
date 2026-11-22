@@ -6,7 +6,7 @@
 //
 // A change request is git refs in its bare repo, never a database (apps-mcp's codehost.ts reads them for previews):
 //   refs/changes/<n>/head    its head                      refs/changes/<n>/merged  the squash commit, once merged
-//   refs/changes/<n>/base    the default branch's tip when it last moved          refs/changes/<n>/closed  written when it is closed
+//   refs/changes/<n>/base    the default branch's tip when it was opened (never moved by a push)  refs/changes/<n>/closed  written when it is closed
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
 // Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
@@ -71,8 +71,8 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     const closed = merged ? "" : await rev(repo, `refs/changes/${n}/closed`);
     const main = await rev(repo, `refs/heads/${await defaultBranch(repo)}`);
     const base = main ? await g(repo, ["merge-base", main, head]).catch(() => "") : "";
-    // The base ref's commit recorded on the change: the default branch's tip when it was opened or last moved, as GitHub records
-    // `baseRefOid` on a PR. It is the grader's base commit; `base` above is the merge base and is never substituted for it.
+    // The base ref's commit recorded on the change: the default branch's tip when it was opened, as GitHub records `baseRefOid` on
+    // a PR and does not move on a push. It is the grader's base commit; `base` above is the merge base and is never substituted.
     const baseRef = await rev(repo, `refs/changes/${n}/base`);
     const files = (await g(repo, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base || "4b825dc642cb6eb9a060e54bf8d69288fbee4904", head])).split("\0").filter(Boolean);
     return { n, head, base, baseRef, main, files, state: merged ? "merged" : closed ? "closed" : "open", meta: await meta(repo, n) };
@@ -92,14 +92,16 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       for (const n of (await numbers(repo)).reverse()) {
         const c = await readChange(repo, n);
         if (c.meta.branch !== branch || c.state !== "open") continue;
-        const lines = [`update refs/changes/${n}/head ${head}`, `update refs/changes/${n}/base ${tip}`];
+        // A push moves the head only: the recorded base stays the commit the change was opened against, as GitHub's baseRefOid does.
+        const lines = [`update refs/changes/${n}/head ${head}`];
         if (text) lines.push(`update refs/changes/${n}/meta ${await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...c.meta, ...text }) })}`);
         await refs(repo, lines);
         return { url: changeUrl(repo, n), title: String(text?.title ?? c.meta.title ?? branch), before: c.head };
       }
       const n = ((await numbers(repo)).at(-1) ?? 0) + 1;
       const m = await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ title: text?.title ?? branch, body: text?.body ?? "", branch, base: into, task, opened_at: new Date().toISOString(), draft: false }) });
-      await refs(repo, [`create refs/changes/${n}/head ${head}`, `create refs/changes/${n}/base ${tip}`, `create refs/changes/${n}/meta ${m}`]);
+      // A repo with no default-branch commit yet has no base to record: write the ref only when there is one.
+      await refs(repo, [`create refs/changes/${n}/head ${head}`, ...(tip ? [`create refs/changes/${n}/base ${tip}`] : []), `create refs/changes/${n}/meta ${m}`]);
       return { url: changeUrl(repo, n), title: String(text?.title ?? branch), before: undefined as string | undefined };
     });
   }

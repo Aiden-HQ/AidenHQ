@@ -136,6 +136,9 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   const of = (type) => flowFacts.filter((f) => f.type === type && f.subject === "pr:local/hello#2");
   assert.deepEqual([of("pr.opened")[0].data.title, of("pr.opened")[0].data.author_kind, of("pr.opened")[0].data.head], ["Other", "agent", first]);
   assert.deepEqual(of("pr.pushed").map((f) => [f.version, f.data.before, f.data.forced]), [[second, first, false]]);
+  // A push moves the head only: the change's recorded base stays the commit it was opened against, as GitHub's baseRefOid does.
+  const bare2 = host.bare("local/hello");
+  assert.equal(git(dir, "--git-dir", bare2, "rev-parse", "refs/changes/2/base"), git(dir, "--git-dir", bare2, "rev-parse", "refs/heads/main"), "the recorded base is still the tip it opened against");
   assert.deepEqual(of("pr.closed").map((f) => [f.version, f.data.merged]), [[second, false]]);
 
   // Repos on two code hosts in one write are refused before anything is filed.

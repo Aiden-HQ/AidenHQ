@@ -42,7 +42,8 @@ test("the grader prompt names the PR's recorded base ref commit as its base comm
   assert.match(system, /It is not the base branch's current tip/);
   assert.match(system, /not the git merge base/);
   assert.match(system, /answered by comparing that base commit id with the commit id the other trusted fact names/);
-  assert.match(system, /names a commit and proves no content/);
-  assert.match(system, /about whether a change was present at it, is met only when the DIFF or another trusted fact shows the change there/);
+  assert.match(system, /proves nothing about the PR's own history/);
+  assert.match(system, /it is not an ancestor proof/);
+  assert.match(system, /about what the base commit contains, or about whether a change was present at it, is met only when the DIFF/);
   assert.match(system, /missing evidence, never a yes/);
 });

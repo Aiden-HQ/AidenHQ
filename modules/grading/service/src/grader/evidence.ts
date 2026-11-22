@@ -90,9 +90,11 @@ const samePr = (a: { repo: string; number: number }, b: { repo: string; number: 
  * A PR's base commit: the base ref's commit recorded on the PR (`baseRefOid`), or "" when the read does not carry one.
  *
  * GitHub records it when the PR is opened or its base is last changed, and does not move it as the base branch advances. So it
- * is the base branch's commit the PR is based on, and it is what a criterion about the PR's base is judged from -- including
- * whether the PR is based on a commit that landed just before it. It is not the base branch's current tip (`baseRef.target`,
- * which moves) and not the git merge base (which advances as the branch is rebased onto it); neither is substituted for it.
+ * is the base branch's commit the PR was opened against, and it is what a criterion about the PR's base is judged from -- a
+ * prerequisite that merged just before the PR was opened is that commit. It is not the base branch's current tip
+ * (`baseRef.target`, which moves) and not the git merge base (which advances as the branch is rebased onto it); neither is
+ * substituted for it. Nor does it prove the PR's ancestry: a base commit that is an ancestor of another commit says nothing
+ * about whether the PR contains that other commit's change.
  *
  * Nothing is established ("") when the read carries no base ref commit, or the value is not a commit id.
  */
@@ -379,8 +381,11 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     const head = `### ${p.url}\n`;
     const text = `title: ${String(pr.title ?? "").trim()}\n\n${String(pr.body ?? "").trim()}`;
-    // An edited description is a new version to grade, even at the same head: the rubric may only be met by what it says.
-    versions.push(`${p.repo}#${p.number}@${sha}+${hash(text)}`);
+    // An edited description is a new version to grade, even at the same head: the rubric may only be met by what it says. So is a
+    // changed base commit: a criterion about the PR's base is judged from it, so the same head and text on another base is another
+    // version (read before the fact line below, which uses the same value).
+    const base = baseCommitOf(pr);
+    versions.push(`${p.repo}#${p.number}@${sha}+${hash(text)}${base ? `.${base}` : ""}`);
     // The code a screenshot may show: the head, the merge commit, and the newest commit that isn't a merge of the base (the
     // agent's own, which the runner re-signs with the same tree before a base update merges on top). By commit or by tree.
     const history = (pr.history?.nodes ?? []).map((n: any) => n.commit).filter(Boolean);
@@ -389,7 +394,6 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     // The base commit (baseCommitOf): the base ref's commit recorded on the PR, never the base branch's moving tip or the git
     // merge base. "not established" is missing evidence rather than a guess.
-    const base = baseCommitOf(pr);
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
