@@ -319,10 +319,10 @@ describe("setup flows, MCP status", () => {
     expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
     emit.mockClear();
     // The module stops answering: status keeps the confirmed pairing rather than listing it as needing setup again.
-    pairDown = true;
+    pairUnreachable = true;
     expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
     expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(0);
-    pairDown = false;
+    pairUnreachable = false;
     paired = false;
     emit.mockRestore();
   });
