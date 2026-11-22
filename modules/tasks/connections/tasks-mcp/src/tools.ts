@@ -824,15 +824,20 @@ const STATE_PROPS = {
   state: { type: "string", description: `comma-separated kinds (${KINDS.join(", ")}); default: every task but done and cancelled ones` },
   attention: { type: "string", enum: ATTENTION, description: "only tasks someone must act on: any, or this one (the owner, an agent, a reviewer)" },
 };
+/** The kinds a `state` argument names, trimmed. */
+const stateKinds = (state: unknown) => String(state ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;
 /**
  * Paperclip statuses to ask for, given the state filter: these are only the candidate superset, the kernel kind is the filter.
  * An idle row includes `history_expired` (its `task.created` fact pruned), whose Paperclip status can be any, done and
- * cancelled included; a waiting row's can be any open one. So either asks for every status.
+ * cancelled included; a waiting row's can be any open one. So either asks for every status, as does `done`.
  */
-const statusesFor = (state: unknown) => (String(state ?? "").split(",").map((k) => k.trim()).some((k) => k === "done" || k === "idle" || k === "waiting") ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES);
+const statusesFor = (state: unknown) => (stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
+/** task_search's one-page query: done only when asked, as before the kind filter learned about idle and waiting. */
+const searchStatusesFor = (state: unknown) => (stateKinds(state).includes("done") ? ALL_STATUSES : OPEN_STATUSES);
 /** A `state`/`attention` argument as the kind list and the one attention, validated. */
 function stateFilter(state: unknown, attention: unknown) {
-  const kinds = String(state ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+  const kinds = stateKinds(state);
   const bad = kinds.filter((k) => !KINDS.includes(k));
   const one = attention ? String(attention) : "";
   if (bad.length || (one && !ATTENTION.includes(one))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
@@ -856,7 +861,8 @@ async function withStates(list: Json[], state: unknown, attention: unknown) {
 const PAGE = 200;
 /**
  * A company's issues, newest first, one page at a time: Paperclip's `offset` paging, as scripts/modules.ts and the board
- * read it. Stops at an empty page, or one repeating rows already read (a server that ignores `offset`).
+ * read it. Yields only rows not seen yet (a task inserted ahead of the offset shifts the next page), advancing the offset by
+ * the page's length; it stops at an empty page, or one with nothing new (a server that ignores `offset`).
  */
 async function* issuePages(q: URLSearchParams) {
   const seen = new Set<string>();
@@ -866,9 +872,10 @@ async function* issuePages(q: URLSearchParams) {
     p.set("offset", String(offset));
     const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
     if (!Array.isArray(page) || !page.length) return;
-    if (!page.some((i: Json) => !seen.has(i.id))) return;
-    for (const i of page) seen.add(i.id);
-    yield page;
+    const fresh = page.filter((i: Json) => !seen.has(i.id));
+    if (!fresh.length) return;
+    for (const i of fresh) seen.add(i.id);
+    yield fresh;
     offset += page.length;
   }
 }
@@ -913,7 +920,7 @@ const TOOLS: Record<string, Tool> = {
       const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
-      q.set("status", statusesFor(state));
+      q.set("status", searchStatusesFor(state));
       const list = await withStates(await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`), state, attention);
       return { tasks: await Promise.all(list.map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
     },
@@ -944,33 +951,39 @@ const TOOLS: Record<string, Tool> = {
       else q.set("excludeRoutineExecutions", "true");
       if (label) q.set("labelId", (await labelIds([String(label)]))[0]);
       if (updated_since) q.set("updatedSince", String(updated_since));
-      // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; the
-      // walk stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
-      const out: (readonly [Json, Json])[] = [];
-      const collect = async (query: URLSearchParams, accept: (i: Json) => boolean = () => true) => {
+      // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; a walk
+      // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
+      const capped = async (query: URLSearchParams, accept: (i: Json) => boolean = () => true) => {
+        const kept: (readonly [Json, Json])[] = [];
         for await (const page of issuePages(query)) {
           for (const [i, s] of await matchingStates(page.filter(accept), kinds, one)) {
-            if (out.length >= max) return;
-            out.push([i, s]);
+            kept.push([i, s]);
+            if (kept.length >= max) return kept;
           }
         }
+        return kept;
       };
-      if (!me) await collect(q);
+      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.updatedAt ?? i.createdAt ?? "")) || 0;
+      let out: (readonly [Json, Json])[];
+      if (!me) out = await capped(q);
       else {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
         const mineOnly = (i: Json) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i);
-        await collect(q, mineOnly);
+        const assigned = await capped(q, mineOnly);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         const owner = await ownerUserId();
+        const chats: (readonly [Json, Json])[] = [];
         if (owner) {
           const theirs = new URLSearchParams(q);
           theirs.delete("assigneeAgentId");
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          await collect(theirs, (i: Json) => !i.assigneeAgentId && mark.test(i.description ?? ""));
+          chats.push(...(await capped(theirs, (i: Json) => !i.assigneeAgentId && mark.test(i.description ?? ""))));
         }
+        // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
+        out = [...assigned, ...chats].sort((a, b) => at(b) - at(a)).slice(0, max);
       }
       return { tasks: await Promise.all(out.map(([i, s]) => brief(i, s))) };
     },

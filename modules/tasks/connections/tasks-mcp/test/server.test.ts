@@ -108,3 +108,11 @@ test("task_list with no state still returns only the not-done kinds", async () =
   const out = parse(await call("task_list", { limit: 10 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["working-1", "waiting-1", "idle-1"]);
 });
+
+test("task_list returns no more than limit matches even when more pages hold matches", async () => {
+  const rows = Array.from({ length: 450 }, (_, n) => row(`idle-${n}`, "todo"));
+  const states = Object.fromEntries(rows.map((r) => [r.id, state("idle")]));
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_list", { state: "idle", limit: 3 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["idle-0", "idle-1", "idle-2"], "newest first, capped at limit");
+});
