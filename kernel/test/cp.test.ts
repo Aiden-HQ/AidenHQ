@@ -192,6 +192,14 @@ test("a fleet settler settles another agent's stuck task: answers its delegator 
   r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
   assert.deepEqual([r.status, h.issues[mine.json.id].status], [200, "done"]);
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-5", { status: "done" })).status, 403);
+  // On another agent's task it changes the status, the holder and the blockers only: never the brief or its labels, never to a person.
+  for (const body of [{ title: "Renamed" }, { description: "New brief." }, { priority: "low" }, { labelIds: [OTHER] }, { assigneeUserId: "u-owner", assigneeAgentId: null }]) {
+    assert.equal((await act("settler", "PATCH", "/api/issues/WOR-5", body)).status, 403, JSON.stringify(body));
+  }
+  // A cycle broken at one task: its blockers dropped as it goes back to work.
+  h.issues[HANDED].blockedBy = [OTHER];
+  r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "todo", blockedByIssueIds: [], comment: "No longer waits on WOR-2." });
+  assert.deepEqual([r.status, h.issues[HANDED].blockedBy], [200, []]);
   // Only to an agent of this instance.
   r = await act("settler", "PATCH", "/api/issues/WOR-5", { assigneeAgentId: "99999999-9999-4999-8999-999999999999" });
   assert.equal(r.status, 400);

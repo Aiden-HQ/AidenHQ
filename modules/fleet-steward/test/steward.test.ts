@@ -183,6 +183,13 @@ test("a task waiting over an hour on its delegator's call or an agent's task han
   assert.match(found[1].reason, /WOR-G has sat handed back to the owner for 120 min \(handback\)/);
 });
 
+test("a retired check group leaves nothing open: an old Tier 2 card incident is dropped on the next tick", async () => {
+  const kv = kvOf();
+  kv.set("detector", JSON.stringify({ open: { "card:c1": { reason: "old", at: new Date(NOW - 3600_000).toISOString(), fired: true }, "gate:a": { reason: "x", at: new Date(NOW).toISOString(), fired: true } }, recovered: [] }));
+  await tick(kv, { gate: async () => [{ key: "a", reason: "x" }] }, async () => true, async () => {}, new Date(NOW), 0);
+  assert.deepEqual(Object.keys(detectorState(kv).open), ["gate:a"]);
+});
+
 test("handbacks past one pass's 20 reads are reached by the next pass: each task's creator is read once and kept", async () => {
   const items = Array.from({ length: 25 }, (_, n) => ({ task: `h${n}`, identifier: `WOR-H${n}`, reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: `task:h${n}` }] }));
   let reads = 0;
@@ -403,12 +410,14 @@ test("flow_report's summary carries the insights and the journey's slowest and m
   assert.deepEqual(asked.at(-1), { journey: "pr", sort: "rounds", limit: "5", since: "2026-11-12" });
 });
 
-test("dispatch stalled: queued wakes with no job started for 15 minutes tell the chief of staff once; a recent start is not a stall", async () => {
+test("dispatch stalled: queued wakes with no job started for 15 minutes tell the owner once, never as a task the stalled dispatch would hold; a recent start is not a stall", async () => {
   const run = async (oldest, started) => {
-    const sent = [];
+    const sent = [], chief = [];
     const kernel = { call: async () => ({ waiting: { count: 3, oldest_at: minsAgo(oldest), oldest_cause: "routine:daily-brief" }, last_started_at: minsAgo(started) }) };
-    const c = checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
-    return { found: await c.dispatch(), sent };
+    const c = checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => void chief.push(text), owner: async (text) => void sent.push(text), gradeFailures: async () => [], now: () => NOW });
+    const found = await c.dispatch();
+    assert.deepEqual(chief, []);
+    return { found, sent };
   };
   const stalled = await run(20, 20);
   assert.deepEqual(stalled.found.map((i) => [i.key, i.critical]), [["stalled", true]]);
@@ -468,7 +477,7 @@ test("an agent Paperclip holds in a lifecycle transition over 15 minutes is rais
   assert.deepEqual(await at(20), []);
 });
 
-test("notices (the chief of staff's, and the owner's unreachable line) are marked told only once sent: a failed critical alert, stall or unreachable notice is tried again; recoveries are trimmed only once filed", async () => {
+test("notices (the chief of staff's, and the owner's two lines) are marked told only once sent: a failed critical alert, stall or unreachable notice is tried again; recoveries are trimmed only once filed", async () => {
   // A critical alert whose notice failed is told by the next webhook.
   const kv = kvOf(), told = [];
   const alert = parseAlerts({ alerts: [{ status: "firing", fingerprint: "ab", labels: { alertname: "CoreServiceDown", severity: "critical" }, annotations: {} }] });
@@ -480,7 +489,7 @@ test("notices (the chief of staff's, and the owner's unreachable line) are marke
   const k2 = kvOf(), sent = [];
   let fail = true;
   const kernel = { call: async () => ({ waiting: { count: 1, oldest_at: minsAgo(20), oldest_cause: "x" }, last_started_at: minsAgo(20) }) };
-  const c = checks({ kernel, kv: k2, apps: async () => [], alerts: async () => [], openKeys: () => ["dispatch:stalled"], notify: async (t) => { if (fail) throw new Error("503"); sent.push(t); }, gradeFailures: async () => [], now: () => NOW });
+  const c = checks({ kernel, kv: k2, apps: async () => [], alerts: async () => [], openKeys: () => ["dispatch:stalled"], owner: async (t) => { if (fail) throw new Error("503"); sent.push(t); }, gradeFailures: async () => [], now: () => NOW });
   await c.dispatch();
   fail = false;
   await c.dispatch();
@@ -490,12 +499,13 @@ test("notices (the chief of staff's, and the owner's unreachable line) are marke
   const k3 = kvOf(), msgs = [];
   const old = new Date(NOW - 2 * 86_400_000).toISOString();
   k3.set("detector", JSON.stringify({ open: { "x:y": { reason: "r", at: old, fired: false } }, recovered: Array.from({ length: 25 }, (_, n) => ({ key: `r${n}`, reason: "", at: old, fired: false })) }));
+  const x = { x: async () => undefined }; // the group couldn't be checked: its open flag stays open
   const down = async () => { throw new Error("503"); };
-  await tick(k3, {}, async () => false, down, new Date(NOW));
+  await tick(k3, x, async () => false, down, new Date(NOW));
   assert.equal(detectorState(k3).open["x:y"].told, undefined);
   assert.equal(detectorState(k3).recovered.length, 25);
-  await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
-  await tick(k3, {}, async () => false, async (t) => void msgs.push(t), new Date(NOW));
+  await tick(k3, x, async () => false, async (t) => void msgs.push(t), new Date(NOW));
+  await tick(k3, x, async () => false, async (t) => void msgs.push(t), new Date(NOW));
   assert.equal(msgs.length, 1);
 });
 

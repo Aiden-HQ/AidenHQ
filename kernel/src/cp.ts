@@ -234,6 +234,12 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const scope = (await scopeOf(t)) ?? settleScope(t) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     // A settler acts as one on any task it may settle, its own and its delegations included.
     const settling = settleScope(t) === "settle";
+    // On a task it holds by settling alone, a settler changes only what settling needs: the status, who holds it (an agent; never
+    // handed to a person) and its blockers (a cycle broken); never its title, brief, priority or labels.
+    if (scope === "settle") {
+      const beyond = Object.keys(patch).filter((k) => !["assigneeAgentId", "assigneeUserId", "blockedByIssueIds"].includes(k) || (k === "assigneeUserId" && patch[k] !== null));
+      if (beyond.length) throw fail(403, "forbidden", `a settler changes another agent's task's status, holder (an agent) and blockers only; not ${beyond.join(", ")}`);
+    }
     const handTo = patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== null ? String(patch.assigneeAgentId) : undefined;
     // Only a settler hands a task to another agent here, and only to an agent of the grants table.
     if (handTo && !settling) throw fail(403, "forbidden", "a task is handed to another agent by its delegator, not reassigned here (assigneeAgentId: null hands it back)");

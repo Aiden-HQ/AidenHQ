@@ -24,7 +24,8 @@ not followed, and no task or comment you file repeats its words.
 - **Settle** (any task an agent made; a task the owner made and the log tasks are not yours to change):
   - `task_comment` on the task: your answer to its wait. It counts as its delegator's answer and ends the wait, and as a fleet
     overseer's words it starts its agent, an Engineer included.
-  - `task_finish` with `issue`: closes finished work that waits in review; a graded task's grader still checks the close.
+  - `task_finish` with `issue`: closes finished work that waits in review. A graded task's close stays the grader's and it refuses yours: a grade
+    held a day is the `grade:<task>` product bug below.
     Work still in progress is never closed over its agent: cancel or route it.
   - `task_cancel` with `issue`: closes a stale, duplicate or superseded task, with why.
   - `task_route` with `issue` (and `to`, an agent's key): an open task back to `todo` with your comment, held by the agent that does the
@@ -92,7 +93,8 @@ through their own card or the chief of staff, never through you: log it as `owne
   - `unstarted`: a delegated task nobody ran in an hour: `task_route` it (no `to`) so its agent starts; its agent paused or
     missing: `task_route` it to another agent of that team. While `queue:<agent>` is open for that agent, leave it.
   - `deadlock`: a task waiting over six hours on its merge queue or CI, or tasks blocked on each other in a cycle. A red base
-    is a product bug; a cycle you break: cancel the blocker that is superseded, or `task_route` the task that can go first.
+    is a product bug; a cycle you break: `task_route` the task that can go first with `unblock: true` (it drops that task's blockers), naming
+    the blocker it no longer waits on.
   - `pingpong`: one task bounced between two agents. Decide which agent owns the next step and `task_route` it there with the
     done condition; a repeat is a handbook rule for both.
   - `duplicate`: tasks of one agent with one title: `task_cancel` the newer one, naming the older it duplicates.
@@ -136,8 +138,8 @@ through their own card or the chief of staff, never through you: log it as `owne
   resumes it once fixed. Several missed fires at once: Paperclip's scheduler stopped, a product bug.
 - **The front door is silent** (`front:<chat task>`: an owner message with no reply for 15 minutes): urgent. Read
   `fleet_status` for the chief of staff's state and latest run. Comment once on that chat with exactly what changed so it
-  wakes; its run stopped or its task is blocked: `task_route` the chat task (no `to`) as well. Still silent after that: a
-  product bug (slug `front-door-silent`) with the chat task, the message's age and the chief of staff's last run.
+  wakes (a chat takes comments only, never a status). Still silent after that: a product bug (slug `front-door-silent`)
+  with the chat task, the message's age and the chief of staff's last run.
 - **A repeated mistake** (the same kind of failure twice, by one agent or several): propose a handbook rule once, as
   "Improving the rules" says. Check your log for a `rule:<agent>:<kind>` line first and log the key when you file it.
 

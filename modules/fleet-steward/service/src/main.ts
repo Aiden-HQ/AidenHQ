@@ -50,18 +50,23 @@ const gradeFailures = async () => {
   return ((await r.json()) as { failures: { task: string; at: string; reason: string }[] }).failures;
 };
 const hashOf = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-/** The owner's one line: only for the Steward itself unreachable (the self-healer is down, so someone outside the fleet must know). */
+/** The owner's lines: only the Steward itself unreachable, or dispatch stalled (the self-healer, or every agent, is down, so
+ * someone outside the fleet must know). */
 const ownerNotice = async (text: string) => void (await kernel.call("POST", "/v1/notify", { kind: "alert", text, dedupe_key: `steward:${hashOf(text)}` }));
 /**
- * Every other fleet notice (a stalled dispatch, a paused routine, a component down, a critical alert, a jammed gate) is a task for
- * the chief of staff: fixed text from code, one per notice and day. The owner hears nothing of them.
+ * Every other fleet notice (a paused routine, a component down, a critical alert, a jammed gate) is a task for the chief of
+ * staff: fixed text from code, one per notice and day. The owner hears nothing of them. Under quiet start, until the owner turns
+ * the Steward on, nothing is filed: the call fails, so the notice is tried again once it is on.
  */
-const toChief = async (text: string, key = hashOf(text), at = new Date()) => void (await kernel.call("POST", "/v1/tasks", {
+const toChief = async (text: string, key = hashOf(text), at = new Date()) => {
+  if (!(await stewardOn(kernel, env.FLEET_STEWARD_QUIET_START))) throw new Error("quiet start: the Steward is off");
+  await kernel.call("POST", "/v1/tasks", {
   title: `Fleet: ${text.split(/\.\s/)[0]!.slice(0, 120)}`,
   description: `${text}\n\nSettle it as the fleet's chief of staff (the Fleet Steward's check task has the detail), then make sure its cause is fixed at the source: a rule through the Engineer, or a product bug. Close this task with one line.`,
   role: "fleet-admin",
   source: `fleet-notice:${key.replace(/[^\w.:/@#-]/g, "-").slice(0, 120)}:${at.toISOString().slice(0, 10)}`,
-}));
+  });
+};
 
 /** The check task: fixed text, never an incident's own words (the Steward reads those with fleet_detector, fenced). Its source
  * says whether something new tripped (fleet-incident:, Flow's DORA incidents) or only recovered (fleet-check:). */
@@ -76,7 +81,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 const fileJam = (keys: string[]) => toChief(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${hashOf([...keys].sort().join(","))}`);
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, gradeFailures, log });
+const all = checks({ kernel, kv, pause: async (routine) => void (await kernel.call("POST", "/v1/routines/pause", { routine })), apps, alerts: () => alertIncidents(kv, toChief), openKeys: () => Object.keys(detectorState(kv).open), notify: toChief, owner: ownerNotice, gradeFailures, log });
 let busy = false;
 const run = async () => {
   if (busy) return;

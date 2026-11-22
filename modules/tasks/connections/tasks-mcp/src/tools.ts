@@ -1374,13 +1374,14 @@ const TOOLS: Record<string, Tool> = {
       properties: {
         issue: { type: "string" },
         to: { type: "string", description: "the agent that takes it, by key or name (task_team, fleet_catalog); default: its agent now" },
+        unblock: { type: "boolean", description: "true: drop the task's blockers too (a cycle of tasks blocked on each other, broken at this one)" },
         comment: { type: "string" },
       },
       required: ["issue", "comment"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, to, comment }: Args) => {
+    run: async ({ issue, to, unblock, comment }: Args) => {
       await requireRole(SETTLE, "route another agent's task");
       const t = await api("GET", `/api/issues/${issueRef(issue)}`);
       if (memoryInboxes().has(t.id)) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
@@ -1394,7 +1395,7 @@ const TOOLS: Record<string, Tool> = {
       }
       if (!agent) throw new Error("this task is with the owner: name the agent it goes to (`to`)");
       const leading = await postLeadingParts(issue, comment);
-      return brief(await patchIssue(issue, { status: "todo", assigneeAgentId: agent, assigneeUserId: null, comment: leading }));
+      return brief(await patchIssue(issue, { status: "todo", assigneeAgentId: agent, assigneeUserId: null, ...(unblock ? { blockedByIssueIds: [] } : {}), comment: leading }));
     },
   },
   task_comment: {

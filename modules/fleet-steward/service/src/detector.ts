@@ -142,6 +142,9 @@ export const QUIET_MS = 30 * MIN;
 export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>): Promise<void> {
   const s = detectorState(kv);
   const at = now.toISOString();
+  // A retired check group (one this detector no longer runs, e.g. the old Tier 2 `card` reminders) leaves nothing open behind it.
+  const groups = Object.keys(checks);
+  for (const key of Object.keys(s.open)) if (!groups.some((g) => key.startsWith(`${g}:`))) delete s.open[key];
   for (const [group, check] of Object.entries(checks)) {
     const found = await check().catch(() => undefined);
     if (!found) continue;
@@ -438,7 +441,7 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
 }
 
 /** The owner's alert list, as checks. `pause` pauses a routine (kernel role kernel.routines). `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -466,6 +469,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
   // Whether a task an agent made (its creator never changes): kept across passes, so each pass reads at most MAX_LOOKUPS new
   // handbacks and every one is reached in turn. A failed read is not kept.
   const agentMade = new Map<string, boolean>();
+  /** Handbacks whose task couldn't be read, until when they are raised unread (a failed read backs off, so later ones get read). */
+  const unreadUntil = new Map<string, number>();
   let unresumedAt = 0; // where the next `unresumed` pass starts in its list, so a bounded pass reaches every eligible wait
   let jobCache = new Map<string, JobRow[]>(); // one check run's job reads, shared by `component` and `run`
   const jobsOf = async (agent: string) => {
@@ -478,10 +483,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
   // A notice per incident (a task for the chief of staff, main.ts toChief), recorded as told only once it went out: a failed send is tried again on the next check, and
   // forgotten when the incident is gone, so its next occurrence is told again.
   const told = (): string[] => JSON.parse(d.kv.get("owner_told") ?? "[]");
-  const announce = async (key: string, text: string) => {
+  const announce = async (key: string, text: string, send = (x: string) => d.notify?.(x, key)) => {
     if (told().includes(key)) return;
     try {
-      await d.notify?.(text, key);
+      await send(text);
     } catch {
       return;
     }
@@ -612,13 +617,14 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       d.kv.set("lifecycle_since", JSON.stringify(next));
       return out;
     },
-    // Queued wakes while no job starts: the owner hears at once, with no agent job needed to file or read anything.
+    // Queued wakes while no job starts: the owner hears at once (`owner`), with no agent job needed to file or read anything. A task
+    // for the chief of staff would wait on the very dispatch that stalled, so this is the owner's second line beside a lost Steward.
     async dispatch() {
       const t = now();
       const w = (await d.kernel.call("GET", "/v1/work")) as { waiting?: { count: number; oldest_at: string | null; oldest_cause: string | null }; last_started_at?: string | null };
       if (!w.waiting?.count || age(w.waiting.oldest_at, t) <= DOWN_MS || age(w.last_started_at, t) <= DOWN_MS) return (forgetTold("dispatch-stalled", []), []);
       const text = `No agent work has started for ${mins(Math.min(age(w.last_started_at, t), age(w.waiting.oldest_at, t)))} while ${w.waiting.count} wake${w.waiting.count === 1 ? "" : "s"} wait (oldest: ${slug(w.waiting.oldest_cause)}).`;
-      await announce("dispatch-stalled", text);
+      await announce("dispatch-stalled", text, (x) => d.owner?.(x));
       return [{ key: "stalled", critical: true, reason: text }];
     },
     // A task held for grading (label grading, in review) for over a day: the grader's verdict is overdue.
@@ -706,11 +712,13 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
         const why = i.attention.map((a) => a.why).find((w) => JUDGEMENTS[w] !== undefined);
         const since = i.wait_since ?? i.since;
         if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;
-        if (why === "handback" && !agentMade.has(i.task)) {
-          // Past this pass's reads, a handback already open stays open (a later pass reads it); a failed read is unknown, so it is raised.
+        if (why === "handback" && !agentMade.has(i.task) && !((unreadUntil.get(i.task) ?? 0) > t)) {
+          // Past this pass's reads, a handback already open stays open (a later pass reads it); a failed read is unknown, so it is
+          // raised, and not read again for an hour.
           if (looked++ >= MAX_LOOKUPS) { if (d.openKeys().includes(`judgement:${i.task}`)) out.push({ key: i.task, reason: "" }); continue; }
           const task = (await (d.kernel.read(`/api/issues/${encodeURIComponent(i.task)}`) as Promise<IssueRow>).catch(() => undefined)) ?? undefined;
           if (task) agentMade.set(i.task, Boolean(task.createdByAgentId && !task.createdByUserId));
+          else unreadUntil.set(i.task, t + HOUR_MS);
         }
         if (why === "handback" && agentMade.get(i.task) === false) continue;
         out.push({ key: i.task, reason: `task ${i.identifier ?? i.task} has ${JUDGEMENTS[why]} for ${mins(age(since, t))} (${why})` });

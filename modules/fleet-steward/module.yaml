@@ -9,7 +9,7 @@ requires: [ grading ] # the detector reads the grader's failed passes
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
-  # the Coach; kernel.routines: the detector pauses a routine failing three runs in a row; kernel.tasks: the check task for the Steward and the fleet notices for the chief of staff (a stall, a paused routine, a component down, a critical alert, a jammed gate); kernel.owner-notice: the owner's one line for a lost Steward;
+  # the Coach; kernel.routines: the detector pauses a routine failing three runs in a row; kernel.tasks: the check task for the Steward and the fleet notices for the chief of staff (a paused routine, a component down, a critical alert, a jammed gate); kernel.owner-notice: the owner's lines for a lost Steward or a stalled dispatch;
   # apps.read: apps-mcp's status, quality, sources and open PRs; kernel.routing: the routing learning loop's reads and its typed
   # routing changes, each a reviewed kernel.apply filed as the calling agent (routing-tuner role only); kernel.flow-read: Flow's idle work
   # for the detector's stuck rule and its week-over-week stage check, and the flow_report tool; product-issues (the chief of staff's):
