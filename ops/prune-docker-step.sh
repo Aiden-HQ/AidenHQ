@@ -10,8 +10,8 @@
 #
 # The `build-cache` step is the one whose OUTPUT is kept too: it runs right after the two builder prunes and before the
 # image and container prunes, and what it writes (`docker system df`) is the cache as it was once pruning finished. The
-# verification judges the 20 GB cap on that snapshot, not on a later `docker system df` a build started in the meantime may
-# have grown past 20 GB, which would look like a prune that did not cap anything. Its record holds the invocation, the
+# verification judges the build-cache ceiling on that snapshot, not on a later `docker system df` a build started in the
+# meantime may have grown past it, which would look like a prune that did not cap anything. Its record holds the invocation, the
 # status and the rows in one write (`<run> <rc>` then the rows): each is only current if all of it is.
 set -uo pipefail
 

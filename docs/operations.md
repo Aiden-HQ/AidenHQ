@@ -202,8 +202,8 @@ unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a 
 Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
 knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
-before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, cache under the
-20 GB cap, no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
+before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
+its 40 GB ceiling, no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
 (not once a night: the peak between prunes is what crossed the alert line), so the space peak between prunes stays under
 the alert line. It also removes one-off containers — a container with no compose service and no `aidenhq.computer` label, the class a
 `docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
@@ -218,10 +218,13 @@ rebuilds. Each prune command has its own `timeout` under the unit's `TimeoutStar
 systemd reaching the later steps and the verification; the apply-time steps are bounded the same way, since `|| true`
 only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
 prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
-system df`), so a build that grows the cache past 20 GB while later steps run does not read as a prune that capped nothing;
-in that snapshot, over 20 GB with nothing reclaimable is a build holding that cache in use (the cap holds), while any
-reclaimable bytes at all mean the cap did not hold. The snapshot, its status and its invocation are one record, so a run
-is only ever judged on its own result, and the cap's only tolerance is the precision Docker printed the size with.
+system df`), so a build that grows the cache while later steps run does not read as a prune that capped nothing. That
+ceiling is 40 GB, not the prune's 20 GB target: a working prune leaves the fleet's ordinary cache on the 20 GB line (a
+29.9 GB peak in the five hours to 2026-11-22T12:45Z), so a 20 GB judgement failed every ordinary run after 2026-11-22;
+40 GB is above that peak and still catches a prune that did nothing (an uncapped store held 104 GB), while disk pressure
+is left to `DiskSpaceLow`/`DiskNearlyFull`. In that snapshot, over the ceiling with nothing reclaimable is a build holding
+that cache in use (the ceiling holds), while any reclaimable bytes at all mean the prune did nothing. The snapshot, its status and its invocation are one record, so a run
+is only ever judged on its own result, and the ceiling's only tolerance is the precision Docker printed the size with.
 
 Each step's exit status is recorded for the verification: the `-` prefix keeps a failure from skipping the next step, and
 the verification reads the record, so a failed prune still fails the unit without running the same 48 h prune a second
