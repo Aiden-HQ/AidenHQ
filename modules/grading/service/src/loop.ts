@@ -25,7 +25,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   stripHidden: Json;
   graderSpeaks: Json;
   /** The hash a pass's verdict names (grades.ts rubricHash): the store drops a verdict from a filing since replaced. */
-  rubricHash: (rubric: string[], deliverable?: Json) => string;
+  rubricHash: (rubric: string[], deliverable?: Json, revision?: number) => string;
   /** The marker `gradeNote` puts on every grader note (`grader/evidence.ts`'s GRADER_MARKER), for the closes this loop words itself. */
   graderMarker: string;
   emit?: (e: Json) => void;
@@ -228,7 +228,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const verdictPath = `/internal/grades/${encodeURIComponent(g.issueId)}/verdict`;
     // The filing this pass looked at: a wait it reports is bound to it, so a row amended or re-bound mid-pass is left for the
     // next pass instead of being parked awaiting evidence for work that is no longer the one asked for.
-    const filing = rubricHash(g.rubric ?? [], g.deliverable);
+    const filing = rubricHash(g.rubric ?? [], g.deliverable, g.revision);
     const agent = issue.assigneeAgentId ? await pc.agent(issue.assigneeAgentId) : undefined;
     const attempt = (g.attempts ?? 0) + 1; // the pass this grade is on (a revision is the next attempt)
     let asked = false, v;
@@ -275,7 +275,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     // The row's filing this pass graded, by hash: the store drops the verdict if its rubric was amended or its deliverable
     // re-bound while the pass ran. The row's own list (g.rubric) and deliverable, not the template the pass falls back to, are
     // what the store compares against.
-    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: rubricHash(g.rubric ?? [], g.deliverable), reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });

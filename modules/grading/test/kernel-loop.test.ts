@@ -124,7 +124,7 @@ test("a revision move queued by a verdict on a rubric since amended never reopen
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
   const filed = ["says where Legacy is used", "links each source", "names the next step"];
   grades.file("t5", filed, { kind: "report", ref: "" });
-  grades.record("t5", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(filed, { kind: "report", ref: "" }) });
+  grades.record("t5", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(filed, { kind: "report", ref: "" }, 0) });
   const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
   grades.amend("t5", corrected, { by: "agent:cos", delegator: "agent:cos" });
   const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
@@ -135,7 +135,7 @@ test("a revision move queued by a verdict on a rubric since amended never reopen
   assert.equal(issue.status, "in_review");
   assert.deepEqual(grades.get("t5").rubric, corrected);
   // A reopen queued for a row still in needs_revision does move the task: the guard is the amended row, not the step.
-  grades.record("t5", { version: "v2", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(corrected, { kind: "report", ref: "" }) });
+  grades.record("t5", { version: "v2", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(corrected, { kind: "report", ref: "" }, 1) });
   db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t5', ?)").run(JSON.stringify([{ do: "reopen", note: "the grader sent it back" }]));
   await loop.runGrades();
   assert.equal(issue.status, "todo");
@@ -151,7 +151,7 @@ test("a reopen whose grade-state read fails is retried, never replayed or droppe
   const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
   const filed = ["says where Legacy is used", "links each source", "names the next step"];
   grades.file("t6", filed, { kind: "report", ref: "" });
-  grades.record("t6", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(filed, { kind: "report", ref: "" }) });
+  grades.record("t6", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(filed, { kind: "report", ref: "" }, 0) });
   // The loop's own api: the grade-state read fails on the first pass, then answers.
   let reads = 0;
   const loop = createKernelGradeLoop({ db, runner: async (m, p, b) => {

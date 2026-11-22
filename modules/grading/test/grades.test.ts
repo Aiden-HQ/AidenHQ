@@ -18,7 +18,7 @@ describe("graded done", () => {
     expect(grades.file("t", ["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }, "agent:cos").created).toBe(false);
     expect(grades.get("t").rubric[0]).toBe("merged into main");
 
-    const filing = rubricHash(["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" });
+    const filing = rubricHash(["merged into main", "checks green", "tests cover it"], { kind: "pr", ref: "" }, 0);
     const reject = (version) => grades.record("t", { version, outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: filing });
     expect(completionGate(grades, "t", "finish_turn")).toEqual({ pass: false, state: "pending", label: "grading" });
     expect(completionGate(grades, "t", "task_finish")).toMatchObject({ pass: false, state: "pending" });

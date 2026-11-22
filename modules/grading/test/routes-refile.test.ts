@@ -84,7 +84,7 @@ test("a delegator amends a filed rubric in place: the row restarts, the delivera
   const h = await harness(t);
   assert.deepEqual((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).json, { created: true, state: "open" });
   // A rejected version leaves the row unsettled with an attempt and a verdict to clear.
-  h.grades.record("t1", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: rubricHash(RUBRIC, PR) });
+  h.grades.record("t1", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: rubricHash(RUBRIC, PR, 0) });
   assert.equal(h.grades.get("t1").attempts, 1);
   assert.equal(h.grades.get("t1").verdicts.length, 1);
 
@@ -125,7 +125,7 @@ test("an amendment is refused for a caller with no claim on the task, and for a 
   assert.match(stranger.json.error, /only agent:cos/);
   assert.deepEqual(h.grades.get("t1").rubric, RUBRIC);
   // Settled rows are settled: satisfied keeps its rubric, whatever the delegator says now.
-  h.grades.record("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, PR) });
+  h.grades.record("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, PR, 0) });
   assert.equal(h.grades.get("t1").state, "satisfied");
   const settled = await h.agentAmend("cos", { issue: "t1", rubric: ["alpha one", "beta two", "gamma three"] });
   assert.equal(settled.status, 409);
@@ -155,7 +155,7 @@ test("the row's recorded filer amends a rubric the delegator didn't file, and a 
   assert.equal(stranger.status, 409);
   assert.match(stranger.json.error, /only agent:other, the task's delegator, or module:maintainer/);
   // An amendment to the list already filed is a no-op, not a restart.
-  h.grades.record("t4", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: rubricHash(byDelegator.json.rubric, { kind: "issue", ref: "acme/app#7" }) });
+  h.grades.record("t4", { version: "sha1", outcome: "needs_revision", model: "glm", criteria: [{ id: "1", met: "no", evidence: "open" }], rubric: rubricHash(byDelegator.json.rubric, { kind: "issue", ref: "acme/app#7" }, 1) });
   const same = await h.agentAmend("cos", { issue: "t4", rubric: byDelegator.json.rubric });
   assert.equal(same.status, 200);
   assert.equal(h.grades.get("t4").attempts, 1);
@@ -225,7 +225,7 @@ test("a file deliverable's contents are evidence, so an absence criterion on it 
 test("a verdict computed on a rubric since amended is dropped, leaving the row open", async (t) => {
   const h = await harness(t);
   assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
-  const before = rubricHash(RUBRIC, PR);
+  const before = rubricHash(RUBRIC, PR, 0);
   const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
   assert.equal((await h.agentAmend("cos", { issue: "t1", rubric: corrected })).status, 200);
   // The runner's pass that started on the old rubric lands after the amendment: it is not applied to the new list.
@@ -236,14 +236,14 @@ test("a verdict computed on a rubric since amended is dropped, leaving the row o
   assert.deepEqual(stale.verdicts, []);
   assert.deepEqual(stale.rubric, corrected);
   // The same verdict on the rubric the row now holds is applied.
-  const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(corrected, PR) });
+  const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(corrected, PR, 1) });
   assert.equal(fresh.state, "satisfied");
 });
 
 test("a verdict computed on a deliverable since re-bound is dropped, even when the rubric did not change", async (t) => {
   const h = await harness(t);
   assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
-  const before = rubricHash(RUBRIC, PR);
+  const before = rubricHash(RUBRIC, PR, 0);
   // The filer re-binds the same rubric to another deliverable: the pass that began on the first one must not land on it.
   assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: APP })).status, 200);
   const stale = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: before });
@@ -253,7 +253,7 @@ test("a verdict computed on a deliverable since re-bound is dropped, even when t
   // The same is true of an awaiting-evidence pass: it must not park the row on the old filing.
   const waiting = await h.verdict("t1", { version: "sha1", outcome: "awaiting_evidence", model: "glm", criteria: [], rubric: before });
   assert.equal(waiting.state, "open");
-  const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, APP) });
+  const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, APP, 1) });
   assert.equal(fresh.state, "satisfied");
 });
 
@@ -267,8 +267,28 @@ test("a wait that names no filing is dropped, so an older runner cannot park an 
   assert.equal(unnamed.state, "open");
   assert.deepEqual(unnamed.rubric, corrected);
   // One that names the row's filing is applied.
-  const named = await h.verdict("t1", { version: "", outcome: "awaiting_evidence", model: "glm", criteria: [], rubric: rubricHash(corrected, PR) });
+  const named = await h.verdict("t1", { version: "", outcome: "awaiting_evidence", model: "glm", criteria: [], rubric: rubricHash(corrected, PR, 1) });
   assert.equal(named.state, "awaiting_evidence");
+});
+
+test("a rubric amended away and back still drops the pass that began before it", async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
+  const passOnFirst = rubricHash(RUBRIC, PR, 0);
+  const other = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
+  // A→B→A: the row's words are the ones it started with, but the filing the pass read is two revisions behind.
+  assert.equal((await h.agentAmend("cos", { issue: "t1", rubric: other })).status, 200);
+  assert.equal((await h.agentAmend("cos", { issue: "t1", rubric: RUBRIC })).status, 200);
+  assert.equal(h.grades.get("t1").revision, 2);
+  assert.deepEqual(h.grades.get("t1").rubric, RUBRIC);
+  // The same words, but the pass began before the amendment: it is dropped rather than applied to a filing it never read.
+  const stale = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: passOnFirst });
+  assert.equal(stale.state, "open");
+  assert.equal(stale.attempts, 0);
+  assert.deepEqual(stale.verdicts, []);
+  // A pass that names the filing the row now holds is applied.
+  const fresh = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: rubricHash(RUBRIC, PR, 2) });
+  assert.equal(fresh.state, "satisfied");
 });
 
 test("a re-file of a task already in review is graded at once, without the assignee finishing again", async (t) => {

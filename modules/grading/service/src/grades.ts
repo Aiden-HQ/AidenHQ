@@ -38,6 +38,12 @@ export interface Grade {
   /** 3-8 checkable criteria, each at most 200 characters; none: the template for the deliverable's kind. */
   rubric: string[];
   deliverable: Deliverable;
+  /**
+   * Which filing this row holds: 0 as first filed, +1 on every restart (an amendment, or a re-file that re-binds it). A verdict
+   * names it with its rubric's hash, so a pass that began on an earlier filing is dropped even when the rubric later comes back
+   * to the same words: the contents alone cannot tell a pass on A from a pass on B that was amended back to A.
+   */
+  revision: number;
   /** Distinct deliverable versions rejected so far. */
   attempts: number;
   state: GradeState;
@@ -73,6 +79,7 @@ interface Row {
   updated_at: string;
   resume: number;
   resumed_at: string | null;
+  revision: number;
 }
 
 /** Rejected versions before the grade gives up and closes the task done, ungraded (fail open: never parked on anyone). */
@@ -124,7 +131,7 @@ export function parseAmendment(b: unknown): { issue: string; rubric: string[] } 
  * began before an amendment or a re-bound deliverable is discarded rather than applied to what the row holds now: a rubric-only
  * token would let a pass on PR #1 mark PR #2's row satisfied.
  */
-export const rubricHash = (rubric: string[], deliverable?: Deliverable) => createHash("sha256").update(JSON.stringify([rubric, deliverable ?? null])).digest("hex").slice(0, 16);
+export const rubricHash = (rubric: string[], deliverable?: Deliverable, revision?: number) => createHash("sha256").update(JSON.stringify([rubric, deliverable ?? null, revision ?? null])).digest("hex").slice(0, 16);
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
 export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string };
 /** The runner's outcome of one grading pass: still waiting on evidence, or the grader's verdict on `version` (grading_failed: the grader failed and is retried; error: evidence that never came or every model refused). */
@@ -155,7 +162,7 @@ export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume), resumedAt: r.resumed_at ?? null });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), revision: r.revision ?? 0, attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume), resumedAt: r.resumed_at ?? null });
 
 export class Grades {
   private events?: { emit: (topic: string, id: string) => void };
@@ -180,6 +187,9 @@ export class Grades {
       // flag is what makes the runner grade it at once rather than wait for another finish.
       if (!columns.includes("resume")) db.exec("ALTER TABLE grades ADD COLUMN resume INTEGER NOT NULL DEFAULT 0");
       if (!columns.includes("resumed_at")) db.exec("ALTER TABLE grades ADD COLUMN resumed_at TEXT");
+      // The filing this row holds, +1 on every restart: a verdict names it, so a pass on a filing that was later amended back to
+      // the same words is still stale. A row written before this column existed is its first filing.
+      if (!columns.includes("revision")) db.exec("ALTER TABLE grades ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
       // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
       db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
       // Who filed each row's rubric, in its own table rather than a column on `grades`. A fresh start, not a migration: a row
@@ -274,7 +284,7 @@ export class Grades {
    */
   private restart(issueId: string, rubric: string, deliverable?: string, { resume = false }: { resume?: boolean } = {}): void {
     const now = new Date().toISOString();
-    const reset = `rubric = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, resumed_at = ${resume ? "?" : "NULL"}, updated_at = ?`;
+    const reset = `rubric = ?, revision = revision + 1, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, resumed_at = ${resume ? "?" : "NULL"}, updated_at = ?`;
     // The deliverable is written only when it is re-bound (a differing re-file); an amendment leaves it as filed.
     const args = resume ? [now] : [];
     if (deliverable === undefined) this.db.prepare(`UPDATE grades SET ${reset} WHERE issue_id = ?`).run(rubric, ...args, now, issueId);
@@ -400,7 +410,7 @@ export class Grades {
     // longer the one asked for. Every outcome is dropped alike, leaving the row as it is (open), so the next pass grades what
     // the row now holds. A verdict naming no filing at all is dropped the same way: nothing shows it read what the row holds,
     // and an unnamed wait would park an amended row for work it never looked at.
-    const current = rubricHash(g.rubric, g.deliverable);
+    const current = rubricHash(g.rubric, g.deliverable, g.revision);
     if (v.rubric !== current) return g;
     if (v.outcome === "awaiting_evidence") return set("awaiting_evidence", g.attempts, g.verdicts, g.failures, g.failedAt);
     const unmet = v.criteria.some((c) => c.met === "no");
