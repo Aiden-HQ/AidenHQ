@@ -128,6 +128,7 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
   writeFileSync(settingsFile, JSON.stringify({ task_usd: 0.16 }));
   assert.equal((await call(jobToken("ag1", "run1"))).status, 200);
   assert.deepEqual(gw.refusedByKey(run1), ["task"], "the refusal is never cleared by a later settled call");
+  writeFileSync(settingsFile, JSON.stringify({ task_usd: 0.08 }));
 
   // The monitoring module's metrics (a textfile gateway.ts writes; no route): agent keys as labels.
   assert.equal((await fetch(`${front.url}/metrics`)).status, 404);

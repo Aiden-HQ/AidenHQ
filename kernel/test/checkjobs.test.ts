@@ -233,7 +233,7 @@ test("checks: a limit the eval doesn't name is reported as a spend limit, never 
   });
   const v = await done(checks.start("github", { repo: "acme/product", head: A, run: "eval", spec: evalSpec }));
   assert.deepEqual([v.state, v.receipt, v.capped], ["error", null, "unknown"]);
-  assert.match(v.error, /^spend cap reached; retry when it frees/);
+  assert.match(v.error, /^spend limit reached; retry when it frees/);
   assert.doesNotMatch(v.error, /eval-day/);
 });
 
