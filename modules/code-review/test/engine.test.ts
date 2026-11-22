@@ -1520,6 +1520,16 @@ test("an agent records `fixed: …` with no GitHub write and the merge gate's op
   assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "on the new head, its review done, the fixed claim no longer holds the merge");
 });
 
+test("the owner can dismiss a fixed claim that still holds the merge", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"]);
+  assert.deepEqual(w.engine.dismiss({ repo: REPO, number: 2, id: "f1", reason: "false positive", by: "owner" }), { dismissed: "f1" });
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+});
+
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));
