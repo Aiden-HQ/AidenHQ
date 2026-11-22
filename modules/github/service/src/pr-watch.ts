@@ -137,7 +137,8 @@ export function startPrWatch(o: PrWatchOptions) {
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
-    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "ok" (GitHub updated it), "final" (a conflict or no right) or "retry:<time>" (a transient failure)
+    state.updated ??= {};    // `<pr url>:<head>:<main oid>` -> "final" (a conflict or no right) or "retry:<time>" (a transient failure)
+    state.updatedOk ??= {};  // `<pr url>:<head>` -> when GitHub accepted an update for that head: it is waited for however main moves, never asked again
     state.updateTries ??= {}; // `<pr url>:<head>` -> how many transient refusals the update has had (whatever head of main it was asked at), so one that never goes through wakes the task instead of retrying unseen
     state.wakes ??= {};      // PR url -> { head, n, escalated? }: wakes sent at this head, and whether the asker was told it is capped
     state.found ??= {};      // PR url -> `<head>:<digest of the findings text>` that woke its task: new findings at the same head wake it again, under the wake cap
@@ -255,8 +256,10 @@ export function startPrWatch(o: PrWatchOptions) {
       // The stuck count belongs to the PR's head, not to the head of main: main moves every few minutes, and a refusal that never
       // clears must still add up across those moves rather than starting over at each one (and leaving its old key behind).
       const tries = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
+      // An accepted update belongs to the PR's head, not to the head of main it was asked at: GitHub may not have shown the new
+      // head yet, and main advancing meanwhile must not send a second request for a head that is already being updated.
+      if (state.updatedOk[tries]) return true; // an update GitHub has not shown yet is waited for, not asked about
       const prior: string | undefined = state.updated[key];
-      if (prior === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
       if (prior === "final") return false;
       // Still inside the backoff: no call this tick, but the polls spent backing off count too, so a refusal that never clears
       // ends as "stuck" here and wakes the task instead of waiting unseen forever.
@@ -285,7 +288,8 @@ export function startPrWatch(o: PrWatchOptions) {
         // statuses `answered` names, so classifying first would record a real update as "unanswered" and retry it for ever.
         if (r.status < 300) {
           delete state.updateTries[tries];
-          state.updated[key] = "ok";
+          delete state.updated[key];
+          state.updatedOk[tries] = new Date().toISOString();
           await wake(pr, "");
           log("branch updated in code", { pr: pr.url, head: pr.headRefOid, base, update_method });
           return true;

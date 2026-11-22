@@ -293,6 +293,12 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   for (let i = 0; i < 3; i++) await ok.watch.tick();
   assert.equal(ok.gh.filter((g) => g === "PUT /repos/acme/app/pulls/21/update-branch rebase").length, 1, "a successful update is not called unanswered and re-asked");
   assert.equal(ok.woke.length, 0, "and it wakes nobody");
+  // The accepted update belongs to the PR's head: main advancing while GitHub still shows the old head must not send a second PUT.
+  let okMain = "k1";
+  const advanced = await rig(t, { behind: 2, update: 201, mainBefore: () => okMain });
+  advanced.set([advanced.agentPr(23, redPr(23))]);
+  for (let i = 0; i < 3; i++) { await advanced.watch.tick(); okMain = `k${i + 2}`; }
+  assert.equal(advanced.gh.filter((g) => g === "PUT /repos/acme/app/pulls/23/update-branch rebase").length, 1, "main advancing does not re-ask an update GitHub already accepted");
   // A refusal that never clears still adds up while main moves under it: the count is the PR head's, not the head of main's.
   let main = "m1";
   const moving = await rig(t, {
