@@ -58,7 +58,9 @@ export async function reportNeed(kernelUrl: string, key: string, err: unknown, l
 /** How long a reply waits for the kernel to take a need: the route answers within its 1 s even when the kernel is slow. */
 const NEED_WAIT_MS = 1_000;
 const PENDING_MAX = 20;
-type Pending = { need: NeedBody["need"] };
+type Pending = { need: NeedBody["need"]; /** The sign-in the need was met on; a sign-in cause from another one is stale. */ gen?: string };
+/** Causes a reconnection fixes; a kept one from before it is dropped rather than marking the fresh sign-in down. */
+const SIGN_IN_CAUSES = new Set(["not_connected", "expired"]);
 const needKey = (n: NeedBody["need"] | { cause: string; scope?: string; org?: string; account?: string }) => [n.cause, n.scope ?? "", n.org ?? "", (n as { account?: string }).account ?? ""].join("\u0000");
 
 /**
@@ -67,14 +69,17 @@ const needKey = (n: NeedBody["need"] | { cause: string; scope?: string; org?: st
  * refusal (a 4xx) is dropped with a log rather than retried forever. With `file`, the kept ones survive the container: an apply
  * recreating it in the window before a report lands loses nothing.
  */
-export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLog; fetcher?: typeof fetch; waitMs?: number; file?: string }) {
+export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLog; fetcher?: typeof fetch; waitMs?: number; file?: string; /** Names the installed sign-in: a kept sign-in need from another one is stale. */ generation?: () => string }) {
   const waitMs = o.waitMs ?? NEED_WAIT_MS;
   const pending = new Map<string, Pending>();
+  const gen = () => o.generation?.() ?? "";
+  /** A kept sign-in need the owner has since fixed by reconnecting: sending it would mark the fresh sign-in down. */
+  const stale = (p: Pending) => Boolean(o.generation) && SIGN_IN_CAUSES.has(p.need.cause) && p.gen !== gen();
   const save = () => {
     if (!o.file) return;
     try {
       mkdirSync(dirname(o.file), { recursive: true });
-      const out = JSON.stringify([...pending].map(([key, p]) => ({ key, need: p.need })));
+      const out = JSON.stringify([...pending].map(([key, p]) => ({ key, need: p.need, ...(p.gen !== undefined ? { gen: p.gen } : {}) })));
       writeFileSync(`${o.file}.tmp`, out);
       renameSync(`${o.file}.tmp`, o.file);
     } catch (e) {
@@ -84,15 +89,24 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
   // What a previous process kept: the file is this process's own, so a bad one is set aside, never fatal.
   if (o.file) {
     try {
-      const rows = JSON.parse(readFileSync(o.file, "utf8")) as { key?: unknown; need?: unknown }[];
+      const rows = JSON.parse(readFileSync(o.file, "utf8")) as { key?: unknown; need?: unknown; gen?: unknown }[];
       for (const r of Array.isArray(rows) ? rows : []) {
         const need = r?.need as NeedBody["need"] | undefined;
-        if (need && typeof need.cause === "string" && typeof r.key === "string") pending.set(r.key, { need });
+        if (need && typeof need.cause === "string" && typeof r.key === "string") pending.set(r.key, { need, ...(typeof r.gen === "string" ? { gen: r.gen } : {}) });
       }
     } catch (e) {
       if ((e as { code?: string }).code !== "ENOENT") o.log.warn({ err: (e as Error).message }, "the kept connection needs could not be read");
     }
   }
+  const keep = (k: string, p: Pending) => {
+    pending.set(k, p);
+    while (pending.size > PENDING_MAX) {
+      const evicted = pending.keys().next().value!;
+      pending.delete(evicted);
+      o.log.warn({ key: evicted }, "a connection need was dropped from the pending set: more than the cap of 20 were waiting");
+    }
+    save();
+  };
   let flushing = false;
   const flush = async (): Promise<void> => {
     if (flushing || !pending.size) return;
@@ -101,6 +115,12 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
     try {
       // One entry per kept key at the start: a failure re-keeps it without being visited again in this pass.
       for (const [k, p] of [...pending]) {
+        if (stale(p)) {
+          pending.delete(k);
+          changed = true;
+          o.log.warn({ cause: p.need.cause }, "a connection need met before the owner reconnected was dropped");
+          continue;
+        }
         const r = await postNeed(o.kernelUrl, o.key(), { connection: "github", need: p.need }, o.log, o.fetcher ?? fetch, 5_000);
         if (r === "retry") continue;
         pending.delete(k);
@@ -109,20 +129,14 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
     } finally { flushing = false; if (changed) save(); }
   };
   return {
-    /** Report now, bounded; a report the kernel could not take is kept for `flush`. */
+    /** Report now, bounded; the report is kept on disk before the first attempt, so a restart inside the wait still sends it. */
     tell: async (err: unknown): Promise<void> => {
       if (!(err instanceof GitHubNeed) || !err.ownerFixable) return;
       const body = bodyOf(err), k = needKey(body.need);
+      keep(k, { need: body.need, gen: gen() });
       const r = await reportNeed(o.kernelUrl, o.key(), err, o.log, o.fetcher, waitMs);
-      if (r === "taken") { if (pending.delete(k)) save(); return; }
-      if (r === "refused") return;
-      pending.set(k, { need: body.need });
-      while (pending.size > PENDING_MAX) {
-        const evicted = pending.keys().next().value!;
-        pending.delete(evicted);
-        o.log.warn({ key: evicted }, "a connection need was dropped from the pending set: more than the cap of 20 were waiting");
-      }
-      save();
+      if (r === "retry") return;
+      if (pending.delete(k)) save();
     },
     flush,
     pending: () => pending.size,

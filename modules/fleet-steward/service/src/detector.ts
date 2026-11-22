@@ -184,7 +184,9 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
       try {
         const found = await acting(task);
         o.lookup_failed_at = undefined;
-        if (found) o.last_activity = last = found;
+        // Only ever forward: a lookup that comes back with an older comment (or an ended job's start after a newer one's end) must
+        // not move the clock backwards past activity already seen.
+        if (found && (!last || Date.parse(found) > Date.parse(last))) o.last_activity = last = found;
       } catch {
         // An unreadable task is not inactivity: one transient failure must not file a false jam line, so the flag waits one more
         // window before the clock alone decides. A lookup that keeps failing past that window still escalates, so a persistent
@@ -271,10 +273,18 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
   return async (task) => {
     const row = ((await d.kernel.call("GET", `/v1/tasks/state?ids=${encodeURIComponent(task)}`)).tasks ?? [])[0] as StateRow | undefined;
     if (row && ["job_running", "job_queued"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
-    const [comments, { holders, auditors }] = await Promise.all([d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>, dir()]);
+    const [comments, { holders, auditors }, work] = await Promise.all([
+      d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>,
+      dir(),
+      d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(task)}`) as Promise<{ jobs?: JobRow[] }>,
+    ]);
     // The holder is a key; an agent no grant maps to (the raw id) is compared as it is.
     const holder = row?.holder ? holders.get(row.holder) ?? row.holder : undefined;
-    return comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === holder || auditors.has(c.authorAgentId))))?.createdAt;
+    const comment = comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === holder || auditors.has(c.authorAgentId))))?.createdAt;
+    // A run that started and ended between two ticks left no comment and no current state: its own start and end are the activity.
+    let job: string | undefined;
+    for (const j of work?.jobs ?? []) for (const t of [j.started_at, j.ended_at]) if (t && (!job || Date.parse(t) > Date.parse(job))) job = t;
+    return [comment, job].filter((t): t is string => Boolean(t)).sort((a, b) => Date.parse(b) - Date.parse(a))[0];
   };
 }
 

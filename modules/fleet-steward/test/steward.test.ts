@@ -326,6 +326,22 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
   await assert.rejects(gateActivity({ kernel, now: () => NOW })("t1"));
 });
 
+test("a run that started and ended between two ticks is activity the comment and current state no longer show", async () => {
+  // No comment, no running job: only the job history says the task was worked. Its end is the newest activity.
+  const kernel = {
+    call: async (m, p) => p.startsWith("/v1/tasks/state")
+      ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0 }] }
+      : p.startsWith("/v1/work")
+        ? { jobs: [{ id: "j1", agent: "a-eng", task: "t1", state: "done", started_at: minsAgo(40), ended_at: minsAgo(20) }] }
+        : { agents: { "a-eng": { key: "eng" }, "a-audit": { roles: ["fleet-audit"] } } },
+    read: async () => [],
+  };
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(20), "the job's end, newer than its start and no comment");
+  // A newer qualifying comment still wins over the job.
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "on it", createdAt: minsAgo(5) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(5));
+});
+
 test("a failed activity lookup defers the jam by a bounded window, and keeps escalating when it keeps failing past it", async () => {
   const raised = new Date(NOW - 3 * 3_600_000);
   const down = async () => { throw new Error("kernel 503"); };
