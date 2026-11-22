@@ -218,3 +218,14 @@ test("code refuses instance details in a GitHub write, and a diff the code host'
   assert.equal(mod.seen.length, 0, "no reviewer call");
   assert.deepEqual([k.records.get(m.id).state, k.records.get(m.id).review_code], ["rejected", "files_not_shown"]);
 });
+
+test("a structured tool call's arguments are scanned without recursion, so a deep or cyclic one is read, not a stack overflow", async () => {
+  const { instanceDetails } = await import("../sdk/src/reviewer.ts");
+  let deep: Record<string, unknown> = { host: "agents.acme.ts.net" };
+  for (let i = 0; i < 100_000; i++) deep = { next: deep };
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: deep }), ["agents.acme.ts.net"]);
+  const cyclic: Record<string, unknown> = { host: "/home/sam/logs" };
+  cyclic.self = cyclic;
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: cyclic }), ["/home/sam/logs"]);
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: { ok: "plain" } }), []);
+});

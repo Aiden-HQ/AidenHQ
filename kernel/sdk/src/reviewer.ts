@@ -64,11 +64,19 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
   const parts: string[] = [];
   if (toolCall) {
     if (toolCall.connection !== "github") return [];
-    const walk = (v: unknown) => {
+    // Walked with an explicit stack, not recursion: this runs in the kernel before the reviewer's own depth check, and an
+    // argument object is the requester's to shape, so a deep one must not overflow the stack it is scanned on. A value seen
+    // twice (a shared reference, or a cycle only a direct caller could build) is read once.
+    const seen = new Set<unknown>();
+    const stack: unknown[] = [toolCall.arguments];
+    while (stack.length) {
+      const v = stack.pop();
       if (typeof v === "string") parts.push(v);
-      else if (v && typeof v === "object") for (const [k, child] of Object.entries(v as Record<string, unknown>)) { parts.push(k); walk(child); }
-    };
-    walk(toolCall.arguments);
+      else if (v && typeof v === "object" && !seen.has(v)) {
+        seen.add(v);
+        for (const [k, child] of Object.entries(v as Record<string, unknown>)) { parts.push(k); stack.push(child); }
+      }
+    }
   } else if (!/^tool: github\./.test(String(diff ?? ""))) return [];
   parts.push(String(diff ?? ""));
   const text = parts.join("\n");
