@@ -895,7 +895,13 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; ex
     p.set("offset", String(offset));
     const left = ms ? ms() : 20_000;
     const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, left)) });
-    if (!Array.isArray(page) || !page.length) return;
+    if (!Array.isArray(page)) return;
+    if (!page.length) {
+      // After a short page this is simply the end. After a full one the offset was inside the list a moment ago, so anything
+      // beyond it now was still unread: the list shrank by more than the overlap, and the scan cannot vouch for what it saw.
+      if (asked.length >= PAGE) progress.moved = true;
+      return;
+    }
     // Advance by half of what came back, not by what was asked: a server capping its page size would otherwise leave a gap.
     offset += Math.max(1, Math.floor(page.length / 2));
     // A page whose ids are exactly the previous page's is a repeated page: the end, or a server ignoring `offset`. Overlapping
@@ -974,60 +980,41 @@ const TOOLS: Record<string, Tool> = {
       const max = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 25));
       const q = new URLSearchParams({ q: String(query).slice(0, 200), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state));
-      // as with task_list, the kernel kind/attention filter runs per page: search candidates are paged until `limit` matches
-      // (Paperclip's ranking order) or the results run out, so a filtered-out closed hit cannot consume a matching result's slot.
-      const list: (readonly [Json, Json])[] = [];
-      const seen = new Set<string>();
+      // As with task_list, the kernel kind/attention filter runs per page over the shared pager (so both tools get the same
+      // overlap, stall and shift handling), until `limit` matches are collected or the ranked hits run out: a filtered-out
+      // closed hit cannot consume a matching result's slot.
       const deadline = Date.now() + SCAN_MS;
-      let repeats = 0, stopped = false, last = "";
-      for (let offset = 0; list.length < max; ) {
-        if (Date.now() > deadline) {
-          stopped = true;
-          break;
-        }
-        const p = new URLSearchParams(q);
-        p.set("limit", String(PAGE));
-        p.set("offset", String(offset));
-        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, deadline - Date.now())) }).catch((err) => {
-          if (Date.now() > deadline) {
-            stopped = true;
-            return null;
-          }
-          throw err;
+      const progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {};
+      const list: (readonly [Json, Json])[] = [];
+      const pages = issuePages(q, progress, () => deadline - Date.now())[Symbol.asyncIterator]();
+      while (list.length < max) {
+        const step = await pages.next().catch((err) => {
+          if (Date.now() < deadline) throw err;
+          progress.expired = true;
+          return { done: true as const, value: undefined };
         });
-        if (!Array.isArray(page) || !page.length) break;
-        // Every candidate is tracked, whether or not it matches: that catches a repeat even when none of the page matched.
-        const fresh = page.filter((i: Json) => !seen.has(i.id));
-        for (const i of fresh) seen.add(i.id);
-        // A ranking that ignores `offset` repeats the same page: stop rather than search it forever. Overlapping tail pages
-        // share rows but are not identical, so reaching the end of a short result set is not mistaken for a stall.
-        const ids = page.map((i: Json) => i.id).join(",");
-        if (ids === last) {
-          if (++repeats > 1) {
-            stopped = true;
-            break;
-          }
-        } else repeats = 0;
-        last = ids;
+        if (step.done) break;
         if (Date.now() > deadline) {
-          stopped = true;
+          progress.expired = true;
           break;
         }
-        const ms = deadline - Date.now();
         try {
-          list.push(...(await matchingStates(fresh, kinds, one, ms, byDefault)));
+          list.push(...(await matchingStates(step.value as Json[], kinds, one, deadline - Date.now(), byDefault)));
         } catch (err) {
           if (Date.now() < deadline) throw err;
-          stopped = true;
+          progress.expired = true;
           break;
         }
-        // Advance by half of what came back: a page capped smaller than asked leaves no gap, and a hit deleted ahead of the
-        // offset shifts later hits up by one, which the overlap re-reads (deduped above) rather than skips.
-        offset += Math.max(1, Math.floor(page.length / 2));
       }
       return {
         tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))),
-        ...(stopped ? { incomplete: "not every search hit was read (the scan hit its budget or stopped advancing)" } : {}),
+        ...(progress.stalled
+          ? { incomplete: "the search stopped advancing through its pages; some hits were not read" }
+          : progress.moved
+            ? { incomplete: "the search results shifted between pages faster than the scan can follow; some hits may have been missed" }
+            : progress.expired
+              ? { incomplete: "the scan ran past its time budget; some hits were not read" }
+              : {}),
       };
     },
   },
@@ -1249,7 +1236,13 @@ const TOOLS: Record<string, Tool> = {
             // The rows that can be reached next are read together, a bounded batch at a time, so a page of truncated chats costs
             // whole batches rather than one round trip each. A prefetch nobody reaches is drained: its failure is kept for the
             // row that is reached, and an unread one must not leave a rejected promise to take the process down.
-            for (const [r] of rest.slice(0, PREPARE_AT_ONCE)) if (r.descriptionTruncated && !r.assigneeAgentId) readFull(r, chatUntil).catch(() => {});
+            for (const [r] of rest.slice(0, PREPARE_AT_ONCE)) {
+              if (!r.descriptionTruncated || r.assigneeAgentId || detail.has(r.id)) continue;
+              // A prefetch only starts while fewer than a batch of reads are still open: rows reached before they settle do not
+              // open another window of requests on top of them.
+              if (detail.size >= PREPARE_AT_ONCE) break;
+              readFull(r, chatUntil).catch(() => {});
+            }
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
             const full = row.descriptionTruncated ? await readFull(row, chatUntil) : row;

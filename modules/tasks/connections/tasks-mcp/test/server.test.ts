@@ -264,6 +264,22 @@ test("task_search's state filter is applied over pages of ranked hits, not just 
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["hit-waiting"]);
 });
 
+test("task_search says it is incomplete when indexed hits shift past the overlap", async () => {
+  // The first page of ranked hits is read, then more of them than the overlap can absorb leave the query: the scan cannot
+  // prove it saw every hit, and must not report a complete search.
+  const rows = Array.from({ length: 400 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open", updatedAt: new Date(Date.UTC(2026, 0, 1) + (400 - n) * 60_000).toISOString() }));
+  const board = issueBoard({ rows });
+  let reads = 0;
+  const handler = (req, res) => {
+    if ((req.url ?? "").includes("/issues?") && reads++ === 1) rows.splice(20, 120);
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "hit-350" ? "waiting" : "working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 5 }));
+  assert.match(String(out.out?.incomplete ?? ""), /shifted/);
+});
+
 test("task_search does not call an exhausted short result set incomplete", async () => {
   // 450 hits, one matching state deep in the tail: the overlap pages at the end share rows, which is not a repeated page.
   const rows = Array.from({ length: 450 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open" }));
