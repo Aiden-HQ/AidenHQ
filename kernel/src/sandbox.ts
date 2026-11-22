@@ -118,7 +118,23 @@ function ensureStateDir(p: string) {
     // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. The mode is
     // applied to the directory this very open resolved, not to the name again: `O_NOFOLLOW | O_DIRECTORY` refuses a path that
     // became a symlink or a non-directory in between, and `fchmod` can't reach a replacement the way a second `chmod(name)` would.
-    const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    const openDir = () => openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    let fd: number;
+    try { fd = openDir(); } catch (e) {
+      // A directory we own but can't read (mode 0300, or a umask that masked the create mode) can't be opened O_RDONLY, and
+      // repairing it is the point of this function. It is the one case where the mode has to be set by name; the directory is
+      // confirmed unchanged first, and the descriptor reopened below is compared to the `lstat` above, so a replacement is
+      // refused rather than repaired.
+      if ((e as NodeJS.ErrnoException).code !== "EACCES") throw e;
+      const now = lstatSync(p);
+      if (!now.isDirectory() || (st && (now.dev !== st.dev || now.ino !== st.ino))) throw new Error("it changed while its mode was being repaired");
+      chmodSync(p, 0o700);
+      fd = openDir();
+      if (st) {
+        const again = fstatSync(fd);
+        if (again.dev !== st.dev || again.ino !== st.ino) { closeSync(fd); throw new Error("it was replaced while its mode was being repaired"); }
+      }
+    }
     try {
       if (!fstatSync(fd).isDirectory()) throw new Error("it became a non-directory while being set up");
       fchmodSync(fd, 0o700);

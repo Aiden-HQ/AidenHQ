@@ -58,6 +58,16 @@ test("a removed state root is recreated 0700, and its logs with it, before the j
   ensureStateDirs(root);
   assert.equal(statSync(root).mode & 0o777, 0o700);
   assert.equal(statSync(logs).mode & 0o777, 0o700);
+  // A directory we own but can't read (0300) is repaired, not refused: it can't be opened O_RDONLY, so the repair sets the
+  // mode by name after confirming the directory is the one just checked, then the descriptor is fchmod'ed as usual.
+  for (const dir of [root, logs]) {
+    chmodSync(dir, 0o300);
+    try {
+      ensureStateDirs(root);
+      assert.equal(statSync(dir).mode & 0o777, 0o700);
+      assert.equal(statSync(dir).mode & 0o700, 0o700, "the repaired mode is owner read+write+search");
+    } finally { chmodSync(dir, 0o700); }
+  }
 });
 
 test("an unusable state root throws once, naming the absolute path, its owner/mode and the kernel's uid, and reports one need", () => {
