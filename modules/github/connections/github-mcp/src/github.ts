@@ -104,11 +104,13 @@ const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({
 
 export class GitHubRefused extends Error {}
 
-/** A review comment's id from `fullDatabaseId` (a BigInt, sent as a JSON string): GitHub's `databaseId` is 32-bit and deprecated. */
-export function reviewCommentId(c: { fullDatabaseId?: string | null }): number {
+/**
+ * A review comment's id from `fullDatabaseId` (a BigInt, sent as a JSON string; GitHub's `databaseId` is 32-bit and deprecated),
+ * or null when GitHub sent none this can use: one such comment is skipped, never taken for an id of its own.
+ */
+export function reviewCommentId(c: { fullDatabaseId?: string | null }): number | null {
   const id = Number(c.fullDatabaseId);
-  if (!Number.isSafeInteger(id) || id < 1) throw new GitHubRefused(`GitHub didn't return a usable review comment id (fullDatabaseId: ${JSON.stringify(c.fullDatabaseId ?? null)})`);
-  return id;
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 export function guard(method: string, path: string, body?: unknown): void {
@@ -477,7 +479,9 @@ export class GitHub {
       for (const t of threads.nodes) {
         if (t.comments.pageInfo?.hasNextPage) complete = false;
         const [first, ...rest] = t.comments.nodes;
-        if (first && (reviewCommentId(first) === comment || rest.some((c) => reviewCommentId(c) === comment))) return reviewCommentId(first);
+        const root = first ? reviewCommentId(first) : null;
+        if (root === null) continue; // no id to reply on: a comment of this thread can't resolve to a root
+        if (root === comment || rest.some((c) => reviewCommentId(c) === comment)) return root;
       }
       if (!threads.pageInfo.hasNextPage) break;
       after = threads.pageInfo.endCursor;

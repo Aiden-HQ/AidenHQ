@@ -467,6 +467,12 @@ describe("posting", () => {
     expect(got).toMatchObject({ comment: 4_657_268_819, replies: [{ id: 4_657_373_830 }] });
   });
 
+  it("skips a thread whose first comment has no usable id, and keeps the rest of the read", async () => {
+    const noId = { id: "T_none", isResolved: false, isOutdated: false, viewerCanResolve: true, path: "src/pay.ts", line: 2, comments: { nodes: [{ fullDatabaseId: null, url: "u", body: "text", author: { login: "owner1" } }] } };
+    const [got] = await poster(world({ threads: [noId, thread("T_ok", "f_ok", "owner1", 41)] })).threads({ owner: "acme", repo: "payments", number: 12 });
+    expect(got).toMatchObject({ id: "T_ok", comment: 41 });
+  });
+
   it("a notice is the acknowledgement alone, from fixed words", async () => {
     const w = world();
     const p = poster(w);

@@ -149,13 +149,16 @@ export class ReviewPoster {
       if (!t) throw new GitHubRefused(`couldn't read ${ref.owner}/${ref.repo}#${ref.number}'s review threads`);
       for (const n of t.nodes) {
         const [first, ...rest] = n.comments.nodes;
-        if (!first) continue;
+        // A thread's first comment is what a reply names and what the service records as its own: without a usable id, skip it
+        // (and its replies, whose thread it can't identify) rather than fail the whole read.
+        const comment = first ? reviewCommentId(first) : null;
+        if (!first || comment === null) continue;
         const finding = FINDING_MARK.exec(first.body)?.[1] ?? null;
         const author = first.author?.login ?? "";
         out.push({
-          id: n.id, comment: reviewCommentId(first), run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
+          id: n.id, comment, run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
           ours: finding !== null && us.some((w) => isWho(w, first.author)), author, bot: first.author?.__typename === "Bot", can_resolve: n.viewerCanResolve, url: first.url,
-          replies: rest.map((c) => ({ id: reviewCommentId(c), author: c.author?.login ?? "", body: c.body.slice(0, 2000) })),
+          replies: rest.flatMap((c) => { const id = reviewCommentId(c); return id === null ? [] : [{ id, author: c.author?.login ?? "", body: c.body.slice(0, 2000) }]; }),
         });
       }
       if (!t.pageInfo.hasNextPage) break;

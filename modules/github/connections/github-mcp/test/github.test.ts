@@ -228,9 +228,17 @@ describe("GitHub", () => {
       expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
     });
 
-    it("a comment without a usable fullDatabaseId is refused, not matched as 0", async () => {
-      const { impl, calls } = fakeThreads([{ ...node(100), comments: { pageInfo: { hasNextPage: false }, nodes: [{ fullDatabaseId: null, url: "u", body: "b", author: { __typename: "User", login: "owner1" } }] } }]);
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden")).rejects.toThrow(/didn't return a usable review comment id/);
+    it("a thread whose root has no usable fullDatabaseId is skipped, and the search goes on", async () => {
+      const noId = { ...node(100), comments: { pageInfo: { hasNextPage: false }, nodes: [{ fullDatabaseId: null, url: "u", body: "b", author: { __typename: "User", login: "owner1" } }] } };
+      const { impl, calls } = fakeThreads([noId, node(200, [201])]);
+      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 201, "fixed: abc1234.", "Aiden");
+      expect(calls.find((c) => c.method === "POST" && c.path !== "/graphql")!.path).toBe("/repos/a/b/pulls/7/comments/200/replies");
+    });
+
+    it("an id only a thread without a usable root could name is missing, never matched as 0", async () => {
+      const noId = { ...node(100), comments: { pageInfo: { hasNextPage: false }, nodes: [{ fullDatabaseId: null, url: "u", body: "b", author: { __typename: "User", login: "owner1" } }] } };
+      const { impl, calls } = fakeThreads([noId]);
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 0, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 0 isn't on a review thread/);
       expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
     });
 
