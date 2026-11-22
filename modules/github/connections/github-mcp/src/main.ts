@@ -91,9 +91,9 @@ const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
 const reviewIdentity = reviewAs({ file: join(stateDir, "review-as.json"), app: reviewApp });
 // A failure only the owner can fix (GitHubNeed) goes to the kernel: the reply waits up to a second for it, so a restart in that
 // window can't drop it, and one the kernel didn't take is kept and retried at the start of the next request. Never throws.
-const needs = needQueue({ kernelUrl, key: codehostKey, log });
-// tellOwner is fire-and-forget (the poster's best-effort reads must not wait); each route awaits `needs.flush()`-bounded work
-// itself where the reply must carry the report: see `await needs.tell(err)` below.
+const needs = needQueue({ kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json") });
+// tellOwner is fire-and-forget (the poster's best-effort reads must not wait); each route awaits `needs.tell(err)` itself where
+// the reply must carry the report. Needs kept from an earlier failure are flushed at the top of those routes, never before auth.
 const tellOwner = (err: unknown) => void needs.tell(err);
 
 const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);
@@ -555,8 +555,6 @@ function authorized(req: IncomingMessage): boolean {
 const http = createServer(async (req, res) => {
   let url: URL;
   try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
-  // A need the kernel didn't take on the request that met it is retried here, before this one's work: a dropped report is not lost.
-  void needs.flush();
   if (url.pathname === "/healthz") {
     // No token: not set up yet (state "missing"), which the apply's live agent check notes rather than fails.
     const ok = github.available();
@@ -625,6 +623,9 @@ const http = createServer(async (req, res) => {
   // the review threads (replies read next run). The kernel's record, not this route, is what the AI reviewer approved.
   if (url.pathname.startsWith("/internal/review/")) {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
+    // The routes that meet a need retry kept ones here, once authorized, and the failed reply waits for that: a 502 that
+    // carried a need is not answered before the need's report has had its chance.
+    await needs.flush();
     if (req.method !== "POST") return void res.writeHead(405).end();
     const send = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
     try {
@@ -660,6 +661,7 @@ const http = createServer(async (req, res) => {
   // Code review's watcher (the code-review module's service) reads open PRs, a PR, new PR comments and a login's permission here.
   if (url.pathname.startsWith("/internal/code-review/")) {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
+    await needs.flush();
     if (req.method !== "GET") return void res.writeHead(405).end();
     const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, needs.tell);
     return void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));

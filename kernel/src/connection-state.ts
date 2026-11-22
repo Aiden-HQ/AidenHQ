@@ -147,26 +147,31 @@ export function createConnectionState(o: {
       }
       const asked = c && ownerWroteAt(c.root, c.comments) !== undefined;
       if (!c || !asked) {
-        // Background: one digest line a day per need, whoever hits it.
-        if (q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, key, today).changes)
-          o.queue({ kind: "digest", batch: true, text: `${label} isn't connected (${ownerWords(n)}): ${link(module, row.url)}`, dedupe_key: `connect:${key}` });
+        // Background: one digest line a day per need, whoever hits it. The marker and the notice commit together, so a notice
+        // `queue` failed to write leaves the need reportable on the next attempt instead of being marked reported without it.
+        inTx(db, "connection_digest", () => {
+          if (q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, key, today).changes)
+            o.queue({ kind: "digest", batch: true, text: `${label} isn't connected (${ownerWords(n)}): ${link(module, row.url)}`, dedupe_key: `connect:${key}` });
+        });
         log("connection need", { connection, cause: n.cause, to: "digest" });
         return background;
       }
       const { task, root, comments } = c;
       // The owner hears once per need until it clears (claimed before the reads below, so two hits can't both send).
-      if (q("UPDATE connection_state SET told = 1, reported_day = ? WHERE key = ? AND told = 0").run(today, key).changes) {
-        const agent = root.assigneeAgentId ? await o.agentName(root.assigneeAgentId).catch(() => "AidenHQ") : "AidenHQ";
-        const via = ownerVia(root, comments);
-        const what = String(task.title ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || `carry on with ${task.identifier ?? task.id}`;
-        o.queue({
-          kind: "decision",
-          text: `${label} needs you to ${verb(n)} so I can ${what}: ${link(module, row.url)}`,
-          task: root.identifier ?? root.id,
-          dedupe_key: `connect:${key}`,
-          ...(via ? { reply: { via, agent, issue: root.id } } : { head: { agent, issue: root.id } }),
-        });
-      }
+      // Read before claiming `told`, so no await sits between the claim and its notice; then both commit together.
+      const agent = root.assigneeAgentId ? await o.agentName(root.assigneeAgentId).catch(() => "AidenHQ") : "AidenHQ";
+      const via = ownerVia(root, comments);
+      const what = String(task.title ?? "").replace(/\s+/g, " ").trim().slice(0, 80) || `carry on with ${task.identifier ?? task.id}`;
+      inTx(db, "connection_told", () => {
+        if (q("UPDATE connection_state SET told = 1, reported_day = ? WHERE key = ? AND told = 0").run(today, key).changes)
+          o.queue({
+            kind: "decision",
+            text: `${label} needs you to ${verb(n)} so I can ${what}: ${link(module, row.url)}`,
+            task: root.identifier ?? root.id,
+            dedupe_key: `connect:${key}`,
+            ...(via ? { reply: { via, agent, issue: root.id } } : { head: { agent, issue: root.id } }),
+          });
+      });
       try {
         await o.idle.wait({ agent: who.agent!, key: who.key ?? "", task: who.task! }, { reason: `waiting for the ${label} connection`, on: `${connection} connection`, ...(full ? { until: iso(t + FULL_WAIT) } : {}) });
       } catch (e) {
@@ -237,11 +242,14 @@ export function createConnectionState(o: {
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
       const rows = q("SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))").all(today) as Row[];
       for (const r of rows) {
-        if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) continue;
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
         const module = moduleOf(r.module);
-        o.queue({ kind: "digest", batch: true, text: `${o.label(module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(module, r.url)}`, dedupe_key: `connect:${r.key}` });
+        // The marker and its notice commit together: a failed insert leaves the need for the next tick.
+        inTx(db, "connection_digest", () => {
+          if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) return;
+          o.queue({ kind: "digest", batch: true, text: `${o.label(module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(module, r.url)}`, dedupe_key: `connect:${r.key}` });
+        });
       }
     },
   };

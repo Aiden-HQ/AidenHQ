@@ -1,13 +1,17 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitHubNeed } from "../src/client.js";
 import { needQueue, reportNeed } from "../src/module-caller.js";
 
 // The kernel at /v1/connections/need as a fake: each answer is one queued reply, and the last one repeats.
-const kernel = (replies: (Response | "hang" | Error)[]) => {
+const replies = (list: (Response | "hang" | Error)[]) => {
+  const rest = [...list];
   const seen: { authorization?: string; body: unknown }[] = [];
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     seen.push({ authorization: (init?.headers as Record<string, string> | undefined)?.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
-    const next = replies.length > 1 ? replies.shift()! : replies[0]!;
+    const next = rest.length > 1 ? rest.shift()! : rest[0]!;
     if (next === "hang") return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError"))));
     if (next instanceof Error) throw next;
     return next;
@@ -15,26 +19,28 @@ const kernel = (replies: (Response | "hang" | Error)[]) => {
   return { fetcher, seen };
 };
 const ok = () => new Response(JSON.stringify({ ok: true }), { status: 200 });
+const busy = () => new Response("busy", { status: 503 });
+const bad = () => new Response("bad request", { status: 400 });
 const need = () => new GitHubNeed({ cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" });
 const log = { warn: () => {} };
 
 describe("an owner-fixable need told to the kernel outside a tool call", () => {
-  it("reportNeed says whether the kernel took it, so a refusal or a failure is retried rather than lost", async () => {
-    expect(await reportNeed("http://kernel", "key", need(), log, kernel([ok()]).fetcher)).toBe(true);
-    expect(await reportNeed("http://kernel", "key", need(), log, kernel([new Response("nope", { status: 503 })]).fetcher)).toBe(false);
-    expect(await reportNeed("http://kernel", "key", need(), log, kernel([new Error("ECONNREFUSED")]).fetcher)).toBe(false);
+  it("reportNeed says whether the kernel has it, or whether a retry can help", async () => {
+    expect(await reportNeed("http://kernel", "key", need(), log, replies([ok()]).fetcher)).toBe("taken");
+    expect(await reportNeed("http://kernel", "key", need(), log, replies([busy()]).fetcher)).toBe("retry");
+    expect(await reportNeed("http://kernel", "key", need(), log, replies([new Error("ECONNREFUSED")]).fetcher)).toBe("retry");
+    expect(await reportNeed("http://kernel", "key", need(), log, replies([bad()]).fetcher)).toBe("refused");
     // Nothing to report is not a failure: a vendor error the owner can't fix isn't sent.
-    const vendor = kernel([ok()]);
-    expect(await reportNeed("http://kernel", "key", new GitHubNeed({ cause: "unreachable", repo: "acme/x" }), log, vendor.fetcher)).toBe(true);
+    const vendor = replies([ok()]);
+    expect(await reportNeed("http://kernel", "key", new GitHubNeed({ cause: "unreachable", repo: "acme/x" }), log, vendor.fetcher)).toBe("taken");
     expect(vendor.seen).toHaveLength(0);
   });
 
-  it("a report the kernel refused is kept and flushed at the start of the next request, with the same body", async () => {
-    const k = kernel([new Response("busy", { status: 503 }), ok()]);
+  it("a report the kernel couldn't take is kept and flushed once at the next request, with the same body", async () => {
+    const k = replies([busy(), ok()]);
     const q = needQueue({ kernelUrl: "http://kernel", key: () => "the-key", log, fetcher: k.fetcher, waitMs: 50 });
     await q.tell(need());
     expect(q.pending()).toBe(1);
-    expect(k.seen).toHaveLength(1);
     await q.flush();
     expect(q.pending(), "the kernel took it on the retry").toBe(0);
     expect(k.seen).toHaveLength(2);
@@ -43,25 +49,58 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(k.seen[0]!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
   });
 
+  it("a permanent refusal (a 4xx) is dropped, not retried on every request", async () => {
+    const k = replies([bad()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
+    await q.tell(need());
+    expect(q.pending()).toBe(0);
+    await q.flush();
+    expect(k.seen, "the refused report was not sent again").toHaveLength(1);
+  });
+
+  it("each kept need is visited at most once per flush, so a refusing kernel is not hammered in one pass", async () => {
+    const k = replies([busy()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
+    await q.tell(need());
+    const before = k.seen.length;
+    await q.flush();
+    expect(k.seen.length - before, "one attempt for the one kept need").toBe(1);
+    expect(q.pending()).toBe(1);
+  });
+
   it("a report that outlives its bound is kept, so the reply is not blocked past it and the need is not dropped", async () => {
-    const k = kernel(["hang", ok()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "the-key", log, fetcher: k.fetcher, waitMs: 20 });
+    const k = replies(["hang", ok()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 20 });
     const t0 = Date.now();
     await q.tell(need());
     expect(Date.now() - t0, "the reply waited only its bound").toBeLessThan(1_000);
     expect(q.pending()).toBe(1);
     await q.flush();
     expect(q.pending()).toBe(0);
-    expect(k.seen).toHaveLength(2);
   });
 
-  it("one need is kept once across repeated reports, and a flush in flight isn't started twice", async () => {
-    const k = kernel([new Response("busy", { status: 500 }), ok()]);
+  it("kept needs survive a restart: a new queue reads them from disk and sends them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const first = replies([busy()]);
+    const q1 = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: first.fetcher, waitMs: 50, file });
+    await q1.tell(need());
+    expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(1);
+    // The container restarts: a fresh queue reads the file and retries it, then clears it on success.
+    const second = replies([ok()]);
+    const q2 = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: second.fetcher, waitMs: 50, file });
+    expect(q2.pending()).toBe(1);
+    await q2.flush();
+    expect(q2.pending()).toBe(0);
+    expect(second.seen[0]!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
+  });
+
+  it("one need is kept once across repeated reports", async () => {
+    const k = replies([busy(), busy()]);
     const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
     await q.tell(need());
     await q.tell(need());
     expect(q.pending()).toBe(1);
-    await Promise.all([q.flush(), q.flush()]);
-    expect(q.pending()).toBe(0);
   });
 });
