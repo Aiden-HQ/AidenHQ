@@ -40,7 +40,7 @@ agents:
       apps: [ app_list, app_status, app_logs, app_view, warehouse_query, person_identity_decide ]
       # The notes vault, read-only, plus its one correction tool (meeting notes), when the meetings module is on.
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, knowledge_list, knowledge_index, knowledge_search, knowledge_read, meeting_note_correct ]
-      owner_channel: [ notify ]
+      owner_channel: [ notify, notify_recent ]
       # Metrics and dashboards (monitoring alerts' series), when the grafana module is on: reads only.
       grafana?: read
       # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's; github_issue_link is

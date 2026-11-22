@@ -33,5 +33,17 @@ export function buildServer(d: Deps, caller?: Caller, trial = false): McpServer 
       return json(await notify(d, args as Parameters<typeof notify>[1], caller && trial ? { ...caller, trial: true } : caller));
     },
   );
+  server.registerTool(
+    "notify_recent",
+    {
+      description: "What the owner was already told, newest first: who sent it, the task, its kind, whether it was delivered or is queued for their next digest, when, and the text. Glance at it before telling them something, so you tell only what is new to them.",
+      inputSchema: z.strictObject({
+        days: z.number().int().min(1).max(14).optional().describe("how far back (default 3)"),
+        limit: z.number().int().min(1).max(50).optional().describe("how many (default 20)"),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ days, limit }) => json(d.store.recentTold(days ?? 3, limit ?? 20).map((r) => ({ source: r.source, task: r.task, kind: r.kind, state: r.state, at: new Date(r.at).toISOString(), text: r.text }))),
+  );
   return server;
 }

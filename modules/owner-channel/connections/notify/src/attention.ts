@@ -59,6 +59,7 @@ export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours
   const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
   if (key && store.getKv(key) === day) return true;
   queueDigest(store, { agent: "AidenHQ", text: m.text });
+  store.told({ source: "kernel", kind: "fyi", state: "queued", text: m.text }, now);
   if (key) store.setKv(key, day);
   return true;
 }
