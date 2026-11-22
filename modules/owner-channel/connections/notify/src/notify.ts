@@ -5,7 +5,7 @@
 // message waits and goes once one is back.
 import { createHash } from "node:crypto";
 import { attend, queueDigest, type AttentionConfig } from "./attention.js";
-import type { Store } from "./store.js";
+import { clip, TOLD_MAX, type Store, type Told } from "./store.js";
 
 /**
  * decision: needs the owner (never held back by the limit); done: a finished result (never muted); fyi: news (the owner may
@@ -67,7 +67,7 @@ const MIN = 60_000;
 /** The chief of staff's role: the one agent whose questions reach the owner wherever it asks. */
 const CHIEF = "fleet-admin";
 /** Text fenced as data: a fence longer than any backtick run inside it. */
-const fence = (t: string) => { const f = "`".repeat(Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${t}\n${f}`; };
+export const fence = (t: string) => { const f = "`".repeat(Math.max(3, ...[...t.matchAll(/`+/g)].map((m) => m[0].length + 1))); return `${f}\n${t}\n${f}`; };
 const WINDOW = { alert: 60 * MIN, other: 10 * MIN };
 
 /** Marks an agent's comment as its visible reply to the owner (the board shows it as a message, not a run note). */
@@ -177,10 +177,13 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     }
     const muted = kind === "fyi" && d.muteFyi === true && !a.actions?.length;
     const digested = att.do === "digest" && found?.ownerVia !== "board" && !muted;
-    if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text });
+    // The ledger entry (what the owner gets to read, questions spelled out): written once the message reached them or is queued for the digest.
+    const told: Told = { source: who?.key ?? "kernel", ...(a.task ? { task: a.task } : {}), kind, text: clip(text, Math.max(0, TOLD_MAX - Array.from(spellOut(a.questions)).length)) + spellOut(a.questions) };
     // The reply on its chat, as the agent's own comment.
     const mirror = found && caller && d.postReply;
     const onChat = mirror ? await d.postReply!(found.issueId, replyBody(text, a.actions, a.questions), caller.assertion).catch(() => false) : false;
+    // A digest line already on the owner's chat is told now; its digest line then goes without a second ledger row.
+    if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text, source: who?.key ?? "kernel", kind, ...(onChat ? { told: true } : {}) }, now);
     // The owner is typing in this chat on the board: the reply stays there (the board notifies them).
     const boardOnly = found?.ownerVia === "board" || digested || muted;
     let out: "sent" | "down" | "off" | "board" = "board";
@@ -190,10 +193,12 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       out = await deliver(d, m, to);
       // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set up.
       if (out === "off" && !caller) out = "down";
-      if (out === "down") d.store.wait({ m, to, at: now, keep: !caller });
+      if (out === "down") d.store.wait({ m, to, at: now, keep: !caller, ...(onChat ? {} : { told }) });
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
+    // Reached the owner (a channel took it, or it is on their chat) (a digest item is told when its digest goes); a message still waiting for a channel is written by the retry that delivers it.
+    if (out === "sent" || onChat) d.store.told(told, now);
     // The chief of staff's question on its own task files its owner wait (the kernel refuses any other task; that is no failure).
     // A wait that failed is returned: the task would read orphaned and be woken to ask again.
     let waitError: string | undefined;
@@ -217,17 +222,27 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
  * Sends what waited while every channel was down: done once a channel takes it, or none is set up for it any more. A message
  * still undelivered after a day is dropped (by then the board shows what it was about).
  */
+let retrying = false;
 export async function retry(d: Pick<Deps, "send" | "store">, now = Date.now()): Promise<number> {
+  if (retrying) return 0; // one pass at a time: an overlapping one would send and record the same waiting message twice
+  retrying = true;
+  try { return await retryPass(d, now); } finally { retrying = false; }
+}
+async function retryPass(d: Pick<Deps, "send" | "store">, now: number): Promise<number> {
   let n = 0;
   for (const w of d.store.waiting()) {
-    const { m, to, at, keep } = w.msg as { m: Message; to: string[]; at: number; keep?: boolean };
+    const { m, to, at, keep, told } = w.msg as { m: Message; to: string[]; at: number; keep?: boolean; told?: Told };
     const out = now - at > 24 * 60 * MIN ? "off" : await deliver(d, m, to);
     if (out === "down" || (out === "off" && keep && now - at <= 24 * 60 * MIN)) continue;
     d.store.done(w.id);
-    if (out === "sent") n++;
+    if (out === "sent") { n++; if (told) d.store.told(told, now); }
   }
   return n;
 }
 
 /** The digest of routine messages as one message: done once a channel took it, or when none is set up to. */
-export const sendDigest = async (d: Pick<Deps, "send" | "transports">, text: string): Promise<boolean> => (await deliver(d, { kind: "digest", text }, d.transports)) !== "down";
+/** The digest as one message: true once a channel took it, "off" when none is set up (the queue clears, nothing is told), false while every channel is down. */
+export const sendDigest = async (d: Pick<Deps, "send" | "transports">, text: string): Promise<boolean | "off"> => {
+  const out = await deliver(d, { kind: "digest", text }, d.transports);
+  return out === "down" ? false : out === "off" ? "off" : true;
+};

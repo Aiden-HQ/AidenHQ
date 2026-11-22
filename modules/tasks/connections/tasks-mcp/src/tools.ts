@@ -5,6 +5,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { uncheckableAbsence } from "./absence.ts";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
@@ -519,47 +520,8 @@ const NO_FACT: [RegExp, string][] = [
 const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
 /** Why the grader can't check this criterion from any fact it is given, or undefined. */
 const noFact = (c: string) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];
-// An absence anywhere in a repository file ("both handbooks contain no Linus", "docs/a.md has no old token") cannot be
-// shown from the evidence a code deliverable is graded on: the grader sees the diff, not the resulting tree. The claim is
-// refused wherever a rubric is written. A claim about an attached file (its contents are evidence), a rendered page path, or
-// what a PR's diff does not add is decidable and stays allowed; a `file` deliverable is the attachment itself.
-const ABSENT = /\b(?:contains?|containing|includes?|including|holds?|holding)\s+no\b|\b(?:does|do|did)(?:n't| not)\s+(?:contain|include|hold|mention|name|reference|list)\b|\b(?:has|have)\s+no\b|\b(?:is|are|was|were)\s+absent\s+from\b/i;
-const REPO_FILE = /\b(?:files?|handbooks?|docs?|documents?|trees?|repos?(?:itories)?|sources?|modules?|readme|codebase)\b|[\w./-]+\.[a-z]{1,5}\b/i;
-const ATTACHED = /\battach(?:ed|ment|ments)\b/i;
-const DIFF_SUBJECT = /\b(?:pr|pull requests?|diff|patch|changes?|commits?|merge[ds]?)\b/i;
-// A clause ends at punctuation or a contrast, never at a coordination: "docs/a.md and the attached report contain no X" is one
-// claim about both, so its subject is split on the coordination and each part judged on its own. A coordination after the
-// claim's object ("... contains no X and docs/a.md has Y") starts a new claim and is not part of this one's subject.
-const CLAUSE_BREAK = /[.;:,]\s+|\b(?:but|while|whereas)\s+/gi;
-const COORDINATION = /\s*(?:[,;]|\band\b|\bor\b|&|\bplus\b)\s*/gi;
-/**
- * The subject an absence claim is about: the coordinated parts of its own clause before the claim, plus the claim and its
- * object. Another clause is left out, so "the /slipped page has no `Linus` row and docs/a.md has the heading" is a claim
- * about the page; "docs/a.md and the attached report contain no X" is a claim about both.
- */
-function absenceSubject(c: string, at: number, length: number): string[] {
-  const breaks = [...c.slice(0, at).matchAll(CLAUSE_BREAK)].map((m) => (m.index ?? 0) + m[0].length);
-  const head = c.slice(breaks.length ? breaks[breaks.length - 1]! : 0, at);
-  const after = c.slice(at + length);
-  const next = after.search(CLAUSE_BREAK);
-  // The object is "no X": a coordination after it starts something else, so it ends the claim rather than joining it.
-  const tail = (next < 0 ? after : after.slice(0, next)).split(COORDINATION)[0] ?? "";
-  return [...head.split(COORDINATION), c.slice(at, at + length) + tail].map((p) => p.trim()).filter(Boolean);
-}
-/** Whether any part of a claim's subject names a repository file its evidence can't show. */
-const absenceRefuses = (parts: string[]) =>
-  parts.some((part) => REPO_FILE.test(part) && !ATTACHED.test(part) && !PAGE_PATH.test(part) && !DIFF_SUBJECT.test(part));
-/** Whether a criterion claims a repository file's contents lack something (see ABSENT), which a diff cannot show. */
-const absentFromFile = (c: Json, kind?: Json) => {
-  const text = String(c);
-  if (kind === "file") return false;
-  // "the diff removes X and docs/a.md contains no Y": each claim is judged on its own subject, never on another clause,
-  // and an exemption for one coordinated part ("the attached report") never covers another ("docs/a.md").
-  for (const claim of text.matchAll(new RegExp(ABSENT.source, "gi"))) {
-    if (absenceRefuses(absenceSubject(text, claim.index, claim[0].length))) return true;
-  }
-  return false;
-};
+// A criterion claiming a repository file's contents lack something cannot be shown from a diff: one rule, shared
+// byte-identically with the grading service that files and amends the row (services/shared/absence.ts), applied in rubricCriteria.
 // A brief that claims part of the tree is untouched while its own tests or requirements change that part reads as a
 // contradiction: the reviewer takes the claim literally and rejects the extra change as out of scope. Flagged where it is
 // filed, while the delegator can still reword it; the handbook rule is the judgment.
@@ -607,7 +569,7 @@ function rubricCriteria(rubric: Json, kind?: Json) {
   if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
   const negative = list.find(unprovable);
   if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
-  const absent = list.find((c) => absentFromFile(c, kind));
+  const absent = uncheckableAbsence(list, kind === undefined ? undefined : String(kind));
   if (absent) throw new Error(`rubric: "${absent.slice(0, 120)}" claims file contents are absent, which the grader can't see: it is given the diff, not the resulting files, so no diff can show a token is gone from a whole file. Name a diff-decidable alternative instead (e.g. "the diff removes every \`Linus\` line from docs/a.md").`);
   const blind = list.find(noFact);
   if (blind) throw new Error(`rubric: "${blind.slice(0, 120)}" names nothing the grader can see: ${noFact(blind)}. Each criterion names one of the facts the grader is given: ${FACTS}.`);

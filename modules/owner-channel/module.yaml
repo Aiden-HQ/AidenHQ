@@ -10,9 +10,14 @@ connections:
     url: http://notify:8089/mcp
     auth: owner_channel_service_key
     tools:
-      read: []
+      read: [ notify_recent ]
+      # notify_recent: what the owner was already told (a ledger, 14 days). Named: granted explicitly, not by `read`.
+      named: [ notify_recent ]
       # notify: a message to the owner (decision, done, fyi, alert, digest); with `task`, the agent's reply on that chat.
       write: [ notify ]
+# Before telling the owner something, the agent glances at what they were already told.
+prompts:
+  - { id: told, file: prompts/told.md, when: { tools: [ owner_channel.notify_recent ] } }
 settings:
   # The channels a message tries, in order: the first one set up that delivers it gets it (the one the owner last wrote from
   # in a chat goes first). One that isn't installed or set up is skipped.

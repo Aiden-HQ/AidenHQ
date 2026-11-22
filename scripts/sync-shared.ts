@@ -116,6 +116,9 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/quality.ts": ["services/board/src/aidenhq-sdk/quality.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
+  // A rubric criterion claiming a file's contents lack something: refused wherever a rubric is written (the grading service
+  // files and amends; the task tools validate a delegation and an amendment before they send it).
+  "services/shared/absence.ts": ["modules/grading/service/src/absence.ts", "modules/tasks/connections/tasks-mcp/src/absence.ts"],
   // The supply-chain checks, version picker and image scan, for app repos (the app CI template is copied into each as it is).
   "scripts/supply-chain/best-version.ts": ["modules/ci/template/.github/supply-chain/best-version.ts", "modules/engineering/skills/supply-chain/best-version.ts", "modules/github/service/src/best-version.ts"],
   "scripts/supply-chain/pins.ts": ["modules/ci/template/.github/supply-chain/pins.ts"],
