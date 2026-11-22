@@ -198,7 +198,7 @@ export const RepoSchema = z
   })
   .strict()
   .superRefine((r, ctx) => {
-    if (r.on_open.some((c) => c.mandatory) !== r.on_push.some((c) => c.mandatory)) ctx.addIssue({ code: "custom", path: ["on_push"], message: "a mandatory reviewer goes in both moments (a PR's first review and each push)" });
+    if (r.on_push.some((c) => c.mandatory) && !r.on_open.some((c) => c.mandatory)) ctx.addIssue({ code: "custom", path: ["on_open"], message: "a mandatory reviewer on each push needs one when a PR opens" });
   });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z

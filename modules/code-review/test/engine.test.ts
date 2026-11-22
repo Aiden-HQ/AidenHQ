@@ -1796,3 +1796,24 @@ test("a reply on a finding's thread posted before the service recorded its threa
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()", "bob's answer counts; mallory (no write access) still doesn't");
   assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"], "a thread reply's fixed is a claim too");
 });
+
+test("a gated repo with no mandatory on_push: a push needs no review of its own, so the PR merges once nothing is open; a fixed claim is still rechecked at the pushed head", async () => {
+  assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] })).errors, []);
+  assert.match(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [MUST_PUSH] }] })).errors[0], /needs a mandatory on_open one/);
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick(); // f1 open, gating
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 1, "no review of the push");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the opening review stands; its open finding still holds the merge");
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" });
+  await w.tick();
+  assert.deepEqual(w.started.slice(1).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"]], "the claim's recheck, on the on_open mandatory combo at low effort");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running", "findings"]);
+  w.finish(1, { findings: [], cleared: ["f1"] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "a later push runs nothing");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
+  assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason], [sha("4"), "pass"]);
+});

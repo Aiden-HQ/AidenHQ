@@ -104,9 +104,10 @@ describe("the Reviews page's routes", () => {
   });
 });
 
-it("a combo may be mandatory, at both moments (the module's shape)", () => {
+it("a combo may be mandatory; on_push's is optional (the module's shape)", () => {
   const c = { engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "medium" };
   expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [{ ...c, mandatory: true }] }] })).toEqual([]);
-  expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual(["repos.0.on_push: a mandatory reviewer goes in both moments (a PR's first review and each push)"]);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual([]);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [c], on_push: [{ ...c, mandatory: true }] }] })).toEqual(["repos.0.on_open: a mandatory reviewer on each push needs one when a PR opens"]);
   expect(configProblems({ repos: [{ repo: "a/b", on_open: [c], on_push: [], mandatory: true }] })[0]).toMatch(/mandatory/);
 });
