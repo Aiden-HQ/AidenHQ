@@ -181,3 +181,17 @@ test("a retired runner instance is not declared", async () => {
   assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a disabled runner is not declared");
   assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
 });
+
+// A cleanup that removes the runner template leaves its enablement links behind, dangling: systemd reads such an instance as
+// not-found, so it declares nothing and must not be exported (a declared series is what lets CiRunnerUnitMissing fire).
+test("a dangling runner enablement link is not declared", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1"]);
+  const template = join(h.unitDir, "aidenhq-ci-runner@.service");
+  unlinkSync(template);
+  symlinkSync(join(h.unitDir, "gone.service"), join(h.wants, "aidenhq-ci-runner@2.service"));
+  const text = await run(h);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@/, "a link with no template behind it declares no runner");
+  assert.doesNotMatch(text, /^aidenhq_unit_backoff\{/m);
+});
