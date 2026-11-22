@@ -32,8 +32,7 @@
 //   step. Same sandbox and token rules as the harness's own engine; only that skill (never the repo's) is loaded. It reads the tree
 //   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
-import { execFileSync, spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -458,8 +457,8 @@ export const PREP_TIMEOUT = "preparing the review ran out of time";
 /** The milliseconds left until `deadline`; throws when none are. */
 const timeLeft = (deadline: number) => { const ms = deadline - Date.now(); if (ms <= 0) throw new Error(PREP_TIMEOUT); return ms; };
 /** A git call within the deadline: a call cut off by it is the same timeout. */
-function gitBy(deadline: number, root: string, args: string[]) {
-  try { return gitSafe(root, args, {}, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
+function gitBy(deadline: number, root: string, args: string[], extraEnv: Record<string, string> = {}) {
+  try { return gitSafe(root, args, extraEnv, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
 }
 
 /** How many characters of patch one request carries. */
@@ -502,22 +501,15 @@ export function patchGroups(root: string, base: string, files: string[], budget 
 }
 
 /**
- * The files of commit `head` extracted into `dir` (`git archive | tar -x`), within the review's deadline: a failure or a timeout throws.
- * The copy is context for the reviewer; the patch it reviews is made by diff, so coverage doesn't depend on it.
+ * The files of commit `head` written into `dir` from a private index of its tree (`read-tree`, `checkout-index`), within the review's
+ * deadline: a failure or a timeout throws. The branch's own attributes are not read (gitEnv), so it can't choose a filter or leave files
+ * out; the copy is context for the reviewer, and the patch it reviews is made by diff.
  */
-export async function snapshot(root: string, head: string, dir: string, deadline = Infinity) {
+export function snapshot(root: string, head: string, dir: string, deadline = Infinity) {
   mkdirSync(dir, { recursive: true });
-  const ms = Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined; // checked before anything starts
-  const git = spawn("git", ["archive", "--format=tar", head], { cwd: root, env: { ...process.env, ...gitEnv() }, stdio: ["ignore", "pipe", "ignore"] });
-  const tar = spawn("tar", ["-x", "-C", dir], { stdio: ["pipe", "ignore", "ignore"] });
-  tar.stdin.on("error", () => {});
-  git.stdout.pipe(tar.stdin);
-  const timer = ms === undefined ? undefined : setTimeout(() => { git.kill(); tar.kill(); }, ms);
-  const ended = (c: ChildProcess) => new Promise<number | null>((ok) => { c.on("close", ok); c.on("error", () => ok(null)); });
-  const codes = await Promise.all([ended(git), ended(tar)]);
-  clearTimeout(timer);
-  if (Date.now() >= deadline) throw new Error(PREP_TIMEOUT);
-  if (codes.some((c) => c !== 0)) throw new Error("the commit's files could not be copied");
+  const index = { GIT_INDEX_FILE: `${dir}.index` };
+  gitBy(deadline, root, ["read-tree", head], index);
+  gitBy(deadline, root, ["checkout-index", "-a", "-f", `--prefix=${dir}/`], index);
 }
 
 /**
@@ -535,7 +527,7 @@ async function codexNative({ instructions, model, effort, root, files, head, lef
     ({ groups, oversize } = patchGroups(root, base, files, undefined, head, deadline));
     // With a commit to review at, codex works in a copy of that commit's files (no history, no .git), never the live checkout the
     // Engineer may still be editing; its findings' paths are relative to that copy.
-    if (head) { cwd = join(scratch, "tree"); await snapshot(root, head, cwd, deadline); }
+    if (head) { cwd = join(scratch, "tree"); snapshot(root, head, cwd, deadline); }
   } catch (err) {
     return { message: "", read: true, cause: (err as Error).message }; // out of time, or the files could not be copied
   }

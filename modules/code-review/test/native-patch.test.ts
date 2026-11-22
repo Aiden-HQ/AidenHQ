@@ -275,13 +275,13 @@ test("snapshot writes a commit's regular files exactly (binary, executable, nest
   const full = sh(repo, "rev-parse", "HEAD");
   sh(repo, "rm", "-rqf", "."); sh(repo, "commit", "-qm", "none");
   const out = join(dir, "out");
-  await snapshot(repo, full, out);
+  snapshot(repo, full, out);
   assert.deepEqual(readFileSync(join(out, "d", "b.bin")), bin);
   assert.equal(readFileSync(join(out, "x.sh"), "utf8"), "echo\n");
   assert.ok((statSync(join(out, "x.sh")).mode & 0o111) !== 0, "the executable bit");
   assert.equal(readFileSync(join(out, "empty"), "utf8"), "");
   const none = join(dir, "none");
-  await snapshot(repo, sh(repo, "rev-parse", "HEAD"), none);
+  snapshot(repo, sh(repo, "rev-parse", "HEAD"), none);
   assert.ok(existsSync(none));
 });
 
@@ -292,7 +292,7 @@ test("preparing the patch and the copy is within the review's time: a deadline a
   assert.equal(r.cause, PREP_TIMEOUT);
   assert.equal(r.message, "");
   assert.throws(() => patchGroups(repo, base, ["a.txt"], undefined, "HEAD", Date.now() - 1), new RegExp(PREP_TIMEOUT));
-  await assert.rejects(snapshot(repo, head, join(mkdtempSync(join(tmpdir(), "snap-")), "o"), Date.now() - 1), new RegExp(PREP_TIMEOUT));
+  assert.throws(() => snapshot(repo, head, join(mkdtempSync(join(tmpdir(), "snap-")), "o"), Date.now() - 1), new RegExp(PREP_TIMEOUT));
 });
 
 const lineZero = (path: string, body: string) => ({ findings: [{ title: "[P1] at line zero", body, confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: path, line_range: { start: 0, end: 0 } } }], overall_correctness: "patch is incorrect", overall_explanation: "x", overall_confidence_score: 0.9 });

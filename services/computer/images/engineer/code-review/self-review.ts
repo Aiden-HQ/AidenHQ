@@ -22,7 +22,8 @@ import { changed, guidePaths, place, scope } from "./scope.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 
-const git = (...a: string[]) => gitSafe(process.cwd(), a).trim(); // the branch's attributes and config run nothing here (gitSafe)
+const raw = (...a: string[]) => gitSafe(process.cwd(), a); // untrimmed: a NUL-separated path list may start with a space
+const git = (...a: string[]) => raw(...a).trim(); // the branch's attributes and config run nothing here (gitSafe)
 const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
 
 // What went wrong, apart from the evidence line: command output may carry repository text, so it is labelled data.
@@ -55,8 +56,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
   // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
   const moved = () => { let r = ""; try { r = git("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || git("rev-parse", "HEAD") !== head; };
-  const prChanged = new Set(git("diff", "--no-renames", "--name-only", "-z", base, head).split("\0").filter(Boolean));
-  const { reviewed, excluded } = scope(changed((a) => git(...a), from, head), [], prChanged);
+  const prChanged = new Set(raw("diff", "--no-renames", "--name-only", "-z", base, head).split("\0").filter(Boolean));
+  const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
   const mine = scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), [], prChanged);
   const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
