@@ -7,6 +7,7 @@ agents:
     name: App Owner
     description: Owns one named app's backlog, reads its requests and usage and files improvements to the Engineer; does not run, deploy or fix the app's health (the DevOps Engineer does).
     reports_to: chief-of-staff
+    skills: [ tasks.delegate-work ]
     model: ~deepseek/deepseek-flash-latest
     graded: true
     connections:

@@ -1,7 +1,6 @@
 ---
 name: handbook-prune
 description: The Sunday prune - find handbook rules nobody cited in 30 days, duplicated or contradicted, and file one task for the Engineer listing the deletions, or note that nothing qualifies.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Handbook prune

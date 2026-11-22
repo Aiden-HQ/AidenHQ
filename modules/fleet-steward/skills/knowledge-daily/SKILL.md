@@ -1,7 +1,6 @@
 ---
 name: knowledge-daily
 description: The daily knowledge pass - check new notes for duplicates, contradictions and missing provenance, confirm obvious identity links, and record the findings.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Knowledge daily pass

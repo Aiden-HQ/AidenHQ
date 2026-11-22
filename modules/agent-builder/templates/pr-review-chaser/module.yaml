@@ -7,6 +7,7 @@ agents:
     name: Review Chaser
     description: Chases pull requests waiting on a review in the owner's repositories and drafts nudges to the reviewers.
     reports_to: chief-of-staff
+    skills: [ tasks.delegate-work ]
     department: outreach # where the board lists it (kernel/defaults.json departments)
     model: ~deepseek/deepseek-flash-latest
     connections:

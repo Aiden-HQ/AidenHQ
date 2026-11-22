@@ -13,6 +13,7 @@ roles:
   requests: [ ops-key? ]
 agents:
   chief-of-staff:
+    skills: [ tasks.delegate-work ]
     department: leadership
     # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
     # 5m48s for two runs on Aiden's notice chat (WOR-2275). Paperclip still runs one at a time per task.
@@ -44,6 +45,7 @@ agents:
     # product-issues: product bugs upstream as the owner (github-mcp).
     roles: [ fleet-admin, product-issues ]
   assistant:
+    skills: [ chief-of-staff.recurring-reports, chief-of-staff.research-tasks, chief-of-staff.research-tools, chief-of-staff.task-replies, meetings.meeting-notes, primer.primer-digest, primer.primer-docs, tasks.delegate-work ]
     department: leadership
     max_parallel: 3 # research asks are independent; the 15-minute meeting scan takes a slot of its own
     model: ~deepseek/deepseek-flash-latest

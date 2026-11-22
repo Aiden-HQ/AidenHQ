@@ -22,6 +22,7 @@ settings:
     type: url
 agents:
   security-watch:
+    skills: [ tasks.delegate-work ]
     department: security
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -35,6 +36,7 @@ agents:
     delegate_to: [ fleet-steward? ]
     roles: [ security-verdict ]
   red-teamer:
+    skills: [ tasks.delegate-work ]
     department: security
     # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11). GLM Flash at high since 2026-11-13 (the
     # owner's pick after a blind bake-off).

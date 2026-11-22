@@ -1,7 +1,6 @@
 ---
 name: research-tools
 description: "Load before using a Researcher tool that writes (Slack drafts, Primer publish, GitHub comment/issue/review/re-run, voice lessons) or when unsure which read tool fits (Glean, Jira, reference docs, notes, Google)."
-when: { fields: { name: Researcher } }
 ---
 
 # Your tools

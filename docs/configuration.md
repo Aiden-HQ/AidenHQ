@@ -121,10 +121,12 @@ outcomes:
   `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
   A section is always in the handbook; what an agent needs only for some work is a skill (below), which its engine
   reads natively from the job's engine home.
-- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, `description`,
-  optional `when`/`unless`), with id `<module>.<name>`, for the agents the module defines and those granted one of its
-  connections, plus any agent (module or instance, any adapter) that names it in its `skills:` list. Compile lists every
-  skill under `skills:` in `config/paperclip.yaml` and each agent's under its own `skills:`; an unknown id, two skills of
+- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, and a one-line
+  `description`), with id `<module>.<name>`. An agent gets exactly the skills it lists: its effective list is
+  `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`, the one override shape for every
+  agent, local or module. Membership and grants select nothing. A listed skill of an available module that isn't enabled
+  is dropped. Compile lists every enabled skill under `skills:` in `config/paperclip.yaml` and each agent's effective list
+  under its own `skills:`; an id no available module has, `when`/`unless` on a skill, two skills of
   one name for one agent, or a skill folder outside its module fail compile. Engineer jobs get theirs in the engine
   home; at every apply, setup imports crew agents' skills into Paperclip (copied into its managed skills root under
   `<data>/paperclip/instances/default/skills/<company id>/`) and sets each crew agent's to exactly its list. Two crew

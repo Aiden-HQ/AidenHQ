@@ -1,7 +1,6 @@
 ---
 name: task-replies
 description: "Load when your run task says \"Process replies on: <tasks>\" - acting on the user's newest comments on their own tasks."
-when: { fields: { name: Researcher } }
 ---
 
 # Processing the user's replies

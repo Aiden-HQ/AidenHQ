@@ -29,6 +29,7 @@ settings:
     default: 10
 agents:
   fleet-steward:
+    skills: [ fleet-steward.agent-review, fleet-steward.fleet-check, fleet-steward.fleet-digest, fleet-steward.fleet-review, fleet-steward.handbook-prune, fleet-steward.knowledge-daily, fleet-steward.knowledge-lint, fleet-steward.review-digest, fleet-steward.route-security-fix, fleet-steward.routing-review, tasks.delegate-work ]
     department: platform
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high

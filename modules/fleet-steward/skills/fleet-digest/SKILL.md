@@ -1,7 +1,6 @@
 ---
 name: fleet-digest
 description: The evening fleet digest - work the day's deep-look lines, check that product-bug fixes are live, and send the owner one message on what tripped, what was done and what is still open.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Fleet digest

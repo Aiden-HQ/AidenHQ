@@ -1,7 +1,6 @@
 ---
 name: meeting-notes
 description: The meeting scan - turn transcripts and Google Meet documents into a canonical meeting note, a project-note entry and tasks for the user's own action items, all through ops-mcp.
-when: { fields: { name: Researcher } }
 ---
 
 # Meeting notes

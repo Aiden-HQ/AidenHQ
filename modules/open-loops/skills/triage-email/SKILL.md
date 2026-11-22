@@ -1,7 +1,6 @@
 ---
 name: triage-email
 description: The inbox scan - one task per email thread the user labels Aiden in Gmail (any connected account), and close the task when the label is removed.
-when: { fields: { name: Intake } }
 ---
 
 # Inbox scan

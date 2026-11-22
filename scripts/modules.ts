@@ -29,7 +29,7 @@ const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.ts); the instance turns it on or off per agent.
 // handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
 // connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "model"] };
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections", "skills"], routines: ["schedules", "model"] };
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
 const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
@@ -1089,7 +1089,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const target = paperclip[kind][key] ?? fail(`unknown ${kind.slice(0, -1)}: ${key}`);
       for (const [f, v] of Object.entries<any>(fields ?? {})) {
         if (!OVERRIDABLE[kind as keyof typeof OVERRIDABLE].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
-        if (kind === "agents" && f === "connections") continue; // merged before grants resolved, above
+        if (kind === "agents" && (f === "connections" || f === "skills")) continue; // connections: merged before grants resolved, above; skills: effectiveSkills, below
         if (kind === "agents" && f === "handbook_fork") {
           if (target.tier === "local") fail(`${key} is a local agent: its rules are its own AGENTS.md`);
           if (!/^[0-9a-f]{40}$/.test(String(v))) fail(`override agents.${key}.handbook_fork must be the module blob sha it was copied from`);
@@ -1163,18 +1163,16 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // overrides (an override may set heartbeat or image).
   const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n)!.def, all.get(n)!.root)).sort(promptOrder);
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
-  const sections = prompts.filter((p) => !p.skill);
-  paperclip.prompts = Object.fromEntries(sections.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
-  for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && sections.some((p) => promptApplies(p, a, enabled))) a.prompts = sections.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
-  // Skills (modules/<m>/skills/<name>/SKILL.md), for every agent whatever its profile: the ones promptApplies picks (its own
-  // module's, or a module's whose connection it holds a grant on) plus those it names in `skills:`. Jobs get exactly these.
-  const skills = prompts.filter((p) => p.skill);
-  if (skills.length) paperclip.skills = Object.fromEntries(skills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
+  paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
+  for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  // Skills (modules/<m>/skills/<name>/SKILL.md): each agent gets exactly its effective list (effectiveSkills), of every
+  // available module's skills; jobs get exactly these.
+  const skills = [...all.values()].flatMap((m) => skillEntries(m.name, m.root).map((s) => ({ ...s, enabled: enabled.includes(m.name) })));
+  const enabledSkills = skills.filter((s) => s.enabled);
+  if (enabledSkills.length) paperclip.skills = Object.fromEntries(enabledSkills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
+  const skillCatalog = Object.fromEntries(skills.map((s) => [s.id, s.enabled]));
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
-    const named = a.skills ?? [];
-    if (!Array.isArray(named) || named.some((id) => typeof id !== "string")) fail(`agent ${key}: skills is a list of skill ids (<module>.<name>)`);
-    for (const id of named) if (!paperclip.skills?.[id]) fail(`unknown skill ${id} for agent ${key}`);
-    const ids = [...new Set([...skills.filter((s) => promptApplies(s, a, enabled)).map((s) => s.id), ...named])].sort();
+    const ids = effectiveSkills(key, a, instance.overrides?.agents?.[key]?.skills, skillCatalog);
     const from: Obj = {};
     for (const id of ids) {
       const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
@@ -1736,16 +1734,14 @@ function cappedFile(instanceDir: string, path: string, warnings: string[], fix: 
 
 const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "roles", "modules", "fields"] };
 /**
- * A module's handbook sections: its `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}], and its
- * skills (`skills/<name>/SKILL.md`). A prompt `file` is a prompts/<name>.md in the module, used verbatim past its optional
- * frontmatter (its leading blank lines included). `when` and `unless` test presence: `tools` (`connection.tool` granted),
- * `roles`, `modules` (enabled) and `fields` (an agent field: `true` = set and not false, anything else = equal). Every `when`
- * test must hold, and no `unless` test. `lane: true`: the fast chat lane's prompt gets it too. A skill is a folder in Codex's
- * SKILL.md format (`name`, a one-line `description`, optional `when`/`unless`) for the agents its module defines or that hold
- * a grant on one of its connections: the engine reads it natively from the job's engine home, never from the handbook.
+ * A module's handbook sections, its `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}]. A prompt
+ * `file` is a prompts/<name>.md in the module, used verbatim past its optional frontmatter (its leading blank lines included).
+ * `when` and `unless` test presence: `tools` (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent
+ * field: `true` = set and not false, anything else = equal). Every `when` test must hold, and no `unless` test. `lane: true`:
+ * the fast chat lane's prompt gets it too.
  */
 export function promptEntries(name: string, def: Obj, root: string): Obj[] {
-  const prompts = [def.prompts ?? []].flat().map((p) => {
+  return [def.prompts ?? []].flat().map((p) => {
     const bad = Object.keys(p ?? {}).find((f) => !PROMPT.fields.includes(f)) ?? ["when", "unless"].flatMap((k) => Object.keys(p[k] ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
     if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(p.id ?? "") || !PROMPT.order.includes(p.order ?? "normal") || !/^prompts\/[a-z0-9-]+\.md$/.test(p.file ?? "") || !existsSync(join(root, p.file))) fail(`module ${name}: prompt ${p?.id}: ${bad ? `unknown ${bad} (fields: ${PROMPT.fields.join(", ")}; tests: ${PROMPT.tests.join(", ")})` : "needs an id (a-z, 0-9, -), a prompts/<name>.md file that exists and an order of first, normal or last"}`);
     const { meta } = frontmatter(readFileSync(join(root, p.file), "utf8"));
@@ -1753,29 +1749,49 @@ export function promptEntries(name: string, def: Obj, root: string): Obj[] {
     if (bad2) fail(`module ${name}: prompt ${p.id}: unknown frontmatter ${bad2} (a prompt has none)`);
     return { id: `${name}.${p.id}`, module: name, file: join(root, p.file), order: p.order ?? "normal", when: p.when ?? {}, unless: p.unless ?? {}, lane: p.lane === true };
   });
+}
+/**
+ * A module's skills (`skills/<name>/SKILL.md`, Codex's SKILL.md format: `name`, a one-line `description`): [{id:
+ * <module>.<name>, file, summary}]. The agents that list one get it (effectiveSkills); the engine reads it natively from the
+ * job's engine home, never from the handbook.
+ */
+export function skillEntries(name: string, root: string): { id: string; file: string; summary: string }[] {
   const dir = join(root, "skills");
-  const skills = (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
+  return (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     const file = join(dir, d.name, "SKILL.md");
     // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
     if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
-    const { name: skillName, description, when, unless, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
+    const { name: skillName, description, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
     if (skillName !== d.name) fail(`module ${name}: skill ${d.name}: its SKILL.md name must be its folder name (${d.name})`);
-    const bad = ["when", "unless"].flatMap((k) => Object.keys((k === "when" ? when : unless) ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
-    if (bad) fail(`module ${name}: skill ${d.name}: unknown ${bad} (tests: ${PROMPT.tests.join(", ")})`);
     const extra = Object.keys(meta).find((k) => !["license", "metadata", "allowed-tools"].includes(k));
-    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools)`);
+    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools; an agent lists the skills it uses in skills:)`);
     const summary = typeof description === "string" ? description.trim() : "";
     if (!summary || summary.includes("\n")) fail(`module ${name}: skill ${d.name}: needs a one-line description`);
-    return { id: `${name}.${d.name}`, module: name, file, order: "normal", when: when ?? {}, unless: unless ?? {}, lane: false, skill: Object.keys(def.connections ?? {}), summary };
+    return { id: `${name}.${d.name}`, file, summary };
   });
-  return [...prompts, ...skills];
+}
+/**
+ * An agent's skills, the one rule: (its `skills:` ∪ override.add) − override.remove, sorted. `override` is instance.yaml
+ * overrides.agents.<key>.skills ({ add?, remove? }); `catalog` maps every available module's skill id to whether its module
+ * is enabled. A skill of an available but disabled module is dropped; an id no available module has fails.
+ */
+export function effectiveSkills(key: string, def: Obj, override: Obj | undefined, catalog: Record<string, boolean>): string[] {
+  const list = (v: unknown, where: string): string[] => {
+    if (v == null) return [];
+    if (!Array.isArray(v) || v.some((id) => typeof id !== "string")) fail(`agents.${key}.${where}: a list of skill ids (<module>.<name>)`);
+    for (const id of v as string[]) if (!Object.hasOwn(catalog, id)) fail(`agents.${key}.skills: unknown skill ${id}`);
+    return v as string[];
+  };
+  if (override != null && (typeof override !== "object" || Array.isArray(override) || Object.keys(override).some((k) => k !== "add" && k !== "remove"))) fail(`overrides.agents.${key}.skills: { add?: [ids], remove?: [ids] }`);
+  const remove = new Set(list(override?.remove, "skills.remove"));
+  return [...new Set([...list(def.skills, "skills"), ...list(override?.add, "skills.add")])].filter((id) => !remove.has(id) && catalog[id]).sort();
 }
 /** Handbook order: first, normal, last; then module; then id. */
 export const promptOrder = (a: Obj, b: Obj) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
 const holds = (t: Obj, a: Obj, enabled: string[]) => [...(t.tools ?? []).map((x: string) => a.enabled_tools?.[x.split(".")[0]!]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r: string) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m: string) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
-/** Its tests hold for the agent; a skill also needs the agent to be its module's or to hold a grant on one of its connections. */
-export const promptApplies = (p: Obj, a: Obj, enabled: string[]) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean) && (!p.skill || a.module === p.module || p.skill.some((c: string) => a.enabled_tools?.[c]?.length));
+/** Its tests hold for the agent. */
+export const promptApplies = (p: Obj, a: Obj, enabled: string[]) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean);
 
 /**
  * instance.yaml `outcomes:`: at most 7 standing goals, each `{id, outcome, done, owner}` (id a-z, 0-9, -; owner an agent

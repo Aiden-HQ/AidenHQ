@@ -1,7 +1,6 @@
 ---
 name: primer-digest
 description: Post the owner's Primer digest to their channel - what other people did on the owner's documents in the last day. Use when the "Primer digest" routine wakes you.
-when: { fields: { name: Researcher } }
 ---
 
 # Primer digest

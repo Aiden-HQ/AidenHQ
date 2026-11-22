@@ -1,7 +1,6 @@
 ---
 name: fleet-check
 description: A detector check - settle every stuck item in the same run (answer a wait, close finished work, cancel stale or duplicate tasks, re-route a handback, restart work that stalled), then fix why it got stuck at its source (a handbook rule, a product bug, a capability to build); the owner hears only what only they can do.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Fleet check

@@ -5,6 +5,7 @@ requires:
   - google
 agents:
   inbox-agent:
+    skills: [ open-loops.scan-slack, open-loops.triage-email, open-loops.triage-slack, tasks.delegate-work ]
     # Intake: the Slack scan, the live Slack triage and the inbox scan, one routine and one skill each (design §4.5).
     department: intake
     model: ~deepseek/deepseek-flash-latest
@@ -24,6 +25,7 @@ agents:
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
   open-loops:
+    skills: [ tasks.delegate-work ]
     department: outreach
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high

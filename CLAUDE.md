@@ -126,7 +126,8 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   own filing, tag on the distro's main, newer than the current one, tested stamp) with no owner approval; turning
   auto-update on is the owner's decision to accept that risk. Any other release move is the owner's below full autonomy.
 - **Cross-agent behaviour goes in a module, not in each handbook.** A skill (`modules/<m>/skills/<name>/SKILL.md`) is the
-  on-demand mechanism: its one-line description is in the handbook's index and the agent reads the text when it needs it. A
+  on-demand mechanism: an agent gets exactly the skills its `skills:` lists (plus `overrides.agents.<key>.skills`), each
+  one-line description is in its handbook's index and the agent reads the text when it needs it. A
   module `prompts:` entry (`modules/<module>/prompts/<id>.md`) is for always-on text (replying in chief-of-staff,
   delegating in engineering; `load: on_demand` still works on a prompt). The kernel's own sections
   stay in `scripts/prompts/`; `scripts/handbook.ts` assembles a handbook and `node scripts/compile.ts --sizes` prints its

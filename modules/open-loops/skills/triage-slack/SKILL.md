@@ -1,7 +1,6 @@
 ---
 name: triage-slack
 description: Slack triage of the live feed - decide each new event quickly as nothing, a needs-response or waiting-on task, or (rarely) an urgent page to the user.
-when: { fields: { name: Intake } }
 ---
 
 # Slack triage

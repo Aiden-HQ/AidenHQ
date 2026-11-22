@@ -65,7 +65,8 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 
 The owner's and the agents' own modules live in the instance repo, `modules/<name>/` (tier `local`), and the same compiler
 loads them. One is always on: its folder enables it. Its `module.yaml` takes only `name`, `description`, `agents` and
-`routines`; skills are `skills/<name>/SKILL.md`, found by folder. A local agent's identity is in `module.yaml` (its
+`routines`; skills are `skills/<name>/SKILL.md`, found by folder. Every agent, module or local, lists the skills it uses in
+`skills:`; nothing is selected implicitly. A local agent's identity is in `module.yaml` (its
 `AGENTS.md` has no frontmatter), it has no roles, services, connections of its own, apps or privileged entries, and each
 routine names the `agent` it runs as, with at most one schedule whose cron minute is one number. Its routines start active.
 The agents' shared skills and routines go in one local module, `library`. ([configuration.md](../docs/configuration.md))

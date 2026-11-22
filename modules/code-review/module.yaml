@@ -98,6 +98,7 @@ settings:
 # (the chief of staff) delegates code review asks to it; no heartbeat, no schedule: it runs only when a task asks.
 agents:
   reviewer-manager:
+    skills: [ tasks.delegate-work ]
     department: engineering
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high

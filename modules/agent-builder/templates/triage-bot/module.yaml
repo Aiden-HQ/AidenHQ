@@ -8,6 +8,7 @@ agents:
     name: Triage Bot
     description: Sorts a named feed (a Slack channel or label) into act, delegate or ignore and files tasks for the ones that need action; does not do the work itself.
     reports_to: chief-of-staff
+    skills: [ tasks.delegate-work ]
     model: ~deepseek/deepseek-flash-latest
     connections:
       slack?: read

@@ -1,7 +1,6 @@
 ---
 name: scan-slack
 description: The half-hourly Slack scan - find asks to the user, their commitments, promises to them and the messages they pinned with their task emoji, turn each into one deduplicated task, and close tasks once answered or unpinned.
-when: { fields: { name: Intake } }
 ---
 
 # Slack scan

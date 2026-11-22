@@ -32,7 +32,7 @@ export function engineEntry(cfg: Pick<SandboxConfig, "enginesFile">, kind: strin
 }
 const fromProduct = (p: string) => resolve(repoRoot, p);
 
-/** A skill compile resolved for the job's agent (the grants table's `skills`): `<module>.<name>` and its module folder. */
+/** A skill of the job's agent's effective list (compile's effectiveSkills, in the grants table's `skills`): `<module>.<name>` and its module folder. */
 export interface Skill { id: string; dir: string }
 
 /** A mode as octal with its leading 0 (0700). */

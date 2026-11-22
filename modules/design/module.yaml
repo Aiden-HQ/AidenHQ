@@ -10,7 +10,7 @@ requires:
 agents:
   ui-designer:
     department: engineering
-    skills: [ engineering.write-code, engineering.supply-chain ]
+    skills: [ apps-platform.design-system, engineering.supply-chain, engineering.write-code, tasks.delegate-work ]
     max_parallel: 2 # mockups are independent; each run gets its own box
     # Graded done: mockups and design work delegated to it are checked against their rubric before they close.
     graded: true
@@ -32,7 +32,7 @@ agents:
     roles: [ repo-checkout ]
   ui-reviewer:
     department: engineering
-    skills: [ engineering.write-code, engineering.supply-chain ]
+    skills: [ apps-platform.design-system, engineering.supply-chain, engineering.write-code, tasks.delegate-work ]
     max_parallel: 2 # design reviews per PR are independent; each run gets its own box
     # Finds visible defects in screenshots: the owner picked GPT Luna at medium (2026-11-13; it matched Opus on screenshot
     # bug-finding at a fraction of the cost). Takes images on OpenRouter.

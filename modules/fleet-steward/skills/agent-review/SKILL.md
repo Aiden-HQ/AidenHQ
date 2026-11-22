@@ -1,7 +1,6 @@
 ---
 name: agent-review
 description: An outcome review run - for each agent coach_due lists, check its output against its sources (precision), what it missed (recall), its inputs, behaviour, feedback and instructions, file the cheapest durable fix (at most 2 per run) and record the review.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Agent review

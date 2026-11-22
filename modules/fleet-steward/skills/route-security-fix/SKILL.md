@@ -1,7 +1,6 @@
 ---
 name: route-security-fix
 description: A security fix task Security Watch assigned - route it to the agent that does the change (the Engineer, an app's owner), or close a "nothing to do" report; never fix it yourself and never hand it to the owner.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Routing a security fix

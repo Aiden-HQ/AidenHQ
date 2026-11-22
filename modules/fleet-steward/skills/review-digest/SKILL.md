@@ -1,7 +1,6 @@
 ---
 name: review-digest
 description: The Monday review digest - one task for the owner with the questions only they can answer (recommendation first) and the week's agent reviews in brief, plus one notify line when it is new.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Review digest

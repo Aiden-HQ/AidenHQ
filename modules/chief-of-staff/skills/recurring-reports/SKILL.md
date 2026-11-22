@@ -1,7 +1,6 @@
 ---
 name: recurring-reports
 description: "Load when your run task is a recurring routine (\"Repeats: <task>\") to produce one period of a task the user set up."
-when: { fields: { name: Researcher } }
 ---
 
 # Running a recurring task

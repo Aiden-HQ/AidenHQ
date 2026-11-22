@@ -1,7 +1,6 @@
 ---
 name: routing-review
 description: The daily routing review - settle the open routing experiment, compare yesterday's team routing decisions against their recorded outcomes, and propose at most one change to members' repos or routing weights as a reviewed experiment.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Routing review

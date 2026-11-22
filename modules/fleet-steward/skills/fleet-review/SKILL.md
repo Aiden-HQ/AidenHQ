@@ -1,7 +1,6 @@
 ---
 name: fleet-review
 description: The Monday fleet review - group the week's recurring failures, propose at most 3 general rule fixes, file the Dependabot backstop, measure reverts, and file one summary for the owner.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Fleet weekly review

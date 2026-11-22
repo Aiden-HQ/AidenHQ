@@ -1,7 +1,6 @@
 ---
 name: knowledge-lint
 description: The Monday knowledge lint - walk the notes vault, the people directory, the agents' rules, the agents' memory and the owner's corrections, propose rule and profile fixes to the Engineer, prune memory, and file one weekly report.
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Knowledge weekly lint

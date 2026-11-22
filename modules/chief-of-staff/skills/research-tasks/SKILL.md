@@ -1,7 +1,6 @@
 ---
 name: research-tasks
 description: "Load when a task is assigned to the Researcher or delegated by Aiden, and when the user asks you to hand code work to an Engineer."
-when: { fields: { name: Researcher } }
 ---
 
 # A task assigned to you
