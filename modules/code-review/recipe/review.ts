@@ -427,8 +427,40 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const gaps = [];
   const hidden = excluded.filter((e) => e.gap);
   if (hidden.length) gaps.push(`${hidden.length} changed file${hidden.length > 1 ? "s" : ""} got no findings pass (${hidden.slice(0, 5).map((e) => `${e.path}: ${e.why}`).join("; ")}${hidden.length > 5 ? "; …" : ""})`);
+  /** The PR's earlier findings at this head (`again`: found or restated by this run): which are fixed, which answers unsafe. */
+  async function recheck(again: Set<string>, claimsOnly = false) {
+    const root = ws.replace(/\/$/, "");
+    const fixed = [];
+    // A gating finding is always rechecked; any other only where the change since the last reviewed head touched it.
+    const near = (t: ReturnType<typeof touched>, line: number) => t === "all" || (Array.isArray(t) && t.some(([a, b]) => line >= a - 3 && line <= b + 3));
+    // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
+    const ask = addressed ? [] : previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
+    const unsafe: string[] = [];
+    if (ask.length) {
+      // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
+      const by = asker(combo);
+      const v = await run(by.engine, { prompt: recheckPrompt(ask), instructions, model: combo.model, effort: by.effort, root: ws, base: h.from, minutes, scratch })
+        .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }));
+      const j = answer(v.message);
+      const rel = (p: string) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p).replace(/^\.\//, "");
+      // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
+      const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
+      const searched = (v.calls ?? []).some((c) => c.tool === "search");
+      if (j && Array.isArray(j.fixed)) {
+        const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
+        for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !(j.still ?? []).includes(f.id) && seen(f)) fixed.push(f.id);
+        for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
+      } else {
+        gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
+      }
+    }
+    result.fixed = fixed;
+    result.unsafe = unsafe;
+  }
   if (!reviewed.length) {
     // Nothing to review (lockfiles, ignored or binary files only) is no gap; a hiding place the change adds is.
+    // The answered findings carried forward are still rechecked at this head (code unchanged since: nothing else to recheck).
+    await recheck(new Set(), true);
     result.coverage.incomplete = gaps.join("; ") || null;
     if (tree) Object.assign(result.coverage, { eligible: [], reviewed: [], counts: { eligible: 0, reviewed: 0 } });
     return bound(result);
@@ -511,33 +543,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   for (const f of rest.slice(room)) result.withheld[f.severity]++;
 
   // Previous findings: fixed only when confirmed gone (never merely missing from this run, never found again or restated now).
-  const again = new Set([...kept.map((f) => f.id), ...restated]);
-  const fixed = [];
-  // A gating finding is always rechecked; any other only where the change since the last reviewed head touched it.
-  const near = (t: ReturnType<typeof touched>, line: number) => t === "all" || (Array.isArray(t) && t.some(([a, b]) => line >= a - 3 && line <= b + 3));
-  // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
-  const ask = addressed ? [] : previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
-  const unsafe: string[] = [];
-  if (ask.length) {
-    // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
-    const by = asker(combo);
-    const v = await run(by.engine, { prompt: recheckPrompt(ask), instructions, model: combo.model, effort: by.effort, root: ws, base: h.from, minutes, scratch })
-      .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }));
-    const j = answer(v.message);
-    const rel = (p: string) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p).replace(/^\.\//, "");
-    // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
-    const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
-    const searched = (v.calls ?? []).some((c) => c.tool === "search");
-    if (j && Array.isArray(j.fixed)) {
-      const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
-      for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !(j.still ?? []).includes(f.id) && seen(f)) fixed.push(f.id);
-      for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
-    } else {
-      gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
-    }
-  }
-  result.fixed = fixed;
-  result.unsafe = unsafe;
+  await recheck(new Set([...kept.map((f) => f.id), ...restated]));
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
   if (tree) {
     // The eligible files, apart from what was actually covered: the files the engine says it analysed, else those whose diff a

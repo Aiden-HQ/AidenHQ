@@ -281,7 +281,12 @@ export class ReviewPoster {
       body: { event: "COMMENT", commit_id: r.head, body: withFooter(first.summary, AGENT), ...(onLines.length ? { comments: onLines.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
     });
     // Its inline comments (each thread's first comment) by finding, for the links and AidenHQ's records.
-    const mine = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100 } });
+    const mine: { id: number; html_url: string; body?: string }[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const cs = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100, page } });
+      mine.push(...cs);
+      if (cs.length < 100) break;
+    }
     const made = mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] }));
     const problems: string[] = [];
     const tryTo = async <T>(what: string, f: () => Promise<T>) => f().catch((e: Error) => void problems.push(`${what}: ${String(e.message).slice(0, 150)}`));

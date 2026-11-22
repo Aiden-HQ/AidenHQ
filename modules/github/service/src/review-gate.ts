@@ -2,11 +2,15 @@
 // code_review: a mandatory combo, compiled into GITHUB_REVIEW_GATED), the queue asks the code-review service's verdict for the
 // PR head it is about to merge, with this module's own token (code review checks it with the kernel). Anything but pass waits;
 // a repo not on the list never calls it, so an install without code review merges as before. Infrastructure never stalls the
-// queue: code review unreachable (or answering 5xx) for over DOWN_MS lets the merge go, and the merge queue records it as the
+// queue: code review unreachable (or answering 5xx) continuously for over DOWN_MS (one streak of failures, ended by any answer
+// or a GAP_MS silence) lets the merge go, and the merge queue records it as the
 // fact pr.review_bypassed (Flow; the Fleet Steward reads it in its flow report) so the gap is seen, never silent.
 
 /** How long code review may be unreachable before a merge goes without its verdict. */
 export const DOWN_MS = 10 * 60_000;
+/** A failure more than this after the last one starts a new streak: the queue asks every 30 s while a merge waits, so a longer
+ * silence means nobody watched, not that code review stayed down. */
+const GAP_MS = 2 * 60_000;
 /** undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks); bypass: it may merge
  * without the verdict, code review unreachable for over DOWN_MS (why). */
 export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string } | { bypass: string }>;
@@ -15,10 +19,12 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
   const gated = new Set(o.gated.map((r) => r.toLowerCase()));
   const fetchFn = o.fetchFn ?? fetch;
   const now = o.now ?? Date.now;
-  /** Since when code review hasn't answered (one service for every repo); reset by any answer. */
+  /** The current streak of failures (one service for every repo): since its first and its latest. Any answer ends it. */
   let down: number | undefined;
+  let last = 0;
   const unreachable = (why: string) => {
-    down ??= now();
+    if (down === undefined || now() - last > GAP_MS) down = now();
+    last = now();
     return now() - down > DOWN_MS ? { bypass: `code review has been unreachable for ${Math.round((now() - down) / 60_000)} minutes (${why})` } : { wait: `code review is unreachable (${why})` };
   };
   return async (repo, number, head) => {

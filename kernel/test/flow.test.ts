@@ -127,6 +127,12 @@ test("empty log gives an empty waterfall, summary and idle list", () => {
   assert.deepEqual([s.stages, s.dora, s.churn, s.fleet.completions, s.fleet.first_pass_grade], [[], null, null, 0, null]);
 });
 
+test("summary lists each merge that went without code review's verdict", () => {
+  const { add, flow } = setup();
+  add("pr.review_bypassed", "pr:acme/app#7", "10:00:00", { head: "a".repeat(40), why: "code review has been unreachable for 11 minutes" });
+  assert.deepEqual(flow.summary({ since: `${D}00:00:00.000Z` }).review_bypassed, [{ pr: "acme/app#7", head: "a".repeat(40), why: "code review has been unreachable for 11 minutes", at: `${D}10:00:00.000Z` }]);
+});
+
 test("item walks to the root and includes its descendants", () => {
   const { add, flow } = setup();
   add("task.created", "task:root", "09:00:00", {}, { task: "root" });
