@@ -132,14 +132,29 @@ ceil_gb() { echo $(( ($1 + 1073741823) / 1073741824 )); }
 # One Docker call with a deadline, so a daemon that stops answering can't hold the apply lock past it, and the whole
 # snapshot under one overall deadline so forty slow saves can't add up to an apply waiting for hours. Without a working
 # `timeout` the call fails rather than running unbounded.
-docker_call() {
-  local secs="$1"; shift
+# How long a call may take right now: its own limit, clamped by what is left of the snapshot deadline. A call that starts
+# after the deadline is refused rather than run unbounded, so nothing done under the apply lock outlives it.
+deadline_secs() { # <secs>: prints the effective seconds, or fails 124
+  local secs="$1" left
   if [ -n "${SNAPSHOT_DEADLINE:-}" ]; then
-    local left=$(( SNAPSHOT_DEADLINE - SECONDS ))
+    left=$(( SNAPSHOT_DEADLINE - SECONDS ))
     [ "$left" -le 0 ] && { echo "security-sbom: snapshot deadline reached" >&2; return 124; }
     [ "$secs" -gt "$left" ] && secs="$left"
   fi
+  printf '%s' "$secs"
+}
+docker_call() {
+  local secs
+  secs="$(deadline_secs "$1")" || return 124
+  shift
   timeout "$secs" docker "$@"
+}
+# A read of the saved archive, under the same deadline: the archive can be tens of GB on slow storage, and it is read
+# while the apply lock is still held, so it may not outlive the snapshot budget.
+archive_read() { # <tar> <member>
+  local secs
+  secs="$(deadline_secs 120)" || return 124
+  timeout "$secs" tar -xOf "$1" "$2" 2>/dev/null
 }
 # A reference's platform manifest as the daemon answers it for <platform>, or its top-level id on a daemon without
 # platform resolution. <platform> is a container's own (below) when it runs another variant of the image than the daemon's.
@@ -231,14 +246,48 @@ resolve_ref() { # <pin manifest> <container .Image> [platform]
   printf '%s' "$pin"
 }
 # A plain `docker save` (a daemon without `image save --platform`) writes every platform a tag or an index id holds, so
-# the archive itself has to prove it holds one image: an OCI `index.json` naming one manifest, or Docker's legacy
-# `manifest.json`, which is a single image by construction. An archive with more manifests is refused rather than scanned
-# under a target that stands for one running variant.
-plain_archive_single() { # <tar>
-  local idx
-  idx="$(tar -xOf "$1" index.json 2>/dev/null || true)"
-  [ -n "$idx" ] || return 0
-  [ "$(printf '%s' "$idx" | grep -o '"digest": *"sha256:' | wc -l)" -le 1 ]
+# the archive itself has to prove it holds the running variant. An OCI archive's `index.json` is read, and a single
+# descriptor that is itself an index (an image id over a multi-platform image) is resolved to the manifests it names: the
+# archive counts as one image only when exactly one platform manifest comes out of it and its digest is <pin>, the
+# platform manifest the container runs. An archive with no `index.json` is Docker's legacy `manifest.json`, which has one
+# entry per image, and a failed read of either is not proof of anything: it is refused. Why is left in archive_err.
+archive_err=""
+plain_archive_single() { # <tar> <pin>
+  local tar="$1" pin="$2" idx mt digest blob nested legacy n
+  if idx="$(archive_read "$tar" index.json)"; then :; else
+    case "$?" in 124) archive_err="the snapshot deadline reached while checking the archive"; return 1 ;; esac
+    idx=""
+  fi
+  if [ -n "$idx" ]; then
+    n="$(printf '%s' "$idx" | grep -o '"digest": *"sha256:' | wc -l)"
+    if [ "$n" -ne 1 ]; then archive_err="the archive's index.json names $n manifests"; return 1; fi
+    mt="$(printf '%s' "$idx" | sed -n 's/.*"mediaType": *"\([^"]*\)".*/\1/p' | tail -1)"
+    digest="$(printf '%s' "$idx" | sed -n 's/.*"digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' | tail -1)"
+    case "$mt" in
+      *index*|*list*)
+        # The saved reference was an index itself: the platform manifests are one level down, in a blob this archive holds.
+        blob="blobs/sha256/${digest#sha256:}"
+        if nested="$(archive_read "$tar" "$blob")"; then :; else
+          case "$?" in 124) archive_err="the snapshot deadline reached while checking the archive"; return 1 ;; esac
+          nested=""
+        fi
+        if [ -z "$nested" ]; then archive_err="the archive's index $digest cannot be read from it"; return 1; fi
+        n="$(printf '%s' "$nested" | grep -o '"digest": *"sha256:' | wc -l)"
+        if [ "$n" -ne 1 ]; then archive_err="the archive's index $digest names $n platform manifests"; return 1; fi
+        digest="$(printf '%s' "$nested" | sed -n 's/.*"digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' | tail -1)" ;;
+    esac
+    if [ "$digest" != "$pin" ]; then archive_err="the archive holds $digest, not the running image $pin"; return 1; fi
+    return 0
+  fi
+  # No OCI index: a legacy `docker save` writes manifest.json, one entry per image.
+  if legacy="$(archive_read "$tar" manifest.json)"; then :; else
+    case "$?" in 124) archive_err="the snapshot deadline reached while checking the archive"; return 1 ;; esac
+    legacy=""
+  fi
+  if [ -z "$legacy" ]; then archive_err="the archive has neither index.json nor manifest.json"; return 1; fi
+  n="$(printf '%s' "$legacy" | grep -o '"Config": *"[^"]*"' | wc -l)"
+  if [ "$n" -ne 1 ]; then archive_err="the archive's manifest.json holds $n images"; return 1; fi
+  return 0
 }
 # Export the image <pin> to <dest> from <ref>, the reference resolved and sized under the lock. The ref is re-read first:
 # if it no longer names <pin> (a tag another pull moved, an index a prune dropped) nothing is written, so a different image
@@ -268,9 +317,9 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
     if ! export_err="$(docker_call 900 image save -o "$dest" "$ref" 2>&1)"; then
       rm -f "$dest"; return 1
     fi
-    if ! plain_archive_single "$dest"; then
+    if ! plain_archive_single "$dest" "$pin"; then
       rm -f "$dest"
-      export_err="this daemon cannot select a platform to save, and $ref's archive holds several platforms; not scanning it"
+      export_err="this daemon cannot select a platform to save, and $ref's archive does not hold exactly the running platform ($archive_err); not scanning it"
       return 1
     fi
   fi

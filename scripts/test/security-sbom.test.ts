@@ -59,6 +59,14 @@ async function run(env = {}, {
   const platformManifestsFile = join(dir, "platform-manifests");
   const platformSizesFile = join(dir, "platform-sizes");
   writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
+  // `tar -xOf <archive> <member>` for the archive check: with FAKE_ARCHIVE_SLEEP it stops answering, as a multi-GB archive
+  // on slow storage does, so a test can prove the read is bounded by the snapshot deadline. Otherwise the real tar runs.
+  writeFileSync(join(dir, "bin/tar"), `#!/usr/bin/env bash
+if [ "$1" = -xOf ] && [ -n "\${FAKE_ARCHIVE_SLEEP:-}" ]; then
+  read -r -t "$FAKE_ARCHIVE_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_ARCHIVE_SLEEP")
+fi
+exec /usr/bin/tar "$@"
+`);
   // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor.
   writeFileSync(join(dir, "bin/df"), "#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' \"${FAKE_FREE_KB:-400000000}\"\n");
   writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
@@ -155,19 +163,31 @@ case "$1" in
       fi
       if grep -qxF -- "$id" "$HELD" || awk -F '\\t' -v ref="$id" '$1 == ref { found = 1 } END { exit !found }' "$TAGS"; then
         if [ -n "$file" ]; then
-          # An OCI archive naming FAKE_SAVE_MANIFESTS manifests: a plain save of a multi-platform index writes one entry
-          # per platform, which is what the script's single-image check reads back. Zero writes no index at all (legacy).
+          # The archive a plain save writes, shaped by FAKE_SAVE_SHAPE and FAKE_SAVE_PIN:
+          #   one     index.json naming one manifest (that manifest is FAKE_SAVE_PIN when set, else the saved ref's id)
+          #   multi   index.json naming two platform manifests (a multi-platform reference)
+          #   nested  index.json naming one descriptor that is itself an index of two platform manifests, as a saved
+          #           image id over a multi-platform image looks on the containerd store
+          #   legacy  manifest.json with one image and no index.json
+          #   none    an archive with neither index nor manifest, which is not proof of anything
+          # Unset keeps the old fixture: the leftover empty file, no index and no manifest.
           : > "$file"
-          if [ -n "\${FAKE_SAVE_MANIFESTS:-}" ] && [ "$FAKE_SAVE_MANIFESTS" -gt 0 ]; then
-            d="$(mktemp -d)"
-            { printf '{\"schemaVersion\":2,\"manifests\":['; i=0
-              while [ "$i" -lt "$FAKE_SAVE_MANIFESTS" ]; do
-                [ "$i" -gt 0 ] && printf ','
-                printf '{\"digest\":\"sha256:%%064d\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}' "$i"
-                i=$((i + 1))
-              done
-              printf ']}\n'; } > "$d/index.json"
-            tar -C "$d" -cf "$file" index.json
+          shape="\${FAKE_SAVE_SHAPE:-none}"
+          pin="\${FAKE_SAVE_PIN:-$id}"
+          if [ "$shape" != none ]; then
+            d="$(mktemp -d)"; mkdir -p "$d/blobs/sha256"
+            case "$shape" in
+              one) printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"manifests\":[{\"digest\":\"%s\",\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}\n' "$pin" > "$d/index.json" ;;
+              multi) printf '{\"schemaVersion\":2,\"manifests\":[{\"digest\":\"sha256:%064d\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"digest\":\"sha256:%064d\",\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\",\"variant\":\"v8\"}}]}\n' 1 2 > "$d/index.json" ;;
+              nested)
+                printf '{\"schemaVersion\":2,\"manifests\":[{\"digest\":\"sha256:%064d\",\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}}]}\n' 7 > "$d/index.json"
+                { printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":['; i=1
+                  while [ "$i" -le 2 ]; do [ "$i" -gt 1 ] && printf ','; printf '{\"digest\":\"sha256:%064d\"}' "$i"; i=$((i + 1)); done
+                  printf ']}\n'; } > "$d/blobs/sha256/0000000000000000000000000000000000000000000000000000000000000007" ;;
+              legacy) printf '[{\"Config\":\"blobs/sha256/%064d\",\"RepoTags\":[\"x:local\"]}]\n' 3 > "$d/manifest.json" ;;
+            esac
+            # Members at the archive root, as docker writes them (index.json, manifest.json, blobs/...).
+            ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
             rm -rf "$d"
           fi
         fi
@@ -246,7 +266,7 @@ case "$1" in
 esac
 exit 0
 `);
-  for (const f of ["stat", "docker", "df"]) chmodSync(join(dir, "bin", f), 0o755);
+  for (const f of ["stat", "docker", "df", "tar"]) chmodSync(join(dir, "bin", f), 0o755);
   // The label column is a dash when absent, as the script's with-block else renders it: an empty field would collapse
   // when the script splits the inspect output on whitespace.
   writeFileSync(containersFile, containers.map((c) => `${c.id}\t${c.image}\t${c.config}\t${c.label ?? "-"}\t${c.descriptor === undefined ? "null" : JSON.stringify(c.descriptor)}`).join("\n") + "\n");
@@ -606,6 +626,27 @@ test("security-sbom: a Docker save that stops answering is cut off by the snapsh
   assert.ok(locks.every((l) => l.startsWith("save held") || l.startsWith("run free")), locks.join("\n"));
 });
 
+test("security-sbom: reading the archive back is bounded by the snapshot deadline too", { skip: NOT_LINUX }, async () => {
+  // The plain-save check reads the archive while the apply lock is still held. A multi-GB archive on slow storage must not
+  // hold the lock past the budget: the read is cut off, the image is a line, and the pass finishes.
+  const started = Date.now();
+  const { status, out, targets, locks } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "one", FAKE_SAVE_PIN: "sha256:1111", AIDENHQ_SBOM_SNAPSHOT_SECS: "3", FAKE_ARCHIVE_SLEEP: "30" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  const took = (Date.now() - started) / 1000;
+  assert.equal(status, 0, out);
+  assert.ok(took < 20, `the pass held the lock for ${took}s on a 3s budget`);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "an archive whose check timed out was scanned");
+  assert.match(line[2], /snapshot deadline reached while checking the archive/, line[2]);
+  assert.ok(locks.every((l) => l.startsWith("save held") || l.startsWith("run free")), locks.join("\n"));
+});
+
 test("security-sbom: a tagged image that cannot fit is a line and saves nothing", { skip: NOT_LINUX }, async () => {
   // 31 GB free, a 30 GB floor: one GB of room above the floor. A tagged image whose archive needs more than that must be
   // a line before any `docker save` writes, not a save that fills the disk and a check afterwards.
@@ -829,8 +870,9 @@ test("security-sbom: a compose label that disagrees with the container's digest 
 
 test("security-sbom: a daemon older than API 1.48 exports without --platform instead of failing every image", { skip: NOT_LINUX }, async () => {
   // `docker image save --platform` needs API 1.48; on a 27.x daemon (API 1.47) asking for it fails every export and the
-  // pass would turn a usable batch into error rows. The pass must fall back to a plain save and say so.
-  const { status, out, targets, calls } = await run({ FAKE_API: "1.47" }, {
+  // pass would turn a usable batch into error rows. The pass must fall back to a plain save and say so, and the archive
+  // that save writes has to prove the running image.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "one", FAKE_SAVE_PIN: "sha256:1111" }, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
     heldIds: ["sha256:1111"],
@@ -889,7 +931,7 @@ test("security-sbom: a pre-1.48 daemon does not plain-save a tag whose archive h
   // On a containerd store an old daemon's plain save of a tag writes every platform it holds; the archive would contain
   // variants the container does not run and the size check would not cover it. The save runs, and its archive has to
   // prove one image: two manifests is a line, never a scan under the running variant's target.
-  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_MANIFESTS: "2" }, {
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "multi" }, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
     manifests: { "aidenhq/board:local": "sha256:1111" },
@@ -901,7 +943,7 @@ test("security-sbom: a pre-1.48 daemon does not plain-save a tag whose archive h
   const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(line, `no tag target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.equal(line[1], "-", "a multi-platform archive was scanned");
-  assert.match(line[2], /holds several platforms/, line[2]);
+  assert.match(line[2], /names 2 manifests/, line[2]);
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
 });
 
@@ -909,7 +951,7 @@ test("security-sbom: a pre-1.48 daemon does not treat an immutable index id as a
   // On the containerd store a container's `.Image` is the top-level index, and it is an inspectable immutable id, so
   // `resolve_ref` legitimately returns it. Immutability is not one variant: a plain save of that id writes every platform
   // the index holds, which a line must record rather than a scan under the running variant's target.
-  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_MANIFESTS: "2" }, {
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "nested" }, {
     containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local" }],
     // The tag has moved to another build, so the container is keyed and pinned by its own index id, which is held and
     // immutable: the resolver legitimately returns it as the export reference.
@@ -921,15 +963,65 @@ test("security-sbom: a pre-1.48 daemon does not treat an immutable index id as a
   const line = targets.find((t) => t[0] === "image:sha256:index");
   assert.ok(line, `no target for the container:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.equal(line[1], "-", "a multi-platform index archive was scanned");
-  assert.match(line[2], /holds several platforms/, line[2]);
+  assert.match(line[2], /names 2 platform manifests/, line[2]);
   assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:index") && !c.includes("--platform")), calls.join("\n"));
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a pre-1.48 daemon accepts a legacy manifest.json archive with one image", { skip: NOT_LINUX }, async () => {
+  // A pre-containerd store's plain save has no index.json: its manifest.json has one entry per image. No index is not a
+  // failure, but it is also not proof: the manifest.json itself has to name one image.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "legacy" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+});
+
+test("security-sbom: a pre-1.48 daemon refuses an archive it cannot verify", { skip: NOT_LINUX }, async () => {
+  // Neither index.json nor manifest.json is not proof of one image: a truncated or unexpected archive is a line, never a
+  // scan attributed to a variant nothing confirmed.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "none" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "an unverifiable archive was scanned");
+  assert.match(line[2], /neither index\.json nor manifest\.json/, line[2]);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), calls.join("\n"));
+});
+
+test("security-sbom: a pre-1.48 daemon refuses an archive of another image than the one running", { skip: NOT_LINUX }, async () => {
+  // A single descriptor is not enough either: it has to be the platform manifest the container runs, or the pass would
+  // file another build's packages under this target.
+  const { status, out, targets } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "one", FAKE_SAVE_PIN: "sha256:9999" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "another image's archive was scanned");
+  assert.match(line[2], /not the running image/, line[2]);
 });
 
 test("security-sbom: a pre-1.48 daemon scans a plain save whose archive holds one image", { skip: NOT_LINUX }, async () => {
   // The same fallback, with an archive that proves one manifest: the running image is scanned instead of the pass
   // publishing a line for every image on an older daemon.
-  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_MANIFESTS: "1" }, {
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "one", FAKE_SAVE_PIN: "sha256:1111" }, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
     manifests: { "aidenhq/board:local": "sha256:1111" },
