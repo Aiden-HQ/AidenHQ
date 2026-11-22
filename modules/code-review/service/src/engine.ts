@@ -680,11 +680,11 @@ export function createEngine(d: EngineDeps) {
         if (carried.has(f.id)) continue;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
-        const claimed = one<{ outcome: string; claim: string }>("SELECT outcome, claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND (? = 0 OR outcome_at <= ?) ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id, r.mandatory ? 1 : 0, r.started ?? "");
+        const claimed = one<{ outcome: string; claim: string; outcome_at: string }>("SELECT outcome, claim, outcome_at FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND (? = 0 OR outcome_at <= ?) ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id, r.mandatory ? 1 : 0, r.started ?? "");
         // A claim recorded after this mandatory run started (its snapshot never held it) is not reviewed by it: reported again, the finding opens.
         if (!claimed && run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
           dispose([f.id], r, "open", "reported again", `run:${r.id}`);
-        run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed ? iso() : null, claimed?.claim ?? null);
+        run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed?.outcome_at ?? null, claimed?.claim ?? null);
       }
       // A claim the mandatory recheck found unsafe or malicious (it hides the problem, or the fix adds one): open again.
       for (const id of unsafe) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ?", r.repo, r.number, id, r.started ?? "").changes)
@@ -694,7 +694,7 @@ export function createEngine(d: EngineDeps) {
       const again = new Set(review.findings.map((f) => f.id));
       const gate = new Set(openGating(r.repo, r.number).map((f) => f.id));
       const fixed = (review.fixed ?? []).filter((x) => typeof x === "string" && !again.has(x) && (r.mandatory || !gate.has(x)));
-      for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
+      for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
     });
     // The replies already on a reopened finding's thread answered the claim that was just refused: never read as a new answer.
