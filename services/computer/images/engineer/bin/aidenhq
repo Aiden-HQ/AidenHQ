@@ -154,6 +154,7 @@ const commitOf = (repo, branch) => {
  * Publish asks for the record self-review.ts leaves in the clone's git dir (branch -> {base, head, open}) for the head it files:
  * a review ran on that commit, whatever it found (findings judged wrong still publish; the skill puts them in the PR body).
  */
+const checked = new Map(); // branch -> the sha that passed, so the write files that commit even if the branch moves meanwhile
 const needSelfReview = (repo, branch) => {
   const dir = cloneOf(repo).have;
   if (!dir) fail(`this workspace has no clone of ${repo}`, 2);
@@ -162,6 +163,7 @@ const needSelfReview = (repo, branch) => {
   try {
     seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim(), "self-review.json"), "utf8"))[branch]?.head;
   } catch {}
+  checked.set(`${repo} ${branch}`, sha);
   if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
 };
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
@@ -214,6 +216,7 @@ if (command === "publish" || command === "review") {
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
     const sha = commitOf(repo, branch);
+    if (command === "publish" && checked.get(`${repo} ${branch}`) !== sha) fail(`${repo} ${branch} moved after its self-review check; run it again`, 2);
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);
