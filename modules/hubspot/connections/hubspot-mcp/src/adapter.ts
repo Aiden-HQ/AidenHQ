@@ -6,11 +6,12 @@
 
 export type CallHubSpot = (tool: string, args: Record<string, unknown>) => Promise<{ content?: unknown; structuredContent?: unknown; isError?: boolean }>;
 
-/** One CRM record as the sync uses it. `associations` is absent when the tool didn't return them. */
+/** One CRM record as the sync uses it. */
 export interface CrmRecord {
   id: string;
   properties: Record<string, any>;
-  associations?: Record<string, string[]>;
+  /** The record's page in HubSpot (the answer's urlTemplate, which carries the portal id, without its tracking query). */
+  url?: string;
 }
 
 /** What to read for one HubSpot object type. */
@@ -63,7 +64,8 @@ export function toolJson(r: Awaited<ReturnType<CallHubSpot>>, tool: string): any
 export function parseRecords(o: any): CrmRecord[] {
   const list = o?.results;
   if (!Array.isArray(list)) throw new Error(`unexpected CRM answer: ${JSON.stringify(o).slice(0, 200)}`);
-  return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {} }));
+  const template = typeof o.urlTemplate === "string" ? o.urlTemplate.split("?")[0] : undefined;
+  return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {}, ...(template ? { url: template.replace("{id}", String(r.id)) } : {}) }));
 }
 
 /** One page of records modified at or after `sinceMs`, oldest first. */

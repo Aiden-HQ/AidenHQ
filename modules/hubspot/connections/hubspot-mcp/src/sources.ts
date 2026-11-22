@@ -99,31 +99,30 @@ export const PASS_BUDGET_MS = 5 * 60_000;
 const REFERENCE_BUDGET_MS = 60_000;
 const text = (v: unknown, cap?: number) => capText(v == null || v === "" ? null : String(v), cap);
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
-const link = (portal: string | undefined, kind: string, id: string) => (portal ? `https://app.hubspot.com/contacts/${portal}/${kind}/${id}` : null);
 
-/** Row builders: one record's columns. The portal id for links is not known yet: url is null. */
-export function contactRow(r: CrmRecord, portal?: string): Row {
+/** Row builders: one record's columns. url is the page HubSpot's answer names (its urlTemplate carries the portal id). */
+export function contactRow(r: CrmRecord): Row {
   const p = r.properties;
   return {
     contact_id: r.id, email: p.email ?? null, first_name: p.firstname ?? null, last_name: p.lastname ?? null, job_title: p.jobtitle ?? null,
     lifecycle_stage: p.lifecyclestage ?? null, lead_status: p.hs_lead_status ?? null, owner_id: p.hubspot_owner_id ?? null, company_ids: [],
-    created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.lastmodifieddate), url: link(portal, "contact", r.id),
+    created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.lastmodifieddate), url: r.url ?? null,
   };
 }
-export function companyRow(r: CrmRecord, portal?: string): Row {
+export function companyRow(r: CrmRecord): Row {
   const p = r.properties;
   return {
     company_id: r.id, name: p.name ?? null, domain: p.domain ?? null, industry: p.industry ?? null, lifecycle_stage: p.lifecyclestage ?? null, owner_id: p.hubspot_owner_id ?? null,
     employees: num(p.numberofemployees) == null ? null : Math.round(num(p.numberofemployees)!), annual_revenue: num(p.annualrevenue),
-    created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "company", r.id),
+    created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: r.url ?? null,
   };
 }
-export function dealRow(r: CrmRecord, portal?: string): Row {
+export function dealRow(r: CrmRecord): Row {
   const p = r.properties;
   return {
     deal_id: r.id, name: text(p.dealname).text, pipeline: p.pipeline ?? null, stage: p.dealstage ?? null, amount: num(p.amount), currency: p.deal_currency_code ?? null,
     close_date: isoOf(p.closedate), owner_id: p.hubspot_owner_id ?? null, company_ids: [], contact_ids: [],
-    created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "deal", r.id),
+    created_at_src: isoOf(p.createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: r.url ?? null,
   };
 }
 /** The property names an activity type uses for its subject, body, direction and status. */
@@ -134,7 +133,7 @@ const ACTIVITY_PROPS: Record<string, { subject?: string; body: string; direction
   notes: { body: "hs_note_body" },
   tasks: { subject: "hs_task_subject", body: "hs_task_body", status: "hs_task_status" },
 };
-export function activityRow(type: string, r: CrmRecord, portal?: string): Row {
+export function activityRow(type: string, r: CrmRecord): Row {
   const p = r.properties;
   const k = ACTIVITY_PROPS[type]!;
   const b = text(p[k.body]);
@@ -142,7 +141,7 @@ export function activityRow(type: string, r: CrmRecord, portal?: string): Row {
     activity_id: `${type}:${r.id}`, type: type.slice(0, -1), subject: text(k.subject && p[k.subject]).text, body: b.text, body_truncated: b.truncated,
     direction: (k.direction && p[k.direction]) || null, status: (k.status && p[k.status]) || null, owner_id: p.hubspot_owner_id ?? null,
     occurred_at: isoOf(p.hs_timestamp), contact_ids: [], company_ids: [], deal_ids: [],
-    created_at_src: isoOf(p.hs_createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: link(portal, "record/" + type, r.id),
+    created_at_src: isoOf(p.hs_createdate), source_updated_at: isoOf(p.hs_lastmodifieddate), url: r.url ?? null,
   };
 }
 
@@ -202,12 +201,12 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
 }
 
 /** One object type's pass. Returns rows written with a difference. */
-export async function syncObject(store: SourceStore, call: CallHubSpot, kind: string, o: { days: number; deadline: number; now?: number; portal?: string; log?: Pick<Logger, "warn"> }): Promise<number> {
+export async function syncObject(store: SourceStore, call: CallHubSpot, kind: string, o: { days: number; deadline: number; now?: number; log?: Pick<Logger, "warn"> }): Promise<number> {
   const def = OBJECTS[kind]!;
   const isActivity = (ACTIVITY_TYPES as readonly string[]).includes(kind);
   const scope = isActivity ? `activity:${kind}` : kind;
   const table = isActivity ? ACTIVITY : kind === "contacts" ? CONTACT : kind === "companies" ? COMPANY : DEAL;
-  const build = (r: CrmRecord) => (isActivity ? activityRow(kind, r, o.portal) : kind === "contacts" ? contactRow(r, o.portal) : kind === "companies" ? companyRow(r, o.portal) : dealRow(r, o.portal));
+  const build = (r: CrmRecord) => (isActivity ? activityRow(kind, r) : kind === "contacts" ? contactRow(r) : kind === "companies" ? companyRow(r) : dealRow(r));
   await store.migrate(DDL);
   let written = 0, skipped = 0;
   const st = await store.scope(scope);
@@ -269,7 +268,7 @@ export async function syncReference(store: SourceStore, call: CallHubSpot, kinds
 }
 
 /** Every 15 minutes: the reference data, then each selected type under its own ingest_run (one failing never stops the others). */
-export function startSync(store: SourceStore, call: CallHubSpot, kinds: string[], log: Logger, o: { days: number; portal?: string }, everyMs = 15 * 60_000): void {
+export function startSync(store: SourceStore, call: CallHubSpot, kinds: string[], log: Logger, o: { days: number }, everyMs = 15 * 60_000): void {
   const tick = async () => {
     const passEnd = Date.now() + PASS_BUDGET_MS;
     const slice = Math.max(30_000, PASS_BUDGET_MS / Math.max(1, kinds.length)); // each type's share, so a long baseline never starves the others
