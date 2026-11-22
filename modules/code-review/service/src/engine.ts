@@ -696,15 +696,13 @@ export function createEngine(d: EngineDeps) {
       const fixed = (review.fixed ?? []).filter((x) => typeof x === "string" && !again.has(x) && (r.mandatory || !gate.has(x)));
       for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
-      // A pending `fixed` claim that a mandatory run at a newer head neither reported again nor flagged unsafe is trusted (the
-      // owner's rule: our AI's `fixed` stands unless the reviewer flags it). A run at the head it was raised on never closes it.
-      if (r.mandatory) {
-        const trusted = all<{ id: string }>(`SELECT DISTINCT f.id FROM findings f JOIN runs x ON x.id = f.run
-          WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL AND f.claim LIKE 'fixed:%'
-            AND NOT EXISTS (SELECT 1 FROM findings g JOIN runs y ON y.id = g.run WHERE g.repo = f.repo AND g.number = f.number AND g.id = f.id AND y.head = ?)`,
-          r.repo, r.number, r.head).map((x) => x.id).filter((id) => !again.has(id) && !unsafe.includes(id));
+      // A pending `fixed` claim on a finding this run's recheck was asked about and didn't call still there stands (the owner's
+      // rule: our AI's `fixed` holds unless the reviewer flags it). Only the batch's mandatory recheck run, only what it received.
+      if (r.mandatory && r.recheck) {
+        const cleared = new Set((review.cleared ?? []).filter((x) => typeof x === "string" && !again.has(x)));
+        const trusted = all<{ id: string }>("SELECT DISTINCT id FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND claim LIKE 'fixed:%'", r.repo, r.number).map((x) => x.id).filter((id) => cleared.has(id) && !unsafe.includes(id));
         for (const id of trusted) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
-        dispose(trusted, r, "fixed", "its fixed claim stood: the review of a newer head did not report it again", `run:${r.id}`);
+        dispose(trusted, r, "fixed", "its fixed claim stood: the recheck did not find it still there", `run:${r.id}`);
       }
     });
     if (!stale) cover(r);
