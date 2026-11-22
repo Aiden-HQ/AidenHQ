@@ -22,8 +22,9 @@ export type Review = {
   tokens?: { input: number; cached: number; output: number };
   /** Earlier findings (the PR's open ones, by id) a recheck found gone at this head: their threads are resolved. */
   fixed?: string[];
-  /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again. */
-  unsafe?: string[];
+  /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again.
+   * Each names the part of the answer that is unsafe and the defect still there at the head (`line`: where it is now). */
+  unsafe?: Unsafe[];
   /** Open findings the recheck was asked about and didn't call still there. */
   cleared?: string[];
   /** Open findings the recheck was asked about, looked at and called still there. */
@@ -134,6 +135,9 @@ export type Ack = {
 export type Status = { repo: string; number: number; head: string; reason: string; important: number; running: { model: string; effort: string }[]; partial?: true };
 /** A typed need an infrastructure refusal carried (github-mcp's review route, needs_owner): the cause and what fixes it. */
 export type PostNeed = { cause: string; org?: string; url?: string; scope?: string };
+/** An answered finding the recheck found unsafe: why the answer is unsafe and the defect still there at the head. */
+export type Unsafe = { id: string; why: string; line?: number };
+
 /** A posted review's outcome: posted, waiting on the AI reviewer's decision (a Tier 1 write), or refused. */
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;

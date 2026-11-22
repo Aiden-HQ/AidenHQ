@@ -28,7 +28,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, openOnly, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread } from "./seams.ts";
+import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { SETUP_PATH } from "./adapters.ts";
@@ -680,29 +680,92 @@ export function createEngine(d: EngineDeps) {
     const stale = !!gh && gh.open && gh.head !== r.head;
     // A claim the mandatory recheck found unsafe opens again (below) and goes in this run's post, saying so, so GitHub shows why
     // it came back (its row links its earlier thread), at the severity it gates at (a mandatory run's important row first).
-    const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
+    // Only an entry that names why the answer is unsafe and the defect still there reopens a finding: an id alone is silence.
+    // A result whose unsafe isn't a list is no list (never a throw that leaves the run stuck on the same result).
+    const listed: unknown[] = Array.isArray(review.unsafe) ? review.unsafe : [];
+    const named = listed.filter((x): x is Unsafe => !!x && typeof x === "object" && "id" in x && typeof x.id === "string" && "why" in x && typeof x.why === "string" && !!x.why.trim());
+    const unsafe: Unsafe[] = r.mandatory && !stale ? [...new Map(named.map((x) => [x.id, x])).values()] : [];
+    // The entries that really reopen (a reason the finding's own note already records is no new defect, so it never gets here).
+    const reopening: Unsafe[] = [];
     // Reopened findings this run only carries for its post: never stored as this run's own row, so each reopens at the severity
     // and gating its own rows have (an advisory combo's finding stays advice).
     const carried = new Set<string>();
-    for (const id of unsafe) {
-      const f = one<Omit<Finding, "fix_brief">>(`SELECT f.id, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
-        JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, id);
+    // What each reopen writes to the finding's own row, so the next recheck reads the reason as its current note.
+    const reopenedRows = new Map<string, { run: string; option: string; why: string; line: number }>();
+    // A finding this run reports again keeps the report's own note in its new row: the reopen note is written below, only when
+    // the claim it reopens is really updated, so a reopen the timestamp guard suppresses leaves no history behind.
+    const original = new Map<string, { why: string; line: number; title: string }>();
+    for (const u of unsafe) {
+      const f = one<Omit<Finding, "fix_brief"> & { run: string; option: string }>(`SELECT f.id, f.run, f.option, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
+        JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, u.id);
       if (!f) continue;
-      const at = review.findings.findIndex((x) => x.id === id), was = at >= 0 ? review.findings[at]! : { ...f, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
-      const reopened = { ...was, title: `${REOPENED.title}${was.title.replace(REOPENED.title, "")}`.slice(0, 200), why: `${REOPENED.why}${was.why.replace(REOPENED.why, "")}`.slice(0, 3000) };
-      if (at >= 0) { review.findings[at] = reopened; continue; }
+      // An answer recorded after this run started (a correction made while it ran) stands: this result can't reopen the finding,
+      // and its post must not say it did.
+      if (r.started && one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at > ?", r.repo, r.number, u.id, r.started)) continue;
+      const at = review.findings.findIndex((x) => x.id === u.id);
+      // The finding as the post carries it: its own row's report fields, never the row's run or option columns (a post schema takes
+      // neither).
+      const was = at >= 0 ? review.findings[at]! : { id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, why: f.why, evidence: f.evidence, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
+      // The same defect named again is no new defect: a reason the finding's own current note already records, case-insensitive
+      // and contained either way, at the same line when the entry gives one, never reopens it twice. Each reopen's reason sits
+      // ahead of the note it replaced, separated by a blank line, so the segments are reasons and the last one is the original
+      // report, which records no reopen and never suppresses a new reason. The history is read from the newest row that carries a
+      // reopen, whatever row the post shows (a later report's row has none).
+      const norm = (t: string) => t.trim().toLowerCase().replace(/\s+/g, " ");
+      const prior = one<{ why: string; line: number }>("SELECT why, line FROM findings WHERE repo = ? AND number = ? AND id = ? AND why LIKE ? ORDER BY rowid DESC LIMIT 1", r.repo, r.number, u.id, `${REOPENED.why}%`);
+      const parts = prior ? prior.why.slice(REOPENED.why.length).split("\n\n") : [];
+      const reasons = (parts.length > 1 ? parts.slice(0, -1) : parts).map(norm).filter(Boolean);
+      const said = norm(u.why);
+      const same = (t: string) => !!said && !!t && (t.includes(said) || said.includes(t));
+      if (same(reasons[0] ?? "") && (u.line === undefined || u.line === prior!.line)) continue;
+      if (reasons.slice(1).some(same)) continue;
+      // Kept only once the reopen is real: a restatement (or a duplicate) keeps the report's own note in its row.
+      if (at >= 0) original.set(u.id, { why: was.why, line: was.line, title: was.title });
+      // The reason leads the reopened note (the original note after it), so GitHub shows what came back and why; the entry's line is
+      // where the defect is now.
+      const line = Number.isInteger(u.line) && (u.line as number) >= 1 ? u.line! : was.line;
+      // A finding with an earlier thread is listed in the post by its title and link only, so the reason goes in the title too (as
+      // much as the post schema's 200 leaves): that is how the author sees why it came back. The original title is cut to 40 so the
+      // reason gets the rest of the row: the reason is what the author has not seen, so it gets the room.
+      const head = `${REOPENED.title}${was.title.replace(REOPENED.title, "").slice(0, 40)}`.slice(0, 80);
+      // The summary renderer cuts a row's title at 160, so the whole title stays inside that: the reason is never cut away there.
+      const titleRoom = 160 - head.length - 3;
+      const short = titleRoom > 20 ? u.why.trim().replace(/\s+/g, " ").slice(0, titleRoom) : "";
+      const shown = String(was.why ?? "");
+      const body = shown.startsWith(REOPENED.why) ? shown.slice(REOPENED.why.length) : shown;
+      // The reason (then a blank line, then the note the finding already had) is what the no-loop check reads back, so the
+      // original note gives way first: the reason is never cut by the row's 1500 or the post's 3000 cap.
+      const reason = u.why.trim().slice(0, 800);
+      const kept = body.trim().slice(0, Math.max(0, 1500 - REOPENED.why.length - 2 - reason.length));
+      const reopened = { ...was, line, ...(line !== was.line ? { end_line: undefined } : {}), title: `${head}${short ? ` — ${short}` : ""}`.slice(0, 200), why: `${REOPENED.why}${reason}${kept ? `\n\n${kept}` : ""}`.slice(0, 3000) };
+      // The finding's own row keeps what it came back for: the next recheck reads it there and the same defect never reopens it twice.
+      reopenedRows.set(u.id, { run: f.run, option: f.option, why: reopened.why, line: reopened.line });
+      if (at >= 0) { review.findings[at] = reopened; reopening.push(u); continue; }
       // At the post's 200, the lowest-ranked advice makes room (withheld): a reopened finding always says why on GitHub.
       const cut = review.findings.length >= 200 ? review.findings.findLastIndex((x) => x.severity !== "important") : -1;
       if (cut >= 0) review.withheld[review.findings.splice(cut, 1)[0]!.severity]++;
-      if (review.findings.length < 200) { review.findings.push(reopened); carried.add(id); }
+      // A reopen only counts when its post carries it: one the post can't hold (200 important ones already) stays closed, since
+      // a merge blocked by a finding GitHub never showed, with no reason there, is the reasonless reopen this change removes. It
+      // is counted as withheld, so the post says something was left out.
+      if (review.findings.length >= 200) { review.withheld.important++; continue; }
+      review.findings.push(reopened);
+      carried.add(u.id);
+      reopening.push(u);
     }
+    // An eviction at the post's 200 can drop a reopen added earlier: only those the final post carries reopen their findings.
+    const shown = new Set(review.findings.map((x) => x.id));
+    const reopens = reopening.filter((u) => shown.has(u.id));
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
       run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ? WHERE id = ?",
         cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), stale ? null : review.withheld.important === 0 && !review.coverage?.incomplete ? 1 : 0, r.id);
       if (stale) return;
-      for (const f of review.findings) {
-        if (carried.has(f.id)) continue;
+      for (const found of review.findings) {
+        if (carried.has(found.id)) continue;
+        // A reopened finding goes in as the report had it: its reopen note is written below, only when its claim really reopens.
+        // A finding this run reports again without reopening it keeps the report's own note: the reopen history is read from the
+        // newest row that carries a reopen (below), never from the newest row, so a restatement cannot hide it or move its line.
+        const o = original.get(found.id), f = o ? { ...found, why: o.why, line: o.line, title: o.title } : found;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
         const claimed = one<{ outcome: string; claim: string; outcome_at: string }>("SELECT outcome, claim, outcome_at FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id);
@@ -712,8 +775,14 @@ export function createEngine(d: EngineDeps) {
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed?.outcome_at ?? null, claimed?.claim ?? null);
       }
       // A claim the mandatory recheck found unsafe or malicious (it hides the problem, or the fix adds one): open again.
-      for (const id of unsafe) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ?", r.repo, r.number, id, r.started ?? "").changes)
-        dispose([id], r, "open", "the recheck found the answer's fix or reason unsafe", `run:${r.id}`);
+      for (const u of reopens) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ?", r.repo, r.number, u.id, r.started ?? "").changes) {
+        dispose([u.id], r, "open", "the recheck found the answer's fix or reason unsafe", `run:${r.id}`);
+        // The finding's own newest row keeps the reason and the line it named, so the next recheck reads them as its current note:
+        // the row this run stored for it when it reported the finding again, else the row it already had.
+        const row = reopenedRows.get(u.id);
+        if (row) run("UPDATE findings SET why = ?, line = ? WHERE repo = ? AND number = ? AND id = ? AND rowid = (SELECT MAX(rowid) FROM findings WHERE repo = ? AND number = ? AND id = ?)",
+          row.why.slice(0, 1500), row.line, r.repo, r.number, u.id, r.repo, r.number, u.id);
+      }
       // What the recheck confirmed gone at this head: fixed, wherever it was found (and not found again by this run). A gating
       // finding is closed only by a mandatory run's recheck.
       const again = new Set(review.findings.map((f) => f.id));
@@ -728,7 +797,7 @@ export function createEngine(d: EngineDeps) {
         // Never at a head the finding was reported or reopened at: a claim stands only once a fix was pushed.
         const trusted = all<{ id: string }>(`SELECT DISTINCT f.id FROM findings f WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL AND f.claim LIKE 'fixed:%'
           AND NOT EXISTS (SELECT 1 FROM findings g JOIN runs y ON y.id = g.run WHERE g.repo = f.repo AND g.number = f.number AND g.id = f.id AND y.head = ?)
-          AND NOT EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?)`, r.repo, r.number, r.head, r.head).map((x) => x.id).filter((id) => cleared.has(id) && !unsafe.includes(id));
+          AND NOT EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?)`, r.repo, r.number, r.head, r.head).map((x) => x.id).filter((id) => cleared.has(id) && !reopens.some((u) => u.id === id));
         for (const id of trusted) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
         dispose(trusted, r, "fixed", "its fixed claim stood: the recheck did not find it still there", `run:${r.id}`);
       }
