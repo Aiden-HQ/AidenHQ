@@ -2,6 +2,7 @@
 // issues carrying a repo's label, their label events with a trust verdict, the repo tree and one file, and the three writes
 // (comment, label, state). A label is trusted only when a collaborator whose role is one of that repo's `trusted` roles added
 // it (the owner's login is an admin, so its labels count); the issue's text or author never decide trust.
+import { createHash } from "node:crypto";
 import { GitHubRefused } from "./github.js";
 import { GitHubNeed } from "./client.js";
 import { scrubProblems, scrubText } from "./scrub.js";
@@ -463,9 +464,33 @@ export class Maintainer {
   }
 
   /**
+   * The hidden marker a close note carries (Markdown hides an HTML comment, so no reader sees it), unique to the issue, the
+   * state and the note's text: it identifies the note this exact call posts. A retry finds a note a failed call left behind by
+   * it, so the note goes once — whatever the caller was told, including when the kernel replaced an owner-fixable need's words
+   * with its own before the agent saw them.
+   */
+  private static readonly NOTE_MARK = (r: MaintainedRepo, number: number, state: "open" | "closed", text: string) =>
+    `<!-- aidenhq-close-note: ${r.repo.toLowerCase()}#${number}:${state}:${createHash("sha256").update(text).digest("hex").slice(0, 12)} -->`;
+
+  /** The URL of an issue comment already carrying `mark` (the note an earlier call posted), if there is one. A read that fails
+   * says "not found": the call posts its note rather than claim one it cannot see (the marker only makes a retry idempotent). */
+  private async notePosted(r: MaintainedRepo, number: number, mark: string): Promise<string | undefined> {
+    const items = await this.readAll(r, `/issues/${number}/comments`).catch(() => []);
+    const found = items.find((c) => typeof c?.body === "string" && c.body.includes(mark));
+    return found ? String(found.html_url ?? "") : undefined;
+  }
+
+  /** Whether the issue is already in `state` (a partial call whose state change did land): then nothing is left to do. */
+  private async inState(r: MaintainedRepo, number: number, state: "open" | "closed"): Promise<boolean> {
+    const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
+    return res.status === 200 && String(res.body?.state ?? "") === state;
+  }
+
+  /**
    * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first, with
    * the same owner-data scrub as `comment` and signed by `agent` (the AidenHQ footer), and the state changes only once it is posted. A note citing a PR only as a bare
-   * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
+   * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it. A note already on the issue
+   * (an earlier call posted it, then its state change failed) is not posted again: the call only changes the state.
    */
   async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string, agent = "AidenHQ") {
     const r = this.target(repo);
@@ -475,18 +500,24 @@ export class Maintainer {
       if (bad) throw new GitHubRefused(bad);
     }
     const text = note === undefined ? undefined : this.scrubbed(r, note);
+    const mark = text === undefined ? undefined : Maintainer.NOTE_MARK(r, number, state, text);
     await this.assertTrusted(r, number);
-    const posted = text === undefined ? undefined : await this.postComment(r, number, withFooter(text, agent));
+    // The note goes once: a retry after a partial call (the note posted, the state change didn't) finds its own note and only
+    // changes the state. A note posted by a call that did finish is not this call's leftover: this call posts its own.
+    const earlier = mark ? await this.notePosted(r, number, mark) : undefined;
+    const leftover = earlier !== undefined && !(await this.inState(r, number, state));
+    const posted = text === undefined || leftover ? undefined : await this.postComment(r, number, withFooter(`${text}\n\n${mark}`, agent));
     const body = state === "closed" ? { state, state_reason: reason ?? "completed" } : { state };
     let res: Awaited<ReturnType<GitHubAccess["rest"]>>;
     try {
       res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
     } catch (e) {
       // The note is already on the issue: retrying the whole call would post it twice, so say what is left, and when. The need
-      // stays typed (its cause and fields, and the kernel's needs_owner routing), with the note's outcome added to its text.
-      if (posted && e instanceof GitHubNeed) {
+      // stays typed (its cause and fields, and the kernel's needs_owner routing), with the note's outcome added to its text. A
+      // retry is safe whatever reaches the agent: the marker above keeps the note from being posted again.
+      if ((posted || leftover) && e instanceof GitHubNeed) {
         const when = e.need.cause === "rate_limited" ? ` after ${e.need.until}` : "";
-        throw new GitHubNeed(e.need, `${e.message}. The note was posted (${posted.url}); the state change to ${state} did not complete — call this again with the same state and no note${when}`);
+        throw new GitHubNeed(e.need, `${e.message}. The note was posted${posted ? ` (${posted.url})` : ""}; the state change to ${state} did not complete — call this again with the same state and no note${when}`);
       }
       throw e;
     }
