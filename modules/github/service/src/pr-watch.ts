@@ -555,7 +555,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           continue;
         }
-        const w = await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\`: \`gh pr checks ${pr.url}\` lists the failures. Fix the cause on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` (skill \`publish\`), passing the PR's current title and whole description again with \`--title\` and \`--body-file\`. Nothing else.`);
+        const w = await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\`: \`gh pr checks ${pr.url}\` lists the failures. Fix the cause on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` (skill \`publish\`), passing the PR's title (corrected, if its title check failed) and whole description again with \`--title\` and \`--body-file\`. Nothing else.`);
         if (w !== "failed") { state.reded[url] = pr.headRefOid; state.breaker[url] = { rounds, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) } }; save(); }
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
