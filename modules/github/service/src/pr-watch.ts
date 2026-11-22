@@ -268,7 +268,11 @@ export function startPrWatch(o: PrWatchOptions) {
       let unanswered = false;
       let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
-        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
+        // A request that never answered (a timeout, a reset) is no answer at all: the branch's state is unknown, so the attempt
+        // backs off and asks again rather than spending the fallback on a race with the call that may still land.
+        const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method })
+          .catch((e: Error) => { log("branch update unanswered", { pr: pr.url, update_method, err: String(e?.message ?? e).slice(0, 200) }); return undefined; });
+        if (!r || !answered(r)) { unanswered = true; last = r; continue; }
         if (r.status < 300) {
           state.updated[key] = "ok";
           await wake(pr, "");
@@ -276,7 +280,6 @@ export function startPrWatch(o: PrWatchOptions) {
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
-        if (!answered(r)) unanswered = true;
         last = r;
       }
       // No answer on some method: retry after the backoff, never final for that head (a 5xx says nothing about whether asking

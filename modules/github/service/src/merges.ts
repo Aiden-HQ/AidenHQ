@@ -23,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** 2 once a design-review marker was written by a version that only records a delivered request: a marker without it predates that confirmation and is reconciled by asking again. */ reviewMarked?: number; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -229,15 +229,20 @@ export function createMerges(d: {
     // The marker says a review was really asked for this head, so it is set only once the task was filed: a filing that threw,
     // or answered `filed: false` (no agent holds the role, the PR changes no UI files), asked nobody and must be asked again on
     // the next poll. Recording it up front let the advisory waiver start from a second request that never reached a reviewer.
-    const askReview = async (again: boolean) => {
-      let filed = true;
+    // `filed: true` is a delivered request; `already: true` means the module already had it on file for this head (a retry of a
+    // request that landed before its answer was lost), which is just as delivered. `filed: false` (no agent holds the role, the
+    // PR changes no UI files) asked nobody: the marker stays unset and the next poll asks again.
+    const askReview = async (again: boolean): Promise<boolean> => {
+      let filed = false;
       await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) })
-        .then((r) => { if (r && typeof r === "object" && (r as { filed?: boolean }).filed === false) filed = false; })
-        .catch((e: Error) => { filed = false; log("design review task failed", { pr: p.url, err: says(e) }); });
-      if (!filed) return;
+        .then((r) => { filed = Boolean(r && typeof r === "object" && ((r as { filed?: boolean }).filed === true || (r as { already?: boolean }).already === true)); })
+        .catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
+      if (!filed) return false;
       if (again) p.reviewAskedAgain = p.head;
       else p.reviewAsked = p.head;
+      p.reviewMarked = 2;
       save();
+      return true;
     };
     // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
     // off the list after its record was approved included).
@@ -261,8 +266,11 @@ export function createMerges(d: {
         p.checked = p.head;
         d.flow?.checksCompleted(p.repo, p.number, p.head, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20));
       }
-      // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
-      if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
+      // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks. A marker
+      // set by the older version (before the filing was confirmed) proves nothing, so it is reconciled by asking once more: the
+      // module answers `already` for a head it has on file and files the missing task otherwise, both ending with the marker set.
+      const askedOnce = p.reviewAsked === p.head && p.reviewMarked === 2;
+      if (v.do === "wait" && uiReview && !askedOnce && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
         // Merged at the bound head. It is this queue's merge only when an unanswered merge call of ours is still pending and the
         // merge commit is exactly that call's (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge
@@ -283,9 +291,15 @@ export function createMerges(d: {
         // No verdict within its time: the reviewer is asked once more for the same head and the wait starts over.
         // Still none after that: a slow UI Reviewer is not a verdict, so its review is advisory for this head (a failure still fails).
         if (v.review && p.wait?.key === v.why && t - Date.parse(p.wait.since) > DESIGN_REVIEW.minutes * 60_000) {
-          if (p.reviewAskedAgain !== p.head) {
-            p.wait = { key: v.why, since: now().toISOString() };
-            return askReview(true);
+          const askedAgain = p.reviewAskedAgain === p.head && p.reviewMarked === 2;
+          if (!askedAgain) {
+            // The wait starts over only for a request that was really delivered: a refused one leaves the old deadline standing,
+            // so the next poll asks again rather than the advisory waiver counting down from a request nobody received.
+            const delivered = await askReview(true);
+            // Delivered now, or already on file from an earlier ask whose answer was lost: either way a reviewer has it, so the
+            // advisory clock starts over. A refused request leaves the old deadline, and the next poll asks again.
+            if (delivered || p.reviewAskedAgain === p.head) p.wait = { key: v.why, since: now().toISOString() };
+            return;
           }
           p.reviewExpired = p.head;
           log("design review advisory: no verdict in time", { pr: p.url });

@@ -148,7 +148,11 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps } };
-    if (path.endsWith("/update-branch")) { const m = updateByMethod?.[body?.update_method]; return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) }; }
+    if (path.endsWith("/update-branch")) {
+      const m = updateByMethod?.[body?.update_method];
+      if (m?.throw) throw new Error(`The operation was aborted due to timeout`);
+      return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) };
+    }
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
@@ -270,6 +274,12 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await refused.watch.tick(); await refused.watch.tick();
   assert.deepEqual(refused.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/18/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "asked once, then backed off: not re-asked on the next tick");
   assert.equal(refused.woke.length, 0, "the fallback's transient answer keeps the attempt retryable");
+  // A request that never answered (a timeout) is no answer: the attempt backs off and is asked again, never cached as final.
+  const timeout = await rig(t, { behind: 2, updateByMethod: { rebase: { throw: true } } });
+  timeout.set([timeout.agentPr(19, redPr(19))]);
+  await timeout.watch.tick(); await timeout.watch.tick();
+  assert.equal(timeout.gh.filter((g) => g === "PUT /repos/acme/app/pulls/19/update-branch rebase").length, 1, "a timeout backs off, it is not re-asked on the next tick");
+  assert.equal(timeout.woke.length, 0, "and nobody is woken while it retries");
   // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
   const conflict = await rig(t, { behind: 2, update: 422 });
   conflict.set([conflict.agentPr(13, redPr(13))]);
