@@ -16,12 +16,13 @@ description: How code is written, tested and published here, in any repository -
   `design-system`. Adding or bumping a dependency, image, action or tool: skill `supply-chain`. App code standards:
   `references/apps.md`.
 - Before your first commit, refresh the code host's branches with `aidenhq clone <org/repo>` (a plain `git fetch` does
-  not work through the workspace's remote) and, when `origin/<branch>` exists, start from its remote head: either
+  not work through the workspace's remote). When the refresh names `origin/<branch>`, start from its remote head: either
   `git switch --create <branch> --track origin/<branch>`, or switch to an existing local branch of that name and
-  fast-forward it (`git merge --ff-only origin/<branch>`), which keeps its unpushed commits. When origin has no such
-  branch, start a new branch. If the local branch cannot be fast-forwarded, stop and report rather than reset or force
-  it, and when the refresh fails, stop the run. Never rebuild the branch's changes from your workspace history and
-  force that copy over the remote; rebasing the branch's existing commits is not rebuilding it.
+  fast-forward it (`git merge --ff-only origin/<branch>`), which keeps its unpushed commits. The refresh keeps a
+  deleted branch's old ref, so treat `origin/<branch>` as absent unless its `origin/<branch> is at …` line is in the
+  refresh's output, and then start a new branch. If the local branch cannot be fast-forwarded, stop and report rather
+  than reset or force it, and when the refresh fails, stop the run. Never rebuild the branch's changes from your
+  workspace history and force that copy over the remote; rebasing the branch's existing commits is not rebuilding it.
 
 ## Work fast, in few big steps
 
