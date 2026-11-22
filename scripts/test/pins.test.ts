@@ -349,6 +349,10 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   const quotedGtResult = scanFile("Dockerfile", quotedGt);
   assert.equal(quotedGtResult.problems.length, 1);
   assert.deepEqual(scanFile("Dockerfile", quotedGt.replace("install -y foo", "install -y foo=1.0")).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // The last stdin redirect is the one the shell applies: `tee x < /dev/null < /tmp/vendor.list` reads the prepared file
+  // and writes a repository, so an unpinned install after it is a problem.
+  const lastStdin = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' > /tmp/vendor.list\nRUN tee /etc/apt/sources.list.d/vendor.list < /dev/null < /tmp/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", lastStdin).problems.length, 1);
 });
 
 test("pins: a disabled source file leaves no entry behind in apt dating", () => {

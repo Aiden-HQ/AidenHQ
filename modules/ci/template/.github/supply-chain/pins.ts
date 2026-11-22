@@ -143,9 +143,10 @@ function writtenFiles(segment: string): Written[] {
     // `-a` may be combined with other short options (`tee -ai file`), and `--append` is the long form.
     const append = /(?:^|\s)(?:-[a-zA-Z]*a[a-zA-Z]*|--append)(?=\s|$)/.test(raw);
     // What `tee` writes comes from its stdin: a `< file` overrides the pipe, and a producer whose own stdout a `>` sent
-    // elsewhere leaves the pipe empty.
-    // Only fd 0 (`<`, `0<`) overrides the pipe; `3< /dev/null` redirects another descriptor and leaves stdin alone.
-    const input = /(?:^|\s)(?:0<|<)\s*(\S+)/.exec(arg)?.[1];
+    // elsewhere leaves the pipe empty. Only fd 0 (`<`, `0<`) overrides the pipe — `3< /dev/null` redirects another
+    // descriptor — and when there are several, the last one the shell applies is the one it reads.
+    const inputs = [...arg.matchAll(/(?:^|\s)(?:0<|<)\s*(\S+)/g)].map((n) => n[1]!);
+    const input = inputs.at(-1);
     const pipe = clean.lastIndexOf("|", m.index! - 1);
     // The command immediately feeding `tee` is the one whose output it reads: an earlier command in the same pipeline
     // (`a > /tmp/log | b | tee x`) sent its own stdout elsewhere and doesn't make this one empty.
