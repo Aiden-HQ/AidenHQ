@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { createApplyPlanner } from "../src/apply-tier.ts";
 import { fillMemory } from "../src/memory.ts";
-import { checkoutMain, checkoutTree, createSettingsChanges } from "../src/settings-change.ts";
+import { checkoutMain, checkoutTree, createSettingsChanges, skillSides } from "../src/settings-change.ts";
 import { localApply } from "../../modules/codehost-local/src/apply.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
@@ -66,7 +66,7 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
     }
     return r;
   };
-  const planner = createApplyPlanner({ instanceRepo: () => REPO, read: (s) => host.read(s), product: { onMain: async () => true, isAncestor: async () => true, log: async () => "" }, modules: () => ({}), verifyRelease: async () => null });
+  const planner = createApplyPlanner({ instanceRepo: () => REPO, read: (s) => host.read(s), product: { onMain: async () => true, isAncestor: async () => true, log: async () => "" }, modules: () => ({}), verifyRelease: async () => null, skills: skillSides({ product, fetch: async () => {}, tree: checkoutTree(bare) }) });
   let k: any;
   // The live compiled config, which only the setting path reads (a self change reads the tree at its base).
   mkdirSync(join(dir, "config"));
@@ -123,6 +123,8 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   assert.deepEqual(sRec.args.files, ["instance.yaml", "modules/library/skills/nudge/SKILL.md"]);
   assert.equal(git(bare, "show", `${head(sRec)}:modules/library/skills/nudge/SKILL.md`), skillText.trim());
   assert.deepEqual(YAML.parse(git(bare, "show", `${head(sRec)}:instance.yaml`)).overrides, { agents: { "review-chaser": { skills: { add: ["library.nudge"] } } } });
+  // The reviewer reads which agents the new skill steers.
+  assert.deepEqual(sRec.args.authority, ["skill library.nudge changed; enabled by agent review-chaser (review)", "agent review-chaser enables skill library.nudge (review)"]);
 
   // Main moved after the fetch: the code host's compare-and-swap answers "file again", and nothing is filed.
   moveNext = true;

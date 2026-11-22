@@ -13,7 +13,7 @@
 // and after (a compile error is the refusal), written on that base and filed as the one kernel.apply with the agent as requester.
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import YAML from "yaml";
@@ -555,6 +555,35 @@ export function createSettingsChanges(d: SettingsDeps) {
     return { record: r.id, tier: r.tier, state: r.state, sha };
   }
   return Object.assign(apply, { asAgent });
+}
+
+/**
+ * The compiled effective skill lists (agent key → skill ids) of the instance at an apply's base and with its commit's files
+ * on top, and the commit's files with every file of each skill folder it touches (apply-tier.ts skill lines). `fetch` brings
+ * the kernel's instance checkout up to main first (the base is on it); `tree` is checkoutTree.
+ */
+export function skillSides({ product, fetch, tree }: { product: string; fetch: () => Promise<unknown>; tree: (base: string, to: string) => Promise<void> }) {
+  return async (c: { base?: string; files: string[]; texts: { head: Record<string, string> } }) => {
+    if (!c.base) throw new Error("the commit's base isn't known");
+    await fetch();
+    const dir = mkdtempSync(join(tmpdir(), "aidenhq-skills-"));
+    try {
+      await tree(c.base, dir);
+      const lists = (): Record<string, string[]> => Object.fromEntries(Object.entries<Dict>(compileTree(product, dir).paperclip.agents).map(([k, a]) => [k, a.skills ?? []]));
+      const before = lists();
+      for (const f of c.files) {
+        const t = Object.hasOwn(c.texts.head, f) ? c.texts.head[f] : undefined;
+        if (t === undefined) rmSync(join(dir, f), { force: true });
+        else (mkdirSync(dirname(join(dir, f)), { recursive: true }), writeFileSync(join(dir, f), t));
+      }
+      const after = lists();
+      const folders = new Set(c.files.map((f) => /^modules\/[^/]+\/skills\/[^/]+(?=\/)/.exec(f)?.[0]).filter((d): d is string => !!d && existsSync(join(dir, d))));
+      const inFolders = [...folders].flatMap((d) => readdirSync(join(dir, d), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => `${join(e.parentPath, e.name).slice(dir.length + 1)}`));
+      return { before, after, files: [...new Set([...c.files, ...inFolders])] };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
 }
 
 /**

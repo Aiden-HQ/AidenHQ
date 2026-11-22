@@ -65,7 +65,7 @@ import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import type { Executor } from "../sdk/src/executor.ts";
 import { createApply, hostApply } from "./apply.ts";
-import { checkoutMain, checkoutTree, createSettingsChanges } from "./settings-change.ts";
+import { checkoutMain, checkoutTree, createSettingsChanges, skillSides } from "./settings-change.ts";
 import { createMemory, fillMemory } from "./memory.ts";
 import { createEvents, routineRun } from "./events.ts";
 import { createRouting } from "./routing-tune.ts";
@@ -214,7 +214,7 @@ const applyHost = hostApply({ repo, instanceDir, stateDir: env("AIDENHQ_STATE_DI
   local: () => (localHost() && repos().instance?.toLowerCase().startsWith(`${LOCAL_ORG}/`) ? { bare: localCode.bare(repos().instance!), repo: repos().instance!, ingest: (s) => ingest(tasksDir, localScratch, localCode.bare(s.repo), s.workspace, s) } : undefined) });
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read and the product checkout.
-const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, read: applyHost.codehost.read, verifyRelease: runVerify(repo), notes: (sha, requester, task) => routing.notes(sha, requester, task) });
+const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, read: applyHost.codehost.read, verifyRelease: runVerify(repo), notes: (sha, requester, task) => routing.notes(sha, requester, task), skills: skillSides({ product: repo, fetch: () => checkoutMain(instanceDir)([]), tree: checkoutTree(instanceDir) }) });
 // The modules' checks (config/kernel/checks.json): the finish gate's task.finish ones and the write.filed ones every filing runs.
 const checksRegistry = checksFile(path.join(configDir, "kernel", "checks.json"));
 const writes = createWrites({

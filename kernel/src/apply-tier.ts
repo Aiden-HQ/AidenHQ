@@ -10,7 +10,7 @@ import YAML from "yaml";
 import { readDigest, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
 import { strayFiles } from "../sdk/src/instance-paths.ts";
 import { applyCard, repoKey } from "./kinds.ts";
-import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
+import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, skillLines, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
 import { UPDATER, canonical, type Requester } from "./records.ts";
@@ -237,6 +237,8 @@ export function createApplyPlanner(h: {
   verifyRelease(baseText: string, name: string, sha: string): Promise<string | null>;
   /** What the kernel itself says of this commit, shown and reviewed with its diff: a routing experiment's code-made evidence (routing-tune.ts). */
   notes?(sha: string, requester: Requester | undefined, task: string | undefined): string | undefined;
+  /** The compiled effective skill lists at the commit's base and head, and its files with each touched skill folder's (settings-change.ts skillSides). */
+  skills?(c: Read): Promise<{ before: Record<string, string[]>; after: Record<string, string[]>; files: string[] }>;
 }) {
   /** Whether this is the updater's own release move, to exactly the instance.yaml its verification of that release writes. */
   async function updaterMove(requester: Requester | undefined, baseText: string | undefined, headText: string | undefined): Promise<boolean> {
@@ -262,13 +264,18 @@ export function createApplyPlanner(h: {
     const [baseI, headI] = [c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]];
     const bump = await productBump(productPin(baseI), productPin(headI), h.product);
     if (bump && "error" in bump) throw new Refused(bump.error);
-    const st = { ...(c.files.includes("instance.yaml") ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
+    // The module sides and the skill lines: whenever the change touches instance.yaml or any module folder. Skill lines come from
+    // both sides compiled with the running product, so a product pin move (judged by the module authority diff) has none.
+    const config = c.files.some((f) => f === "instance.yaml" || f.startsWith("modules/"));
+    const st = { ...(config ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
+    const skills = config && !bump && h.skills ? await h.skills(c).then(skillLines, (e: Error) => [`skill enablers couldn't be listed: ${String(e.message).split("\n")[0]!.slice(0, 200)} (review)`]) : [];
     const notes = h.notes?.(a.sha, requester, task);
     // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
-    const { refusals, authority } = applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), releaseVerified, ...st });
+    const { refusals, authority: modules } = applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), releaseVerified, ...st });
     if (refusals.length) throw new Refused(refusals.join("; "));
+    const authority = [...modules, ...skills];
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...(authority.length ? { authority } : {}), ...(release ? { release } : {}) };
     const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote].filter(Boolean).join("\n\n");
@@ -294,10 +301,11 @@ export const hostProduct = (repo: string): ProductGit => ({
 });
 
 /** The planner on this host: the code host's read and the product checkout. */
-export function hostPlanner({ repo, instanceRepo, read, verifyRelease, notes }: {
+export function hostPlanner({ repo, instanceRepo, read, verifyRelease, notes, skills }: {
   repo: string; instanceRepo: () => string | undefined; read: (s: Source) => Promise<Read>;
   verifyRelease: (baseText: string, name: string, sha: string) => Promise<string | null>;
   notes?: (sha: string, requester: Requester | undefined, task: string | undefined) => string | undefined;
+  skills?: (c: Read) => Promise<{ before: Record<string, string[]>; after: Record<string, string[]>; files: string[] }>;
 }): ApplyPlanner {
-  return createApplyPlanner({ instanceRepo, read, notes, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), verifyRelease });
+  return createApplyPlanner({ instanceRepo, read, notes, skills, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), verifyRelease });
 }

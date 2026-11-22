@@ -391,6 +391,33 @@ export function classifyModules(diffs: ModuleDiff[]): Classified {
 /** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */
 export const authorityLines = (diffs: ModuleDiff[]) => diffs.flatMap((d) => d.changes.map((c) => `${d.module}: ${c.what} (${c.owner ? "owner" : "review"})`));
 
+/**
+ * What a change does to skills, for the reviewer (a shared skill can steer every agent that lists it through tools it already
+ * holds): each changed skill (a file under `modules/<m>/skills/<name>/`) with the agents that enable it after the change and the
+ * files beside its SKILL.md (code), then each agent's effective list that gains or loses a skill. `before` and `after` are the
+ * compiled effective lists (agent key → skill ids) on either side.
+ */
+export function skillLines(a: { files: string[]; before: Record<string, string[]>; after: Record<string, string[]> }): string[] {
+  const changed = new Map<string, Set<string>>();
+  for (const f of a.files) {
+    const m = /^modules\/([a-z0-9][a-z0-9-]*)\/skills\/([a-z0-9][a-z0-9-]*)\/(.+)$/.exec(f);
+    if (m) (changed.get(`${m[1]}.${m[2]}`) ?? changed.set(`${m[1]}.${m[2]}`, new Set()).get(`${m[1]}.${m[2]}`)!).add(m[3]!);
+  }
+  const lines: string[] = [];
+  for (const [skill, files] of [...changed].sort(([x], [y]) => x.localeCompare(y))) {
+    const by = Object.keys(a.after).filter((k) => a.after[k]!.includes(skill)).sort();
+    lines.push(`skill ${skill} changed; enabled by ${by.length ? `agent ${by.join(", ")}` : "no agent"} (review)`);
+    const code = [...files].filter((f) => f !== "SKILL.md").length;
+    if (code) lines.push(`skill ${skill} has code: ${code} files besides SKILL.md (review)`);
+  }
+  for (const k of [...new Set([...Object.keys(a.before), ...Object.keys(a.after)])].sort()) {
+    const [was, is] = [a.before[k] ?? [], a.after[k] ?? []];
+    for (const s of is.filter((x) => !was.includes(x))) lines.push(`agent ${k} enables skill ${s} (review)`);
+    for (const s of was.filter((x) => !is.includes(x))) lines.push(`agent ${k} stops enabling skill ${s}`);
+  }
+  return lines;
+}
+
 /** A module entry in instance.yaml `modules:` (`name`, `name@marketplace` or `{ id }`), as a module name. */
 export const moduleName = (m: unknown) => String(isMap(m) ? m.id : m).split("@")[0]!;
 
