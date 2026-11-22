@@ -179,11 +179,29 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   return { status: 200, json: prs };
 }
 
-/** A listed file at an exact commit: its text as it is, a parsed JSON body back out as JSON (never "[object Object]"). */
+/**
+ * A listed file at an exact commit: its text as it is, a parsed JSON body back out as JSON (never "[object Object]").
+ *
+ * The path must be a regular blob in the commit's tree, and is read from the tree first. The contents API follows a symlink whose
+ * target is a regular file in the repository and answers with that target's bytes — under every media type, `raw` and the plain
+ * JSON object alike — so a listed path that is a symlink there would hand back a file the grant does not name. A tree entry is the
+ * literal object at that path: `blob` at mode `100644`/`100755` is a file, `120000` is a symlink, `160000` a submodule, a `tree`
+ * a directory, and a missing entry is nothing. Anything but a regular blob refuses (404), and the contents read is not made.
+ */
 async function file(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
-  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(String(b.path))}?ref=${String(b.ref)}`, undefined, { accept: "application/vnd.github.raw+json" });
-  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${String(b.path)} at ${String(b.ref)}` } };
-  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${String(b.path)}: ${r.status}`);
+  const path = String(b.path), ref = String(b.ref);
+  // The commit's own tree, listed once: `git/trees/{sha}` resolves a commit to the tree it records, and a recursive listing names
+  // every entry by its full path, so the entry at `path` is the literal object there.
+  const t = await ctx.access.rest("GET", `/repos/${s.slug}/git/trees/${ref}?recursive=1`);
+  if (t.status === 404) return { status: 404, json: { error: `${s.slug} has no ${path} at ${ref}` } };
+  if (t.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/git/trees/${ref}: ${t.status}`);
+  // A truncated tree (over 100,000 entries) cannot say whether this path is a blob or something else, so it proves nothing.
+  if (t.body?.truncated !== false) throw fail(502, `GitHub's tree for ${s.slug}@${ref} is truncated: ${path} cannot be placed`);
+  const entry = (Array.isArray(t.body?.tree) ? t.body.tree : []).find((e: any) => e?.path === path);
+  if (!entry || entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) return { status: 404, json: { error: `${s.slug} has no regular file ${path} at ${ref}` } };
+  const r = await ctx.access.rest("GET", `/repos/${s.slug}/contents/${enc(path)}?ref=${ref}`, undefined, { accept: "application/vnd.github.raw+json" });
+  if (r.status === 404) return { status: 404, json: { error: `${s.slug} has no ${path} at ${ref}` } };
+  if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/contents/${path}: ${r.status}`);
   return { status: 200, text: typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null) };
 }
 

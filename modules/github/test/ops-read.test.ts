@@ -16,14 +16,51 @@ const withRest = (c: OpsContext, rest: OpsContext["access"]["rest"]): OpsContext
 const ok = (body: unknown) => ({ status: 200, body, headers: new Headers() });
 const sha = "a".repeat(40);
 
+/** A tree listing with the given entries: what the `file` read places a path in before it reads any content. */
+const tree = (entries: { path: string; mode: string; type: string }[], truncated = false) => ok({ sha: "t", truncated, tree: entries });
+const BLOB = { mode: "100644", type: "blob" };
+
 test("a file at an exact commit is its text — a parsed JSON body goes back out as JSON, never [object Object]", async () => {
   const c = ctx();
-  const parsed = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: sha }, withRest(c, async () => ok({ suites: [] })));
+  const areas = { path: ".github/ci/areas.json", ...BLOB };
+  const parsed = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: sha },
+    withRest(c, async (_m, path) => path.includes("/git/trees/") ? tree([areas]) : ok({ suites: [] })));
   assert.equal(parsed.text, "{\"suites\":[]}", "a parsed JSON file is serialized back, not stringified as an object");
   assert.doesNotMatch(parsed.text, /object Object/);
-  const raw = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/workflows/ci.yml", ref: sha }, withRest(c, async () => ok("name: ci\njobs: {}\n")));
+  const yml = { path: ".github/workflows/ci.yml", ...BLOB };
+  const raw = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/workflows/ci.yml", ref: sha },
+    withRest(c, async (_m, path) => path.includes("/git/trees/") ? tree([yml]) : ok("name: ci\njobs: {}\n")));
   assert.equal(raw.text, "name: ci\njobs: {}\n", "a non-JSON file (ci.yml is YAML) stays its own text");
-  assert.equal((await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: sha }, c)).status, 404);
+  assert.equal((await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path: ".github/ci/areas.json", ref: sha }, c)).status, 404, "no tree at all is no file");
+});
+
+test("a granted path that is a symlink, a submodule or a directory at the commit mints nothing: only a regular blob is read", async () => {
+  // The contents API dereferences a symlink whose target is a regular file and answers with that file's bytes, so the literal tree
+  // entry is what confines a read to the grant. Nothing but a blob at 100644/100755 is the file the grant names.
+  const c = ctx();
+  const path = ".github/ci/areas.json";
+  for (const entry of [
+    { path, mode: "120000", type: "blob" },  // a symlink: its mode is what makes it one, and the contents API would follow it
+    { path, mode: "160000", type: "commit" }, // a submodule
+    { path, mode: "040000", type: "tree" },   // a directory
+  ]) {
+    let read = false;
+    const a = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path, ref: sha },
+      withRest(c, async (_m, p) => (p.includes("/git/trees/") ? tree([entry]) : ((read = true), ok("SECRETS=1\n")))));
+    assert.equal(a.status, 404, JSON.stringify(entry));
+    assert.equal(read, false, `the contents of a ${entry.type}/${entry.mode} are never read`);
+  }
+  // A path the tree does not carry is not there, whatever the contents endpoint would answer for a nearby name.
+  const missing = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path, ref: sha },
+    withRest(c, async (_m, p) => (p.includes("/git/trees/") ? tree([{ path: ".github/ci/other.json", ...BLOB }]) : ok("SECRETS=1\n"))));
+  assert.equal(missing.status, 404);
+  // A truncated listing cannot place the path, so it proves nothing — never a fallback to the contents read.
+  await assert.rejects(() => answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path, ref: sha },
+    withRest(c, async (_m, p) => (p.includes("/git/trees/") ? tree([{ path, ...BLOB }], true) : ok("SECRETS=1\n")))), /truncated/);
+  // A regular blob — 100644 or the executable 100755 — is the file.
+  const runnable = await answerOp("read", { module: "grading", repo: "acme/app", kind: "file", path, ref: sha },
+    withRest(c, async (_m, p) => (p.includes("/git/trees/") ? tree([{ path, mode: "100755", type: "blob" }]) : ok("ok\n"))));
+  assert.equal(runnable.text, "ok\n");
 });
 
 test("the run's latest shard jobs come from the filter=latest query, one instance per shard name", async () => {

@@ -287,8 +287,9 @@ test("a PR that edits the workflows, the map or the suite runner mints nothing",
 });
 
 test("a base map that differs from the head's (main moved, or a PR edit) mints nothing", async () => {
-  // CI reads the map from the base; the fact names the command at the base. If the head's map is not the same bytes, the base
-  // describes a tree the graded head did not run, so no fact — never a command only the base carries.
+  // CI's select.ts reads the map from the tree it tests (the PR's merge commit), which carries the base's map exactly when the PR
+  // did not edit it. The fact names the command at the base and requires that map to be the head's own bytes: a base that differs
+  // is a tree the graded head did not run, so no fact — never a command only the base carries.
   const prs = [withChecks(310, "a", "b", [PASS("kernel#1", "7/126/1")])];
   const moved = JSON.stringify({ everything: [], markdown: [], suites: [{ name: "kernel#1", secs: 33, run: "npm test", paths: ["kernel"] }] });
   const ev = await prEvidence([{ repo: REPO, number: 310, url: url(310), heads: ["branch-a"] }], "", factDeps(prs, { baseAreas: moved }));

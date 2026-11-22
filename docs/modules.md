@@ -56,7 +56,10 @@ codehost:
 ```
 
 `evidence` is narrower than `read` and lists its paths exactly: a `file` read (`{path, ref}`, a listed path at a commit
-sha) and nothing else, so a module reads only the files its grant names. `run`
+sha) and nothing else, so a module reads only the files its grant names. The path must be a **regular blob** in that
+commit's tree (`100644` or `100755`), which the read checks before it fetches anything: the contents API follows a symlink
+whose target is a file in the repository and answers with that target's bytes, so a granted path that is a symlink, a
+submodule or a directory mints nothing rather than return a file the grant does not name. `run`
 answers a workflow run's identity (`workflow_path`, `workflow_state`, `event`, `head_sha`, `run_attempt`, the run's
 own `base_sha`, the `post_checks` instances of its `post-checks` job: `run_attempt`, `state`, `conclusion`, and
 `latest_shard_jobs`: each `packages (N)`/`modules (N)` job's newest instance, by name), which
@@ -82,7 +85,9 @@ instance is per job name.
 A failed-job re-run keeps an earlier attempt's passing shard and posts its checks in the newer attempt, so the poster's
 attempt may be the higher one. The run must be `.github/workflows/ci.yml`, active, from a `pull_request`
 whose `head_sha` is the graded head. The fact names the suite's `run` and directory from `areas.json` at the run's own
-base (`base_sha`), and only when that map is byte-identical to the head's, never the branch tip. That `base_sha` is the
+base (`base_sha`), and only when that map is byte-identical to the head's, never the branch tip: CI's `select.ts` reads the
+map from the tree it tests (the PR's merge commit), which is the base's map exactly when the PR did not edit it, and a PR
+that edits `.github/ci/` mints nothing at all. That `base_sha` is the
 only immutable base: GitHub drops a run's `pull_requests` entry once the PR merges, so a merged run answers no base,
 and there the base is the PR's merge commit's first parent (`commit`), the tree the merge was made on. The PR's
 `baseRef` is where its base branch points now, not where it pointed when the run started — it is never a stand-in, so
@@ -91,9 +96,9 @@ be the graded head's own, byte for byte (a PR that rewrote the workflow ran its 
 be a directory at the graded head (`post-checks` posts nothing for one `run-suites.sh` reported `gone:`, so a deleted
 directory is a green job with nothing run). Because the workflows, the suite runner and the map are the
 inputs that decide what a shard ran, a PR that changes anything under `.github/workflows/` or `.github/ci/` mints no
-command fact at all. The same holds for `.ci-base/`: it is gitignored, so CI's own base checkout can own it, but a PR can
-still force-add a file there (`git add -f` beats `.gitignore`) and GitHub lists it, so a `.ci-base/` path in the PR's files
-refuses the fact rather than trusting where CI happened to write its checkout.
+command fact at all. The same holds for `.ci-base/`: no tree carries it today (CI runs `.github/ci/run-suites.sh`), but it
+stays gitignored and a PR can still force-add a file there (`git add -f` beats `.gitignore`) and GitHub lists it, so a
+`.ci-base/` path in the PR's files refuses the fact rather than assume nothing owns the path again.
 
 What the fact proves, and what it does not: it proves a green shard job existed in that `ci.yml` run at that head and
 that CI's own `post-checks` job ran in the same attempt. It does not prove, from the check record alone, that that

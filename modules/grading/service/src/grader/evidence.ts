@@ -90,18 +90,20 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * and again at `5c9381c` (suite `121603408900`). Requiring either would refuse every real per-suite check, so the job record
  * and the `post-checks` job are what this fact binds to.
  *
- * The command and directory come from `areas.json` at the run's own recorded base (`base_sha`), byte-identical to the head's:
- * CI reads the map from the base commit, so the two agree unless main's map moved or the PR edited it, and either way the base
- * can't name a command the graded head doesn't carry. That base is the only immutable one; the PR's `baseRef` is where its base
+ * The command and directory come from `areas.json` at the run's own recorded base (`base_sha`), byte-identical to the head's.
+ * CI's `select.ts` reads the map from the tree it tests (the PR's merge commit), and that tree's map is the base's exactly when
+ * the PR did not edit the map — which the `.github/ci/` guard below already refuses — so the base's map is the one CI used, and
+ * the byte-identity requirement means it can never name a command the graded head does not carry either. That base is the only immutable one; the PR's `baseRef` is where its base
  * branch points now, which moves as main advances, so it is never a stand-in. A merged run records no base, and there the merge
  * commit's first parent (the tree the merge was made on) is used instead; a run with neither mints nothing. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
  * to the head's (a PR that rewrote the workflow ran its own CI), and the suite's directory is a directory at the graded head
  * (`post-checks` posts nothing for a `gone:` one, so a deleted directory is a green job with nothing run). Which suites a shard
  * ran is known only inside the run (CI writes the plan to the `checks` job's outputs, which GitHub does not expose on the job),
  * so the fact does not re-derive it. Only a suite that map names mints a fact. The workflows, the map and the suite runner are
- * the inputs that decide what a shard ran, so a PR that edits anything under `.github/workflows/`, `.github/ci/` or `.ci-base/`
- * mints nothing at all (`.ci-base/` is CI's base checkout, but a PR can force-add a file there past `.gitignore`). Every read
- * that fails, or any field that doesn't match, mints nothing.
+ * the inputs that decide what a shard ran, so a PR that edits anything under `.github/workflows/` or `.github/ci/` mints nothing
+ * at all. `.ci-base/` is refused too: no tree carries it today (CI runs `.github/ci/run-suites.sh`), but it stays gitignored and a
+ * PR can force-add a file there past `.gitignore`, so the guard refuses the prefix rather than assume nothing owns it again.
+ * Every read that fails, or any field that doesn't match, mints nothing.
  */
 async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
   if (!deps.file || !deps.job || !deps.run || !deps.exists) return [];
