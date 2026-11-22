@@ -246,4 +246,7 @@ test("a report's own version argument is not an instance address, while a real o
   assert.deepEqual(scan("nothing", "192.168.1.10"), ["192.168.1.10"], "a private quad in the version argument");
   assert.deepEqual(scan("nothing", "100.101.102.103"), ["100.101.102.103"], "a tailnet quad in the version argument");
   assert.deepEqual(scan("nothing", "1.2.3.4"), [], "an ordinary version argument");
+  // A version argument's value is refused when the text uses it to reach something: that is an address, not a version.
+  assert.deepEqual(scan("ssh://1.2.3.4/x"), ["1.2.3.4"], "a version value used as a URL host");
+  assert.deepEqual(scan("the agent at 1.2.3.4:8443"), ["1.2.3.4"], "a version value used as a host and port");
 });

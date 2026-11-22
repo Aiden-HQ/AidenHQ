@@ -113,9 +113,19 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
-      .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !versions.has(m[0])),
+      .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !(versions.has(m[0]) && !addressShaped(text, m.index ?? 0, m[0].length))),
   ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
   return [...new Set(found)];
+}
+
+/**
+ * Whether a quad is used as an address rather than a number: a URL host, a host with a port, or a bare host after a scheme or
+ * `@`. A version argument's value is still refused when the text uses it to reach something, since a version never is one.
+ */
+function addressShaped(text: string, at: number, length: number): boolean {
+  const before = text.slice(Math.max(0, at - 8), at), after = text.slice(at + length, at + length + 2);
+  // A scheme or user part right before it (`https://`, `user@`), or a port right after it (`:8443`), means a host.
+  return /(?:\/\/|@)$/.test(before) || /^:\d/.test(after);
 }
 
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
