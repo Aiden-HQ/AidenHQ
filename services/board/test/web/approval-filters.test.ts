@@ -17,6 +17,14 @@ describe("Approvals filters", () => {
     }
   });
 
+  it("keeps a Tier 1 card still with the reviewer out of Done: it has not ended", () => {
+    const withReviewer = card({ state: "pending", tier: 1 });
+    expect(inFilter(withReviewer, "done")).toBe(false);
+    expect(inFilter(withReviewer, "failed")).toBe(false);
+    expect(inFilter(withReviewer, "pending")).toBe(false);
+    expect(inFilter(withReviewer, "all")).toBe(true);
+  });
+
   it("still files an ended card under Done, a failure under Failed, and a Tier 2 pending card under Pending", () => {
     expect(inFilter(card({ state: "used", outcome: "applied" }), "done")).toBe(true);
     expect(inFilter(card({ state: "auto", outcome: "applied" }), "done")).toBe(true);

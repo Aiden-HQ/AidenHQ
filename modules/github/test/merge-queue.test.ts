@@ -18,7 +18,7 @@ const HEAD = "a".repeat(40);
 const check = (name, state) => ({ __typename: "CheckRun", name, status: state === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "PENDING" ? null : state });
 const rollup = (state, { names = ["build"], more = false } = {}) => ({ state, contexts: { pageInfo: { hasNextPage: more }, nodes: names.map((n) => check(n, state)) } });
 
-/** GitHub with one open PR per repo (`prs[repo]`: { head, checks, names?, more?, baseNames?, files? }); merges and writes are recorded. */
+/** GitHub with one open PR per repo (`prs[repo]`, or `prs["repo#n"]` for one PR of a repo with several); merges and writes are recorded. */
 function fakeGitHub(prs) {
   const writes = [];
   const gh = async (method, path, body) => {
@@ -844,6 +844,21 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   assert.deepEqual(waits.map((w) => w.id), ["k-00000000000000h1", "k-00000000000000h1", "k-00000000000000h1"]);
   // The wait ended (review passed): the record's reason is cleared, so no stale "code review: …" sits on a merging record.
   assert.equal(waits.at(-1).reason, null);
+});
+
+test("a PR left unpolled behind another of its repository is never published as a wait of its own", async (t) => {
+  // One merge per repository per poll: the second PR of the repo is skipped this pass and has no reason of its own, so nothing
+  // about it reaches the kernel (it merges on the next poll, with no blocker in between).
+  const prs = { "acme-agents/widget#1": { head: HEAD, checks: "SUCCESS" }, "acme-agents/widget#2": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, github, outcomes, waits, merge, settle } = await setup(t, { prs });
+  await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/widget", number: 2, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge"], "the first PR merged, the second waited its turn");
+  assert.deepEqual(waits.map((w) => w.reason), [], "the second PR has no reason, so no wait is published for it");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge", "/repos/acme-agents/widget/pulls/2/merge"]);
 });
 
 test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
