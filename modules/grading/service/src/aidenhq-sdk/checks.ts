@@ -7,9 +7,6 @@ export const DESIGN_REVIEW_CHECK = "design-review";
 /** Code review's commit status: a mirror of its merge verdict for people and `gh pr checks`. The merge queue asks code review's
  * verdict itself, so the status never becomes a second gate here. */
 export const CODE_REVIEW_STATUS = "aidenhq/review";
-/** The image CVE scan: advisory (owner, 2026-11-22). A finished scan counts as ok whatever it found, so it never holds a merge or
- * turns the base red; its real conclusion stays on the head (`status`) as evidence for image work. */
-export const IMAGE_SCAN_CHECK = "image-scan";
 /** The aggregate check a repository's CI may end with (the product's ci.yml `ci-required`). */
 export const GATE_CHECK = "ci-required";
 
@@ -22,7 +19,7 @@ export function namedChecks(rollup: Json): { name: string; status: string | null
   return (rollup?.contexts?.nodes ?? [])
     .map((n: Json) => ({ name: n.name ?? n.context, status: contextStatus(n) }))
     .filter((c: Json) => c.name && c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS)
-    .map((c: Json) => ({ ...c, ok: pass.has(c.status) || (c.name === IMAGE_SCAN_CHECK && c.status !== "PENDING"), pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
+    .map((c: Json) => ({ ...c, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
 }
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;

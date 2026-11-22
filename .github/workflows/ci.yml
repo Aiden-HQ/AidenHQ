@@ -516,9 +516,9 @@ jobs:
   # runner): scripts/supply-chain/image-scan.ts reads each Dockerfile as text and passes grype only digest-pinned
   # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
   # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is
-  # installed below, at the version the security module pins. Advisory (owner, 2026-11-22): it stays out of ci-required,
-  # and the code host's merge gate counts a finished scan as ok whatever it found (kernel/sdk/src/checks.ts IMAGE_SCAN_CHECK).
-  # Secrets (secrets.yml, gitleaks) and the 7-day rule (policy) stay blocking.
+  # installed below, at the version the security module pins. Advisory (owner, 2026-11-22): the scan step continues on
+  # error, so the job (and every reader of check and workflow results) stays green; what it found are the step's error
+  # annotations on the check. Secrets (secrets.yml, gitleaks) and the 7-day rule (policy) stay blocking.
   image-scan:
     needs: checks
     if: needs.checks.outputs.dockerfiles != ''
@@ -546,6 +546,7 @@ jobs:
           tar xzf "$RUNNER_TEMP/grype.tgz" -C "$RUNNER_TEMP" grype
           sudo install -m 0755 "$RUNNER_TEMP/grype" /usr/local/bin/grype
       - name: Scan (no build)
+        continue-on-error: true
         run: |
           # On a pull request the scanner and its exceptions come from the base commit, on a merge train from main (its tree holds
           # the PRs' own edits), so no PR can run its own code here or loosen its own scan; a base without the scanner fails

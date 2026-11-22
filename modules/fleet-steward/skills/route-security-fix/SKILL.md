@@ -16,7 +16,8 @@ Security Watch assigns its fix tasks to you (label `security`). You route, you d
 - **Product or instance change** (the product repo, its official modules under `modules/` included, or an upstream image or
   version bump in compose or the instance registry): `task_delegate` to the Engineer with the task's exact
   change, a done condition and `deliverable` `pr` with the repo. For an image, the rubric names the check that repository
-  runs: "`image-scan` green on the PR's head" in the product repo, with the registry's data for the tag and digest the PR
+  runs: "`image-scan` on the PR's head reports no fixable high or critical CVE" in the product repo (the scan is
+  advisory there: always green, findings as its error annotations), with the registry's data for the tag and digest the PR
   pins as evidence. A package a RUN step installs is proven by Security Watch's scan of the deployed image instead;
   Engineers have no Docker, so never ask them to build or scan it locally. A product-repo change is done when its PR is merged.
 - **An app repo** (`app:*`, `repo:*` in the agents org): `task_create` with `assignee` the app's owning agent
