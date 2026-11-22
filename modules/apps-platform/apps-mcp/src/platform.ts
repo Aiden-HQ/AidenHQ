@@ -449,21 +449,23 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     const forged = forgedIdentity(app.name, sign);
     const health = app.health.url ? new URL(app.health.url).pathname : undefined;
     const probes = identityProbes(app, node(), health);
+    const noHttp = noHttpSurface(app);
     const ports: PortAnswers[] = [], denied: string[] = [];
     for (const c of containers) {
       if (!/^[0-9a-f]{64}$/.test(c?.Id ?? "")) throw new Error(`${app.name}: a container has no id`);
       const service = String(c.Config?.Labels?.["com.docker.compose.service"] ?? "");
       const exposed = Object.keys(c.Config?.ExposedPorts ?? {}).filter((k) => k.endsWith("/tcp")).map((k) => parseInt(k, 10));
       const ips = Object.values<any>(c.NetworkSettings?.Networks ?? {}).flatMap((n) => [n.IPAddress, n.GlobalIPv6Address]).filter(Boolean);
-      const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+      // `tls`: the app may be skipped, so the socket gets a ClientHello and a TLS listener stays hard instead of skipped.
+      const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, tls: noHttp, probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
       const scans = [];
       for (const uid of processUids(await exec(["top", c.Id, "-eo", "uid,pid"]))) scans.push(JSON.parse(await exec(identityProbeArgs(cfg.healthImage, c.Id, uid), { input: JSON.stringify(input), timeout: 300_000 })));
       const scan = mergeScans(scans);
       denied.push(...scan.denied.map((p) => `${service}:${p}`));
       for (const k of scan.sockets)
-        ports.push({ service, port: k.port, host: k.host, listening: k.listening, ...(k.raw ? { raw: k.raw } : {}), answers: k.statuses.map((status, i) => ({ probe: probes[i]!, status })) });
+        ports.push({ service, port: k.port, host: k.host, listening: k.listening, ...(k.raw ? { raw: k.raw } : {}), ...(k.tls ? { tls: k.tls } : {}), answers: k.statuses.map((status, i) => ({ probe: probes[i]!, status })) });
     }
-    return identityPorts(ports, required, denied, noHttpSurface(app));
+    return identityPorts(ports, required, denied, noHttp);
   }
 
   /**

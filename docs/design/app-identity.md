@@ -83,9 +83,17 @@ probe requires it to refuse a token-less request.
 does not have its ports fail the deploy for silence. A database answers its own protocol and hangs up on an HTTP request, so
 its `closed`/`silent` socket is recorded as a non-hard "not probed" finding naming that app-level reason, and the deploy is
 not rolled back for it. The skip is refused for any app that is exposed, shared, has a `health.url` or has an `api`: those
-apps could serve HTTP, and their silence fails closed exactly as before. A socket on the skipped app that answers HTTP —
-plaintext or over TLS — is still judged first, as on any app, so the skip never covers a port that speaks HTTP. Every
-skipped port is a recorded non-hard finding, never a silent pass.
+apps could serve HTTP, and their silence fails closed exactly as before.
+
+The plaintext look cannot tell a database from a TLS listener that hangs up on a GET, so on an app the skip may cover (and
+only there) the gate also sends a TLS ClientHello. A socket that answers with a TLS record is "answers HTTPS" and hard; only
+a socket that answered **neither HTTP nor TLS** is skipped. A socket that answered HTTP bytes at all — plaintext, over TLS,
+or without a counted status — is judged, never skipped, on every app shape. Every skipped port is a recorded non-hard
+finding, never a silent pass.
+
+**New installs.** Nothing to configure: the skip is decided from the registry alone, so it applies to an app the moment its
+registry entry has no `expose`, no `share.host`, no `health.url` and no `api`. An existing app that gains any of them takes
+the ordinary gate on its next deploy. There is no migration and no field to add.
 
 ## Agents (app_api, app_view)
 

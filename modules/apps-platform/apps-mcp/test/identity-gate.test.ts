@@ -55,14 +55,14 @@ async function gate(app: typeof tailnet, base: string, node = true) {
 function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], tls: noHttpSurface(app), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
     const c = execFile(process.execPath, ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
-      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? [], [], noHttpSurface(app)));
+      ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, ...(k.tls ? { tls: k.tls } : {}), answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? [], [], noHttpSurface(app)));
     });
     c.stdin!.end(JSON.stringify(input));
   });
@@ -107,6 +107,15 @@ async function tcp(code: string, host = "127.0.0.1"): Promise<number> {
   await new Promise((r) => setTimeout(r, 300));
   return port;
 }
+/**
+ * A TLS listener's answers, without needing a certificate: a ClientHello gets the opening of a real handshake record
+ * (`16 03 03`, as Node's own TLS server answers one) and the plaintext GET gets a TLS alert (`15 03 03 00 02 02 28`).
+ * That pair is exactly what a real HTTPS listener produced when checked offline against `tls.createServer`; the gate reads
+ * only the record opening, so no key material belongs in the repo.
+ */
+const tlsResponder = (): Promise<number> => tcp(`(s) => s.on("data", (d) => {
+  s.end(d[0] === 0x16 ? Buffer.from([0x16, 0x03, 0x03, 0, 4, 2, 0, 0, 0]) : Buffer.from([0x15, 0x03, 0x03, 0, 2, 2, 40]));
+})`);
 // This host's own non-loopback IPv4 address: an app container's eth0.
 const eth0 = Object.values(networkInterfaces()).flat().find((n) => n && n.family === "IPv4" && !n.internal)?.address;
 // hello2: no registry port, no health.url, a compose that publishes nothing; its image EXPOSEs 8080.
@@ -285,8 +294,8 @@ describe("identity gate", () => {
   });
 
   it.runIf(process.platform === "linux")("lets the warehouse shape past the gate: not exposed, no health.url, one published database port", async () => {
-    // Grading criterion 1. The warehouse: a database on a published port, reached only on the host's loopback (expose: false),
-    // with no health.url and no api. It is not expected to serve HTTP at all, so its silent database socket is a recorded skip.
+    // The warehouse: a database on a published port, reached only on the host's loopback (expose: false), with no health.url
+    // and no api. It is not expected to serve HTTP at all, so its silent database socket is a recorded skip.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
     expect(noHttpSurface(db)).toBe(true);
     // A real PostgreSQL answers an HTTP GET by hanging up, and never says a word: `closed`, which used to fail the deploy.
@@ -296,8 +305,8 @@ describe("identity gate", () => {
   }, 60_000);
 
   it.runIf(process.platform === "linux")("still judges a closed non-HTTP socket hard on an app that is exposed, shared, has a health.url or has an api", async () => {
-    // Grading criterion 2. The app-level skip is refused for every app that could serve HTTP, so the gate fails exactly as it
-    // did before for them: a socket that hangs up without a word is unconfirmed, never a skip.
+    // The app-level skip is refused for every app that could serve HTTP, so the gate fails exactly as it did before for them:
+    // a socket that hangs up without a word is unconfirmed, never a skip.
     const base = { name: "db", repo: "example-org/x", owner: "a", description: "d", port: 5433 };
     const withDoor = [
       parseApp({ ...base, expose: true }),
@@ -314,8 +323,8 @@ describe("identity gate", () => {
   }, 120_000);
 
   it.runIf(process.platform === "linux")("judges a socket that answers HTTP on the warehouse shape too: the skip never covers an HTTP answer", async () => {
-    // Grading criterion 5, and the waiver's own bound. This is the SAME not-exposed, no-health.url, no-api shape as criterion 1,
-    // but the socket answers HTTP. An HTTP answer is judged first, so it is a hard finding (no sign-in) rather than a skip.
+    // The skip's own bound: this is the SAME not-exposed, no-health.url, no-api shape as the warehouse test above, but the
+    // socket answers HTTP. An HTTP answer is judged first, so it is a hard finding (no sign-in) rather than a skip.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
     expect(noHttpSurface(db)).toBe(true);
     const plain = await tcp(`(s) => s.on("data", () => s.end("HTTP/1.0 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok"))`);
@@ -324,8 +333,41 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringContaining(NO_SIGN_IN) });
   }, 60_000);
 
+  it.runIf(process.platform === "linux")("judges TLS-wrapped HTTP on the warehouse shape hard: the skip needs a probe that says no TLS", async () => {
+    // How a real TLS server answers both probes: a ClientHello gets a handshake record (0x16 0x03 0x03), and the plaintext
+    // GET gets a TLS alert (0x15 0x03 0x03). The plaintext look alone reads that alert as a non-HTTP banner, so without the
+    // ClientHello an HTTPS listener would be skipped like a database. The ClientHello decides: "answers HTTPS", hard, on the
+    // very shape the app-level skip covers.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    expect(noHttpSurface(db)).toBe(true);
+    const r = await scan(db, [await tlsResponder()]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS \(a TLS ClientHello got a TLS record\)/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("keeps a lone TLS opening byte hard: a record begun and abandoned is not a plain banner", async () => {
+    // A listener that writes one 0x15 (a TLS alert's content type) and hangs up could serve HTTPS. Inferring from that byte
+    // alone is what let an earlier head skip it, so the ClientHello must decide and the record opening stays hard.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    const lone = await tcp(`(s) => s.on("data", () => s.end(Buffer.from([0x15])))`);
+    const r = await scan(db, [lone]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS \(a TLS ClientHello got a TLS record\)/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("judges a socket that answered HTTP bytes with no counted status hard, on the warehouse shape too", async () => {
+    // A malformed HTTP reply: fetch gets no status (so no counted answer), but the plaintext look still sees "HTTP/". It is
+    // an HTTP listener and must never be skipped; the skip is for sockets that answered neither HTTP nor TLS.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
+    expect(noHttpSurface(db)).toBe(true);
+    const malformed = await tcp(`(s) => s.on("data", () => s.end("HTTP/1.1 xx\\r\\n\\r\\n"))`);
+    const r = await scan(db, [malformed]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTP \(a plaintext GET got an HTTP reply\)/) });
+  }, 60_000);
+
   it.runIf(process.platform === "linux")("records a skipped identity port as a non-hard finding that names the app-level reason", async () => {
-    // Grading criterion 6. The skip is not silent: the deploy's result still says which port was not probed, and why.
+    // The skip is not silent: the deploy's result still says which port was not probed, and why.
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
     const port = await tcp("(s) => s.on('data', () => s.destroy())");
     const r = await scan(db, [port]);
