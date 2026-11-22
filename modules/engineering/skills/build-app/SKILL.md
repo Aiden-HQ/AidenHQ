@@ -1,6 +1,6 @@
 ---
 name: build-app
-description: Build or change an app's UI, pages or multi-step features, including work that needs live apps, a browser or GitHub reads. Covers the app reads, the starter's browser setup, routes and navigation, and the UI review. Load for any app UI or page work.
+description: "Covers building or changing an app's UI, pages or multi-step features: the app reads, the starter's browser setup, routes and navigation, and the UI review. Use for any app UI or page work, including work that needs live apps, a browser or GitHub reads."
 ---
 
 # Building apps
@@ -26,6 +26,13 @@ package is missing (it goes into the `engineer` image by a PR). You have no ware
 - Code, tests and PRs follow `write-code` (`references/apps.md` for app standards); UI follows `design-system`.
 - Routes and navigation follow skill `design-system` (every page at its own URL, the starter's `src/lib/navigation.tsx`, `PAGES`). The header brand is `Link href="/"`; every clickable element visibly acts.
 - Keep `feature-map.json` current (pages plus a few stateful URLs, each with what should be visible); `ui-review` reads it.
-  Before publishing, `npm run build`, then: `PORT=4173 node server.mjs & sleep 2; ui-review http://127.0.0.1:4173 --widths 1280 --modes light
-  --out .aidenhq/out/review; kill $!`. Its "Routes" section must read "renders" for every link and no dead clicks.
+  Before publishing, run `npm run build`, then:
+
+  ```sh
+  PORT=4173 node server.mjs & pid=$!; sleep 2
+  ui-review http://127.0.0.1:4173 --widths 1280 --modes light --out .aidenhq/out/review; status=$?
+  kill $pid; [ "$status" -eq 0 ]
+  ```
+
+  Its "Routes" section must read "renders" for every link, with no dead clicks.
 - Publish as skill `publish` says (`aidenhq publish <org/repo> <branch>`). The task ends when the PR merges; the delegator hears it then.

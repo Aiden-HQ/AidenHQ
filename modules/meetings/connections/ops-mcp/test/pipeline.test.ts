@@ -195,3 +195,16 @@ describe("prompt injection", () => {
     expect(() => env.app.vault.read("/home/user/.ssh/id_rsa")).toThrow(/Path rejected/);
   });
 });
+
+describe("Drive documents on resumed work", () => {
+  it("names the Drive file to re-read once matched, since source_read rejects Drive sources", async () => {
+    const env = makeEnv({ routing: "routes: []\n" });
+    env.now.ms = Date.parse("2026-10-04T16:00:00+02:00");
+    const weekly = event({ id: "weekly_1", title: "Wallet Weekly", start: "2026-10-04T14:45:00+02:00", end: "2026-10-04T15:15:00+02:00", attendees: people("Carol", "Alex"), attachments: [{ file_id: "drive_file_1" }] });
+    const reg = env.app.meetings.registerDriveDocument({ file_id: "drive_file_1", title: "Wallet Weekly - 2026/10/04 14:45 GMT+02:00 - Notes by Gemini", modified_time: "2026-10-04T15:40:00+02:00", content: "notes" }) as { source_id: string };
+    const m = (await env.app.meetings.match({ source_id: reg.source_id, calendar_status: "ok", events: [weekly], hints: { title_guesses: [], people: [] }, source_text: "notes" })) as { status: string };
+    expect(m.status).toBe("matched");
+    const scan = (await env.app.meetings.scan()) as { work: Record<string, unknown>[] };
+    expect(scan.work).toEqual([expect.objectContaining({ source_id: reg.source_id, status: "matched", drive_file_id: "drive_file_1", next_step: expect.stringContaining("drive_read_file") })]);
+  });
+});

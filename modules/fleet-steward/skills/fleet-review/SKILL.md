@@ -1,6 +1,6 @@
 ---
 name: fleet-review
-description: "Load on the \"Fleet Ops: weekly review\" run (Monday): group recurring failures into at most 3 rule proposals, file the Dependabot backstop, measure reverts, file one owner summary."
+description: "Groups the week's recurring failures into at most 3 rule proposals, files the Dependabot backstop, measures reverts and files one owner summary. Use on the \"Fleet Ops: weekly review\" run (Monday)."
 when: { fields: { name: Fleet Steward } }
 ---
 

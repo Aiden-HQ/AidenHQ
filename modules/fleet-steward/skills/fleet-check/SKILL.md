@@ -1,6 +1,6 @@
 ---
 name: fleet-check
-description: "Load on a \"Fleet Ops: check\" run (the fleet detector tripped or recovered), or to settle a stuck item, file a product bug or decide whether to tell the owner."
+description: "Settles open fleet items on a \"Fleet Ops: check\" run (the fleet detector tripped or recovered), files product bugs and decides whether to tell the owner. Use on that run, or to settle a stuck item."
 when: { fields: { name: Fleet Steward } }
 ---
 

@@ -142,6 +142,7 @@ export class MeetingService {
       match: decision ? { status: decision.status, score: decision.score, event_id: decision.chosen_event_id } : undefined,
       unscheduled: decision?.chosen_event_id?.startsWith(UNSCHEDULED_PREFIX) || undefined,
       user_note: md.user_note,
+      drive_file_id: md.drive?.file_id,
       user_name: this.cfg.self.names.at(-1),
       next_step: this.nextStep(s, decision),
     };
@@ -154,7 +155,10 @@ export class MeetingService {
         return "fetch calendar events in calendar_window, then call meeting_match";
       case "matched":
       case "failed":
-        return d?.status === "matched" ? "read the source with source_read, then call meeting_publish with the extraction" : "call meeting_match";
+        if (d?.status !== "matched") return "call meeting_match";
+        return s.source_type === "local_transcript"
+          ? "read the source with source_read, then call meeting_publish with the extraction"
+          : "read the document with drive_read_file (drive_file_id), then call meeting_publish with the extraction";
       case "obsidian_write_pending":
         return "call meeting_publish without an extraction to retry the vault write";
       default:

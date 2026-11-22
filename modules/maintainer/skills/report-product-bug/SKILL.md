@@ -1,6 +1,6 @@
 ---
 name: report-product-bug
-description: A product-bug task from the Fleet Steward (marker product-bug:<slug>, or product-bug:<slug>:live for a fix check) - file or update its one GitHub issue on the product repo with github_product_issue, then finish with the issue link.
+description: "Files or updates the one GitHub issue for a product bug on the product repo with `github_product_issue` and finishes with the issue link. Use for a product-bug task from the Fleet Steward (marker `product-bug:<slug>`, or `product-bug:<slug>:live` for a fix check)."
 when: { fields: { name: Maintainer } }
 ---
 

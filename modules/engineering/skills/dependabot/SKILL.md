@@ -1,6 +1,6 @@
 ---
 name: dependabot
-description: Handle Dependabot PRs on the product repo and every maintained repo with dependabot on - one task per PR (marker `dependabot:<repo>/<number>`) or a sweep of stragglers (`dependabot:<date>`). Load when a task's marker starts with `dependabot:`.
+description: "Handles Dependabot PRs on the product repo and every maintained repo with Dependabot on, one task per PR (marker `dependabot:<repo>/<number>`) or a sweep of stragglers (`dependabot:<date>`). Use when a task's marker starts with `dependabot:`."
 ---
 
 # Dependabot PRs

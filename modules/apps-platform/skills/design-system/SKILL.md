@@ -1,6 +1,6 @@
 ---
 name: design-system
-description: Build or change the UI of an AidenHQ app (or the board) on the app starter (Vite + React + shadcn/ui + Tailwind) and the design system - theme, building blocks, guidelines, review checklist, matching a mockup. Use for any page, component, style or new app.
+description: "Guides building or changing the UI of an AidenHQ app or the board on the app starter (Vite + React + shadcn/ui + Tailwind) and the design system: theme, building blocks, guidelines, review checklist, matching a mockup. Use for any page, component, style or new app."
 when: { tools: [ apps.app_check ] }
 ---
 

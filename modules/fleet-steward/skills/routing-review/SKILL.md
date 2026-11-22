@@ -1,6 +1,6 @@
 ---
 name: routing-review
-description: "Load on the daily routing review run: settle the open routing experiment, then propose at most one change to members' repos or weights."
+description: "Settles the open routing experiment, then proposes at most one change to members' repos or weights. Use on the daily routing review run."
 when: { fields: { name: Fleet Steward } }
 ---
 

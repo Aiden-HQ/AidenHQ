@@ -1,6 +1,6 @@
 ---
 name: review-digest
-description: "Load on the \"Agent Coach: weekly digest\" run (Monday): file one owner task with the questions only they can answer and the week's reviews."
+description: "Files one owner task with the questions only the owner can answer and the week's agent reviews. Use on the \"Agent Coach: weekly digest\" run (Monday)."
 when: { fields: { name: Fleet Steward } }
 ---
 

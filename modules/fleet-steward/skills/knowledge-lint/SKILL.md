@@ -1,6 +1,6 @@
 ---
 name: knowledge-lint
-description: "Load on the \"Librarian weekly lint\" run (Monday): lint the vault, identities, agents' rules and owner corrections; file rule and profile fixes and one weekly report."
+description: "Lints the vault, identities, agents' rules and owner corrections, and files rule and profile fixes and one weekly report. Use on the \"Librarian weekly lint\" run (Monday)."
 when: { fields: { name: Fleet Steward } }
 ---
 

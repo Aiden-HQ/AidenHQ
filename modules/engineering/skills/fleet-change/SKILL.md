@@ -1,6 +1,6 @@
 ---
 name: fleet-change
-description: Change this fleet's setup or the AidenHQ product through git - the instance repo (modules, settings, overrides, apps.yaml, instance agents, handbook rules, the product pin), product PRs, rule/access/memory/profile proposals, and applying a change. Load for any task that touches the instance repo or the product repo.
+description: "Changes the fleet's setup or the AidenHQ product through git: the instance repo (modules, settings, overrides, apps.yaml, instance agents, handbook rules, the product pin), product PRs, rule, access, memory and profile proposals, and applying a change. Use for any task that touches the instance repo or the product repo."
 ---
 
 # Changing the fleet and the product
@@ -32,7 +32,7 @@ rebase on `origin/main`, apply again. Rollback is a revert commit applied the sa
 
 Read `modules/*/module.yaml` for a module's agents, routines and settings. A product change (bug,
 handbook fix, dependency or image bump) goes on its own branch, then publish once as skill `publish` says
-(`aidenhq publish <product repo> <branch>`): the card pushes and opens or updates the PR. The AI reviewer decides it (Tier 1). Green checks file the merge; its Done notice names the commit, and an instance runs it
+(`aidenhq publish <product repo> <branch>`): the card publishes the branch and opens or updates the PR. The AI reviewer decides it (Tier 1). Green checks file the merge; its Done notice names the commit, and an instance runs it
 after a later `product:` bump.
 
 - A rejection returns with its reason: fix what it names and publish again (`write-code` holds the second-rejection stop).
