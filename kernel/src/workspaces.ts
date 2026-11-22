@@ -26,8 +26,6 @@ import { checkAttempt } from "./checkjobs.ts";
 export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
 const DAY = 86_400_000;
 const CLOSED = new Set(["done", "cancelled"]);
-/** engineState's folder name for an agent's task (sandbox.ts). */
-const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_");
 const execFileP = promisify(execFile);
 
 /** The fraction of each filesystem used (as `df` and the DiskSpaceLow rule count it), the fullest one. */
@@ -47,7 +45,9 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
   const use = (rows: Row[]): Use | undefined => rows.length ? { pairs: rows.map(({ agent, task }) => ({ agent, task })), last: Math.max(...rows.map((r) => r.last)), started: Math.max(...rows.map((r) => r.started)) } : undefined;
   // Read in the folder's own synchronous step, so a job that ended while the pass yielded counts.
   const useIdent = (identifier: string) => use(db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE identifier = ? GROUP BY agent, task").all(identifier) as Row[]);
-  const usePairs = (pairs: { agent: string; task: string }[] = []) => use(pairs.flatMap(({ agent, task }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE task = ? AND agent = ? GROUP BY agent, task").all(task, agent) as Row[]));
+  // An engine home is named `<agent>_<task>` (sandbox.ts engineState): its jobs are those of each split of the name at a `_`,
+  // read now, so a first job admitted for it during the pass counts.
+  const useHome = (name: string) => use([...name.matchAll(/_/g)].flatMap(({ index }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE agent = ? AND task = ? GROUP BY agent, task").all(name.slice(0, index), name.slice(index + 1)) as Row[]));
   // In use: a job admitted or running, or one that ended within a day whose box is not released yet (release still reads the
   // workspace and the box keeps its mounts until then, boxes.ts tend; a release stuck for longer pins nothing).
   const LIVE = () => `(state IN ('admitted', 'running') OR (box IS NOT NULL AND (released IS NULL OR released < 0) AND COALESCE(ended, at) > ${Math.floor(now() - DAY)}))`;
@@ -63,9 +63,6 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
     const until = now() + budgetMs;
     const pressure = used() >= PRESSURE;
     const idleMs = (pressure ? 1 : IDLE_DAYS) * DAY, closedMs = pressure ? 0 : CLOSED_DAYS * DAY;
-    // An engine home's name is its (agent, task) (sandbox.ts engineState); the pairs that exist, by name.
-    const byHome = new Map<string, { agent: string; task: string }[]>();
-    for (const { agent, task } of db.prepare("SELECT DISTINCT agent, task FROM jobs").all() as { agent: string; task: string }[]) byHome.set(homeName(agent, task), [...(byHome.get(homeName(agent, task)) ?? []), { agent, task }]);
     const running = () => { try { return new Set((db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]).map((r) => checkAttempt(r.id, r.at))); } catch { return new Set<string>(); } };
     // Its sessions went with it: the next job starts fresh instead of resuming one whose files are gone (boxes.ts lastSession).
     const fresh = (u: Use, engine?: string) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = COALESCE(?, engine) AND NOT ${LIVE()}`).run(agent, task, engine ?? null); };
@@ -74,7 +71,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
       { root: join(workDir, ".cache-layers"), use: useIdent, busy: liveIdent },
       { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
       ...engines().map((kind) => ({
-        root: join(stateDir, kind), use: (n: string) => usePairs(byHome.get(n)), busy: (_: string, u?: Use) => livePair(u),
+        root: join(stateDir, kind), use: useHome, busy: (n: string) => livePair(useHome(n)),
         gone: (u: Use) => fresh(u, kind),
       })),
     ];
