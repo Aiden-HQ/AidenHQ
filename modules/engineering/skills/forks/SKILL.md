@@ -1,6 +1,6 @@
 ---
 name: forks
-description: The daily fork switch-back - move an instance off its own product or module patch (`product_fork:` or a module `fork:`) once upstream merged it. Load for the fork-switchback routine or any task about `product_fork:` or a module `fork:`.
+description: "Moves an instance off its own product or module patch (`product_fork:` or a module `fork:`) once upstream merged it, in the daily fork switch-back. Use for the fork-switchback routine or any task about `product_fork:` or a module `fork:`."
 ---
 
 # Forks

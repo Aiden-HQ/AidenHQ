@@ -1,6 +1,6 @@
 ---
 name: primer-docs
-description: "Load when you publish a document on Primer and whenever a Primer notice wakes you (a comment or direct edits on a document you published): write it, then run its review."
+description: "Writes documents on Primer and runs their review whenever a Primer notice wakes the agent (a comment or direct edits on a published document). Use when publishing a document on Primer and on every such notice."
 ---
 
 # Primer documents

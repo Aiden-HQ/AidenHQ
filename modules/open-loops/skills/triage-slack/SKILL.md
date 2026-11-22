@@ -1,12 +1,12 @@
 ---
 name: triage-slack
-description: "Load for the Slack live-feed triage run (Intake): decide each pending event as nothing, a needs-response or waiting-on task, or (rarely) an urgent page to the user."
+description: "Decides each pending Slack live-feed event as nothing, a needs-response or waiting-on task, or (rarely) an urgent page to the owner. Use on the Slack live-feed triage run (Intake)."
 when: { fields: { name: Intake } }
 ---
 
 # Slack triage
 
-`slack_owner` once gives the user's Slack ID, `<me>`; unpaired: finish "Slack not paired". `slack_pending_events` (default limit), again while a batch is full (50), at most 3 calls; none: finish.
+`slack_owner` once gives the owner's Slack ID, `<me>`; unpaired: finish "Slack not paired". `slack_pending_events` (default limit), again while a batch is full (50), at most 3 calls; none: finish.
 
 Decide each event on its own text the moment you see it, however recent. Default is nothing.
 

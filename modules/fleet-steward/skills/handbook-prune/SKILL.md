@@ -1,6 +1,6 @@
 ---
 name: handbook-prune
-description: "Load on the \"Agent Coach: weekly prune\" run (Sunday): file one deletion task for handbook rules uncited in 30 days, duplicated or contradicted."
+description: "Files one deletion task for handbook rules uncited in 30 days, duplicated or contradicted. Use on the \"Agent Coach: weekly prune\" run (Sunday)."
 when: { fields: { name: Fleet Steward } }
 ---
 

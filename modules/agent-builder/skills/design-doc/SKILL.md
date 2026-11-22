@@ -1,6 +1,6 @@
 ---
 name: design-doc
-description: The layout of a new agent's design doc on Primer, as a filled example to copy. Use when you write a design for review on Primer.
+description: "Provides the layout of a new agent's design doc on Primer as a filled example to copy (template.md). Use when writing an agent design for the owner's review on Primer."
 ---
 
 # An agent's design doc
@@ -17,5 +17,5 @@ replace every example value with your agent:
 6. **Trial plan**, **Examples** (what happens, what a good result contains) and **Open decisions**, each with the recommended
    choice in bold and why in a few words.
 
-Write in plain words for the person: no file names, YAML, tool names or grants. Stay well under 80,000 characters and
+Write in plain words for the owner: no file names, YAML, tool names or grants. Stay well under 80,000 characters and
 publish with `primer_create_document` (`format: markdown`).

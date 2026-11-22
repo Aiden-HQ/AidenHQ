@@ -1,6 +1,6 @@
 ---
 name: fleet-digest
-description: "Load on the \"Fleet Ops: daily digest\" run (evening): work deep-look lines, verify product-bug fixes live, send the owner one message."
+description: "Works the day's deep-look log lines, verifies product-bug fixes live and sends the owner one digest message. Use on the \"Fleet Ops: daily digest\" run (evening)."
 when: { fields: { name: Fleet Steward } }
 ---
 

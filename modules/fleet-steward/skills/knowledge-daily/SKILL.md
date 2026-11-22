@@ -1,6 +1,6 @@
 ---
 name: knowledge-daily
-description: "Load on a \"Librarian daily pass\" run: check new notes, confirm obvious identity links, curate agents' memory into proposals."
+description: "Checks new notes, confirms obvious identity links and curates agents' memory into proposals. Use on a \"Librarian daily pass\" run."
 when: { fields: { name: Fleet Steward } }
 ---
 

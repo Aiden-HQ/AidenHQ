@@ -1,6 +1,6 @@
 ---
 name: delegate-work
-description: "Load before handing work to an Engineer, the UI/UX Designer or another graded agent (task_delegate, or task_create with an assignee) - the brief, deliverable and rubric, UI work, and what counts as done."
+description: "Covers handing work to an Engineer, the UI/UX Designer or another graded agent (`task_delegate`, or `task_create` with an assignee): the brief, deliverable and rubric, UI work, and what counts as done. Use before delegating any work."
 unless: { fields: { module: engineering } }
 ---
 
@@ -14,7 +14,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 - Give the files (and lines) and the PR or commit that last changed them; for a restore, the removing commit.
 - The PR body names each issue it closes as `Fixes <owner>/<repo>#<number>`, one line each.
 - Brief and PR body are plain facts addressed to the Engineer; a note aimed at the reviewer is treated as steering and rejects the card.
-- A new app's repository is asked for explicitly: "create the repository `<agents org>/<app-name>` with `aidenhq create-repo`" (an approval card). Use `local/<name>` for one on this server.
+- A new app's repository is asked for explicitly: "create the repository `<agents org>/<app-name>` with `aidenhq create-repo`" (a card). Use `local/<name>` for one on this server.
 - The instance repo (`aidenhq-alpha/aidenhq-instance`) changes only through apply: `deliverable: apply` with a rubric on the applied card, never a `pr`. Archived repositories refuse pushes.
 - Name a CI job the repository runs (read its default-branch workflows). The product repo runs `ci-required`; `image-scan` is advisory there and required in app repos built from the CI template. Name a selector and its rule ("pin what `best-version.ts` prints"), not a version.
 - Skill `write-code` is the Engineer's rulebook; name in the brief which of its rules the change touches (a data app's schema, a security fix, `.github/code-review-critical` paths, an app's `AGENTS.md` map) so the rubric can check them.
@@ -53,4 +53,4 @@ Work for the Engineer, DevOps Engineer and UI/UX Designer is graded however you 
 - Done means merged and, for an app, deployed and healthy. A delegated task reaching `done` is a claim: check the deployed app or repository, and reopen with the exact unmet condition and reproduction.
 - **A new app is done when it is live and whoever asked has its link.** (1) The Engineer builds it (`pr` on the app's repository, done at merge); (2) `task_delegate` to the DevOps Engineer "create and deploy `<name>` from `<repo>` at main", deliverable `app`. Then read the `url` from `app_status` and send it.
 - A promise to report later rests on a delegated task under yours: its outcome wakes you there. A red check goes back to the Engineer.
-- Non-blocking `code-review` findings in an Engineer's report become one low-priority backlog task (`task_create`, `assignee` the app's owning agent per `fleet_catalog`, else you; marker `code-review:<owner/name>#<PR number>`; `deliverable` pr with that repo when graded).
+- Non-blocking code-review findings in an Engineer's report become one low-priority backlog task (`task_create`, `assignee` the app's owning agent per `fleet_catalog`, else you; marker `code-review:<owner/name>#<PR number>`; `deliverable` pr with that repo when graded).

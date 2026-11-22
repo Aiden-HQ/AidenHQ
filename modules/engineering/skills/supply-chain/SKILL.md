@@ -1,6 +1,6 @@
 ---
 name: supply-chain
-description: Pick and pin a dependency, package, Docker image, GitHub Action or apt package version under the 7-day rule. Use before adding or upgrading any dependency, image, action or tool install, and when CI's supply-chain checks fail.
+description: "Picks and pins a dependency, package, Docker image, GitHub Action or apt package version under the 7-day rule. Use before adding or upgrading any dependency, image, action or tool install, and when CI's supply-chain checks fail."
 ---
 
 # Supply chain: pin everything, at least 7 days old
