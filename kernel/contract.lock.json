@@ -196,7 +196,7 @@
     "schema codehost.json.runner.orgs": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\",\"minItems\":1}"},
     "schema codehost.json.runner.orgs[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^([\\\\w.-]+|\\\\*|@agents|@product|@orgs)$\"}"},
     "schema codehost.json.setup": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
-    "schema codehost.json.setup.paths": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\",\"minItems\":1}"},
+    "schema codehost.json.setup.paths": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\",\"minItems\":1,\"maxItems\":20}"},
     "schema codehost.json.setup.paths[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^[\\\\w.][\\\\w./*-]{0,499}$\"}"},
     "schema codehost.json.setup.repos": {"state":"experimental","fp":"{\"req\":true,\"type\":\"array\",\"minItems\":1}"},
     "schema codehost.json.setup.repos[]": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^(@instance|@product|@orgs|@maintained|@agents/([\\\\w.-]+|\\\\*)|[\\\\w.-]+/([\\\\w.-]+|\\\\*)|\\\\*/\\\\*)$\"}"},
