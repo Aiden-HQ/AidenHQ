@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { flushDigest, queueBatch, retractBatch } from "./attention.js";
+import { flushDigest, queueBatch } from "./attention.js";
 import { kernelClient } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { KINDS, notify, retry, sendDigest, type Deps, type Kind } from "./notify.js";
@@ -119,11 +119,6 @@ const take = async () => {
   const done: number[] = [];
   try {
     for (const m of await kernel.take()) {
-      if (typeof m.retract === "string") {
-        retractBatch(store, m.retract);
-        if (Number.isInteger(m.id)) done.push(m.id);
-        continue;
-      }
       // A kernel batch line waits for the digest slot (or goes as an fyi when there are no digest hours).
       if (m.batch === true && queueBatch(store, d.attention!, { text: String(m.text ?? ""), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}) })) {
         if (Number.isInteger(m.id)) done.push(m.id);
@@ -144,5 +139,5 @@ setInterval(() => void take(), 10_000).unref();
 void take();
 setInterval(() => void retry(d).catch((err) => log.warn({ err: String(err) }, "retry failed")), 30_000).unref();
 // The digest of routine crew messages: one message per slot.
-setInterval(() => void flushDigest(store, d.attention!, (text) => sendDigest(d, text)).catch(() => undefined), 5 * 60_000).unref();
+setInterval(() => void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.liveNeeds()).catch(() => undefined), 5 * 60_000).unref();
 startWatch({ work: kernel.activity, api: (p) => kernel.read(p), store, notify: async (text, kind) => (await notify(d, { kind, text })).sent }, log);

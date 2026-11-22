@@ -55,6 +55,8 @@ test("owner-asked: Gmail missing → one message → connect → the task resume
   assert.equal(state.kind, "waiting");
   assert.equal(state.reason, "agent_wait");
   assert.deepEqual((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down.map((d) => [d.connection, d.module, d.cause]), [["google_workspace", "google", "not_connected"]]);
+  assert.deepEqual((await w.k.v1("GET", "/v1/connections/live", undefined, "router-key")).json.keys, ["google_workspace:not_connected"]);
+  assert.equal((await w.k.v1("GET", "/v1/connections/live", undefined, "dispatch-key")).status, 403, "the owner's router only");
   assert.equal((await w.k.v1("POST", "/v1/connections/google/ok", {}, "dispatch-key")).status, 401, "the board's key only");
   assert.equal((await w.k.v1("POST", "/v1/connections/nope/ok", {})).status, 404);
   assert.deepEqual((await w.k.v1("POST", "/v1/connections/google/ok", {})).json, { woken: 1 });

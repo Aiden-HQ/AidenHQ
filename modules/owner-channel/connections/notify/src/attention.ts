@@ -63,13 +63,6 @@ export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours
   return true;
 }
 
-/** The kernel took back a batch line (its need cleared before the digest went): it leaves the queue, and its day marker, so a new need can report. */
-export function retractBatch(store: Store, dedupe_key: string): void {
-  const key = `batch:${dedupe_key}`;
-  store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => i.key !== key)));
-  store.setKv(key, "");
-}
-
 /** The owner-local slot now: its date plus the latest digest hour already reached (none before the first one). */
 export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, now: number): string | undefined {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: cfg.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(now).map((x) => [x.type, x.value]));
@@ -85,10 +78,22 @@ const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(
  * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
  * message's items leave the queue (and are told) only once it went; a failed send keeps the rest for the next tick.
  */
-export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now()): Promise<boolean> {
+export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now(), liveNeeds?: () => Promise<string[]>): Promise<boolean> {
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
-  const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
+  let q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
+  // A connection-need line goes only while the kernel still confirms that need down; a recovered, expired or removed one drops out.
+  // A kernel that can't be read keeps every line: better to tell the owner than to hide a real outage.
+  if (liveNeeds && q.some((i) => i.key?.startsWith("batch:connect:"))) {
+    const live = await liveNeeds().then((k) => new Set(k), () => undefined);
+    if (live) {
+      const gone = new Set(q.filter((i) => i.key?.startsWith("batch:connect:") && !live.has(i.key.slice("batch:connect:".length))).map((i) => i.id));
+      if (gone.size) {
+        q = q.filter((i) => !gone.has(i.id));
+        store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !gone.has(i.id))));
+      }
+    }
+  }
   const batches: Item[][] = [];
   for (const i of q) {
     const b = batches.at(-1);

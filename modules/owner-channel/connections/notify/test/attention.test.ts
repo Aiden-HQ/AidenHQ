@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { flushDigest, queueBatch, queueDigest, retractBatch } from "../src/attention.js";
+import { flushDigest, queueBatch, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
@@ -69,14 +69,21 @@ it("a long digest goes as several messages under the transport limit, each told 
   expect(store.recentTold(3, 50, Date.UTC(2026, 10, 17, 9, 5))).toHaveLength(20);
 });
 
-it("a retracted kernel batch line leaves the digest, and its need can report again the same day", () => {
-  const store = openStore(":memory:");
-  const cfg = { digestHours: [9], timezone: "UTC" };
-  const now = Date.UTC(2026, 10, 17, 8);
-  queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, now);
-  queueDigest(store, { agent: "Worker", text: "other" }, now);
-  retractBatch(store, "connect:github:not_connected");
-  expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other"]);
-  queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, now);
-  expect(JSON.parse(store.getKv("digest:queue")!)).toHaveLength(2);
+it("a connection-need digest line goes only while the kernel confirms it; an unreadable kernel keeps every line", async () => {
+  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const at = Date.UTC(2026, 10, 17, 9);
+  const run = async (live: () => Promise<string[]>) => {
+    const store = openStore(":memory:");
+    queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, at - 1000);
+    queueBatch(store, cfg, { text: "Google isn't connected", dedupe_key: "connect:google:expired" }, at - 1000);
+    queueDigest(store, { agent: "Worker", text: "other" }, at - 1000);
+    let out = "";
+    await flushDigest(store, cfg, async (t) => ((out = t), true), at, live);
+    return out;
+  };
+  const sent = await run(async () => ["google:expired"]);
+  expect(sent).toContain("Google isn't connected");
+  expect(sent).toContain("other");
+  expect(sent).not.toContain("GitHub isn't connected");
+  expect(await run(async () => { throw new Error("kernel down"); })).toContain("GitHub isn't connected");
 });

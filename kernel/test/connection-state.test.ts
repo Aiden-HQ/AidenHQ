@@ -121,19 +121,20 @@ test("a stale row expires, so its old since never makes a new blip count as last
   assert.equal(w.queued.length, 1);
 });
 
-test("a success retracts the digest line already queued for the cleared need (921d7114)", async () => {
+test("liveKeys lists only reported needs that are still hit or owner-told, on connections that exist (921d7114)", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.deepEqual(w.s.liveKeys(), [], "unconfirmed");
+  w.tick(LASTED);
+  w.s.tick();
+  assert.deepEqual(w.s.liveKeys(), ["github:not_connected"]);
   w.s.ok("github", { fullOnly: true });
-  assert.deepEqual(w.queued, [], "nothing was reported, nothing to retract");
+  assert.deepEqual(w.s.liveKeys(), [], "recovered");
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
   w.tick(LASTED);
   w.s.tick();
-  assert.equal(w.queued.length, 1);
-  w.s.ok("github", { fullOnly: true });
-  assert.equal(w.queued.length, 2);
-  assert.equal(w.queued[1].retract, "connect:github:not_connected");
-  assert.equal(w.queued[1].batch, true);
+  w.tick(25 * 60_000);
+  assert.deepEqual(w.s.liveKeys(), [], "nobody hit it lately");
 });
 
 test("Connect that lands while a wait is being armed still wakes the task (7bcb9ba7)", async () => {
@@ -155,7 +156,7 @@ test("downFor names the account an expired need is about (dfeba64b)", async () =
   assert.equal(w.s.downFor("a1")[0]!.account, undefined, "a need on the whole connection is listed first");
 });
 
-test("an expired reported need retracts its queued line; every confirmed account is listed", async () => {
+test("every confirmed down account is listed", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "a@x.com", detail: "" });
   await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "b@x.com", detail: "" });
@@ -164,7 +165,6 @@ test("an expired reported need retracts its queued line; every confirmed account
   assert.deepEqual(w.s.downFor("a1").map((d) => d.account), ["a@x.com", "b@x.com"]);
   w.tick(25 * 60_000);
   w.s.tick();
-  assert.deepEqual(w.queued.filter((n) => n.retract).map((n) => n.retract).sort(), ["connect:google:expired:account:a@x.com", "connect:google:expired:account:b@x.com"]);
   assert.deepEqual(w.s.downFor("a1"), []);
 });
 
@@ -345,7 +345,7 @@ test("tick lists a still-waiting connection once a day", async () => {
   w.s.ok("google");
   w.tick(DAY);
   w.s.tick();
-  assert.equal(w.queued.filter((n) => !n.retract).length, 2, "nothing once connected");
+  assert.equal(w.queued.length, 2, "nothing once connected");
 });
 
 test("a down user sign-in does not mark a sibling connection of the same module down", async () => {

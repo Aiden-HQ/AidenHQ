@@ -100,9 +100,6 @@ export function createConnectionState(o: {
     }
   }
   const q = (sql: string) => db.prepare(sql);
-  const retract = (key: string) => {
-    try { o.queue({ kind: "digest", batch: true, retract: `connect:${key}`, text: "retract" }); } catch (e) { log("connection digest: the retraction wasn't queued", { key, err: (e as Error).message }); }
-  };
   /** The module a connection belongs to (its display name and board link are the module's). */
   const moduleOf = (connection: string) => o.connections()[connection]?.module ?? connection;
 
@@ -202,21 +199,16 @@ export function createConnectionState(o: {
       const { account, fullOnly } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear } : clear;
       const t = now();
       const where = `module = ?${account ? " AND account = ?" : ""}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
-      let reported: { key: string }[] = [];
-      const woken = inTx(db, "connection_ok", () => {
+      return inTx(db, "connection_ok", () => {
         const waits = `module = ?${account ? " AND account = ?" : ""}${fullOnly ? " AND full = 1" : ""}`;
         const args = account ? [connection, account] : [connection];
         const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waits}`).all(...args) as { task: string; agent: string }[];
-        reported = q(`SELECT key FROM connection_state WHERE ${where} AND reported_day IS NOT NULL`).all(...args) as { key: string }[];
         q(`DELETE FROM connection_state WHERE ${where}`).run(...args);
         q(`DELETE FROM connection_waits WHERE ${waits}`).run(...args);
         for (const w of waiters) o.wakes.open({ key: `connect:${connection}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
         if (waiters.length) log("connection ok", { connection, ...(account ? { account } : {}), woken: waiters.length });
         return waiters.length;
       });
-      // A digest line already queued for a need that has now cleared would tell the owner something false: the owner channel drops it.
-      for (const r of reported) retract(r.key);
-      return woken;
     },
 
     /** The board's Connect names a module: every connection of it connected. */
@@ -249,6 +241,13 @@ export function createConnectionState(o: {
       return out;
     },
 
+    /** The keys of the needs confirmed down now (reported, still being hit or owner-told, on a connection that exists): the owner channel keeps a queued digest line only while its key is here. */
+    liveKeys(): string[] {
+      const live = Object.keys(o.connections());
+      const rows = q(`SELECT key FROM connection_state WHERE reported_day IS NOT NULL AND (told = 1 OR COALESCE(last_hit, since) >= ?) AND module IN (${live.map(() => "?").join(", ")})`).all(now() - STALE, ...live) as { key: string }[];
+      return rows.map((r) => r.key);
+    },
+
     /** Once per UTC day: one digest line per need at least LASTING old and not reported today. */
     tick(): void {
       const t = now(), today = day(t);
@@ -260,10 +259,7 @@ export function createConnectionState(o: {
       q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
       // A need nobody hit lately has stopped failing (a success would have cleared it only with a sign-in's word): expire it. An owner's
       // wait keeps its row until Connect or the wait's end.
-      const stale = q("SELECT key, reported_day FROM connection_state WHERE told = 0 AND COALESCE(last_hit, since) < ?").all(t - STALE) as { key: string; reported_day: string | null }[];
       q("DELETE FROM connection_state WHERE told = 0 AND COALESCE(last_hit, since) < ?").run(t - STALE);
-      // A line already queued for it would outlive the evidence: the owner channel drops it.
-      for (const r of stale) if (r.reported_day) retract(r.key);
       // The owner-asked path is reminded only while a task still waits; a background need needs no waiter.
       const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND since <= ? AND (told = 0 OR EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account)))`).all(today, t - LASTING) as Row[];
       for (const r of rows) {

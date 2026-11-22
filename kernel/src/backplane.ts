@@ -86,6 +86,8 @@
 //                              that only the owner can fix, recorded as that connection's need (needs.ts) and routed like a tool call's -> {ok}
 //   GET  /v1/connections/down?agent=  (a module with role kernel.jobs) the agent's granted connections that are down ->
 //                              {down: [{connection, module, cause, since}]}: names, causes and dates only (the dispatch preamble)
+//   GET  /v1/connections/live  (the module with role kernel.notify) {keys}: the connection-state keys of the needs confirmed down now; the
+//                              owner channel keeps a queued `connect:<key>` digest line only while its key is here
 //   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/{decide,update}, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
@@ -207,6 +209,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/connections/:module/ok", auth: "board" },
   { method: "POST", path: "/v1/connections/need", auth: "module" },
   { method: "GET", path: "/v1/connections/down", auth: "module" },
+  { method: "GET", path: "/v1/connections/live", auth: "module" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
   { method: "POST", path: "/v1/validate", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
@@ -340,7 +343,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
-  connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "has" | "report">;
+  connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "liveKeys" | "has" | "report">;
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
@@ -573,6 +576,12 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           const agent = new URLSearchParams(q ?? "").get("agent") ?? "";
           if (!/^[\w-]{1,100}$/.test(agent)) throw fail(400, "bad_request", "send ?agent=<id>");
           return send(res, 200, { down: connectionState.downFor(agent) });
+        }
+        case "GET /v1/connections/live": {
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.notify")) throw fail(403, "forbidden", `${w.module} may not read connection state (role kernel.notify)`);
+          if (!connectionState) throw fail(503, "unavailable", "connection state is off");
+          return send(res, 200, { keys: connectionState.liveKeys() });
         }
         case "GET /v1/connections/health": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { probes: connectionHealth ? await connectionHealth() : {} });
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
