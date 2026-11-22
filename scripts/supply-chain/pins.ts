@@ -700,9 +700,11 @@ const sourceName = (p: string) => /^\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.
 function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string; parents?: boolean; targetDir?: string; noClobber?: boolean } | undefined {
   let rest = l.replace(new RegExp(`^\\s*${verb}\\s+`, "i"), "").trim();
   let from: string | undefined, parents = false, targetDir: string | undefined;
-  // `-n`/`-f` (and `--no-clobber`/`--force`) decide whether an existing target is replaced, and the last one wins:
-  // `mv -n -f a b` forces, `mv -f -n a b` does not. The mode is read as the flags are consumed, not searched later.
+  // `-n`/`-f` (and `--no-clobber`/`--force`) decide whether an existing target is replaced. The mode is read as the
+  // flags are consumed, not searched later. For `mv` the last one wins (`mv -n -f a b` forces, `mv -f -n a b` does not);
+  // GNU `cp`'s `-f` does not cancel `-n` (it only retries an unopenable destination), so `cp -n -f a b` keeps `a` out.
   let noClobber = false;
+  const setNoClobber = (n: boolean) => { if (n || verb === "mv") noClobber = n; };
   // Every leading flag is consumed before the operands are read, whichever form they take: `--from=<stage>`, a valued
   // `--flag=value`/`--flag value` (`--chmod`, `--chown`, `--exclude`) and a valueless `--flag` (`--link`, `--parents`,
   // `--follow-link`), plus `cp`/`mv` short flags (`-r`, `-t dir`). A flag never takes the JSON array or the first source
@@ -726,8 +728,8 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
         [/^--target-directory\s+("[^"]*"|'[^']*'|\S+)\s*/i, (m) => { targetDir = strip(m[1]!); }],
         [/^--suffix=("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
         [/^--suffix\s+("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
-        [/^--no-clobber\s*/i, () => { noClobber = true; }],
-        [/^--force\s*/i, () => { noClobber = false; }],
+        [/^--no-clobber\s*/i, () => { setNoClobber(true); }],
+        [/^--force\s*/i, () => { setNoClobber(false); }],
         // `-t` may be glued to its directory (`cp -t/etc/apt/sources.list.d/ f`) or followed by it (`cp -rt dir f`).
         [/^-[a-zA-Z]*t(=?\S+)\s*/, (m) => { targetDir = strip(m[1]!.replace(/^=/, "")); }],
         [/^-[a-zA-Z]*t\s+("[^"]*"|'[^']*'|\S+)\s*/, (m) => { targetDir = strip(m[1]!); }],
@@ -735,8 +737,9 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
         // so its cluster stops there and the next word is an operand, not another flag.
         [/^-[a-zA-Z]*S("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
         [/^-[a-zA-Z]*S\s+("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
-        // A valueless cluster is read one character at a time, so `-fn` and `-nf` differ the way they do to the shell.
-        [/^-[a-zA-Z]+(?=\s|$)\s*/, (m) => { for (const c of m[0].replace(/^-|\s+$/g, "")) if (c === "n") noClobber = true; else if (c === "f") noClobber = false; }],
+        // A valueless cluster is read one character at a time, so `-fn` and `-nf` differ the way they do to `mv`
+        // (and not to `cp`, where `-f` never cancels `-n`).
+        [/^-[a-zA-Z]+(?=\s|$)\s*/, (m) => { for (const c of m[0].replace(/^-|\s+$/g, "")) if (c === "n") setNoClobber(true); else if (c === "f") setNoClobber(false); }],
         [/^--[\w-]+(?=\s|$)\s*/, () => {}],
       ];
   for (;;) {

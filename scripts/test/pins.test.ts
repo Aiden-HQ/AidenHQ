@@ -1086,4 +1086,15 @@ test("pins: a normalised COPY path, a guarded mv and the last overwrite flag", (
   for (const flags of ["-f -n", "--force --no-clobber", "-fn"]) {
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN mv ${flags} ${src} ${src}.disabled\n${unpinned}\n`).problems.length, 1, flags);
   }
+  // GNU `cp`'s `-f` does not cancel `-n` (it only retries an unopenable destination), so `cp -n -f` still leaves the
+  // target alone, while for `mv` the last flag wins. Both files are known, so the kept repository lines show the mode.
+  const dst = "/etc/apt/sources.list.d/other.list";
+  const both = (verb: string, flags: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN echo 'deb https://other.example/apt bookworm main' > ${dst}\nRUN ${verb} ${flags} ${src} ${dst}\n${unpinned.replace("foo", "foo=1.0")}\n`).pins.filter((p) => p.kind === "apt")[0]!.sources;
+  const vendor = "https://vendor.example/apt bookworm main", other = "https://other.example/apt bookworm main";
+  for (const flags of ["-f", "--force"]) assert.deepEqual(both("cp", flags), [vendor], flags);
+  for (const flags of ["-n -f", "--no-clobber --force", "-nf", "-f -n", "-fn", "-n", "--no-clobber"]) {
+    assert.deepEqual([...both("cp", flags)!].sort(), [vendor, other].sort(), flags);
+  }
+  for (const flags of ["-f", "--no-clobber --force", "-nf", "-n -f"]) assert.deepEqual(both("mv", flags), [vendor], flags);
+  for (const flags of ["-f -n", "-fn", "-n", "--no-clobber"]) assert.deepEqual([...both("mv", flags)!].sort(), [vendor, other].sort(), flags);
 });
