@@ -124,11 +124,22 @@ test("task_list(state=\"done\") returns a done row behind a first page of open r
 });
 
 test("task_list with no state still returns only the not-done kinds", async () => {
-  const rows = [row("done-1", "done"), row("working-1", "todo"), row("waiting-1", "in_progress"), row("idle-1", "todo")];
-  const states = { "done-1": noAttention("done"), "working-1": noAttention("working"), "waiting-1": noAttention("waiting"), "idle-1": noAttention("idle") };
+  const rows = [row("done-1", "done"), row("working-1", "todo"), row("waiting-1", "in_progress"), row("idle-1", "todo"), row("reopened-1", "todo")];
+  // reopened-1 is open in Paperclip but the kernel still holds its done row: the kernel decides, so it is left out too.
+  const states = { "done-1": noAttention("done"), "working-1": noAttention("working"), "waiting-1": noAttention("waiting"), "idle-1": noAttention("idle"), "reopened-1": noAttention("done") };
   const { call } = bridge({ handler: issueBoard({ rows }), states });
   const out = parse(await call("task_list", { limit: 10 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["working-1", "waiting-1", "idle-1"]);
+});
+
+test("task_list still lists a task the kernel has no state for, when no state is named", async () => {
+  const rows = [row("known-1", "todo"), row("unseen-1", "todo")];
+  const { call } = bridge({ handler: issueBoard({ rows }), states: { "known-1": noAttention("working") } });
+  const out = parse(await call("task_list", { limit: 10 }));
+  assert.deepEqual(new Set(out.out?.tasks.map((t) => t.id)), new Set(["known-1", "unseen-1"]), JSON.stringify(out));
+  // An explicit state does need a kernel row.
+  const waiting = parse(await call("task_list", { state: "waiting", limit: 10 }));
+  assert.deepEqual(waiting.out.tasks.map((t) => t.id), []);
 });
 
 test("task_list returns no more than limit matches even when more pages hold matches", async () => {

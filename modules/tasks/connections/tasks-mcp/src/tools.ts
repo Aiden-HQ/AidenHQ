@@ -842,23 +842,28 @@ function stateFilter(state: unknown, attention: unknown) {
   const bad = named.filter((k) => !KINDS.includes(k));
   const one = attention ? String(attention) : "";
   if (bad.length || (one && !ATTENTION.includes(one))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
-  // An attention-only query keeps the documented default kinds: its wider candidate statuses must not put a closed task in
-  // the list the default leaves out.
-  return { kinds: named.length || !one ? named : DEFAULT_KINDS, attention: one };
+  // A query that names no kind keeps the documented default: every task but the done and cancelled ones. That holds for an
+  // attention-only query too (its wider candidate statuses must not put a closed task in), and the kernel row is what decides,
+  // so a task just reopened in Paperclip whose kernel state is still done is left out as well.
+  return { kinds: named.length ? named : DEFAULT_KINDS, attention: one, byDefault: !named.length };
 }
-/** Whether a kernel row passes the filter; a task with no row passes only without a filter. */
-const matchesState = (s: Json | undefined, kinds: string[], attention: string) =>
-  (!kinds.length || (s && kinds.includes(s.kind))) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention)));
+/**
+ * Whether a kernel row passes the filter. `byDefault` is the kind list the tool applies when none was named: a row with a
+ * kernel state must match it, but a task the kernel has no state for is still listed (it always was). An explicit `state`
+ * needs a row, as does `attention`.
+ */
+const matchesState = (s: Json | undefined, kinds: string[], attention: string, byDefault = false) =>
+  (!s ? !kinds.length || byDefault : !kinds.length || kinds.includes(s.kind)) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention)));
 /** `list` paired with its kernel rows that pass the filter, in Paperclip's order. */
-async function matchingStates(list: Json[], kinds: string[], attention: string, ms?: number) {
+async function matchingStates(list: Json[], kinds: string[], attention: string, ms?: number, byDefault = false) {
   if (!list.length) return [] as (readonly [Json, Json])[];
   const rows = await stateRows(list.map((i) => i.id), ms);
-  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => matchesState(s, kinds, attention)) as (readonly [Json, Json])[];
+  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => matchesState(s, kinds, attention, byDefault)) as (readonly [Json, Json])[];
 }
-/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`; a task with no row passes only without a filter. */
+/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`. */
 async function withStates(list: Json[], state: unknown, attention: unknown) {
-  const { kinds, attention: one } = stateFilter(state, attention);
-  return matchingStates(list, kinds, one);
+  const { kinds, attention: one, byDefault } = stateFilter(state, attention);
+  return matchingStates(list, kinds, one, undefined, byDefault);
 }
 /** The most rows one Paperclip page (and one kernel state read) spans. */
 const PAGE = 200;
@@ -951,7 +956,7 @@ const TOOLS: Record<string, Tool> = {
       onlyArgs("task_search", args);
       const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const { kinds, attention: one } = stateFilter(state, attention);
+      const { kinds, attention: one, byDefault } = stateFilter(state, attention);
       const max = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 25));
       const q = new URLSearchParams({ q: String(query).slice(0, 200), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state));
@@ -996,7 +1001,7 @@ const TOOLS: Record<string, Tool> = {
         }
         const ms = deadline - Date.now();
         try {
-          list.push(...(await matchingStates(fresh, kinds, one, ms)));
+          list.push(...(await matchingStates(fresh, kinds, one, ms, byDefault)));
         } catch (err) {
           if (Date.now() < deadline) throw err;
           stopped = true;
@@ -1030,7 +1035,7 @@ const TOOLS: Record<string, Tool> = {
       onlyArgs("task_list", args);
       const { mine, state, attention, label, updated_since, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const { kinds, attention: one } = stateFilter(state, attention);
+      const { kinds, attention: one, byDefault } = stateFilter(state, attention);
       const max = Math.max(1, Math.min(Math.floor(Number(limit) || 100), 200));
       const q = new URLSearchParams({ status: statusesFor(state) });
       const me = mine ? grant().id : "";
@@ -1082,7 +1087,7 @@ const TOOLS: Record<string, Tool> = {
             const chunk = raw.slice(n, n + PREPARE_AT_ONCE);
             ready.push(...((await atEdge(() => Promise.all(chunk.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[]));
           }
-          const rows = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
+          const rows = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now(), byDefault), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > until) complete = false;
           // The page's last row, as the list is served: anything behind it ranks at or after it, never before.
@@ -1153,11 +1158,12 @@ const TOOLS: Record<string, Tool> = {
           } else {
             // Neither page holds a match: read on in whichever source still has pages, without touching one it proves nothing
             // about beyond its own tail (a page read at all can fail, so only read what can change the answer).
-            if (!pa.done) {
+            // The source whose page ends earlier is read first, then the heads are compared again: the source that has not
+            // been read may already have a match, and reading it blindly could cost a request nothing needs.
+            if (!pa.done && (pb.done || cmp(pa.value.tail, pb.value.tail) <= 0)) {
               pa = await left.next();
               ia = 0;
-            }
-            if (!pb.done) {
+            } else if (!pb.done) {
               pb = await right.next();
               ib = 0;
             }
