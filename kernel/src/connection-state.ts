@@ -5,8 +5,9 @@
 //   own words, escalate.ts ownerWroteAt): one decision message on that root task with the one link, once per need until it
 //   clears (`told`), and the calling task waits on the connection (idle.ts, as an agent's own wait: 7 days for a full cause,
 //   a day for a partial one, so it retries daily);
-// - anything else (a routine's run, its delegated work, a module's own call): one batched digest line a day, never a ping, and only
-//   for a need that has lasted (LASTING): a restart's blip clears itself on the next success and never reaches the owner.
+// - anything else (a routine's run, its delegated work, a module's own call): hit() only records the row; tick() queues one batched
+//   digest line a day, never a ping, for a row at least LASTING old. A success deletes the row, so a restart's blip clears itself
+//   and never reaches the owner: a need is confirmed by still existing.
 // The agent always gets the kernel's fixed words, never the module's text. ok() clears a connection (a successful call with no account; the board's Connect clears every connection of its module, okModule) and wakes every task waiting on it; a multi-account need names its account, and only that
 // account's rows and waits clear, so a healthy account's call never wakes work that failed on another one.
 // Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
@@ -34,9 +35,8 @@ const FULL = new Set<string>(["not_connected", "expired"]);
 const DAY = 864e5;
 /** A full cause waits until Connect wakes it (idle.ts takes at most 7 days ahead). */
 const FULL_WAIT = 7 * DAY - 60_000;
-/** A background full need (a restart's blip) reaches the digest only when hit again this long after it began, with no success in between (a success deletes the row). A partial cause is no blip: it reports at once. */
+/** A need reaches the digest (tick) only once its row is this old: a success deletes it first. */
 const LASTING = 10 * 60_000;
-const LASTED = "(cause NOT IN ('not_connected', 'expired') OR since <= ?)";
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
 const NAME = /^[\w.:/@-]{1,100}$/;
 const day = (ms: number) => iso(ms).slice(0, 10);
@@ -151,13 +151,8 @@ export function createConnectionState(o: {
       }
       const asked = c && ownerWroteAt(c.root, c.comments) !== undefined;
       if (!c || !asked) {
-        // Background: one digest line a day per need, whoever hits it, once the need has lasted. The marker and the notice commit together, so a notice
-        // `queue` failed to write leaves the need reportable on the next attempt instead of being marked reported without it.
-        inTx(db, "connection_digest", () => {
-          if (q(`UPDATE connection_state SET reported_day = ? WHERE key = ? AND ${LASTED} AND (reported_day IS NULL OR reported_day != ?)`).run(today, key, t - LASTING, today).changes)
-            o.queue({ kind: "digest", batch: true, text: `${label} isn't connected (${ownerWords(n)}): ${link(module, row.url)}`, dedupe_key: `connect:${key}` });
-        });
-        log("connection need", { connection, cause: n.cause, to: "digest" });
+        // Background: the row is the record; tick() reports it once it has lasted.
+        log("connection need", { connection, cause: n.cause, to: "digest later" });
         return background;
       }
       const { task, root, comments } = c;
@@ -240,11 +235,11 @@ export function createConnectionState(o: {
       return out;
     },
 
-    /** Once per UTC day: one digest line per need that still has waiting tasks and wasn't reported today (a full need only as a reminder: `hit` confirms it first). */
+    /** Once per UTC day: one digest line per need at least LASTING old and not reported today. */
     tick(): void {
       const t = now(), today = day(t);
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
-      const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND (cause NOT IN ('not_connected', 'expired') OR reported_day IS NOT NULL) AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account))`).all(today) as Row[];
+      const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND since <= ?`).all(today, t - LASTING) as Row[];
       for (const r of rows) {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
@@ -254,7 +249,7 @@ export function createConnectionState(o: {
         try {
           inTx(db, "connection_digest", () => {
             if (!q("UPDATE connection_state SET reported_day = ? WHERE key = ? AND (reported_day IS NULL OR reported_day != ?)").run(today, r.key, today).changes) return;
-            o.queue({ kind: "digest", batch: true, text: `${o.label(module)} isn't connected (${ownerWords(n)}), and work is waiting on it: ${link(module, r.url)}`, dedupe_key: `connect:${r.key}` });
+            o.queue({ kind: "digest", batch: true, text: `${o.label(module)} isn't connected (${ownerWords(n)}): ${link(module, r.url)}`, dedupe_key: `connect:${r.key}` });
           });
         } catch (e) {
           log("connection digest: the notice wasn't queued; the next tick retries it", { connection: r.module, key: r.key, err: (e as Error).message });
