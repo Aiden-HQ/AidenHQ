@@ -1155,7 +1155,10 @@ const aliasCodenames = new Map<string, Promise<string>>();
 function aliasCodename(alias: string): Promise<string> {
   if (!aliasCodenames.has(alias)) {
     aliasCodenames.set(alias, (async () => {
-      const r = await fetchRetry(`http://deb.debian.org/debian/dists/${alias}/Release`, { timeout: 30000 });
+      // HTTPS: this is suite metadata, not an index, and it selects which suite of a third-party repository is
+      // queried, so a plaintext hop that rewrites `Codename` would send the age check to a suite that need not hold
+      // the package. Debian serves the same Release file over TLS.
+      const r = await fetchRetry(`https://deb.debian.org/debian/dists/${alias}/Release`, { timeout: 30000 });
       const m = /^Codename:\s*(\S+)\s*$/m.exec(await r.text());
       if (!m) throw new Error(`dists/${alias}/Release names no Codename`);
       return m[1]!;
