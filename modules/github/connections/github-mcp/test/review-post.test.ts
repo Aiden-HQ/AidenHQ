@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { GitHub, GitHubRefused, guard } from "../src/github.js";
 import { ReviewPoster } from "../src/review-post.js";
+import { gitHubApp, type GitHubApp } from "../src/github-app.js";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { accessFor } from "./fake-access.js";
 import { SCALES, anchors, modelName, plain, redact, renderFinding, renderReview, renderStatus, rightLines, type Review } from "../src/review-render.js";
 
@@ -35,9 +40,20 @@ describe("rendering model text", () => {
     expect(summary).toContain('<!-- aidenhq-review: {"important":1,"nit":0,"pre_existing":0} -->');
   });
 
+  it("a nit gets no thread: 1 important and 2 nits make one inline comment, and the summary lists the 2 nits", () => {
+    const r = review([finding("f_imp_1", "src/pay.ts", 2), finding("f_nit_1", "src/pay.ts", 3, { severity: "nit", title: "Name pay better" }), finding("f_nit_2", "src/util.ts", 8, { severity: "nit", title: "Dead branch" })]);
+    const { summary, comments, listed } = renderReview(r, "run1", { gated: true });
+    expect(comments.map((c) => c.id)).toEqual(["f_imp_1"]);
+    expect(listed).toEqual([]);
+    expect(summary).toContain("**Nits** (no thread)");
+    expect(summary).toContain("- `pay.ts:3` Name pay better");
+    expect(summary).toContain("- `util.ts:8` Dead branch");
+    expect(summary).toContain("**blocks the merge**"); // the important one gates; the nits don't
+  });
+
   it("scans at a glance: a short title, the counts, important findings in a table linked to their threads, the rest collapsed, each finding once", () => {
     expect([modelName("anthropic/claude-haiku-5.5"), modelName("~openai/gpt-6.2-sol"), modelName("~deepseek/deepseek-flash-latest")]).toEqual(["Haiku 5.5", "GPT 6.2 Sol", "DeepSeek Flash"]);
-    const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "nit" }), finding("f_none_1", "docs/x.md", 7, { severity: "pre_existing" })]);
+    const r = review([finding("f_imp_1", "src/deep/pay.ts", 2, { title: "Amount | unchecked" }), finding("f_nit_1", "src/pay.ts", 3, { severity: "pre_existing" }), finding("f_none_1", "docs/x.md", 7, { severity: "pre_existing" })]);
     const place = anchors(r.findings, new Map([["src/deep/pay.ts", new Set([1, 2])], ["src/pay.ts", new Set([9])]]));
     expect(place.get("f_nit_1")).toEqual({ line: 9 }); // the nearest diff line of its file
     expect(place.has("f_none_1")).toBe(false); // in no changed file: no thread
@@ -45,7 +61,7 @@ describe("rendering model text", () => {
     expect(summary).toContain("### Aiden review · DeepSeek Flash (medium)");
     expect(summary).toContain("**blocks the merge**");
     expect(summary).toContain("| \u{1F534} | [Amount \\| unchecked](https://github.com/t/1) | `pay.ts:2` |");
-    expect(summary).toMatch(/<details><summary>1 nit<\/summary>[\s\S]*`pay.ts:3`/);
+    expect(summary).toMatch(/<details><summary>1 pre-existing<\/summary>[\s\S]*`pay.ts:3`/);
     expect(summary.match(/Amount/g)).toHaveLength(1);
     expect(summary).toContain("Fix brief"); // the one without a thread carries its reasoning, once
     expect(comments.find((c) => c.id === "f_nit_1")!.body).toContain("outside the diff");
@@ -105,7 +121,7 @@ describe("rendering model text", () => {
 /** A fake GitHub for one pull request: records writes, keeps the ack comment and threads. Everyone posts as the owner. */
 function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: string; merged?: boolean } } = {}) {
   const calls: { method: string; path: string; auth: string; body?: any }[] = [];
-  const state = { status: undefined as { context: string; state: string; description: string; target_url?: string } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
+  const state = { status: undefined as { context: string; state: string; description: string; target_url?: string; creator?: { login: string; type: string } } | undefined, ack: undefined as { id: number; body: string } | undefined, threads: opts.threads ?? [], reviews: [] as { id: number; body: string; comments: { body: string }[]; user: { login: string }; html_url: string }[] };
   const impl = (async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -129,20 +145,21 @@ function world(opts: { threads?: unknown[]; headSha?: string; pr?: { state: stri
     if (method === "PUT" && /\/pulls\/12\/reviews\/\d+$/.test(url.pathname)) { state.reviews[0]!.body = body.body; return ok(state.reviews[0]); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/comments")) return ok({ id: 601, html_url: "https://github.com/acme/payments/pull/12#discussion_r601" }, 201);
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status$/.test(url.pathname)) return ok({ statuses: state.status ? [state.status] : [] });
-    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description, target_url: body.target_url }; return ok({}, 201); }
+    if (method === "POST" && /\/statuses\/[0-9a-f]{40}$/.test(url.pathname)) { state.status = { context: body.context, state: body.state, description: body.description, target_url: body.target_url, creator: auth.includes("ghs_") ? { login: "aidenhq-review[bot]", type: "Bot" } : { login: "owner1", type: "User" } }; return ok({}, 201); }
     if (method === "POST" && url.pathname.endsWith("/pulls/12/reviews")) { const r = { id: 9, body: body.body, comments: body.comments ?? [], user: { login: "owner1" }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" }; state.reviews.push(r); return ok(r); }
     if (method === "GET" && url.pathname.endsWith("/issues/12/comments")) return ok(state.ack ? [{ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7", user: { login: "owner1" } }] : []);
     if (method === "POST" && url.pathname.endsWith("/issues/12/comments")) { state.ack = { id: 7, body: body.body }; return ok({ id: 7, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }, 201); }
-    if (method === "GET" && url.pathname.endsWith("/issues/comments/7")) return state.ack ? ok({ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7" }) : new Response("Not Found", { status: 404 });
+    if (method === "GET" && url.pathname.endsWith("/issues/comments/7")) return state.ack ? ok({ ...state.ack, html_url: "https://github.com/acme/payments/pull/12#issuecomment-7", user: { login: "owner1", type: "User" } }) : new Response("Not Found", { status: 404 });
     if (method === "PATCH" && url.pathname.endsWith("/issues/comments/7")) { state.ack = { id: 7, body: body.body }; return ok({}); }
     if (method === "POST" && /\/pulls\/12\/comments\/\d+\/replies$/.test(url.pathname)) return ok({ id: 77 }, 201);
     return new Response("Not Found", { status: 404 });
   }) as typeof fetch;
-  const access = accessFor((u, i) => impl(u, i));
-  return { impl, calls, state, access };
+  const w = { impl, calls, state, access: undefined as unknown as ReturnType<typeof accessFor> };
+  w.access = accessFor((u, i) => w.impl(u, i));
+  return w;
 }
-const thread = (id: string, finding: string | null, author: string, comment: number, resolved = false) => ({ id, isResolved: resolved, isOutdated: false, path: "src/pay.ts", line: 2, comments: { nodes: [{ databaseId: comment, url: "u", body: `${finding ? `<!-- aidenhq-finding: ${finding} -->\n` : ""}text`, author: { login: author } }] } });
-const poster = (w: ReturnType<typeof world>) => new ReviewPoster(new GitHub(w.access, w.impl), w.access);
+const thread = (id: string, finding: string | null, author: string, comment: number, resolved = false) => ({ id, isResolved: resolved, isOutdated: false, viewerCanResolve: true, path: "src/pay.ts", line: 2, comments: { nodes: [{ databaseId: comment, url: "u", body: `${finding ? `<!-- aidenhq-finding: ${finding} -->\n` : ""}text`, author: { login: author } }] } });
+const poster = (w: ReturnType<typeof world>, app?: GitHubApp) => new ReviewPoster(new GitHub(w.access, w.impl), w.access, undefined, app);
 const postArgs = (r: Review, extra: object = {}) => ({ repo: r.repo, pr: r.pr, head: r.head, review: r, run: "run-1", resolve: [], ...extra });
 const FOOTER = "🤖 Generated by Aiden with [AidenHQ](https://aidenhq.ai)";
 
@@ -150,7 +167,7 @@ describe("posting", () => {
   it("posts as the owner, COMMENT only: a thread for every finding (its line, the nearest diff line, or its file), links in the summary; the acknowledgement is the notice's", async () => {
     const w = world();
     const p = poster(w);
-    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" }), finding("f_binary_1", "logo.png", 1, { severity: "nit" })]);
+    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_off_line", "src/pay.ts", 90, { severity: "pre_existing" }), finding("f_binary_1", "logo.png", 1, { severity: "pre_existing" })]);
     const done = await p.execute("post", postArgs(r));
     expect(JSON.parse(done.text)).toMatchObject({ identity: "owner", login: "owner1", inline: 3, listed: 0 });
     expect(done.objects).toEqual(["github:acme/payments#12/comment/501", "github:acme/payments#12/comment/502", "github:acme/payments#12/comment/601"]);
@@ -274,6 +291,79 @@ describe("posting", () => {
     expect(out.facts.details).toContain("fixed Commands help");
     expect(out.facts.details).not.toContain("review always");
     expect(out.targets).toEqual({ "acme/payments#12": { repo: "acme/payments", ref: "pull/12", commit: HEAD, base_sha: BASE } });
+  });
+});
+
+describe("code review's GitHub App", () => {
+  /** The App set up in a vault dir, over the same fake GitHub; installed on acme/payments when `installed`. */
+  function withApp(w: ReturnType<typeof world>, installed: boolean): GitHubApp {
+    const dir = mkdtempSync(join(tmpdir(), "ghapp-"));
+    mkdirSync(join(dir, "github-app"));
+    writeFileSync(join(dir, "github-app", "app_id"), "4242\n");
+    writeFileSync(join(dir, "github-app", "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }));
+    writeFileSync(join(dir, "github-app", "slug"), "aidenhq-review\n");
+    const appFetch = (async (input: URL | string, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const auth = String((init?.headers as Record<string, string>).authorization);
+      w.calls.push({ method: init?.method ?? "GET", path: url.pathname, auth });
+      if (!/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(auth)) return new Response("{}", { status: 401 });
+      if (url.pathname === "/repos/acme/payments/installation") return installed ? new Response(JSON.stringify({ id: 55 })) : new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+      if (url.pathname === "/app/installations/55/access_tokens") return new Response(JSON.stringify({ token: "ghs_app55", expires_at: new Date(Date.now() + 3_600_000).toISOString() }), { status: 201 });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    return gitHubApp({ dir: join(dir, "github-app"), fetchImpl: appFetch });
+  }
+  const isWrite = (c: { method: string; path: string; body?: any }) => !c.path.startsWith("/app") && !c.path.endsWith("/installation") && c.method !== "GET" && !(c.path === "/graphql" && !String(c.body?.query).startsWith("mutation"));
+
+  it("posts every review write as the App's installation where it is installed, and as the owner where it isn't; reads stay the owner's", async () => {
+    const r = review([finding("f_on_line1", "src/pay.ts", 2), finding("f_binary_1", "logo.png", 1)]);
+    for (const installed of [true, false]) {
+      const w = world({ threads: [thread("T_ours", "f_fixed_1", "owner1", 41)] });
+      const p = poster(w, withApp(w, installed));
+      const posted = JSON.parse((await p.execute("post", postArgs(r, { resolve: ["f_fixed_1"], own: [41] }))).text);
+      await p.execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "findings", important: 1 });
+      await p.execute("notice", { repo: "acme/payments", pr: 12, head: HEAD, phase: "done" });
+      const writes = w.calls.filter(isWrite);
+      // The review, its file comment, the summary links, the resolve, the status and the acknowledgement.
+      expect(writes.map((c) => `${c.method} ${c.path.replace(/[0-9a-f]{40}/, "sha")}`).sort()).toEqual(["PUT /repos/acme/payments/pulls/12/reviews/9", "POST /graphql", "POST /repos/acme/payments/issues/12/comments", "POST /repos/acme/payments/pulls/12/comments", "POST /repos/acme/payments/pulls/12/reviews", "POST /repos/acme/payments/statuses/sha"].sort());
+      expect(new Set(writes.map((c) => c.auth))).toEqual(new Set([installed ? "Bearer ghs_app55" : "Bearer gho_owner"]));
+      expect(posted).toMatchObject({ identity: installed ? "app" : "owner", login: installed ? "aidenhq-review" : "owner1", resolved: 1 });
+      // Reads (the PR, its files, reviews, threads) stay the owner's.
+      expect(w.calls.filter((c) => c.method === "GET" && c.path.startsWith("/repos/acme/payments/pulls")).every((c) => c.auth === "Bearer gho_owner")).toBe(true);
+    }
+  });
+
+  it("surfaces a broken App instead of posting as the owner", async () => {
+    const w = world();
+    const dir = mkdtempSync(join(tmpdir(), "ghapp-"));
+    writeFileSync(join(dir, "app_id"), "4242");
+    writeFileSync(join(dir, "key.pem"), generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }));
+    writeFileSync(join(dir, "slug"), "aidenhq-review");
+    const app = gitHubApp({ dir, fetchImpl: (async () => new Response(JSON.stringify({ message: "This installation has been suspended" }), { status: 403 })) as typeof fetch });
+    await expect(poster(w, app).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "pass", important: 0 })).rejects.toThrow(/suspended/);
+    expect(w.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    expect(app.failure()).toMatch(/suspended/);
+    // Removed (the admin page deletes its files): no old failure lingers on the card.
+    for (const f of ["app_id", "key.pem", "slug"]) rmSync(join(dir, f));
+    expect(app.failure()).toBeUndefined();
+    // A saved App that is incomplete posts as the owner (the App is optional), and its card row says what is wrong.
+    const half = mkdtempSync(join(tmpdir(), "ghapp-"));
+    writeFileSync(join(half, "app_id"), "4242");
+    const halfApp = gitHubApp({ dir: half });
+    await poster(w, halfApp).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "pass", important: 0 });
+    expect(w.calls.filter((c) => c.method !== "GET").map((c) => c.auth)).toEqual(["Bearer gho_owner"]);
+    expect(halfApp.failure()).toMatch(/missing or unreadable/);
+  });
+
+  it("a write the installation refuses (a permission it wasn't granted) shows on the App's row until a write as it works", async () => {
+    const w = world();
+    const app = withApp(w, true);
+    const impl = w.impl;
+    w.impl = (async (u: URL | string, i?: RequestInit) => (String(u).includes("/statuses/") && String((i?.headers as Record<string, string>).authorization).includes("ghs_") ? new Response(JSON.stringify({ message: "Resource not accessible by integration" }), { status: 403 }) : impl(u, i))) as typeof fetch;
+    await expect(poster(w, app).execute("status", { repo: "acme/payments", pr: 12, head: HEAD, reason: "pass", important: 0 })).rejects.toThrow(/403/);
+    expect(app.failure()).toMatch(/Resource not accessible by integration/);
+    await poster(w, app).execute("notice", { repo: "acme/payments", pr: 12, head: HEAD, phase: "done" });
+    expect(app.failure()).toBeUndefined();
   });
 });
 

@@ -92,8 +92,8 @@ export interface RepoRow {
   day_spent_usd: number;
   /** Why the service can't watch it (no read access, …); null when fine. */
   error?: string | null;
-  /** Who posts there, when the service knows: the owner's sign-in. */
-  identity?: "owner" | null;
+  /** Who posts there, when the service knows: the owner's sign-in, or the owner's GitHub App installed on the repo. */
+  identity?: "owner" | "app" | null;
 }
 export interface ReposView {
   repos: RepoRow[];

@@ -47,7 +47,7 @@ const ISO = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]
 const time: Valid = (s) => ISO.test(s) || /^\d{13}$/.test(s);
 const agentish: Valid = (s, c) => s === "me" || Boolean(c.known?.has(s));
 const link: Valid = (s, c) => Boolean(c.origin) && s.startsWith(`${c.origin}/`) && /^https?:\/\/[A-Za-z0-9_.:\/@+#?&=%~-]{1,300}$/.test(s);
-const STATES = ["pending", "approved", "rejected", "stale", "expired", "used", "auto", "core", "on", "off", "dependency", "missing", "ok", "unknown", "none", "idle", "denied", "cancelled", "failed", "healthy", "unhealthy", "rolled_back", "review", "applied", "done", "working", "waiting", "open_link"];
+const STATES = ["pending", "approved", "rejected", "stale", "expired", "running", "used", "auto", "core", "on", "off", "dependency", "missing", "ok", "unknown", "none", "idle", "denied", "cancelled", "failed", "healthy", "unhealthy", "rolled_back", "review", "applied", "done", "working", "waiting", "open_link"];
 const REASONS = ["closed", "cancelled", "job_running", "job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "blocked", "agent_wait", "module_wait", "owner_task", "scheduled", "chat_turn", "backlog", "failed", "unpolled", "orphaned", "unknown", "history_expired"];
 const WHYS = ["card", "owner_wait", "delegator_wait", "handback", "failed", "stalled_wait", "unpolled", "orphaned", "unknown", "history_expired"];
 const CHANGE_KINDS = ["setting", "agent", "module", "routine", "rules", "handbook", "unfork", "pin", "marketplace", "grants"];

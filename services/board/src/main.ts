@@ -76,7 +76,7 @@ const google = cfg.google && new GoogleAuth(cfg.google.url, cfg.google.token, lo
 const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new McpAuth(s.label, url, token, log) }));
 // Board sign-in: admins sign in on the kernel's admin listener and the kernel hands this origin its own session (kernel-auth.ts);
 // the board opens no accounts file.
-const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl });
+const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl, log });
 // Open boards hear what agents change in their chats (watch.ts): one look at Paperclip every 2s while any board listens.
 const watchedActivity = cachedActivity(work);
 startWatch({ pc: paperclip, liveRuns: async () => liveRunsOf(await watchedActivity()), states: taskStates, events: store.events, records, log, session: liveActivity(cfg.sessions) });

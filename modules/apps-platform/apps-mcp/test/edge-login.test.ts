@@ -22,6 +22,7 @@ it("a keyless apps node is no door until it logs in, and its login link never go
   await edge();
   expect(sent).toEqual([]); // nothing served yet: no door needed
   p.store.addDeploy({ app: "notes", sha: "a".repeat(40), images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "" });
+  p.store.setRunning("notes", "a".repeat(40));
   await edge();
   await edge();
   expect(sent).toEqual([{ text: expect.not.stringContaining("tailscale.com"), key: "apps-edge:login" }]);

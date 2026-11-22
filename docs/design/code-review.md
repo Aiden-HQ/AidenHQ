@@ -80,7 +80,9 @@ Config is one authority: the board and Aiden write it through the normal setting
 is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
 Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): outside PRs or drafts reviewed
 automatically, a repo in a new org, any change to a moment's combos (another engine or model, one more combo)
-and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches. `always`, `stop` and `focus` are
+and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches, or, where the owner's optional
+GitHub App is installed on the PR's base repo, as that App (one review writer, its own write limit:
+`docs/superpowers/specs/2026-11-22-github-app-review-writer-design.md`). `always`, `stop` and `focus` are
 PR state, not config.
 
 ## Triggers
@@ -136,13 +138,15 @@ a `notice` (Tier 0, fixed words) per run and a `status` (Tier 0, fixed words) pe
 commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
 changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):
 
-- **Every finding gets one thread**: on its lines when they are on the reviewed diff, else on the nearest diff line of its file
+- **Every important (and pre-existing) finding gets one thread; a nit gets none** (every inline comment is a GitHub write, and the
+  secondary rate limit on those blocked the fleet; owner, 2026-11-22): a nit is one line of the summary, `file:line` and its title.
+  A thread sits on its lines when they are on the reviewed diff, else on the nearest diff line of its file
   (saying where it really is), else a file comment (a file GitHub shows no patch for). Only a finding in no changed file has no
   thread; it is a collapsed block in the summary instead. A finding an earlier review already opened a thread for isn't posted
   again. Each comment has a severity marker, a collapsed "why flagged" and "Copy as fix brief".
 - **The summary scans at a glance**: the title `Aiden review · Haiku 5.5 (medium)` (the model's short name and effort), one line
   of counts (on a gated repo's mandatory review, whether it blocks the merge), the important findings as a table (severity,
-  title linking to its thread, `file:line`), nits and pre-existing ones in the same table collapsed, the commands as one
+  title linking to its thread, `file:line`), pre-existing ones in a collapsed table, nits as a short list of `file:line` and title, the commands as one
   collapsed line, and one muted line with the commit, the scope (whole PR or changes since a commit), the engine and the cost. A
   clean review is one line. Each finding appears once. Partial coverage says so (`coverage_note`, codex-native's "which parts
   it read isn't tracked", is never shown: it isn't a gap).
@@ -174,7 +178,9 @@ it changes (one writer). It is a mirror: the merge queue still asks the service,
 status out of the named checks, so it never becomes a second gate. It is advice for people and agents watching a PR, not a gate:
 a status belongs to a commit, not a PR, so a new PR at a head another PR already passed shows that pass until the next poll. A
 repo admin may still add `aidenhq/review` as a required status in a ruleset (the admin's choice per repo; AidenHQ never changes
-rulesets) knowing that; the merge queue's gate is the verdict.
+rulesets) knowing that; the merge queue's gate is the verdict. Such a required status must accept any source: the App and the
+owner both write it (a ruleset's check with no `integration_id`; classic protection's `app_id: -1`). Adding it in GitHub's UI
+after the App has posted it can pin it to the App, and then a repo without the App never passes.
 
 An infrastructure refusal of a post is a connection problem, not a verdict. github-mcp's review route carries an owner-fixable
 `GitHubNeed` (an org that restricts OAuth apps, an expired sign-in, a missing scope, org SSO) out as the kernel's `needs_owner`
@@ -213,7 +219,11 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   change is a row in `dispositions` (finding, head, state, reason, evidence, who decided).
 - **Answers (owner, 2026-11-21).** A reply on Aiden's own thread (the service's record) for an open gating finding, from the PR's
   author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
-  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). Any other reply is conversation.
+  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). An agent records the same answer with the
+  `code_review_resolve` tool (engine `resolve`, the same `answer` path, no GitHub write: a GitHub refusal never holds a merge);
+  an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 1, queued in
+  the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply
+  still works. Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
   the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
   and a finding answered and reported again stays answered. A reopened finding goes in that run's post, titled as reopened,

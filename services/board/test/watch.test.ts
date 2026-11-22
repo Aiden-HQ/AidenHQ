@@ -40,8 +40,8 @@ afterAll(() => (stop(), app.close()));
 
 it("tells open boards what agents change: each task by its id, and the chat it belongs to", async () => {
   let text = "";
-  const until = (s: string) => new Promise<void>((resolve) => {
-    const check = setInterval(() => text.includes(s) && (clearInterval(check), resolve()), 10);
+  const until = (s: string, times = 1) => new Promise<void>((resolve) => {
+    const check = setInterval(() => text.split(s).length - 1 >= times && (clearInterval(check), resolve()), 10);
   });
   const req: ClientRequest = request({ host: "127.0.0.1", port, path: "/api/events", headers: { host: "localhost:3120" } }, (res) => res.on("data", (c) => (text += c)));
   req.on("error", () => {});
@@ -61,6 +61,21 @@ it("tells open boards what agents change: each task by its id, and the chat it b
   // A card the kernel files is announced as `approvals`.
   records.cards.push(card({ id: "A9" }));
   await until("event: approvals");
+  // A live card's wait reason changes and nothing else about it: the open Approvals views still hear it (no minute-long wait
+  // for the fallback poll, which would show an obsolete reason).
+  const held = records.cards.find((c) => c.id === "A9")!;
+  held.state = "running";
+  held.wait = "code review: 1 important finding open";
+  await until("event: approvals", 2);
+  held.wait = "code review: 2 important findings open";
+  await until("event: approvals", 3);
+  // A Tier 0 record in flight is a running card on Approvals too (its own uncapped live read carries it), so a change in its
+  // wait is announced as well, though the capped recent read never lists it.
+  records.cards.push(card({ id: "A10", tier: 0, state: "running", wait: "waiting on slack's rate limit" }));
+  await until("event: approvals", 4);
+  const tier0 = records.cards.find((c) => c.id === "A10")!;
+  tier0.wait = "waiting on slack's rate limit (retry 2)";
+  await until("event: approvals", 5);
   req.destroy();
   const frames = (name: string) => text.match(new RegExp(`event: ${name}\\ndata: .*`, "g"));
   expect(frames("chat")).toEqual(Array(2).fill(`event: chat\ndata: {"issue":"${chat.id}"}`));

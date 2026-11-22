@@ -33,8 +33,11 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
   A new app's repository is asked for explicitly: "create the repository `<agents org>/<app-name>` with
   `aidenhq create-repo`" (an approval card two AI reviewers check against the task). It holds the app starter on main.
 - **A writable target.** Before a `pr` brief names a repository, confirm it accepts a branch and a PR: an archived
-  repository is read-only and refuses the push, so a `pr` task aimed at one cannot finish. When the content has moved,
-  name the live copy and the path inside it.
+  repository is read-only and refuses the push, so a `pr` task aimed at one cannot finish. The instance repo
+  (`aidenhq-alpha/aidenhq-instance`) is the same case by design: the code host refuses every branch push and PR to it
+  ("the instance repo changes only through apply") and `kernel.apply` lands the commit straight on `main`, so an instance
+  change is `deliverable: apply` with a rubric on the applied card and the commit on `main` — never a PR, and never a `pr`
+  rubric that asks for one. When the content has moved, name the live copy and the path inside it.
 - **Only checks the repository runs.** Before a brief names a CI check, read that repository's workflows on its default
   branch and name a job that is there (`sed -n '/^jobs:/,$p' .github/workflows/*.yml | rg -N '^  [a-z][a-z0-9_-]*:$'`):
   the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` (advisory in the product repo) is the product repo's and the app repos' that copied

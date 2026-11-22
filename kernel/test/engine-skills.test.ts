@@ -3,7 +3,7 @@
 // state folder as /codex-home.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { engineState, ensureStateDirs } from "../src/sandbox.ts";
@@ -58,6 +58,16 @@ test("a removed state root is recreated 0700, and its logs with it, before the j
   ensureStateDirs(root);
   assert.equal(statSync(root).mode & 0o777, 0o700);
   assert.equal(statSync(logs).mode & 0o777, 0o700);
+  // A directory we own but can't read (0300) is repaired, not refused: it can't be opened O_RDONLY, so the repair sets the
+  // mode by name after confirming the directory is the one just checked, then the descriptor is fchmod'ed as usual.
+  for (const dir of [root, logs]) {
+    chmodSync(dir, 0o300);
+    try {
+      ensureStateDirs(root);
+      assert.equal(statSync(dir).mode & 0o777, 0o700);
+      assert.equal(statSync(dir).mode & 0o700, 0o700, "the repaired mode is owner read+write+search");
+    } finally { chmodSync(dir, 0o700); }
+  }
 });
 
 test("an unusable state root throws once, naming the absolute path, its owner/mode and the kernel's uid, and reports one need", () => {
@@ -117,6 +127,63 @@ test("a symlinked state root, or a symlinked ancestor of it, is refused and neve
   symlinkSync(tree, join(dir, "linked"));
   assert.throws(() => ensureStateDirs(join(dir, "linked", "state")), /ancestor .* is a symlink, which is never followed/);
   assert.equal(statSync(join(tree, "state")).mode & 0o777, 0o755);
+});
+
+test("a root with '..' is normalized once, so the path checked is the path written (never through a symlink to another tree)", () => {
+  const { dir } = setup();
+  const base = join(dir, "base");
+  const other = join(dir, "other", "tree");
+  mkdirSync(base, { recursive: true });
+  mkdirSync(other, { recursive: true });
+  chmodSync(other, 0o755);
+  symlinkSync(other, join(base, "linked"));
+  // The raw string, not `path.join`: `join` would normalize it here and the test would pass without the fix.
+  // Raw OS semantics would read `<base>/linked/../state` as `<other>/state`; `normalize` (as at the launcher) reads `<base>/state`.
+  const { root, logs } = ensureStateDirs(`${base}/linked/../state`);
+  assert.equal(root, join(base, "state"));
+  assert.equal(logs, join(base, "state", "logs"));
+  assert.ok(statSync(root).isDirectory());
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  // The other tree was neither created in nor chmod'ed.
+  assert.equal(existsSync(join(dir, "other", "state")), false);
+  assert.equal(statSync(other).mode & 0o777, 0o755);
+});
+
+test("the repaired root still names the directory it set up, not one swapped in after", () => {
+  const { dir } = setup();
+  const base = join(dir, "base");
+  mkdirSync(base, { recursive: true });
+  // Connected to the checks above: the path is re-read after the repair, so it must still be the directory that was opened.
+  const { root } = ensureStateDirs(base);
+  const named = lstatSync(root);
+  assert.ok(named.isDirectory());
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  // The repair itself is descriptor-anchored: a 0300 directory is repaired without read access, and a link planted at the
+  // root's name is refused rather than chmod'ed through.
+  chmodSync(root, 0o300);
+  try {
+    ensureStateDirs(base);
+    assert.equal(statSync(root).mode & 0o777, 0o700);
+  } finally { chmodSync(root, 0o700); }
+  // And a path that was replaced by a symlink before the call is refused, never repaired through.
+  const outside = join(dir, "outside");
+  mkdirSync(join(outside, "state"), { recursive: true });
+  chmodSync(join(outside, "state"), 0o755);
+  symlinkSync(outside, join(dir, "swap"));
+  assert.throws(() => ensureStateDirs(join(dir, "swap", "state")), /symlink, which is never followed/);
+  assert.equal(statSync(join(outside, "state")).mode & 0o777, 0o755);
+});
+
+test("an empty state_dir is rejected, never taken as the working directory", () => {
+  const cwdMode = statSync(".").mode & 0o777;
+  for (const value of ["", "   "]) {
+    assert.throws(() => ensureStateDirs(value), /state_dir is empty, which must name a path/);
+  }
+  assert.equal(statSync(".").mode & 0o777, cwdMode, "the working directory is not re-permissioned");
+  // One need per episode, exactly as an unusable root: a misconfigured kernel doesn't alert on every job.
+  const needs: string[] = [];
+  for (let job = 0; job < 3; job++) assert.throws(() => ensureStateDirs("", (e) => needs.push(e.message)));
+  assert.equal(needs.length, 1);
 });
 
 test("a relative state root keeps its form for the launcher's exact path comparison", () => {

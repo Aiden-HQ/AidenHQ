@@ -34,6 +34,183 @@ const latestCard = (cards: any[]) => cards.reduce((last: any, a: any) => {
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
+const COMMAND_TIMEOUT_MS = 60_000;
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+const CI_AREAS = ".github/ci/areas.json";
+const SHA40 = /^[0-9a-f]{40}$/;
+
+type CiMap = { everything: string[]; markdown: string[]; suites: any[] };
+
+/** `.github/ci/areas.json` as CI reads it: the suites and the command and directory each one runs. */
+function ciMap(text: string): CiMap | undefined {
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(json?.suites) || !Array.isArray(json?.everything) || !Array.isArray(json?.markdown)) return;
+  return {
+    everything: json.everything.map(String),
+    markdown: json.markdown.map(String),
+    suites: json.suites.filter((s: any) => typeof s?.name === "string" && typeof s?.run === "string" && s.run)
+      .map((s: any) => ({ name: s.name, run: String(s.run), dir: s.name.split("#")[0]! })),
+  };
+}
+
+/** `p`, or undefined after `ms`; a failure — thrown or rejected — is the same as no answer at all. */
+const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | undefined> =>
+  Promise.race([Promise.resolve().then(p).catch(() => null), new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
+
+/**
+ * A suite's pass, as CI itself records it: CI's `post-checks` job (`.github/workflows/ci.yml`, `f61fa8e0`) posts one completed
+ * `success` check per suite a shard ran, named exactly the suite, with `external_id: <run_id>/<job id>/<shard>`. A check alone
+ * proves nothing: GitHub's check API answers any App token, so PR code holding the workflow token could post one. So the fact
+ * also needs the shard's own Actions job record behind that `job id` — its `run_id` is the check's `<run_id>`, its name is
+ * the shard the check names, and it concluded `success` — plus, in that same run, a completed `success` `post-checks` job at
+ * or after the shard's own `run_attempt`, never before it: the poster CI itself ran. A failed-job re-run keeps the earlier
+ * attempt's passing shard (CI's own `filter=latest` list) and posts its checks in the newer attempt, so the poster's attempt
+ * may be the higher one. Then the run must be the repository's own CI on the graded head: `.github/workflows/ci.yml`,
+ * active, `pull_request`, `head_sha` the graded head.
+ *
+ * What this proves, exactly: a green shard job existed in that `ci.yml` run at that head, and CI's own `post-checks` job ran
+ * at or after the shard's attempt. It does not prove, from the check record alone, that that shard ran that suite: GitHub gives an
+ * API-posted check no link back to the job that posted it. The suite-to-shard assignment is carried by `post-checks`, which
+ * reads the trusted base-map plan and runs no PR code, and the practical forgery path — a PR adding a `checks: write` step to
+ * its own run — needs a `ci.yml` edit, which the `.github/` guard below refuses. This is deliberately not called unforgeable:
+ * a same-repo PR that otherwise reaches a workflow token with `checks: write` can post a check at any head, and no field on a
+ * check record separates that from CI's own.
+ *
+ * Two bindings that would look stronger are not usable, and their absence is deliberate, not an oversight. A check posted
+ * through the API is filed by GitHub under the head's existing check suite for the posting App — on this repo, `community.yml`'s
+ * `pull_request_target` suite, which exists from the moment the PR opens — not under the run that posted it; its `checkSuite`
+ * therefore never names the `<run_id>` in its own `external_id`. And it has no job, so its `detailsUrl` is its own
+ * `/runs/<check id>` page, never the runner form `…/actions/runs/<run>/job/<job>` that only the job's own check run carries.
+ * Measured on PR #1243 at `d275911` (posted check `136946586698` in suite `121621144682` = run `44937127396`, `community.yml`)
+ * and again at `5c9381c` (suite `121603408900`). Requiring either would refuse every real per-suite check, so the job record
+ * and the `post-checks` job are what this fact binds to.
+ *
+ * The command and directory come from `areas.json` at the run's own recorded base (`base_sha`), byte-identical to the head's.
+ * CI's `select.ts` reads the map from the tree it tests (the PR's merge commit), and that tree's map is the base's exactly when
+ * the PR did not edit the map — which the `.github/ci/` guard below already refuses — so the base's map is the one CI used, and
+ * the byte-identity requirement means it can never name a command the graded head does not carry either. That base is the only immutable one; the PR's `baseRef` is where its base
+ * branch points now, which moves as main advances, so it is never a stand-in. A merged run records no base, and there the merge
+ * commit's first parent (the tree the merge was made on) is used instead; a run with neither mints nothing. CI's own two preconditions are checked as well: `ci.yml` at the run's base is byte-identical
+ * to the head's (a PR that rewrote the workflow ran its own CI), and the suite's directory is a directory at the graded head
+ * (`post-checks` posts nothing for a `gone:` one, so a deleted directory is a green job with nothing run). Which suites a shard
+ * ran is known only inside the run (CI writes the plan to the `checks` job's outputs, which GitHub does not expose on the job),
+ * so the fact does not re-derive it. Only a suite that map names mints a fact. The workflows, the map and the suite runner are
+ * the inputs that decide what a shard ran, so a PR that edits anything under `.github/workflows/` or `.github/ci/` mints nothing
+ * at all. `.ci-base/` is refused too: no tree carries it today (CI runs `.github/ci/run-suites.sh`), but it stays gitignored and a
+ * PR can force-add a file there past `.gitignore`, so the guard refuses the prefix rather than assume nothing owns it again.
+ * Every read that fails, or any field that doesn't match, mints nothing.
+ */
+async function commandFacts(pr: any, repo: string, deps: any): Promise<string[]> {
+  if (!deps.file || !deps.job || !deps.run || !deps.exists) return [];
+  const head = String(pr.headRefOid ?? "");
+  if (!SHA40.test(head)) return [];
+  const files = (pr.files?.nodes ?? []).map((f: any) => String(f?.path ?? "")).filter(Boolean);
+  if (!files.length || pr.files?.pageInfo?.hasNextPage) return [];
+  // CI's own execution inputs (the workflows, the suite map and the selector and runner that read it): a PR that edits any of
+  // them may have run something else, so nothing it shows counts. `.ci-base/` is not a tracked path in normal use, but a PR can
+  // force-add one (`git add -f` beats .gitignore) and GitHub then lists it; refusing the prefix keeps the guard independent of
+  // where CI's own base checkout happens to write.
+  if (files.some((f) => f.startsWith(".github/workflows/") || f.startsWith(".github/ci/") || f.startsWith(".ci-base/"))) return [];
+  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  if (rollup?.pageInfo?.hasNextPage) return [];
+  const checks = (rollup?.nodes ?? []).filter((n: any) => n.__typename === "CheckRun" && n.status === "COMPLETED" && n.conclusion === "SUCCESS" && n.name && n.externalId);
+  if (!checks.length) return [];
+  // One read per job and per run however many suites a shard carried: the same Actions record, not a second opinion.
+  const cache = new Map<string, Promise<unknown>>();
+  const read = (key: string, p: () => Promise<any>) => {
+    if (!cache.has(key)) cache.set(key, withTimeout(p, COMMAND_TIMEOUT_MS));
+    return cache.get(key)!;
+  };
+  const found = await Promise.all(checks.map(async (c: any) => {
+    // `<run_id>/<job id>/<shard>`: CI's own format, with nothing else in it.
+    const m = /^(\d{1,20})\/(\d{1,20})\/(\d{1,6})$/.exec(String(c.externalId ?? ""));
+    if (!m) return undefined;
+    const [, run, jobId, shard] = m as unknown as [string, string, string, string];
+    // GitHub Actions' own App. The check suite and runner-form URL that would look stronger are unusable here (see this
+    // function's comment): GitHub files an API-posted check in the head's older App suite and gives it no job link. A check
+    // from another App is refused outright.
+    if (String(c.checkSuite?.app?.slug ?? "") !== "github-actions") return undefined;
+    const j: any = await read(`job/${jobId}`, () => deps.job(repo, jobId));
+    // A made-up or posted check has no such job, or one from another run or another shard: never a fact.
+    if (!j || String(j.run_id ?? "") !== run || j.name !== `packages (${shard})` && j.name !== `modules (${shard})`) return undefined;
+    if (j.state !== "completed" || j.conclusion !== "success") return undefined;
+    const u: any = await read(`run/${run}`, () => deps.run(repo, run));
+    if (!u || u.workflow_path !== CI_WORKFLOW || u.workflow_state !== "active" || u.event !== "pull_request" || u.head_sha !== head) return undefined;
+    // A shard that passed and then failed a re-run keeps its old passing check on the head (`post-checks` never deletes one),
+    // so a check naming an instance the run has since replaced would grade on a result the shard no longer reports. The job
+    // the check names must be that shard's latest instance in the run: the same id the newest attempt left behind, and that
+    // attempt itself completed and green. A run read that answers no latest map is no evidence, never a pass.
+    const latest: any = u.latest_shard_jobs?.[String(j.name)];
+    if (!latest || String(latest.id ?? "") !== jobId) return undefined;
+    if (latest.state !== "completed" || latest.conclusion !== "success") return undefined;
+    // CI's own poster: a run with no completed `success` `post-checks` job mints nothing, whatever checks name it. The poster
+    // is what turns a green shard into a per-suite record. It must not predate the shard, but it may come later: a failed-job
+    // re-run keeps an earlier attempt's passing shard and posts its checks in the new attempt, so the shard's own attempt can
+    // be the lower one. Both numbers are that run's attempts, so "at or after the shard" is the whole rule.
+    const attempt = Number(j.run_attempt ?? u.run_attempt ?? NaN);
+    const post = (u.post_checks ?? []).find((p: any) => Number.isSafeInteger(attempt) && Number(p?.run_attempt) >= attempt
+      && p?.state === "completed" && p?.conclusion === "success");
+    if (!post) return undefined;
+    // The run's own recorded base is where CI read `areas.json` and the workflow (main as it was when the run started). It is
+    // the only immutable source of that tree: the PR's `baseRef` is the current tip of its base branch, which moves as main
+    // advances, so it cannot stand in. GitHub drops the run's `pull_requests` entry once the PR merges, which is exactly the
+    // head a merged task is graded on, so there the base is the merge commit's first parent: the tree the merge was made on.
+    // An unreadable commit, or one with no parent, is still no base, and mints nothing.
+    let base = String(u.base_sha ?? "");
+    if (!SHA40.test(base)) {
+      const merge = String(pr.mergeCommit?.oid ?? "");
+      if (!deps.commit || !SHA40.test(merge)) return undefined;
+      const m: any = await read(`commit/${merge}`, () => deps.commit(repo, merge));
+      base = String(m?.parents?.[0] ?? "");
+      if (!SHA40.test(base)) return undefined;
+    }
+    return { name: String(c.name), base };
+  }));
+  const green = found.filter(Boolean) as { name: string; base: string }[];
+  if (!green.length) return [];
+  const bases = [...new Set(green.map((g) => g.base))];
+  const reads = await withTimeout(() => Promise.all([head, ...bases].map((ref) => deps.file(repo, CI_AREAS, ref).catch(() => null))), COMMAND_TIMEOUT_MS) ?? [];
+  // The head's own map, so a base map that differs (main moved, or the PR edited it — which the `.github/` guard already
+  // refuses) can never name a command the graded head doesn't carry. Byte for byte, never a merge of the two.
+  const headMap = String(reads[0] ?? "");
+  const maps = new Map<string, CiMap>();
+  for (const [i, b] of bases.entries()) {
+    const at = String(reads[i + 1] ?? "");
+    const map = at === headMap ? ciMap(at) : undefined;
+    // The run's own `areas.json`, the same one the head carries; a base whose map can't be read is no evidence for its suites.
+    if (map) maps.set(b, map);
+  }
+  if (!maps.size) return [];
+  // CI's own preconditions, read against the same trees the run used. `ci.yml` at the run's base must be the graded head's
+  // own, byte for byte: a PR that rewrote the workflow ran its own CI, so a job named for a suite proves nothing there (the
+  // `.github/` guard above already refuses the PR's own edit; this covers the workflow at the head it actually checked out).
+  // And the suite's directory must be a directory at the graded head: `post-checks` posts nothing for one `run-suites.sh`
+  // reported `gone:`, so a deleted directory is a green job with nothing run.
+  const headWorkflow = await withTimeout(() => deps.file(repo, CI_WORKFLOW, head), COMMAND_TIMEOUT_MS);
+  if (typeof headWorkflow !== "string" || !headWorkflow) return [];
+  const sameWorkflow = new Map<string, boolean>();
+  for (const b of bases) {
+    const at = await withTimeout(() => deps.file(repo, CI_WORKFLOW, b), COMMAND_TIMEOUT_MS);
+    sameWorkflow.set(b, typeof at === "string" && at === headWorkflow);
+  }
+  const present = new Map<string, boolean>();
+  const facts: string[] = [];
+  for (const { name, base } of green) {
+    const suite = maps.get(base)?.suites.find((s: any) => s.name === name);
+    if (!suite || sameWorkflow.get(base) !== true) continue;
+    if (!present.has(suite.dir)) present.set(suite.dir, (await withTimeout(() => deps.exists(repo, suite.dir, head), COMMAND_TIMEOUT_MS)) === true);
+    // Not a directory (or not readable) at the head: the suite did not run there, so nothing is a fact.
+    if (present.get(suite.dir) !== true) continue;
+    facts.push(`${name} green on head ${head}: ran "${suite.run}" in ${suite.dir}/ — passed`);
+  }
+  return [...new Set(facts)];
+}
+
 const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
 
 /**
@@ -80,7 +257,6 @@ export interface RecordedIds {
   merges: string[];
 }
 
-const SHA40 = /^[0-9a-f]{40}$/;
 const addId = (list: string[], v: unknown, re?: RegExp) => {
   if (typeof v === "string" && v && (!re || re.test(v)) && !list.includes(v)) list.push(v);
 };
@@ -396,6 +572,8 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // The base commit (baseCommitOf): the base ref's commit recorded on the PR, never the base branch's moving tip or the git
     // merge base. "not established" is missing evidence rather than a guess.
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    // The command facts this change adds: one line per green suite job on this head (see `commandFacts`).
+    facts.push(...(await commandFacts(pr, p.repo, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
     const kept = text.slice(0, Math.max(0, left - head.length)).trim();
     left -= head.length + kept.length + 2;

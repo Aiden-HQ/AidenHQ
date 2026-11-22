@@ -18,10 +18,11 @@ export const REVIEW_CODES = [
   // the review didn't finish (a call failed, timed out, refused or hit a limit): tried once more, then approved
   "reviewer_failed",
   "fail_open",
-  // code's own refusals before any review: the diff differs from the code host's own count of the change, or a GitHub
-  // write carries the instance's hosts, addresses or paths
+  // code's own refusals before any review: the diff differs from the code host's own count of the change, a GitHub
+  // write carries the instance's hosts, addresses or paths, or a conn.tool call's arguments can't be read or shown whole
   "files_not_shown",
   "instance_details",
+  "tool_call_unreadable",
   // ai_review_code skips the AI review of this push or PR (code review owns it): code approved it
   "code_review_owns",
   // the owner's own veto on this task: he decides

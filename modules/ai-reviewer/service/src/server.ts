@@ -11,12 +11,14 @@ const gateway = process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201";
 const log = (msg: string, f = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
 
 /** One request through the reviewer, with the review's model token: the reviewer's own defaults for anything not sent. */
-export const reviewWith = (url: string): Review => (request, { modelToken }) => review({ ...request, ask: openRouterAsk(modelToken, { url, retryDelaysMs: [] }) /* the gateway retries transient failures */ });
+export const reviewWith = (url: string): Review => (request, { modelToken, progress }) => review({ ...request, ask: openRouterAsk(modelToken, { url, retryDelaysMs: [], onProgress: progress }) /* the gateway retries transient failures */ });
 
 if (import.meta.main) {
   const handle = serveReviewer(reviewWith(`${gateway}/api/v1/chat/completions`), { key: readFileSync(process.env.REVIEWER_KEY_FILE!, "utf8").trim(), log });
+  // The instance (a fresh one each start) is in /healthz: the kernel fails the reviews a recreated service lost.
+  const { instance } = handle;
   http.createServer(async (req, res) => {
-    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+    if (req.url === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, instance }));
     if (!(await handle(req, res))) res.writeHead(404, { "content-type": "application/json" }).end('{"error":"no such route"}');
   }).listen(Number(process.env.PORT ?? 8095), () => log("listening", { port: Number(process.env.PORT ?? 8095) }));
 }

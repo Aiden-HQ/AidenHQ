@@ -102,6 +102,15 @@ export const NoticeArgsSchema = z.object({
   review: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\/pull\/\d{1,9}#pullrequestreview-\d{1,15}$/).optional(),
 });
 export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
+/** An agent's answer to an important finding, replied on its thread (`comment`: the thread's first comment). */
+export const ReplyArgsSchema = z.object({
+  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
+  pr: z.number().int().min(1),
+  head: z.string().regex(SHA),
+  comment: z.number().int().min(1),
+  body: z.string().min(1).max(1600),
+});
+export type ReplyArgs = z.infer<typeof ReplyArgsSchema>;
 
 /** The commit status code review mirrors its merge verdict to (code-review computes it, per PR head, from its /v1/verdict). */
 export const STATUS_CONTEXT = "aidenhq/review";
@@ -154,6 +163,7 @@ const ORDER = ["important", "nit", "pre_existing"] as const;
 // summary of about 30,000.
 export const INLINE_MAX = 15;
 const LISTED_MAX = 4;
+const NITS_MAX = 40;
 const EVIDENCE_MAX = 500;
 
 const ASSIGNMENT = /\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential)s?)(["']?\s*[:=]\s*["']?)[^\s"',;]{4,}/gi;
@@ -282,16 +292,18 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const { earlier = new Map<string, string>(), links = new Map<string, string>() } = opts;
   const ranked = [...r.findings].sort((a, b) => ORDER.indexOf(a.severity) - ORDER.indexOf(b.severity));
   const place = opts.place ?? new Map(ranked.map((f): [string, Anchor] => [f.id, f.end_line && f.end_line > f.line ? { line: f.end_line, start_line: f.line } : { line: f.line }]));
-  // Every important finding gets a thread (answering it there is how it closes); the others up to INLINE_MAX.
+  // Every important finding gets a thread (answering it there is how it closes); pre-existing ones up to INLINE_MAX. A nit gets
+  // none: it is one line of the summary (every inline comment is a GitHub write, and the limit on those is what blocks the fleet).
   const open = ranked.filter((f) => !earlier.has(f.id) && place.has(f.id));
-  const chosen = [...open.filter((f) => f.severity === "important"), ...open.filter((f) => f.severity !== "important").slice(0, INLINE_MAX)];
+  const chosen = [...open.filter((f) => f.severity === "important"), ...open.filter((f) => f.severity === "pre_existing").slice(0, INLINE_MAX)];
   const ids = new Set(chosen.map((f) => f.id));
   const comments = chosen.map((f): Placed => {
     const a = place.get(f.id)!;
     return a === "file" ? { id: f.id, path: f.path, file: true, body: renderFinding(f, r, "file", opts.scale) } : { id: f.id, path: f.path, ...a, body: renderFinding(f, r, a.start_line ? undefined : a.line, opts.scale) };
   });
   const threaded = (f: Finding) => ids.has(f.id) || earlier.has(f.id);
-  const listed = ranked.filter((f) => !threaded(f));
+  const listed = ranked.filter((f) => f.severity !== "nit" && !threaded(f));
+  const nits = ranked.filter((f) => f.severity === "nit");
   const c = counts(r.findings);
   const incomplete = r.coverage.incomplete;
   const withheld = r.withheld.important + r.withheld.nit + r.withheld.pre_existing;
@@ -302,7 +314,7 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
   const row = (f: Finding) => { const url = links.get(f.id) || earlier.get(f.id); const t = cell(plain(f.title, 160)); return `| ${ICON[f.severity]} | ${url ? `[${t}](${url})` : t} | ${fileLine(f)} |`; };
   const table = (fs: Finding[]) => ["| | Finding | Where |", "|---|---|---|", ...fs.map(row)].join("\n");
   const important = ranked.filter((f) => f.severity === "important" && threaded(f));
-  const minor = ranked.filter((f) => f.severity !== "important" && threaded(f));
+  const minor = ranked.filter((f) => f.severity === "pre_existing" && threaded(f));
   const lines = [
     `<!-- ${MARK.review}: ${JSON.stringify(c)} -->`,
     RUN_MARK(run),
@@ -313,11 +325,8 @@ export function renderReview(r: Review, run: string, opts: { place?: ReadonlyMap
     ...(withheld ? ["", `Withheld to keep this short: ${countLine(r.withheld)}. ${cmd("aiden review full")} shows more.`] : []),
   ];
   if (important.length) lines.push("", table(important));
-  if (minor.length) {
-    const nits = minor.filter((f) => f.severity === "nit").length, pre = minor.length - nits;
-    const what = [nits ? `${nits} ${nits === 1 ? "nit" : "nits"}` : "", pre ? `${pre} pre-existing` : ""].filter(Boolean).join(" · ");
-    lines.push("", `<details><summary>${what}</summary>\n\n${table(minor)}\n\n</details>`);
-  }
+  if (minor.length) lines.push("", `<details><summary>${minor.length} pre-existing</summary>\n\n${table(minor)}\n\n</details>`);
+  if (nits.length) lines.push("", `**${nits.length === 1 ? "Nit" : "Nits"}** (no thread)`, "", ...nits.slice(0, NITS_MAX).map((f) => `- ${fileLine(f)} ${plain(f.title, 160)}`), ...(nits.length > NITS_MAX ? [`- … ${nits.length - NITS_MAX} more`] : []));
   // Without a thread (in no changed file): the first few with their reasoning, the rest named, so the post stays within GitHub's
   // and the card's size.
   for (const f of listed.slice(0, LISTED_MAX)) lines.push("", `<details><summary>${ICON[f.severity]} ${plain(f.title, 160)} ${code(`${f.path}:${f.line}`)}</summary>\n\n${plain(f.why, 800)}${f.evidence ? `\n\n${fence(redact(f.evidence).slice(0, EVIDENCE_MAX))}` : ""}\n\n**Fix brief:** ${plain(f.fix_brief, 500)}\n\n</details>`);

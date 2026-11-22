@@ -161,3 +161,313 @@ test("a legacy local change, with only a rewritten base ref, establishes no base
   assert.match(fact, /base commit not established/, "nothing is claimed");
   assert.doesNotMatch(fact, /base commit [0-9a-f]/, "and no sha is shown");
 });
+
+// --- command facts: CI's own per-suite check, bound to the shard job that ran it ------------------------------------------
+const KERNEL_RUN = "node --disable-warning=ExperimentalWarning --test --test-shard=1/2 test/*.test.ts";
+const GRADING_RUN = "npm test";
+const AREAS = JSON.stringify({ everything: [], markdown: [], suites: [
+  { name: "kernel#1", secs: 33, run: KERNEL_RUN, paths: ["kernel"] },
+  { name: "modules/grading", secs: 4, job: "modules", run: GRADING_RUN, paths: ["modules/grading"] },
+] });
+/** A PR head with `checks` on it, `files` changed, and a base the PR claims (the run's own base is the deps' business). */
+const withChecks = (n, head, merge, checks, files = ["kernel/src/x.ts"]) => ({
+  ...merged(n, head, merge), baseRef: { target: { oid: SHA("e") } },
+  files: { pageInfo: { hasNextPage: false }, nodes: files.map((path) => ({ path })) },
+  commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: checks } } } }] },
+});
+/**
+ * A check as CI's own `post-checks` makes it: GitHub Actions' App, completed `success`, `external` `<run>/<job id>/<shard>`.
+ * It carries no job link and sits in an unrelated check suite, exactly as real posted checks do (see the docblock in
+ * evidence.ts); the job record and the `post-checks` job are what the fact binds to.
+ */
+const PASS = (name, external) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion: "SUCCESS", externalId: external, checkSuite: { app: { slug: "github-actions" } } });
+/**
+ * The command facts' reads: `file` answers `areas.json` at a base, `ci.yml` at the head and its base, and the map; `job`
+ * answers the shard's Actions job (null is the 404 a check with no job behind it gets); `run` answers the workflow run CI
+ * made; `exists` answers whether a suite's directory is a directory at the head. `base` names the run's base (the base `file`
+ * is read at), never the PR's own moving base. No log read exists at all.
+ */
+const factDeps = (prs, { areas = AREAS, jobs = {}, runs = {}, base = SHA("d"), baseAreas, headWorkflow = "name: ci\n", baseWorkflow, dirs, commits = {} } = {}) => {
+  const head = prs[0].headRefOid;
+  const here = dirs ?? ["kernel", "modules/grading", "scripts"];
+  return {
+    ...depsFor(prs),
+    commit: async (_repo, ref) => commits[ref] === null ? null : { sha: ref, parents: [base], ...(commits[ref] ?? {}) },
+    file: async (_repo, path, ref) => path === ".github/ci/areas.json" ? (ref === head ? areas : ref === base ? baseAreas ?? areas : null)
+      : path === ".github/workflows/ci.yml" ? (ref === head ? headWorkflow : ref === base ? baseWorkflow ?? headWorkflow : null) : null,
+    exists: async (_repo, path, ref) => ref === head && here.includes(path),
+    job: async (_repo, id) => jobs[id] === null ? null : { id: Number(id), name: "packages (1)", state: "completed", conclusion: "success", run_id: 7, run_attempt: 1, ...(jobs[id] ?? {}) },
+    run: async (_repo, id) => runs[id] === null ? null : { id: Number(id), event: "pull_request", head_sha: head, workflow_path: ".github/workflows/ci.yml",
+      workflow_state: "active", run_attempt: 1, base_sha: base, post_checks: [{ run_attempt: 1, state: "completed", conclusion: "success" }],
+      // The run's shard jobs, latest instance per name (`filter=latest`): the job each passing check must be, so a pass a re-run
+      // replaced cannot mint. Built from the checks' own `<run>/<job id>/<shard>`, through the same `jobs` records the job read
+      // answers, so the two cannot disagree; a test overrides it to stand in for a shard that was re-run.
+      latest_shard_jobs: Object.fromEntries((prs[0].commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).flatMap((c) => {
+        const m = /^(\d+)\/(\d+)\/(\d+)$/.exec(String(c?.externalId ?? ""));
+        if (!m || jobs[m[2]] === null) return [];
+        const job = { id: Number(m[2]), name: "packages (1)", state: "completed", conclusion: "success", run_attempt: 1, ...(jobs[m[2]] ?? {}) };
+        return [[job.name, { id: job.id, run_attempt: job.run_attempt, state: job.state, conclusion: job.conclusion }]];
+      })), ...(runs[id] ?? {}) },
+  };
+};
+const fact = (name, run, dir) => `${name} green on head ${SHA("a")}: ran "${run}" in ${dir}/ — passed`;
+const noCommand = (ev) => !ev.facts.some((f) => f.includes('ran "'));
+
+test("a suite's check with its shard job and run behind it mints the fact naming the command and directory", async () => {
+  const prs = [withChecks(300, "a", "b", [PASS("kernel#1", "7/111/1"), PASS("modules/grading", "7/112/3")])];
+  const ev = await prEvidence([{ repo: REPO, number: 300, url: url(300), heads: ["branch-a"] }], "", factDeps(prs, { jobs: { 112: { name: "modules (3)" } } }));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+  assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+});
+
+test("a shard that passed and was then re-run and failed mints nothing: the old passing check is superseded", async () => {
+  // Attempt 1's `packages (1)` passed and post-checks published kernel#1's check naming job 111. Then the shard was re-run as
+  // attempt 2 and failed. post-checks never deletes the old check, so it is still a completed success on the head — but the
+  // run's latest `packages (1)` is now job 121, which did not pass, so nothing is a fact.
+  const prs = [withChecks(320, "a", "b", [PASS("kernel#1", "7/111/1")])];
+  const rerun = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", factDeps(prs, {
+    runs: { 7: { run_attempt: 2, post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }],
+      latest_shard_jobs: { "packages (1)": { id: 121, run_attempt: 2, state: "completed", conclusion: "failure" } } } },
+  }));
+  assert.ok(noCommand(rerun), rerun.facts.join("\n"));
+  // The same holds when the re-run is still going: an unfinished latest instance is no pass either.
+  const running = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", factDeps(prs, {
+    runs: { 7: { latest_shard_jobs: { "packages (1)": { id: 121, run_attempt: 2, state: "in_progress", conclusion: null } } } },
+  }));
+  assert.ok(noCommand(running), running.facts.join("\n"));
+});
+
+test("a shard whose latest instance is the check's own job still mints, even after another shard was re-run", async () => {
+  // `filter=latest` answers one instance per job name: re-running `packages (2)` does not replace `packages (1)`. A suite check
+  // naming packages (1)'s only job is that shard's current record, so it still counts.
+  const prs = [withChecks(321, "a", "b", [PASS("kernel#1", "7/131/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "", factDeps(prs, {
+    runs: { 7: { run_attempt: 2, post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }],
+      latest_shard_jobs: { "packages (1)": { id: 131, run_attempt: 1, state: "completed", conclusion: "success" },
+        "packages (2)": { id: 132, run_attempt: 2, state: "completed", conclusion: "failure" } } } },
+  }));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});
+
+test("a check whose external_id has no job behind it mints nothing", async () => {
+  const prs = [withChecks(301, "a", "b", [PASS("kernel#1", "7/114/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 301, url: url(301), heads: ["branch-a"] }], "", factDeps(prs, { jobs: { 114: null } }));
+  assert.ok(noCommand(ev), ev.facts.join("\n"));
+});
+
+test("a job from another run, or of another shard, is not that check's job", async () => {
+  const prs = [withChecks(302, "a", "b", [PASS("kernel#1", "7/118/1")])];
+  const otherRun = await prEvidence([{ repo: REPO, number: 302, url: url(302), heads: ["branch-a"] }], "", factDeps(prs, { jobs: { 118: { run_id: 8 } } }));
+  assert.ok(noCommand(otherRun), otherRun.facts.join("\n"));
+  const otherShard = await prEvidence([{ repo: REPO, number: 302, url: url(302), heads: ["branch-a"] }], "", factDeps(prs, { jobs: { 118: { name: "packages (2)" } } }));
+  assert.ok(noCommand(otherShard), otherShard.facts.join("\n"));
+});
+
+test("a check whose run is not ci.yml on a pull_request at the graded head mints nothing", async () => {
+  const prs = [withChecks(303, "a", "b", [PASS("kernel#1", "7/119/1")])];
+  const others = [{ workflow_path: ".github/workflows/other.yml" }, { workflow_state: "disabled_manually" }, { event: "push" }, { head_sha: SHA("f") }];
+  for (const fake of others) {
+    const ev = await prEvidence([{ repo: REPO, number: 303, url: url(303), heads: ["branch-a"] }], "", factDeps(prs, { runs: { 7: fake } }));
+    assert.ok(noCommand(ev), JSON.stringify(fake));
+  }
+});
+
+test("a PR that edits the workflows, the map or the suite runner mints nothing", async () => {
+  // `.ci-base/` is gitignored, but a PR can force-add a file there (`git add -f`), and GitHub lists it in the PR's files: the
+  // runner CI executes lives at that path, so a PR shipping one mints nothing.
+  for (const edited of [".github/ci/areas.json", ".github/ci/select.ts", ".github/ci/run-suites.sh", ".github/workflows/ci.yml", ".github/workflows/other.yml", ".ci-base/.github/ci/run-suites.sh"]) {
+    const prs = [withChecks(304, "a", "b", [PASS("kernel#1", "7/120/1")], ["kernel/src/x.ts", edited])];
+    const ev = await prEvidence([{ repo: REPO, number: 304, url: url(304), heads: ["branch-a"] }], "", factDeps(prs));
+    assert.ok(noCommand(ev), edited);
+  }
+  // What CI does not run from: a template or a policy file beside them changes nothing about which suite ran.
+  const prs = [withChecks(304, "a", "b", [PASS("kernel#1", "7/120/1")], ["kernel/src/x.ts", ".github/CODEOWNERS"])];
+  const ev = await prEvidence([{ repo: REPO, number: 304, url: url(304), heads: ["branch-a"] }], "", factDeps(prs));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});
+
+test("a base map that differs from the head's (main moved, or a PR edit) mints nothing", async () => {
+  // CI's select.ts reads the map from the tree it tests (the PR's merge commit), which carries the base's map exactly when the PR
+  // did not edit it. The fact names the command at the base and requires that map to be the head's own bytes: a base that differs
+  // is a tree the graded head did not run, so no fact — never a command only the base carries.
+  const prs = [withChecks(310, "a", "b", [PASS("kernel#1", "7/126/1")])];
+  const moved = JSON.stringify({ everything: [], markdown: [], suites: [{ name: "kernel#1", secs: 33, run: "npm test", paths: ["kernel"] }] });
+  const ev = await prEvidence([{ repo: REPO, number: 310, url: url(310), heads: ["branch-a"] }], "", factDeps(prs, { baseAreas: moved }));
+  assert.ok(noCommand(ev), ev.facts.join("\n"));
+});
+
+test("an unreadable map, a truncated list, or a suite the map does not name mints nothing", async () => {
+  const prs = [withChecks(305, "a", "b", [PASS("kernel#1", "7/121/1")])];
+  const at = (deps) => prEvidence([{ repo: REPO, number: 305, url: url(305), heads: ["branch-a"] }], "", deps);
+  assert.ok(noCommand(await at(factDeps(prs, { areas: "{not json" }))), "an unreadable map");
+  assert.ok(noCommand(await at(factDeps(prs, { areas: JSON.stringify({ everything: [], markdown: [], suites: [] }) }))), "a suite the map doesn't name");
+  const cutChecks = [withChecks(305, "a", "b", [PASS("kernel#1", "7/121/1")])];
+  cutChecks[0].commits.nodes[0].commit.statusCheckRollup.contexts.pageInfo = { hasNextPage: true };
+  assert.ok(noCommand(await at(factDeps(cutChecks))), "a cut check list");
+  const cutFiles = [withChecks(305, "a", "b", [PASS("kernel#1", "7/121/1")])];
+  cutFiles[0].files.pageInfo = { hasNextPage: true };
+  assert.ok(noCommand(await at(factDeps(cutFiles))), "a cut file list");
+});
+
+test("the PR's current base is never a stand-in: the run's own base, or the merge commit's first parent, is", async () => {
+  // GitHub empties a run's `pull_requests` once the PR merges, so a merged run answers no base. The PR's `baseRef` is where its
+  // base branch points *now* and main has moved since the run, so a map read there is another commit's map: it mints nothing.
+  // The merge commit's first parent is where the merge was made, which is what the run read, and is used in its place.
+  const tip = SHA("f");
+  const prs = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
+  prs[0].baseRef = { target: { oid: tip } };
+  const noCommit = await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "",
+    factDeps(prs, { runs: { 7: { base_sha: null } }, commits: { [SHA("b")]: null } }));
+  assert.ok(noCommand(noCommit), noCommit.facts.join("\n"));
+  // A base that is not a full sha is no answer either, and with no readable merge commit behind it nothing is minted.
+  const bad = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
+  assert.ok(noCommand(await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "",
+    factDeps(bad, { runs: { 7: { base_sha: "main" } }, commits: { [SHA("b")]: { parents: [] } } }))));
+  // The run's own recorded base is what mints, even when the PR's current tip is something else entirely.
+  const ok = [withChecks(308, "a", "b", [PASS("kernel#1", "7/124/1")])];
+  ok[0].baseRef = { target: { oid: tip } };
+  const good = await prEvidence([{ repo: REPO, number: 308, url: url(308), heads: ["branch-a"] }], "", factDeps(ok, { base: SHA("d") }));
+  assert.ok(good.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), good.facts.join("\n"));
+});
+
+
+test("an external_id that isn't CI's <run>/<job>/<shard> mints nothing", async () => {
+  for (const external of ["", "7/122", "7/122/1/2", "7/x/1", "abc/122/1"]) {
+    const prs = [withChecks(306, "a", "b", [PASS("kernel#1", external)])];
+    const ev = await prEvidence([{ repo: REPO, number: 306, url: url(306), heads: ["branch-a"] }], "", factDeps(prs));
+    assert.ok(noCommand(ev), external);
+  }
+});
+
+test("no job log is read at all: the fact comes from CI's per-suite check and the shard job behind it", async () => {
+  const prs = [withChecks(307, "a", "b", [PASS("kernel#1", "7/123/1")])];
+  const deps = factDeps(prs);
+  assert.equal("jobLog" in deps, false, "the log is gone from grading's dependencies");
+  assert.equal("log" in deps, false);
+  const ev = await prEvidence([{ repo: REPO, number: 307, url: url(307), heads: ["branch-a"] }], "", deps);
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});
+
+test("one shard's job and run are read once however many suites its check names", async () => {
+  // A shard carries several suites and CI posts one check per suite, all with the same `<run>/<job id>/<shard>`: the same
+  // Actions record answers for each, so the reads are memoized, never a second fetch that could disagree.
+  const prs = [withChecks(309, "a", "b", [PASS("kernel#1", "7/131/1"), PASS("kernel#2", "7/131/1"), PASS("scripts#1", "7/131/1")])];
+  const deps = factDeps(prs);
+  let jobReads = 0, runReads = 0;
+  const job = deps.job, run = deps.run;
+  deps.job = (repo, id) => (jobReads++, job(repo, id));
+  deps.run = (repo, id) => (runReads++, run(repo, id));
+  const ev = await prEvidence([{ repo: REPO, number: 309, url: url(309), heads: ["branch-a"] }], "", deps);
+  assert.equal(jobReads, 1, "one job read for one shard");
+  assert.equal(runReads, 1, "one run read for one run");
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});
+
+test("a job or run read that throws is no answer, not a failed grade", async () => {
+  const prs = [withChecks(312, "a", "b", [PASS("kernel#1", "7/141/1"), PASS("modules/grading", "7/142/1")])];
+  const deps = factDeps(prs, { jobs: { 142: { name: "modules (1)" } } });
+  deps.job = async (_repo, id) => { if (String(id) === "141") throw new Error("GitHub said 502"); return { id: Number(id), name: "modules (1)", state: "completed", conclusion: "success", run_id: 7, run_attempt: 1 }; };
+  const ev = await prEvidence([{ repo: REPO, number: 312, url: url(312), heads: ["branch-a"] }], "", deps);
+  assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), ev.facts.join("\n"));
+  assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+});
+
+test("a suite whose directory is gone at the graded head mints nothing: a green job that ran nothing is not a pass", async () => {
+  const prs = [withChecks(320, "a", "b", [PASS("kernel#1", "7/171/1"), PASS("modules/grading", "7/172/3")])];
+  // `kernel` is absent at the head (a deleted directory: `run-suites.sh` writes `gone:` and exits 0); `modules/grading` is there.
+  const ev = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", factDeps(prs, { dirs: ["modules/grading", "scripts"], jobs: { 172: { name: "modules (3)" } } }));
+  assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), "a deleted directory cannot pass its suite");
+  assert.ok(ev.facts.includes(fact("modules/grading", GRADING_RUN, "modules/grading")), ev.facts.join("\n"));
+  // An exists read that fails mints nothing at all: no answer is never a pass.
+  const deps = factDeps(prs);
+  deps.exists = async () => { throw new Error("GitHub said 502"); };
+  const bad = await prEvidence([{ repo: REPO, number: 320, url: url(320), heads: ["branch-a"] }], "", deps);
+  assert.ok(noCommand(bad), bad.facts.join("\n"));
+});
+
+test("a head whose ci.yml differs from the run's base mints nothing: that CI was not the repository's", async () => {
+  const prs = [withChecks(321, "a", "b", [PASS("kernel#1", "7/181/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "",
+    factDeps(prs, { headWorkflow: "name: ci\njobs: { test: { runs-on: ubuntu-latest } }\n", baseWorkflow: "name: ci\n" }));
+  assert.ok(noCommand(ev), ev.facts.join("\n"));
+  // Byte-identical at both ends is the one that mints. Same map, same workflow.
+  const ok = await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "", factDeps(prs));
+  assert.ok(ok.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ok.facts.join("\n"));
+  // An unreadable ci.yml at the head mints nothing either.
+  const unreadable = factDeps(prs);
+  unreadable.file = async (_repo, path) => (path === ".github/workflows/ci.yml" ? null : AREAS);
+  assert.ok(noCommand(await prEvidence([{ repo: REPO, number: 321, url: url(321), heads: ["branch-a"] }], "", unreadable)));
+});
+
+test("a check that only claims a job's id mints nothing: a real job, run and poster must stand behind it", async () => {
+  // A check posted through the API can repeat a green job's `external_id` verbatim. What it cannot produce is the shard job
+  // record, the repository's own CI run on the head, and the `post-checks` job that ran in the shard's own attempt.
+  const forged = (extra) => ({ ...PASS("kernel#1", "7/150/1"), ...extra });
+  const cases: [string, any, any, string][] = [
+    ["another App", forged({ checkSuite: { app: { slug: "aidenhq" } } }), {}, "posted by something other than GitHub Actions"],
+    ["no App at all", forged({ checkSuite: null }), {}, "a check with no App"],
+    ["no job behind its id", PASS("kernel#1", "7/150/1"), { jobs: { 150: null } }, "a job GitHub has no record of"],
+    ["a job of another run", PASS("kernel#1", "7/151/1"), { jobs: { 151: { run_id: 8 } } }, "a job in a different run"],
+    ["a job whose shard disagrees", PASS("kernel#1", "7/152/1"), { jobs: { 152: { name: "packages (2)" } } }, "a job for another shard"],
+    ["a red job", PASS("kernel#1", "7/153/1"), { jobs: { 153: { conclusion: "failure" } } }, "a job that did not pass"],
+    ["another workflow", PASS("kernel#1", "7/154/1"), { runs: { 7: { workflow_path: ".github/workflows/community.yml" } } }, "a run of another workflow"],
+    ["another event", PASS("kernel#1", "7/155/1"), { runs: { 7: { event: "push" } } }, "a push run, which posts no suite checks"],
+    ["another head", PASS("kernel#1", "7/156/1"), { runs: { 7: { head_sha: SHA("f") } } }, "a run of a different head"],
+    ["no poster", PASS("kernel#1", "7/157/1"), { runs: { 7: { post_checks: [] } } }, "a run with no post-checks job"],
+    ["a red poster", PASS("kernel#1", "7/158/1"), { runs: { 7: { post_checks: [{ run_attempt: 1, state: "completed", conclusion: "failure" }] } } }, "a post-checks job that did not pass"],
+    ["a poster from before the shard", PASS("kernel#1", "7/159/1"), { runs: { 7: { post_checks: [{ run_attempt: 0, state: "completed", conclusion: "success" }] } } }, "a poster that ran before the shard did"],
+  ];
+  for (const [what, check, opts, why] of cases) {
+    const prs = [withChecks(313, "a", "b", [check])];
+    const ev = await prEvidence([{ repo: REPO, number: 313, url: url(313), heads: ["branch-a"] }], "", factDeps(prs, opts));
+    assert.ok(!ev.facts.some((f) => f.startsWith("kernel#1 green on head")), `${what}: ${why}`);
+  }
+  // The same check with all of them right is the one that mints: the refusal is the binding, not a blanket distrust.
+  const prs = [withChecks(313, "a", "b", [PASS("kernel#1", "7/150/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 313, url: url(313), heads: ["branch-a"] }], "", factDeps(prs));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});
+
+test("a failed-job re-run keeps the earlier passing shard, and the later poster still mints: the poster may not predate it", async () => {
+  // Attempt 2 re-ran the failed job; the shard's own passing job is attempt 1, and `post-checks` ran again in attempt 2.
+  const prs = [withChecks(330, "a", "b", [PASS("kernel#1", "7/160/1")])];
+  const ev = await prEvidence([{ repo: REPO, number: 330, url: url(330), heads: ["branch-a"] }], "",
+    factDeps(prs, { runs: { 7: { post_checks: [{ run_attempt: 2, state: "completed", conclusion: "success" }] } } }));
+  assert.ok(ev.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), ev.facts.join("\n"));
+});
+
+test("a merged PR's run records no base, so the merge commit's first parent is the base graded: never the PR's current tip", async () => {
+  // GitHub drops `pull_requests` on merge, which is the head a merged task is graded on. The merge commit's first parent is the
+  // tree the merge was made on; the PR's `baseRef` is where main points now. Only the former can name the map CI read.
+  const tip = SHA("f");
+  const prs = [withChecks(331, "a", "b", [PASS("kernel#1", "7/161/1")])];
+  prs[0].baseRef = { target: { oid: tip } };
+  const merged1 = await prEvidence([{ repo: REPO, number: 331, url: url(331), heads: ["branch-a"] }], "",
+    factDeps(prs, { runs: { 7: { base_sha: null } }, base: SHA("d") }));
+  assert.ok(merged1.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), merged1.facts.join("\n"));
+  // A commit GitHub cannot read, or one with no parent, is no base: nothing is minted.
+  const unreadable = await prEvidence([{ repo: REPO, number: 331, url: url(331), heads: ["branch-a"] }], "",
+    factDeps(prs, { runs: { 7: { base_sha: null } }, commits: { [SHA("b")]: null } }));
+  assert.ok(noCommand(unreadable), unreadable.facts.join("\n"));
+  const parentless = await prEvidence([{ repo: REPO, number: 331, url: url(331), heads: ["branch-a"] }], "",
+    factDeps(prs, { runs: { 7: { base_sha: null } }, commits: { [SHA("b")]: { parents: [] } } }));
+  assert.ok(noCommand(parentless), parentless.facts.join("\n"));
+  // The first parent is the base; a second parent is the PR's own head and is never used.
+  const second = await prEvidence([{ repo: REPO, number: 331, url: url(331), heads: ["branch-a"] }], "",
+    factDeps(prs, { runs: { 7: { base_sha: null } }, commits: { [SHA("b")]: { parents: [SHA("d"), SHA("a")] } } }));
+  assert.ok(second.facts.includes(fact("kernel#1", KERNEL_RUN, "kernel")), second.facts.join("\n"));
+});
+
+test("the module's evidence grant lists every path the fact reads: the code and the grant can't drift apart", async () => {
+  // The tests pass with a stubbed `file`, so a grant that omits a path the code reads is invisible to them and fatal in
+  // production: the kernel refuses an unlisted `file` path and the fact silently mints nothing. Read the module's own
+  // manifest and require both files, exactly as the code names them.
+  const { readFileSync } = await import("node:fs");
+  const manifest = readFileSync(new URL("../module.yaml", import.meta.url), "utf8");
+  const listed = (/^\s+paths:\s*\[([^\]]*)\]/m.exec(manifest)?.[1] ?? "").split(",").map((p) => p.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  const src = readFileSync(new URL("../service/src/grader/evidence.ts", import.meta.url), "utf8");
+  const read = [...src.matchAll(/const (CI_WORKFLOW|CI_AREAS) = "([^"]+)";/g)].map((m) => m[2]);
+  assert.deepEqual([...read].sort(), [".github/ci/areas.json", ".github/workflows/ci.yml"]);
+  for (const path of read) assert.ok(listed.includes(path!), `the evidence grant does not list ${path}, so that read is refused`);
+  assert.ok(listed.every((p) => !p.endsWith("/") && !p.includes("*")), "the grant names files exactly, never a directory or a prefix");
+});

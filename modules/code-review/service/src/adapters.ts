@@ -16,6 +16,7 @@ export const RECIPE = "code-review";
 export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
 export const STATUS_KIND = "code-review.status";
+export const REPLY_KIND = "code-review.reply";
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 /** A dedupe key as a wake's `id`: the kernel takes `[\w.-]{1,80}` and keys the row by it, so a resend is the same wake. */
@@ -110,7 +111,7 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
     // The executor's outcome (github-mcp review-post.ts): the review's link, the threads it resolved, the identity it posted as.
     let o: { review?: unknown; resolved?: unknown; identity?: unknown; comments?: unknown; ack_id?: unknown } = {};
     try { o = JSON.parse(r.outcome?.text ?? "{}"); } catch {}
-    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" ? { identity: o.identity } : {}), ...(Number.isInteger(o.ack_id) && (o.ack_id as number) > 0 ? { ack: o.ack_id as number } : {}), ...(Array.isArray(o.comments) ? { comments: o.comments.filter((c): c is number => Number.isInteger(c) && (c as number) > 0).slice(0, 200) } : {}) };
+    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" || o.identity === "app" ? { identity: o.identity } : {}), ...(Number.isInteger(o.ack_id) && (o.ack_id as number) > 0 ? { ack: o.ack_id as number } : {}), ...(Array.isArray(o.comments) ? { comments: o.comments.filter((c): c is number => Number.isInteger(c) && (c as number) > 0).slice(0, 200) } : {}) };
   }
   // Failed or stale (what it acted on changed, e.g. a restart between its approval and its run) may post when filed again; a
   // rejection is the AI reviewer's or the owner's answer, and a cancel is someone's decision.
@@ -151,6 +152,10 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     },
     async status(s: Status) {
       const r = (await kernel.call("POST", "/v1/writes", { kind: STATUS_KIND, args: { repo: s.repo, pr: s.number, head: s.head, reason: s.reason, important: s.important, running: s.running.slice(0, 8), ...(s.partial ? { partial: true } : {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
+      return { ...settled(r), write: r.id };
+    },
+    async reply(p) {
+      const r = (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: { repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }, task: await taskOf(p.repo, p.number) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },
     async outcome(write) {
@@ -196,7 +201,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
  * no other requester can post a review through these kinds.
  */
 export function reviewExecutor(github: (op: "preview" | "execute", body: unknown) => Promise<any>, runOf: (id: string) => { repo: string; number: number; head: string } | undefined): Executor {
-  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === STATUS_KIND ? "status" : undefined);
+  const kindOf = (k: string) => (k === POST_KIND ? "post" : k === ACK_KIND ? "notice" : k === STATUS_KIND ? "status" : k === REPLY_KIND ? "reply" : undefined);
   return {
     async plan(req) {
       const kind = kindOf(req.kind);
@@ -204,7 +209,7 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
       if (!kind) throw new Error(`not a code-review kind: ${req.kind}`);
       if (req.requester?.kind !== "module" || req.requester.module !== "code-review") throw new Error("only the code-review service files these");
       const run = a.run ? runOf(a.run) : undefined;
-      if (kind !== "notice" && kind !== "status" && (!run || run.repo !== String(a.repo).toLowerCase() || run.number !== a.pr || run.head !== a.head)) throw new Error(`the ${kind} doesn't match its run`);
+      if (kind === "post" && (!run || run.repo !== String(a.repo).toLowerCase() || run.number !== a.pr || run.head !== a.head)) throw new Error(`the ${kind} doesn't match its run`);
       const v = (await github("preview", { kind, args: req.args })) as { facts?: Record<string, unknown>; targets?: Record<string, unknown> };
       return { args: req.args, ...(v.facts ? { facts: v.facts } : {}), ...(v.targets ? { targets: v.targets } : {}) };
     },

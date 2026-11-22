@@ -56,6 +56,10 @@ export type Rec = {
   cap?: Cap | null;
   /** What the reviewer reads beside the card, from the plan at filing (executor.ts ReviewContext): never part of the digest. */
   context?: ReviewContext | null;
+  /** Why its executor says a claimed record is still running (POST /v1/writes/:id/wait): shown while it is claimed, never after. */
+  wait?: string | null;
+  /** How many accepted waits this claim has had: each is its own notice, so a reason that recurs (A → B → A) still arrives. */
+  waits?: number;
 };
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
@@ -97,7 +101,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   // a task by its identifier (a fact's task, facts.ts; a task's records)
   db.exec("CREATE INDEX IF NOT EXISTS records_identifier ON records (identifier)");
   const facts = openFacts(db, now);
@@ -137,7 +141,8 @@ export function openRecords(file: string, now = () => new Date()) {
    */
   const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
-    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND COALESCE(decided_at, created_at) > ?" : ""}`)
+    // A wait reason belongs to the claimed state alone: any move out of it clears it.
+    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${to === "claimed" ? "" : ", wait = NULL, waits = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND COALESCE(decided_at, created_at) > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
     return r.changes === 1;
   };
@@ -186,11 +191,15 @@ export function openRecords(file: string, now = () => new Date()) {
      * Newest first; `reviewed`: only records that went to the reviewer or the owner (Tier 1 and 2), `task`: only that task's.
      * `limit: null` reads every record that matches: a guard that must see all of a task's records (the release train's close)
      * never reads a capped page, where an older foreign record could be cut off.
+     * `after`: the next page past that record in this same order (keyset, not an offset: a record filed between two reads never
+     * shifts a page, and nothing is skipped or repeated). A reader that must see every matching record (the board's live list)
+     * pages with it instead of treating the largest page as the whole set.
      */
-    list(states: State[], limit: number | null = 100, { reviewed = false, task, kinds }: { reviewed?: boolean; task?: string; kinds?: string[] } = {}): Rec[] {
+    list(states: State[], limit: number | null = 100, { reviewed = false, task, kinds, after }: { reviewed?: boolean; task?: string; kinds?: string[]; after?: string } = {}): Rec[] {
       expire();
-      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
-        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), ...(limit === null ? [] : [limit])));
+      const keyset = after ? " AND (created_at, rowid) < (SELECT created_at, rowid FROM records WHERE id = ?)" : "";
+      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""}${keyset} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
+        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), ...(after ? [after] : []), ...(limit === null ? [] : [limit])));
     },
     /** Records filed or decided since then, oldest first (the daily digest). */
     since: (at: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE (created_at > ? OR decided_at > ?) AND tier > 0 ORDER BY created_at").all(at, at)),
@@ -272,6 +281,18 @@ export function openRecords(file: string, now = () => new Date()) {
     },
     /** approved → claimed, once, within its 7 days. */
     claim: (id: string) => moved(() => move(id, ["approved"], "claimed", {}, true), () => fact(id, "record.claimed", "claimed", "kernel", (r) => ({ kind: r.kind }))),
+    /**
+     * A claimed record's live wait reason (its executor's, POST /v1/writes/:id/wait). Only while it is claimed; false when it
+     * has left that state. It never moves the record's state or its updated_at (a wait is not progress).
+     */
+    setWait(id: string, reason: string | null): boolean {
+      // A set reason counts as a wait transition even when it repeats an earlier one (A → B → A), so each accepted wait is a
+      // notice of its own. A clear keeps the count: it ends this wait, not the claim's history, so a reason reported after the
+      // clear (`A → clear → A`) still gets a new tag instead of reusing one whose notice may still be queued. Only leaving
+      // `claimed` clears it (the `move` above).
+      const waited = reason === null ? "COALESCE(waits, 0)" : "COALESCE(waits, 0) + 1";
+      return db.prepare(`UPDATE records SET wait = ?, waits = ${waited} WHERE id = ? AND state = 'claimed'`).run(reason, id).changes === 1;
+    },
     /** GitHub objects the outcome of record `id` made (objects.ts). */
     addObjects: (id: string, refs: unknown) => addObjects(db, id, refs, iso()),
     objectOf: (ref: string) => objectOf(db, ref),
