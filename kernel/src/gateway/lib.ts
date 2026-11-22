@@ -245,14 +245,12 @@ function opening(data: string): boolean {
  * cached, output, costUsd } or undefined. The model is the one OpenRouter answered with. failure() (a stream, after done())
  * → why an answer that never completed (neither final usage nor a finish event) failed: its first error event's reason,
  * else its last event's type; undefined for an answer that completed. `[DONE]` is only the transport's end, never a finish.
- * Never model text: the reason is safe to log. deltas() → the output events streamed (any event with a `delta`: about a
- * token each), what a failed stream's output is estimated from.
+ * Never model text: the reason is safe to log.
  */
-export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined; failure(): string | undefined; deltas(): number } {
-  let tail = "", body = "", event: string[] = [], held = 0, last = "none", error: string | undefined, finished = false, final = false, deltas = 0, found: (Answer & { id: string; usage: UsageBlock }) | undefined;
+export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined; failure(): string | undefined } {
+  let tail = "", body = "", event: string[] = [], held = 0, last = "none", error: string | undefined, finished = false, final = false, found: (Answer & { id: string; usage: UsageBlock }) | undefined;
   const line = (data: string) => {
     if (data !== "[DONE]") last = eventType(data) ?? "chunk";
-    if (/"delta"\s*:/.test(data)) deltas++;
     const err = streamError(data);
     if (err) error ??= `error event: ${err.reason}`;
     else if (FINISHED.test(data)) finished = true;
@@ -289,7 +287,6 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
     failure() {
       return finished || final ? undefined : (error ?? `no usage or finish; last event: ${last}`);
     },
-    deltas: () => deltas,
     done() {
       if (sse) { field(tail); field(""); tail = ""; } else take(body);
       if (!found) return undefined;
@@ -736,22 +733,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
     // Settled once, however the call ends: at what OpenRouter billed (usage.cost; tokens x list price if a usage block lacks it,
-    // never 0); nothing when the upstream refused before any output (`free`: OpenRouter bills none); a stream that failed
-    // in-band at an estimate (`stream_error`, failedAt); else the reservation (a stream cut, no usage, a restart).
+    // never 0); nothing when the upstream refused before any output or a stream failed in-band (`free`: OpenRouter bills
+    // neither; the latter as `stream_error`, so it stays visible); else the reservation (a stream cut, no usage, a restart).
     live++;
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
       const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : r.usd;
       const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
-    };
-    // A stream that failed in-band (an error event, or an end with neither usage nor a finish) is booked at an estimate, never
-    // free: its input (a usage block's tokens if one came, else the reservation's estimate) and the output streamed before the
-    // failure (its delta events, about a token each), at list price, never over the reservation.
-    const failedAt = (u: Usage | undefined, deltas: number): Usage => {
-      const output = Math.max(u?.output ?? 0, deltas);
-      const input = u ? (u.input * price.in + u.cached * price.cached_in) / 1e6 : r.usd;
-      return { key: u?.key ?? id, model: u?.model ?? "", input: u?.input ?? 0, cached: u?.cached ?? 0, output, costUsd: Math.min(r.usd, input + (output * price.out) / 1e6) };
     };
     let up: Response;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -824,14 +813,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : failed ? failed.transient && !rerun : RETRY_STATUS.has(up.status);
         if (!transient || n >= retryDelaysMs.length) { if (err) throw err; break; }
         if (failed) {
-          // The discarded attempt is booked on its own row, at its estimate, through a cap-checked reservation: refused by
-          // the caps, there is no re-run (this attempt goes to the caller and settles on the call's own row).
-          const t = usageTap(true);
-          t.feed(`${peeked!.text}\n\n`);
-          const est = failedAt(t.done(), t.deltas()), held = `gw:${randomUUID()}`;
-          if ("over" in reserve(who, now(), held, body.model, est.costUsd!, 0, 1)) break;
+          // The re-run is cap-checked like any call (refused: this attempt goes to the caller and settles on the call's own
+          // row); the discarded attempt keeps its own free `stream_error` row.
+          const held = `gw:${randomUUID()}`;
+          if ("over" in reserve(who, now(), held, body.model, 0, 0, 1)) break;
           rerun = true;
-          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), est.input, est.cached, est.output, est.costUsd, now() - t0, "stream_error", held);
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), 0, 0, 0, 0, now() - t0, "stream_error", held);
         }
         const after = Number(up?.headers.get("retry-after"));
         const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
@@ -878,7 +865,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const failed = status === "ok" && sse ? tap.failure() : undefined;
       if (failed) {
         log("upstream stream error", { model: body.model, gen, reason: failed });
-        settle("stream_error", failedAt(u, tap.deltas()));
+        settle("stream_error", u && { ...u, costUsd: 0 }, true);
       } else settle(status, u, !up.ok && !sse && status !== "upstream_aborted"); // free: a definite error answer, no stream started
     }
     if (!res.destroyed) res.end();

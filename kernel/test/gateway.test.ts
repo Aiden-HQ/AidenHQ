@@ -350,40 +350,35 @@ async function streamRig(t, claims = { kind: "reviewer" }) {
   const token = mintToken("job-secret", claims);
   // A 30 KB prompt: reserved at about 10,000 input tokens x $1/M = $0.01.
   rig.body = { model: "m", stream: true, input: "x".repeat(30_000) };
-  rig.reserved = (Math.ceil(Buffer.byteLength(JSON.stringify(rig.body)) / 3) * price.in) / 1e6;
   rig.call = async (path = "responses", body = rig.body) => { const r = await fetch(`${front.url}/api/v1/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); return { status: r.status, text: await r.text() }; };
   rig.rows = () => gw.db.prepare("SELECT status, cost_usd, input, output FROM calls ORDER BY rowid").all().map((x) => ({ ...x }));
   rig.fresh = () => { gw.db.exec("DELETE FROM calls"); rig.posts = 0; };
   return rig;
 }
 
-test("gateway: a stream that fails in-band is booked at an estimate, never free: input plus the output streamed, capped at the reservation", async (t) => {
+test("gateway: a stream that fails in-band is booked free as stream_error (OpenRouter bills none), its tokens kept", async (t) => {
   const rig = await streamRig(t);
-  const near = (a, b) => Math.abs(a - b) < 1e-9;
 
-  // No usage came: the reservation's input estimate; the output streamed before the failure doesn't take it past the reservation.
-  rig.answers = [streamed(sse([...opened("gen-a"), { type: "response.output_text.delta", delta: "Hel" }, { type: "response.output_text.delta", delta: "lo" }, failed("gen-a", "server_error")]))];
+  // Output streamed, then an error event: free, visible as stream_error.
+  rig.answers = [streamed(sse([...opened("gen-a"), { type: "response.output_text.delta", delta: "Hel" }, failed("gen-a", "server_error")]))];
   assert.match((await rig.call()).text, /response\.failed/);
   let [row] = rig.rows();
-  assert.equal(row.status, "stream_error");
-  assert.ok(near(row.cost_usd, rig.reserved), `booked ${row.cost_usd}, reserved ${rig.reserved}`);
-  assert.equal(row.output, 2, "two delta events streamed: about two tokens");
+  assert.deepEqual([row.status, row.cost_usd], ["stream_error", 0]);
   assert.equal(rig.logged.find(([m]) => m === "upstream stream error")[1].reason, "error event: server_error");
 
-  // A usage block named the input (Anthropic's message_start): its tokens, plus the streamed output, at list price.
+  // A usage block named the input (Anthropic's message_start): its tokens are kept, still at $0.
   rig.fresh();
-  rig.answers = [streamed(sse([{ type: "message_start", message: { id: "msg_1", model: "m", usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 1 } } }, ...["a", "b", "c"].map((text) => ({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })), { type: "error", error: { type: "overloaded_error", message: "secret provider text" } }]))];
+  rig.answers = [streamed(sse([{ type: "message_start", message: { id: "msg_1", model: "m", usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 1 } } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "a" } }, { type: "error", error: { type: "overloaded_error", message: "secret provider text" } }]))];
   await rig.call("messages", { model: "m", stream: true, max_tokens: 64, messages: [{ role: "user", content: "x".repeat(30_000) }] });
   [row] = rig.rows();
-  assert.deepEqual([row.status, row.input, row.output], ["stream_error", 100, 3]);
-  assert.ok(near(row.cost_usd, (100 * price.in + 3 * price.out) / 1e6), `booked ${row.cost_usd}`);
+  assert.deepEqual([row.status, row.input, row.cost_usd], ["stream_error", 100, 0]);
 
-  // A usage block on an error event is billed from, never taken as completion.
+  // A usage block on an error event is never taken as completion.
   rig.fresh();
   rig.answers = [streamed(sse([{ id: "gen-u", choices: [{ delta: { content: "Hi" } }] }, { id: "gen-u", error: { code: 502, message: "secret provider text" }, usage: { prompt_tokens: 50, completion_tokens: 1 } }]))];
   await rig.call("chat/completions", { model: "m", stream: true, messages: [{ role: "user", content: "x".repeat(30_000) }] });
   [row] = rig.rows();
-  assert.deepEqual([row.status, row.input], ["stream_error", 50]);
+  assert.deepEqual([row.status, row.input, row.cost_usd], ["stream_error", 50, 0]);
 
   // A completion whose JSON spans two data fields of one event is read whole: billed, not failed.
   rig.fresh();
@@ -404,16 +399,15 @@ test("gateway: an answer that failed before any output is re-run once when its e
   const rig = await streamRig(t);
 
   // The incident's shape: opened (echoing a large request), then failed (rate limited). Nothing reached the caller, so it is
-  // re-run; the caller gets the completed answer and the failed attempt is booked on its own row at its estimate.
+  // re-run; the caller gets the completed answer and the failed attempt keeps its own free stream_error row.
   rig.answers = [streamed(sse([...opened("gen-x", rig.body.input + "y".repeat(80_000)), failed("gen-x", "rate_limit_exceeded")])), streamed(completed)];
   rig.body = { ...rig.body, input: rig.body.input + "y".repeat(80_000) };
-  rig.reserved = (Math.ceil(Buffer.byteLength(JSON.stringify(rig.body)) / 3) * price.in) / 1e6;
   const rerun = await rig.call();
   assert.equal(rerun.status, 200);
   assert.doesNotMatch(rerun.text, /gen-x|secret provider text/, "nothing of the failed attempt reaches the caller");
   assert.match(rerun.text, /^: OPENROUTER PROCESSING[\s\S]*response\.created[\s\S]*response\.completed/, "the chosen attempt's opening events are replayed once");
   assert.equal(rig.posts, 2);
-  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02], ["stream_error", rig.reserved]]);
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02], ["stream_error", 0]]);
   assert.equal(rig.logged.find(([m]) => m === "upstream retry")[1].stream_error, "rate_limit_exceeded");
 
   // Only once: a second failure goes to the caller as it came (Codex retries on its own).
@@ -454,7 +448,7 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.equal(rig.posts, 1);
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
 
-  // A re-run is cap-checked: once the failed attempt has taken the call past its cap ($0.005 here), it goes to the caller as it came.
+  // A re-run is cap-checked: once the call's own reservation ($0.01) is past its cap ($0.005 here), it goes to the caller as it came.
   const capped = await streamRig(t, { kind: "reviewer", capUsd: 0.005 });
   capped.answers = [streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")])), streamed(completed)];
   assert.match((await capped.call()).text, /response\.failed/);
