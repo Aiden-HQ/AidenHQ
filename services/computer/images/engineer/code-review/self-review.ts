@@ -50,12 +50,15 @@ async function main(): Promise<{ out: string[]; code: number }> {
   // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
   const records = (): Record<string, { base?: string; head?: string; open?: number }> => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } };
   const last = records()[branch] ?? {};
+  // open: the important findings left, or INCOMPLETE. A record for the head is what `aidenhq publish` asks for, whatever the outcome; only a
+  // finished clean review lets the next run be incremental.
+  const INCOMPLETE = -1;
   const remember = (open: number) => writeFileSync(memo, JSON.stringify({ ...records(), [branch]: { base, head, open } })); // reread: another branch's record may have landed meanwhile
   const rerun = last.base === base && !!last.head && last.head !== head && (() => { try { git("merge-base", "--is-ancestor", last.head!, head); return true; } catch { return false; } })();
   const incremental = rerun && last.open === 0, from = incremental ? last.head! : base, effort = rerun ? AGAIN : FIRST;
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
   if (git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
-  if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
+  if (from === head) { remember(INCOMPLETE); return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 }; }
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
   // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
@@ -67,8 +70,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const left = new Set([...excluded, ...mine.excluded].map((x) => x.path));
   const gapNote = gaps.length ? `generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}` : "";
   if (!reviewed.length) {
-    if (gapNote) return { out: [`self-review: ${at}: incomplete`, detail(gapNote)], code: 2 };
     if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review")], code: 2 };
+    if (gapNote) { remember(INCOMPLETE); return { out: [`self-review: ${at}: incomplete`, detail(gapNote)], code: 2 }; }
     remember(0);
     return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles, binary or generated files changed; no model ran)`], code: 0 };
   }
@@ -89,8 +92,9 @@ async function main(): Promise<{ out: string[]; code: number }> {
     const ran = await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, head, left: [...left] });
     const r = scrub(ran, [token]);
     // Redaction changed the output (something credential-shaped, a file name included): what was validated is no longer what is shown.
-    if (r.message !== ran.message || r.cause !== ran.cause) return { out: [`self-review: ${at}: incomplete`, detail("the reviewer's output held something that looks like a credential and was redacted")], code: 2 };
-    if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
+    const unfinished = (out: string[]) => { if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review")], code: 2 }; remember(INCOMPLETE); return { out, code: 2 }; };
+    if (r.message !== ran.message || r.cause !== ran.cause) return unfinished([`self-review: ${at}: incomplete`, detail("the reviewer's output held something that looks like a credential and was redacted")]);
+    if (!r.message) return unfinished([`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")]);
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
     // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
     // one in a file the change doesn't touch is a nit).
@@ -102,8 +106,8 @@ async function main(): Promise<{ out: string[]; code: number }> {
       ...(n ? [`(${n} important finding${n === 1 ? "" : "s"} without a failure scenario counted as a nit)`] : []),
     ];
     // Some of the patch was not reviewed (a part that failed, a hunk too big to send): nothing counts as clean.
-    if (r.incomplete || gapNote) return { out: [`self-review: ${at}: incomplete`, detail([r.incomplete, gapNote].filter(Boolean).join("; ")), ...lines], code: 2 };
-    if (moved()) return { out: [`self-review: ${at}: incomplete`, detail("the checkout changed during the review"), ...lines], code: 2 };
+    if (r.incomplete || gapNote) return unfinished([`self-review: ${at}: incomplete`, detail([r.incomplete, gapNote].filter(Boolean).join("; ")), ...lines]);
+    if (moved()) return unfinished([]);
     remember(important.length); // a finished review
     return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`, ...lines], code: important.length ? 1 : 0 };
   } finally { rmSync(scratch, { recursive: true, force: true }); }

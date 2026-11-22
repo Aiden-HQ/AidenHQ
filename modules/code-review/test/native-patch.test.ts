@@ -152,6 +152,9 @@ test("self-review exits 2 when some part of the patch could not be reviewed, wha
     assert.equal(r.status, 2, r.stdout);
     assert.match(r.stdout, /it breaks/, "the finding is still printed");
     assert.match(r.stdout, new RegExp(`^self-review: branch ${branch} base \\w+ \\(merge base\\) head \\w+: incomplete$`, "m"));
+    const rec = JSON.parse(readFileSync(join(repo, ".git", "self-review.json"), "utf8"))[branch];
+    assert.equal(rec.head, sh(repo, "rev-parse", "HEAD"), "an incomplete run records the head (what publish asks for)");
+    assert.equal(rec.open, -1, "and the next run isn't incremental");
     assert.equal((await run("main", "some-other-branch")).status, 2, "a branch that isn't checked out is not reviewed");
   } finally { model.close(); }
 });

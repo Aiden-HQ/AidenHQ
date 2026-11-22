@@ -150,6 +150,20 @@ const commitOf = (repo, branch) => {
   execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
   return sha;
 };
+/**
+ * Publish asks for the record self-review.ts leaves in the clone's git dir (branch -> {base, head, open}) for the head it files:
+ * a review ran on that commit, whatever it found (findings judged wrong still publish; the skill puts them in the PR body).
+ */
+const needSelfReview = (repo, branch) => {
+  const dir = cloneOf(repo).have;
+  if (!dir) fail(`this workspace has no clone of ${repo}`, 2);
+  const sha = commitOf(repo, branch);
+  let seen;
+  try {
+    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim(), "self-review.json"), "utf8"))[branch]?.head;
+  } catch {}
+  if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
+};
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
 /** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */
 const firstSubject = (repo, branch) => {
@@ -196,6 +210,7 @@ const lines = [];
 if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
   const body = withFixes(flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "", fixes);
+  if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
     const sha = commitOf(repo, branch);
