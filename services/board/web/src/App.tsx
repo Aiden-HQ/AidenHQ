@@ -36,7 +36,7 @@ import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card } from "./types";
-import { dayDate, keepsSecureCookies, matches } from "./util";
+import { dayDate, keepsSecureCookies, matches, parkBucket, todayIn } from "./util";
 import { panelsOf } from "./sidebar";
 import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
 import "./shell.css";
@@ -369,17 +369,18 @@ export function App() {
     }
   }
 
-  /** Snooze: into Backlog now, back on top of Today on `date`. Undo puts it back where it was. */
+  /** Snooze: parked by its date (`parkBucket`) now, back on top of Today on `date`. Undo puts it back where it was. */
   async function snoozeCard(id: string, date: string) {
     const cur = itemsRef.current;
     const from = bucketOf(id);
+    const park = parkBucket(todayIn(board!.timezone), date);
     if (cur && from) {
       const card = { ...cur[from].find((c) => c.id === id)!, scheduled: { date, bucket: "today" as Bucket }, carried: undefined };
       hold();
-      setItems(from === "backlog" ? { ...cur, backlog: cur.backlog.map((c) => (c.id === id ? card : c)) } : { ...cur, [from]: cur[from].filter((c) => c.id !== id), backlog: [card, ...cur.backlog] });
+      setItems(from === park ? { ...cur, [park]: cur[park].map((c) => (c.id === id ? card : c)) } : { ...cur, [from]: cur[from].filter((c) => c.id !== id), [park]: [card, ...cur[park]] });
     }
     try {
-      await api.schedule(id, { date, bucket: "today", park: "backlog" });
+      await api.schedule(id, { date, bucket: "today", park });
       toast(`Snoozed until ${dayDate(date)}`, from ? { label: "Undo", run: () => void api.move(id, from).then(() => refresh(true), (e) => toast(`Couldn't undo: ${(e as Error).message}`)) } : undefined);
       void refresh(true);
     } catch (e) {

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createChecks, resultHash } from "../src/checkjobs.ts";
+import { checkEnv, createChecks, resultHash } from "../src/checkjobs.ts";
 import { createGateway } from "../src/gateway/lib.ts";
 import { modelsList } from "./models-list.ts";
 import { mintToken, verifyToken } from "../src/gateway/token.ts";
@@ -343,4 +343,10 @@ test("checks: check.ended carries the task it was asked for", async () => {
   assert.equal(db.prepare("SELECT task FROM facts WHERE type = 'check.ended'").get().task, "t-1");
   assert.throws(() => checks.start("github", { repo: "acme/app", head: A, run: "fast", spec: { base: B }, task: "a b" }), /task id/);
   assert.equal(v.state, "done");
+});
+
+test("a result recipe with no model (a tools check) gets its spec and result files and no model token", () => {
+  const env = checkEnv("result");
+  assert.deepEqual(Object.keys(env).filter((k) => /AIDENHQ|OPENROUTER/.test(k)).sort(), ["AIDENHQ_RESULT", "AIDENHQ_SPEC"]);
+  assert.ok("OPENROUTER_API_KEY" in checkEnv("model", { modelToken: "t" }));
 });

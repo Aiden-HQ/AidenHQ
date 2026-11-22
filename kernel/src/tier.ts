@@ -386,11 +386,14 @@ export function codeVerdict(input: ReviewInput, model: string): Verdict | undefi
   if (input.tier > 1 && !input.reviewFirst) return { decision: "escalate", code: "tier_raised", reason: `code now puts it at Tier 2: ${input.reason}`, model };
   return undefined;
 }
-/** How many failed reviews (the reviewer unreachable, failing or slow) a record waits out before it goes back. */
-export const REVIEW_TRIES = 6;
-/** The last failed try: the owner's card on its merits still reaches them, with the failure on it; anything else goes back. */
-export const failedVerdict = (input: ReviewInput, v: Verdict, n: number): Verdict =>
-  input.byMerit ? { ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` } : { ...v, decision: "reject", reason: `${v.reason}, ${n} times: ask again later.` };
+/** A failed review (the reviewer unreachable, failing or slow) waits 1, 2, 4 … minutes, never more than this, and is never rejected for it. */
+export const RETRY_CAP_MS = 15 * 60_000;
+/** Failed reviews of a record that is Tier 2 on its merits before the owner's card, with the failure on it, replaces the retries. */
+export const OWNER_AFTER_TRIES = 6;
+export const ownerAfterFailure = (input: ReviewInput, v: Verdict, n: number): Verdict =>
+  ({ ...v, decision: "escalate", code: "owner_tier", reason: `The AI reviewer couldn't read it (${v.reason}, ${n} times). It is Tier 2 on its merits, so the owner decides: ${input.reason}` });
+/** The wait before try `n` (1-based) of a failed review or of an approved record's pre-run reads. */
+export const retryWait = (n: number) => Math.min(60_000 * 2 ** (n - 1), RETRY_CAP_MS);
 /**
  * The panel's approve + reject (reject, panel_split) goes back to the agent with both notes, up to MAX_SPLITS times on its
  * target; the next one goes to the owner (owner, 2026-11-20: "go back for fix up to 3 times and only then escalate"). Splits

@@ -37,7 +37,6 @@ describe("re-filing a rubric", () => {
     assert.equal(r.grade.state, "open");
     assert.equal(r.grade.attempts, 0);
     assert.deepEqual(r.grade.verdicts, []);
-    assert.equal(r.grade.delegators, null);
     assert.equal(r.grade.closedReason, null);
   });
 

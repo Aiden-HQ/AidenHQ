@@ -52,3 +52,84 @@ RUN npm i -g pnpm@10.34.9 typescript@5.9.3 && npm cache clean --force
 # first on its PATH (/opt/aidenhq/bin): a read-only gh, a capped sleep and aidenhq-browse (screenshots of the app it builds).
 COPY --chmod=755 bin/aidenhq /usr/local/bin/aidenhq
 COPY --chmod=755 bin/sleep bin/aidenhq-browse /opt/aidenhq/bin/
+
+# ---- Code review tools (modules/code-review/catalog.json: every `tool` option's binary; recipe/tools.ts runs them) ----
+# Each is pinned (versions published on or before 2026-11-14, so 7+ days old) and checksummed (release downloads: sha256 per
+# architecture from the GitHub release's own digests), or resolved as of that date (npm --before, uv --exclude-newer, the Go
+# module proxy with its checksum database). gitleaks is the one above. Nothing is downloaded when a review runs, except the
+# vulnerability databases osv-scanner and govulncheck read (data, not code).
+# uv 0.13.8 builds the Python tools' venv, then stays only as a build step's tool.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) triple=x86_64-unknown-linux-gnu sum=5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91 ;; \
+      arm64) triple=aarch64-unknown-linux-gnu sum=74f2f5c6024d397481db228db8fc25eed420db192243f88438c118e7e013e585 ;; \
+    esac \
+    && curl -fsSLo /tmp/uv.tgz "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-$triple.tar.gz" \
+    && echo "$sum  /tmp/uv.tgz" | sha256sum -c - \
+    && mkdir /tmp/uv && tar -xzf /tmp/uv.tgz -C /tmp/uv --strip-components=1 \
+    && UV_CACHE_DIR=/tmp/uv-cache /tmp/uv/uv venv --python /usr/bin/python3 /opt/review-py \
+    && UV_CACHE_DIR=/tmp/uv-cache /tmp/uv/uv pip install --python=/opt/review-py/bin/python --exclude-newer=2026-11-14T23:59:59Z vulture==2.16 ruff==0.17.5 \
+    && ln -s /opt/review-py/bin/vulture /opt/review-py/bin/ruff /usr/local/bin/ \
+    && rm -rf /tmp/uv /tmp/uv.tgz /tmp/uv-cache && chmod -R a+rX /opt/review-py \
+    && vulture --version | grep -qx 'vulture 2.16' && ruff --version | grep -qx 'ruff 0.17.5'
+RUN npm i -g --before=2026-11-14 oxlint@1.93.0 knip@6.45.1 jscpd@5.4.3 fallow@3.43.0 && npm cache clean --force \
+    && oxlint --version | grep -q 1.93.0 && knip --version | grep -q 6.45.1 && jscpd --version | grep -q 5.4.3 && fallow --version | grep -q 3.43.0
+# govulncheck v1.9.0 (2026-10-11), built with the image's Go from the module proxy (go.sum and the checksum database verify it).
+RUN GOTOOLCHAIN=local CGO_ENABLED=0 GOBIN=/usr/local/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 \
+    && chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /tmp/gocache && govulncheck -version | grep -q v1.9.0
+# osv-scanner 2.7.1, zizmor 1.32.0, scc 4.1.0 and squawk 2.72.0: release binaries.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) a=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 file=osv-scanner_linux_amd64 ;; \
+      arm64) a=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 file=osv-scanner_linux_arm64 ;; \
+    esac \
+    && curl -fsSLo /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.7.1/$file" && echo "$a  /usr/local/bin/osv-scanner" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/osv-scanner && osv-scanner --version | grep -q 2.7.1
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) a=bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b file=zizmor-x86_64-unknown-linux-gnu.tar.gz ;; \
+      arm64) a=cb152b207f815116d7fa1c1ee4614f61578803351395052908095e79adfd9fd0 file=zizmor-aarch64-unknown-linux-gnu.tar.gz ;; \
+    esac \
+    && curl -fsSLo /tmp/zz.tgz "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/$file" && echo "$a  /tmp/zz.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/zz.tgz -C /usr/local/bin zizmor && rm /tmp/zz.tgz && zizmor --version | grep -q 1.32.0
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) a=c7328436d3027f4357d3d7853f7dc3ac2bbcb4ca08f1adad91a27c593884079b file=scc_Linux_x86_64.tar.gz ;; \
+      arm64) a=6e0d2a1f8d3540ba7df185477dec40bb7340f1b214bfd303147de5cad2bd7b8b file=scc_Linux_arm64.tar.gz ;; \
+    esac \
+    && curl -fsSLo /tmp/scc.tgz "https://github.com/boyter/scc/releases/download/v4.1.0/$file" && echo "$a  /tmp/scc.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/scc.tgz -C /usr/local/bin scc && rm /tmp/scc.tgz && scc --version | grep -q 4.1.0
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) a=a61661808119a82515565503111099b070c869f73698f61cb1785de5d0c8b11a file=squawk-linux-x64 ;; \
+      arm64) a=bcb529c1344512de5ce70695d89e7b1ae58738f73c05187a5f56cbf079417cf2 file=squawk-linux-arm64 ;; \
+    esac \
+    && curl -fsSLo /usr/local/bin/squawk "https://github.com/sbdchd/squawk/releases/download/v2.72.0/$file" && echo "$a  /usr/local/bin/squawk" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/squawk && squawk --version | grep -q 2.72.0
+# ---- end of the code review tools ----
+# Code review lenses, lane R2: the review options that run an upstream skill, plugin or scanner as shipped (modules/code-review,
+# recipe/engines.ts `skill:<option>` and recipe/deepsec.ts). Everything here is pinned to a commit or version published on or before
+# 2026-11-14 (the 7-day rule at 2026-11-22); a bump moves the pin and the catalog's version together. Nothing is loaded by default:
+# a review run links only the selected skill or plugin into its own throwaway home (resolveSkill).
+#   /opt/review/skills/<owner>__<repo>/  the repo at its pin (skill folders inside)
+#   /opt/review/plugins/<name>/          a Claude Code plugin folder at its pin
+# deepsec 2.3.12 (2026-11-06; 2.3.13 on 2026-11-16 is too new): npm's tarball, install scripts off.
+RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force && deepsec --version
+RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
+    pin() { d=$1; repo=$2; sha=$3; git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$sha" && git -C "$d" checkout -q FETCH_HEAD && rm -rf "$d/.git"; }; \
+    skills() { pin "/opt/review/skills/$(echo "$1" | sed 's#/#__#')" "$1" "$2"; }; \
+    # Skill repos (names pass through to run.skill as <owner>/<repo>:<skill>).
+    skills cloudflare/security-audit-skill c1c8a8c1471069fb0e188eeaff69b8e8db6564a8; \
+    skills trailofbits/skills 149d7b21f4067765b82e67029730b42d228ef4b4; \
+    skills mattpocock/skills 5863806dd4e15c63174bee4e7515a4256792ecfa; \
+    skills supabase/agent-skills c9be0e931b7930f7d02126d04774d904c381e7d7; \
+    skills vercel-labs/agent-skills 53b6e3ddf96b3fa83af97b1783ed805b582ad3a7; \
+    skills getsentry/skills a582c51ee29d0f35e6ac321340796f77d43da733; \
+    skills callstackincubator/agent-skills 59e9d17446a248b21d86f078fcd0bd2d36db1ca4; \
+    skills dotnet/skills 2877c712edc20643b72f64e2983b168e6661d607; \
+    skills pashov/skills eacfc09b365d2697b83355909d0300607e596ffc; \
+    # Claude Code plugins: anthropics/claude-plugins-official's three, and EveryInc's (the repo root is the plugin).
+    pin /tmp/cpo anthropics/claude-plugins-official b5b01ac4f889fec0c4c6bb89f27ca7c8574473f6; \
+    for p in pr-review-toolkit code-modernization security-guidance; do cp -r "/tmp/cpo/plugins/$p" "/opt/review/plugins/$p"; done; rm -rf /tmp/cpo; \
+    pin /opt/review/plugins/compound-engineering EveryInc/compound-engineering-plugin ee46dde75a40e297bd8eac4055a410a771d3ac1d; \
+    # Left out: gemini-cli-extensions/code-review (no gemini CLI in the image) and openai/codex-plugin-cc (inactive since 2026-07,
+    # and it calls a local codex outside our gateway).
+    chmod -R a+rX /opt/review; \
+    test -f /opt/review/skills/cloudflare__security-audit-skill/skills/security-audit/SKILL.md; \
+    test -f /opt/review/plugins/pr-review-toolkit/.claude-plugin/plugin.json; \
+    test -f /opt/review/plugins/compound-engineering/.claude-plugin/plugin.json

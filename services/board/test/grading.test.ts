@@ -12,7 +12,7 @@ describe("grading client", () => {
     const ok = (async (url: string, init: RequestInit) => {
       seen.push({ url, auth: (init.headers as Record<string, string>).authorization!, body: JSON.parse(String(init.body)) });
       const ids = JSON.parse(String(init.body)).ids as string[];
-      return new Response(JSON.stringify({ grades: Object.fromEntries(ids.map((id) => [id, id === "a" ? { issueId: "a", state: "escalated" } : null])) }));
+      return new Response(JSON.stringify({ grades: Object.fromEntries(ids.map((id) => [id, id === "a" ? { issueId: "a", state: "needs_revision" } : null])) }));
     }) as unknown as typeof fetch;
     const view = await createGrading({ url: "http://grading:8096/", keyFile, fetchFn: ok }).grades(["a", "b"]);
     expect(seen).toEqual([{ url: "http://grading:8096/board/grades", auth: "Bearer secret", body: { ids: ["a", "b"] } }]);

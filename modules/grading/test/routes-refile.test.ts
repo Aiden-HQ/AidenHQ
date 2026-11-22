@@ -27,7 +27,7 @@ async function harness(t) {
     "WOR-3": { id: "t3", identifier: "WOR-3", status: "done", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null },
   };
   const byRef = (ref) => Object.values(tasks).find((i) => i.id === ref || i.identifier === ref);
-  const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({}), release: async () => {} };
+  const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({}) };
   const { server, grades } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());

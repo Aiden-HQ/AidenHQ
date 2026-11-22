@@ -14,7 +14,7 @@ requires:
 # with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
 # holds no kernel role and can't report a write's outcome.
 privileged: [ git-credential ]
-# The merge queue, its gate rules and the reviewer-eval gate are the gate's own core: read by the reviewer and a second one on
+# The merge queue, its gate rules and the reviewer's code list (evalgate.ts) are the gate's own core: read by the reviewer and a second one on
 # another model family (the path inventory, paths.yaml; the rest of the code host part is the reviewer's).
 paths:
   - sensitivity: panel
@@ -154,8 +154,7 @@ connections:
               search_commits, search_repositories, search_users ]
       write: []
       destructive: []
-# The code host's own checks (the merge queue's reviewer eval: kernel.checks) read the repos it lands, through the kernel's
-# snapshot.
+# Check jobs read the repos the code host lands through the kernel's snapshot.
 codehost:
   snapshot: { repos: [ "*/*" ] }
 # The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
@@ -163,8 +162,6 @@ codehost:
 # task's PR. It holds only its module token.
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
 # superseded (kernel.tasks).
-# The merge queue's reviewer eval (service/src/evalgate.ts) is a kernel check job (kernel.checks) whose signed receipt it
-# verifies before a product PR that changes the reviewer merges.
 # The release train (service/src/train.ts, W3) files the instance's pin bump as a kernel.apply, which the
 # kernel plans and tiers like any apply (kernel.apply), on a task for the Platform Engineer's role (kernel.tasks).
 # It reads that task's records (kernel.work-read) to adopt a bump whose own state was lost and follow it to its end, and lists
@@ -172,7 +169,7 @@ codehost:
 # whose process is gone. That listing reads no other source and closes no other family (kernel/src/modtasks.ts).
 # All of them go with the code host's own token (codehost_github_token), never with github-mcp's service key.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.checks, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice ]
+  requests: [ kernel.tasks, kernel.wake, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice ]
 # Flow (docs/design/flow.md): the facts the code host emits through the kernel (service/src/flow.ts), each carrying the task that opened
 # the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
@@ -186,8 +183,8 @@ facts:
   pr.merged: { subject: pr }
   pr.reverted: { subject: pr }
   pr.review_bypassed: { subject: pr } # merged without code review's verdict: code review unreachable over 10 minutes
-  work.waiting: { subject: pr, reasons: [ checks, design_review, code_review, eval, retry, conflict, github ] }
-  work.resumed: { subject: pr, reasons: [ checks, design_review, code_review, eval, retry, conflict, github ] }
+  work.waiting: { subject: pr, reasons: [ checks, design_review, code_review, retry, conflict, github ] }
+  work.resumed: { subject: pr, reasons: [ checks, design_review, code_review, retry, conflict, github ] }
   code.added: { subject: pr }
   code.rewritten: { subject: pr }
   issue.opened: { subject: issue }

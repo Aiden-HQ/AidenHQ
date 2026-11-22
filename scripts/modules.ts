@@ -10,6 +10,7 @@ import { validateImages } from "./computers.ts";
 import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
+import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
@@ -1519,6 +1520,8 @@ export function checkEntries(name: string, def: Obj) {
  * (true: a model token of the check's own) and `result` (true: the
  * recipe writes a JSON result the receipt binds).
  */
+/** The most a check job's model token may spend (USD); its time ceiling is the launcher's (MAX_CHECK_MIN). */
+export const MAX_CHECK_USD = 100;
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name: string, def: Obj, root: string) {
   const out: Obj = {};
@@ -1528,7 +1531,7 @@ export function checkJobs(name: string, def: Obj, root: string) {
     const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a: unknown) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
-    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
+    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > MAX_CHECK_MIN) fail(`${where}: timeout_min is whole minutes, 1 to ${MAX_CHECK_MIN}`);
     if (typeof r.title !== "string" || !r.title || r.title.length > 120) fail(`${where}: title is a short text`);
     const spec = r.spec ?? {};
     if (!spec || typeof spec !== "object" || Object.entries<string>(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);

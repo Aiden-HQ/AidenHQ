@@ -111,7 +111,7 @@ export interface Agents {
 /** GET /api/agents/:id/scorecard (fleet-stats.ts). */
 export interface Scorecard {
   done: { count: number; prior: number; tasks: { identifier: string; title: string }[] };
-  reopen: { graded: number; reopened: number; escalated: number };
+  reopen: { graded: number; reopened: number };
   approvals: { filed: number; rejected: number; priorRejected: number };
   runsFailed: number;
   cost: { usd: number; prior: number; perDone: number | null; billed: boolean };

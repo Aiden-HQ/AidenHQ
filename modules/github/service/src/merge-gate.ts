@@ -1,8 +1,10 @@
 // The code host's merge gate: whether an approved merge record's PR merges now, from GitHub's view of it. One decision per PR
 // (`decide`); merges.ts polls, merges and reports. A PR merges only when it is open on the default branch, at the head the
 // record bound (only our own repos: agents org and product; the approved record is the review), every named
-// check is green on that head, GitHub can merge it, the default branch is green (or this PR already holds its red tip: the fix
-// must land) and, where required, the reviewer-eval receipt verifies (merges.ts asks evalgate.ts last). Anything else waits a bounded time or fails with the reason: nothing here updates, rebases, retargets,
+// check is green on that head, GitHub can merge it and the default branch is green (or this PR already holds its tip: its own
+// checks proved the tree after the merge, so a fix for a red base lands, and a PR at the tip doesn't wait for the tip's CI).
+// Anything else waits (with no
+// time limit: merges.ts) or fails with the reason: nothing here updates, rebases, retargets,
 // re-runs or forces. A moved head, a moved base (behind, conflicts) or a red check goes back to the PR's own path, which asks
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
@@ -27,14 +29,9 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
   }
 }`;
 
-/** How long a PR may wait on one thing (checks running, GitHub working out mergeability) before it is reported not merged. */
-export const WAIT_MINUTES = 90;
-/** How long a product merge waits on its reviewer-eval receipt (evalgate.ts). */
-export const EVAL_WAIT_MINUTES = 180;
-
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
-/** The UI Reviewer's design review: advisory in the named checks, required on a UI PR in the agents org (owner, 2026-11-13). */
+/** The UI Reviewer's design review: advisory in the named checks, required on a UI PR in the agents org (owner, 2026-11-13) until its wait of `minutes` (asked twice) ends with no verdict: then advisory for that head. */
 export const DESIGN_REVIEW = { name: DESIGN_REVIEW_CHECK, minutes: 120 };
 
 /**
@@ -115,10 +112,10 @@ export function mergeMethod(repo: Json) {
 
 /**
  * What to do with one PR of an approved record, from `data` (PR_QUERY's answer, withGate applied) and the record's bound `head`:
- * { do: "merge" | "done" | "wait" | "fail", why, limit?, review? }. Before a "merge", merges.ts still asks the eval gate.
- * Only our own repos (agents org, product) reach it, so the record is the review. `uiReview`: a UI PR needs the design review's pass.
+ * { do: "merge" | "done" | "wait" | "fail", why, review? }. Before a "merge", merges.ts still asks the eval gate.
+ * Only our own repos (agents org, product) reach it, so the record is the review. `uiReview`: a UI PR needs the design review's pass, unless `designAdvisory` (its wait ended with no verdict: a failure still fails).
  */
-export function decide(data: Json, head: string, { uiReview }: { uiReview?: boolean }) {
+export function decide(data: Json, head: string, { uiReview, designAdvisory }: { uiReview?: boolean; designAdvisory?: boolean }) {
   const pr = data?.repository?.pullRequest;
   if (!pr) return { do: "fail", why: "not found on GitHub" };
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
@@ -132,7 +129,7 @@ export function decide(data: Json, head: string, { uiReview }: { uiReview?: bool
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
   const named = namedChecks(rollup);
-  if (!named.length) return { do: "wait", why: "no checks on its head yet", limit: 10 };
+  if (!named.length) return { do: "wait", why: "no checks on its head yet" };
   // Check names are set by whoever can push to the repo: counted, never quoted.
   const red = named.filter((c) => !c.ok && !c.pending);
   if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };
@@ -141,19 +138,19 @@ export function decide(data: Json, head: string, { uiReview }: { uiReview?: bool
   if (uiReview && prTouchesUi(pr)) {
     const dr = designReview(rollup);
     if (dr === "failure") return { do: "fail", why: "the UI Reviewer's design review failed on its head" };
-    if (dr !== "success") return { do: "wait", why: "waiting for the UI Reviewer's design review on its head", limit: DESIGN_REVIEW.minutes, review: true };
+    if (dr !== "success" && !designAdvisory) return { do: "wait", why: "waiting for the UI Reviewer's design review on its head", review: true };
   }
   switch (pr.mergeStateStatus) {
     case "CLEAN":
     case "HAS_HOOKS":
     case "UNSTABLE": { // only an advisory context isn't green: every named one is, above
-      // A red default branch takes no merges on top, except a PR that already holds its tip: its own green checks prove the tree
-      // after the merge, so the fix for a red base can land.
-      // A base that never ran CI (an app repo whose CI runs on PRs only) has nothing to judge: green. The tip is in the reason, so
-      // each new tip's CI gets its own wait.
+      // A PR that holds the tip merges on its own green checks: they prove the tree after the merge (the fix for a red base
+      // lands, and the tip's own CI is no wait). One behind a red or still-running tip waits for it. The tip is in the reason,
+      // so each new tip gets its own wait.
       const base = baseCi(pr.baseRef?.target?.statusCheckRollup), tip = String(pr.baseRef?.target?.oid ?? "").slice(0, 12);
-      if (base === "pending") return { do: "wait", why: `CI is running on \`${def}\` at \`${tip}\`` };
-      if (base === "red" && pr.baseRef?.compare?.behindBy !== 0) return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
+      const behind = pr.baseRef?.compare?.behindBy !== 0;
+      if (behind && base === "pending") return { do: "wait", why: `CI is running on \`${def}\` at \`${tip}\`` };
+      if (behind && base === "red") return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
       return { do: "merge" };
     }
     case "DIRTY":

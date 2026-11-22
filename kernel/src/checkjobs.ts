@@ -138,11 +138,12 @@ export class CheckError extends Error {
 const TAIL = 4000;
 /** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token only for a judged
  * run (the eval) or a model recipe, each its own `check` token (OPENROUTER_API_KEY: the name the launcher registers it by). */
-export function checkEnv(kind: "plain" | "judged" | "model", { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
+export function checkEnv(kind: "plain" | "result" | "judged" | "model", { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
   const env: Record<string, string> = { CI: "1", HOME: `${BOX_OUT}/home`, npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false" };
-  if (kind !== "plain") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? "") });
+  if (kind === "judged" || kind === "model") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? "") });
   if (kind === "judged") env.EVAL_RESULT = `${BOX_OUT}/result.json`;
-  if (kind === "model") Object.assign(env, { AIDENHQ_SPEC: `${BOX_OUT}/spec.json`, AIDENHQ_RESULT: `${BOX_OUT}/result.json` });
+  // A result recipe's spec and result files: a model recipe's, or a plain one's (a tools check: no token at all).
+  if (kind === "model" || kind === "result") Object.assign(env, { AIDENHQ_SPEC: `${BOX_OUT}/spec.json`, AIDENHQ_RESULT: `${BOX_OUT}/result.json` });
   return env;
 }
 
@@ -394,7 +395,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // Its run key on the row before it runs: a run a restart loses still has its spend counted (recover).
       minted(runKey(token));
     }
-    const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv("plain");
+    const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv(r.result ? "result" : "plain");
     const step = { prior };
     const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }), step);
     return codeEnded(r, dir, o, token ? runKey(token) : undefined, step);

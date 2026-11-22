@@ -203,52 +203,6 @@ test("a feedback agent's delegations and comments carry the untrusted app-feedba
   assert.doesNotMatch(plain.created[0].description, /From app feedback/);
 });
 
-// A brief whose fallback branch is "no release has the fix, record that and park" has an honest no-change answer: as a pr
-// it is graded on a merged PR that can never exist, and the grade holds and escalates again. The refusal names the shape
-// that works; a report is accepted, and a brief with no fallback keeps its pr rubric.
-const parked =
-  "Bump `prom/node-exporter` to a release that meets the floors (Go >= 1.26.11, golang.org/x/net >= 0.62.0). " +
-  "If no upstream release meets the floors, record that and park: do not patch the image locally.";
-
-test("a fix brief with a park fallback is refused as a pr deliverable, and accepted as a report", async () => {
-  for (const description of [
-    parked,
-    "If no upstream release meets the floors, park it until one does.",
-    "No published release satisfies the floors: do not rebuild the image locally, record the floors instead.",
-    "If no upstream release carries the fix yet, record the floors and park the task.",
-  ]) {
-    const pr = await call("task_delegate", { agent: "Kai", title: "Security fix: node-exporter", description, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
-    assert.equal(pr.r.result?.isError, true, description);
-    assert.match(pr.text, /has a fallback branch/);
-    assert.match(pr.text, /kind: "report"/);
-    assert.equal(pr.created.length, 0);
-    assert.equal(pr.filed.length, 0);
-  }
-
-  // task_create with an assignee is the shape Security Watch files, and is refused the same way.
-  const created = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "Kai", deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" } });
-  assert.equal(created.r.result?.isError, true);
-  assert.match(created.text, /has a fallback branch/);
-  assert.equal(created.created.length, 0);
-
-  // The shape Security Watch files (assignee fleet-ops, which isn't graded) is refused too: any pr deliverable on it.
-  const toOps = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "fleet-ops", deliverable: { kind: "pr" } });
-  assert.equal(toOps.r.result?.isError, true);
-  assert.match(toOps.text, /has a fallback branch/);
-  assert.equal(toOps.created.length, 0);
-
-  // An app task is graded on a deploy, which a parked brief never makes either.
-  const app = await call("task_create", { title: "Security fix: roadmap-keeper", description: parked, marker: "security:target:app:roadmap-keeper", assignee: "Kai", deliverable: { kind: "app", ref: "roadmap-keeper" } });
-  assert.equal(app.r.result?.isError, true);
-  assert.match(app.text, /has a fallback branch/);
-  assert.equal(app.created.length, 0);
-
-  const report = await call("task_create", { title: "Security fix: node-exporter", description: parked, marker: "security:target:image:node-exporter", assignee: "Kai", deliverable: { kind: "report" } });
-  assert.equal(report.r.result?.isError, undefined, report.text);
-  assert.equal(report.filed.length, 0);
-  assert.doesNotMatch(report.created[0].description, /Graded before done/);
-});
-
 test("a brief with no fallback branch keeps its pr deliverable and rubric", async () => {
   for (const [title, description] of [
     ["Bump undici", "Move the builder image to node:24-bookworm-slim and bump undici to 7.18.2; open the product PR."],

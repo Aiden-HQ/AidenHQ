@@ -184,9 +184,14 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
 /** github-mcp's internal review routes, as this module. */
 export function githubReview(base: string, token: () => string, fetcher: typeof fetch = fetch) {
   return async (op: "preview" | "execute", body: unknown) => {
-    const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/${op}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`github-mcp review ${op}: ${r.status} ${String((j as { detail?: string }).detail ?? "").slice(0, 300)}`);
+    // An execute answers when the post is done, however long github-mcp's write queue and GitHub's rate limits take: it sends a
+    // blank every 30 s meanwhile, so a stall (no bytes for fetch's body timeout) fails it, never a duration. A failure after the
+    // headers is the body's `error`. Only the preview, which makes no GitHub write, gets a short timeout.
+    const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/${op}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), ...(op === "preview" ? { signal: AbortSignal.timeout(120_000) } : {}) });
+    // A body that can't be read (the connection dropped after the headers) rejects here: the outcome is unknown, never an empty one.
+    const text = await r.text();
+    const j = (() => { try { return JSON.parse(text); } catch { if (r.ok) throw new Error(`github-mcp review ${op}: an unreadable answer (${text.slice(0, 100)})`); return {}; } })();
+    if (!r.ok || (j as { error?: string }).error) throw new Error(`github-mcp review ${op}: ${r.status} ${String((j as { detail?: string }).detail ?? "").slice(0, 300)}`);
     return j;
   };
 }

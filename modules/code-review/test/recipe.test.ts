@@ -166,6 +166,10 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   // An important finding is never withheld (it gates once stored): its texts are cut short instead.
   const imp = bound({ coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: Array.from({ length: 100 }, () => F({ severity: "important", evidence: "x".repeat(4000) })) });
   assert.deepEqual([imp.findings.length, imp.withheld.important], [100, 0]);
+  // Only when even cut short they can't fit are the last importants withheld, and the review says so.
+  const huge = bound({ coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: Array.from({ length: 3000 }, () => F({ severity: "important", evidence: "x".repeat(4000) })) });
+  assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= 200_000 && huge.withheld.important > 0 && huge.findings.length + huge.withheld.important === 3000);
+  assert.match(huge.coverage.incomplete, /important findings left out/);
   // A long list of coverage gaps fits the post's 500 characters.
   assert.equal(bound({ coverage: { reviewed: [], excluded: [], incomplete: "x".repeat(900) }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: [] }).coverage.incomplete.length, 498);
 });
@@ -446,4 +450,11 @@ test("tool arguments of the wrong type are refused and never count as a read; fi
   const odd = t.diff.run({ path: ":(glob)*" });
   assert.match(odd, /\+odd/);
   assert.doesNotMatch(odd, /a\.js/);
+});
+
+test("an engine that reports what it analysed (deepsec): a change's file it didn't analyse is a gap", async () => {
+  const { ws, out } = box({ head: { "src/a.js": "a\nb\n", "src/b.js": "c\n" }, base: { "src/a.js": "a\n" } });
+  const r = await review({ spec: spec({ combo: JSON.stringify({ engine: "deepsec", model: "~deepseek/deepseek-flash-latest", effort: "low" }) }), ws, out,
+    run: async () => ({ read: true, covered: ["src/a.js"], message: JSON.stringify({ findings: [], stale_guidance: [] }) }) });
+  assert.match(r.coverage.incomplete, /1 reviewed file the engine didn't analyse \(src\/b\.js\)/);
 });

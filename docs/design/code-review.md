@@ -56,6 +56,8 @@ the final message out; fan-out, verification, dedupe and the schema are `review.
 | `claude-code` | Claude Code's own `/code-review <effort>` over the change, then our finder prompt in the same session restates its findings as our JSON | our prompts | `claude -p` through the gateway's Anthropic route; built-in tools off but Agent and Bash, the repo tools (MCP); empty cwd, user settings only, CLAUDE.md off |
 | `codegenie` | `codegenie review --format json` (Polygon's harness, its own planning and verification), mapped to our findings | recheck by codex on the same model | a worktree of the trusted base (its `codegenie.toml` and `.codegenie/skills` are the base's), the head as review data; its OpenRouter calls rewritten to the gateway (`gateway-fetch.ts`) |
 | `codex-native` | `codex exec review --base <base>` (OpenAI's built-in reviewer and its own prompt; the brief as its developer instructions), its findings mapped to ours (P0-P2 important, P3 nit) | recheck by codex on the same model | the box's checkout (base and head commits) as its cwd and the shell; it reads git itself, so which parts it read isn't tracked: a note (`coverage_note`), never partial coverage; a failed or cut-off run still is |
+| `skill:<option>` | an installed upstream skill or plugin (the engineer image's pinned `/opt/review`) run in its harness (`claude-code` or `codex`, the catalog's `run.harness`) over the range (`base..HEAD`; the empty tree as base for a whole-tree review), then our restate-as-JSON step in the same session | the harness's, our prompts | the harness's own (above); only the selected skill or plugin is linked into the run's throwaway home, never the repo's; reads the code its own way, so coverage is a note, not tracked |
+| `deepsec` | Vercel's scanner on its pi backend through the gateway: `init` when nothing is under `.deepsec/` (the allowlisted files but the lockfile come back as `setup`), then `scan`, `process` and `revalidate` (a tree) or `process --diff <base>` (a change); CRITICAL/HIGH/HIGH_BUG important, the rest nits | recheck by codex on the same model | its own read-only agent on the box's checkout, run from a scratch workspace with our config (the repo's deepsec config and matchers are never loaded as code; only its INFO.md, as text); state in the run's scratch (`DEEPSEC_DATA_ROOT`), the run's token only in `OPENROUTER_API_KEY`, install scripts off |
 
 **One access policy for every reviewer** (owner, 2026-11-21: the same settings across all reviewers, no special case per
 engine). An engine that runs commands gets a shell that reads the repo and the system and runs read-only commands, with the
@@ -141,7 +143,9 @@ changed; the acknowledgement is left to the newer head), while a run whose PR mo
 
 Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
 finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with
-several combos it shows the latest run to finish (each review names its own combo).
+several combos it shows the latest run to finish (each review names its own combo). An automatic review makes none (its summary
+says the same); a command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or
+summary already as it would be writes nothing, and a post's thread resolves are one request.
 
 Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment and notice ending with the
 AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a Tier 1 write). Every fleet write posts as
@@ -154,8 +158,8 @@ made only by the notice (one in flight per PR until its comment id is recorded);
 follows each settled post of the PR's current head.
 
 **The status `aidenhq/review`.** On a gated repo, each open non-draft PR's head carries the commit status `aidenhq/review`, so
-people and `gh pr checks --watch` see the verdict: pending while the head's mandatory review is queued or running (naming the
-reviewers), failure while important findings are open or the review failed or was partial (with the count and how to unblock),
+people and `gh pr checks --watch` see the verdict (nothing is written while the head's mandatory review is queued or running: an unreported
+status already waits, and each write counts against the owner's GitHub rate limit): failure while important findings are open or the review failed or was partial (with the count and how to unblock),
 success when the verdict passes. The service computes it from the same `verdict()` the merge queue asks and writes it only when
 it changes (one writer). It is a mirror: the merge queue still asks the service, and `kernel/sdk/src/checks.ts` leaves the
 status out of the named checks, so it never becomes a second gate. It is advice for people and agents watching a PR, not a gate:

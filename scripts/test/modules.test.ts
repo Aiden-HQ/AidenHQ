@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { BUNDLE } from "./bundle.ts";
 import { ensureIdentityKeys } from "../identity.ts";
-import { checkEntries, codeReviewGated, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.ts";
+import { checkEntries, checkJobs, codeReviewGated, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -445,4 +445,18 @@ test("code review gates a repo with a mandatory combo at both moments; one at a 
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)], on_push: [] }] }), /mandatory combo goes in both on_open and on_push/);
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)] }] }), /both on_open and on_push/);
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", mandatory: true }] }), /a repo's mandatory is gone/);
+});
+
+test("check job limits: a recipe may run 180 minutes and its model token may be capped at 100; more fails the compile", () => {
+  const job = (r) => ({ check_jobs: { big: { argv: ["node", "x.ts"], title: "big", spec: { budget_usd: "usd" }, timeout_min: 180, ...r } } });
+  const root = mkdtempSync(join(tmpdir(), "cj-"));
+  assert.equal(checkJobs("m", job({ model: { max_usd: 100 } }), root).big.model.max_usd, 100);
+  assert.equal(checkJobs("m", job({}), root).big.timeout_min, 180);
+  assert.throws(() => checkJobs("m", job({ timeout_min: 181 }), root), /1 to 180/);
+  assert.throws(() => checkJobs("m", job({ model: { max_usd: 101 } }), root), /0-100/);
+  // the real code review module declares both profiles: the tools one with no model
+  const real = checkJobs("code-review", YAML.parse(readFileSync(join(here, "../../modules/code-review/module.yaml"), "utf8")), join(here, "../../modules/code-review"));
+  assert.equal(real["code-review"].model.max_usd, 100);
+  assert.equal(real["code-review-tools"].model, undefined);
+  assert.equal(real["code-review-tools"].result, true);
 });

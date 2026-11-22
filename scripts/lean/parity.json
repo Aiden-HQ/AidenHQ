@@ -133,8 +133,8 @@
     "n": 16,
     "workflow": "Graded done, reopen on failed grade",
     "today": [
-      "modules/grading/test/parity.test.ts",
-      "modules/grading/test/grades.test.ts"
+      "modules/grading/test/grades.test.ts",
+      "modules/grading/test/settle.test.ts"
     ],
     "next": "grading task.finish check"
   },

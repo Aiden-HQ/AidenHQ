@@ -648,3 +648,9 @@ jobs:
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["image-scan"], .["reviewer-eval"]] | all(.result | IN("success", "skipped")))' >/dev/null
+      # A fork's PR gets no eval key, so its reviewer-eval is skipped: one that changes the reviewer's code fails here until
+      # the maintainer pushes its branch to this repo, where the eval runs.
+      - if: needs.checks.outputs.eval == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::this fork PR changes the AI reviewer's code (REVIEWER_CODE): push its branch to this repo so reviewer-eval runs"
+          exit 1

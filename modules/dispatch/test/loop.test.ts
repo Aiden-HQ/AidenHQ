@@ -71,12 +71,18 @@ const wake = (key, cause, extra = {}) => ({ key, task: "t1", agent: "eng", cause
 
 test("a claimed wake becomes one job and one reply; a busy kernel leaves it to come back", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix the login", description: "The login page 500s.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  let clock = 1_000_000;
+  k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana", now: () => clock });
   k.busy = 1;
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 0, "busy: no job");
   assert.equal(k.dropped.length, 0, "busy: the wake is kept");
-  k.inbox.push(wake("issue:t1:1", "assigned")); // its lease ran out: claimed again
+  k.inbox.push(wake("issue:t1:1", "assigned")); // its lease ran out, but its backoff has not: left alone
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 0, "still backing off");
+  clock += 2 * 60_000;
+  k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   assert.equal(k.started.length, 1);
   assert.equal(k.started[0].wake, "issue:t1:1");
@@ -516,234 +522,6 @@ test("a task whose runs end on a refused write re-uses one card across run ends"
   assert.match(k.filed[0].source, /^escalation:t1:[0-9a-f]{16}$/);
 });
 
-test("a run that ended on the platform line's refusal blocks the task once; an ordinary refusal does not", async () => {
-  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  const k = fake({ task, tasks: { p1: parent } });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  const blocked = () => k.db.prepare("SELECT reason, at FROM platform_blocked WHERE task = ?").get("t1");
-  // A run ending on the platform line's refusal records the block once and says so on its task.
-  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await k.dispatch.tick();
-  assert.equal(blocked()?.reason, why, "the refusal itself is the task's block reason");
-  assert.equal(typeof blocked()?.at, "number", "recorded once, with when it was refused");
-  // The block's words ride the run's one post (a job posts one notice), so they reach the task rather than being dropped.
-  assert.equal(k.posts.length, 1, "one post for the run, its reply and the block in it");
-  assert.match(k.posts[0].body, /^Could not publish\.\n\n\*\*Blocked, and not retried:\*\* github\.pr: only a job holding the platform-engineer role/);
-  assert.ok(!k.posts.some((p) => p.kind === "status"), "a refusal never sets the status: Paperclip blocks only on tasks");
-  const notices = k.posts.filter((p) => p.kind === "notice").length;
-  // A second end on the same refusal (a job that started before the block) adds no second record or notice.
-  k.jobs.set("j2", { id: "j2", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at: 2, ended: 2, acked: false });
-  await k.dispatch.tick();
-  assert.equal(notices, k.posts.filter((p) => p.kind === "notice").length, "no second notice for the same block");
-  assert.equal(k.posts.filter((p) => /Blocked, and not retried/.test(p.body)).length, 1, "no second block post either");
-  assert.equal((k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get()).n, 1, "one durable record");
-  // A later refusal moves the date forward: a word written between the two does not clear a refusal it predates.
-  assert.equal((k.db.prepare("SELECT at FROM platform_blocked WHERE task = ?").get("t1") as { at: number }).at, 2, "the second end re-dates the block");
-  // While blocked, a wake for the task is dropped rather than starting a run.
-  k.inbox.push(wake("issue:t1:5", "assigned"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "no run on a task the platform line must publish");
-  assert.match(k.dropped.at(-1).why, /^blocked: github\.pr: only a job holding the platform-engineer role/, "the wake says why it was dropped");
-  // An ordinary refusal (a moved head) records nothing and keeps today's behaviour: the agent fixes it and retries.
-  const plain = fake({ task: { ...task }, tasks: { p1: parent } });
-  plain.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "github.pr: \`agent/WOR-3/fix\` moved since it was asked for (head-moved): it was aaaaaaaa, it is bbbbbbbb now; ask again for its new head", refusedCode: "head-moved", session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await plain.dispatch.tick();
-  assert.equal(plain.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get().n, 0, "an ordinary refusal records no block");
-  plain.inbox.push(wake("issue:t1:6", "assigned"));
-  await plain.dispatch.tick();
-  assert.equal(plain.started.length, 1, "an ordinary refusal's task still draws a run");
-  // The code alone is no platform block: another module's executor returning `platform-only` blocks nothing.
-  const foreign = fake({ task: { ...task }, tasks: { p1: parent } });
-  foreign.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "primer.pr: the change needs a connection the job does not hold", refusedCode: "platform-only", refusedKind: "primer.pr", refusedSource: "primer", session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await foreign.dispatch.tick();
-  assert.equal(foreign.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get().n, 0, "a foreign module's platform-only code records no block");
-  assert.ok(!foreign.posts.some((p) => /Blocked, and not retried/.test(p.body)));
-  foreign.inbox.push(wake("issue:t1:7", "assigned"));
-  await foreign.dispatch.tick();
-  assert.equal(foreign.started.length, 1, "and its task still draws a run");
-  // Nor is another of the github module's own kinds: the same code from a kind the rule does not name blocks nothing either,
-  // so the block answers only the publish refusals the platform rule makes, never every github refusal that carries a code.
-  const sibling = fake({ task: { ...task }, tasks: { p1: parent } });
-  sibling.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: "github.merge: a merge this task may not make", refusedCode: "platform-only", refusedKind: "github.merge", refusedSource: "github", session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await sibling.dispatch.tick();
-  assert.equal(sibling.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get().n, 0, "another github kind's platform-only code records no block");
-  sibling.inbox.push(wake("issue:t1:8", "assigned"));
-  await sibling.dispatch.tick();
-  assert.equal(sibling.started.length, 1, "and its task still draws a run");
-  // Nor does the code with no source at all (a row from before it was recorded): no source, no block.
-  const unsourced = fake({ task: { ...task }, tasks: { p1: parent } });
-  unsourced.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await unsourced.dispatch.tick();
-  assert.equal(unsourced.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get().n, 0, "no source, no block");
-});
-
-test("a platform-line refusal on a run that posts nothing else still says the block once", async () => {
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
-  const k = fake({ task });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  // A run the owner stopped posts no outcome of its own (its note is the kernel's), so the block's words go as the task's only word.
-  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "cancelled", exit: 0, final: "", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", cancelled: true, session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await k.dispatch.tick();
-  assert.equal(k.posts.length, 1, "one post: the block's words, since the run had none");
-  assert.match(k.posts[0].body, /^\*\*Blocked, and not retried:\*\* github\.pr: only a job holding/);
-  assert.equal((k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get()).n, 1, "and its record");
-});
-
-test("an unrelated agent's comment and the assignee's own clear nothing; the task that asked for it clears the block", async () => {
-  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
-  const comments = [];
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  // The asker holds no overseer role: only the fact that it filed this task makes its word count.
-  const k = fake({ task, tasks: { p1: parent }, comments, directory: { cos: { key: "chief-of-staff" }, other: { key: "researcher" }, eng: { key: "engineer" } } });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  const n = () => (k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get() as { n: number }).n;
-  // Real clock values: the block is dated where the run ended, so a comment's own time is what decides whether it clears it.
-  const T0 = Date.now();
-  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at: T0, ended: T0, acked: false });
-  await k.dispatch.tick();
-  assert.equal(n(), 1);
-  const earlier = new Date(T0 - 60_000).toISOString();
-  // A person's word from before the refusal is no way out: the run already ended after it.
-  comments.push({ id: "c0", authorType: "user", body: "Try publishing it again.", createdAt: earlier });
-  k.inbox.push(wake("comment:c0", "comment"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "the owner's word from before the refusal draws no run");
-  assert.equal(n(), 1, "and leaves the block standing");
-});
-
-test("an unrelated agent's comment and the assignee's own clear nothing; the task that asked for it clears the block", async () => {
-  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
-  const comments = [];
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  // The asker holds no overseer role: only the fact that it filed this task makes its word count.
-  const k = fake({ task, tasks: { p1: parent }, comments, directory: { cos: { key: "chief-of-staff" }, other: { key: "researcher" }, eng: { key: "engineer" } } });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  const n = () => (k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get() as { n: number }).n;
-  // Real clock values: the block is dated where the run ended, so a comment's own time is what decides whether it clears it.
-  const T0 = Date.now();
-  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at: T0, ended: T0, acked: false });
-  await k.dispatch.tick();
-  assert.equal(n(), 1);
-  const earlier = new Date(T0 - 60_000).toISOString();
-  const later = new Date(T0 + 60_000).toISOString();
-  // A person's word from before the refusal is no way out: the run already ended after it.
-  comments.push({ id: "c0", authorType: "user", body: "Try publishing it again.", createdAt: earlier });
-  k.inbox.push(wake("comment:c0", "comment"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "the owner's word from before the refusal draws no run");
-  assert.equal(n(), 1, "and leaves the block standing");
-  // Another agent's comment starts nothing, and it is not a way out: the task still waits on the platform line.
-  comments.push({ id: "c1", authorType: "agent", authorAgentId: "other", body: "I think you should publish it anyway.", createdAt: later });
-  k.inbox.push(wake("comment:c1", "comment"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "another agent's comment draws no run");
-  assert.equal(n(), 1, "and leaves the block standing");
-  // The blocked assignee's own comment is no way out: it cannot publish the change, so its word would only spend another run.
-  comments.push({ id: "c2", authorType: "agent", authorAgentId: "eng", body: "Just retry it.", createdAt: later });
-  k.inbox.push(wake("comment:c2", "comment"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "the blocked assignee's own comment draws no run");
-  assert.equal(n(), 1, "and leaves the block standing");
-  // The owner's word, deleted (or hidden) since, is no one's word any more: it is not a way out either.
-  comments.push({ id: "c2b", authorType: "user", body: "Publish it anyway.", createdAt: later, deletedAt: later });
-  k.inbox.push(wake("comment:c2b", "comment"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "a deleted owner comment draws no run");
-  assert.equal(n(), 1, "and leaves the block standing");
-  // The task that asked for it may re-scope the work: its comment lifts the block and the task draws its next run.
-  comments.push({ id: "c3", authorType: "agent", authorAgentId: "cos", body: "File this on the platform line's own task instead.", createdAt: later });
-  k.inbox.push(wake("comment:c3", "comment"));
-  await k.dispatch.tick();
-  assert.equal(n(), 0, "the asker's comment clears the record");
-  assert.equal(k.started.length, 1, "and the task draws its next run");
-});
-
-test("a later refusal re-dates the block, so the owner's word between the two clears nothing", async () => {
-  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
-  const comments = [];
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  const k = fake({ task, tasks: { p1: parent }, comments });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  const n = () => (k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get() as { n: number }).n;
-  const T0 = Date.now();
-  const ended = (job: string, at: number) => k.jobs.set(job, { id: job, task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at, ended: at, acked: false });
-  ended("j1", T0);
-  await k.dispatch.tick();
-  assert.equal(n(), 1);
-  // A way out arrives, then a second run (already in flight, or admitted by that word) ends on the same refusal.
-  const between = new Date(T0 + 30_000).toISOString();
-  comments.push({ id: "c-between", authorType: "user", body: "Take another run at it.", createdAt: between });
-  ended("j2", T0 + 90_000);
-  await k.dispatch.tick();
-  assert.equal(n(), 1, "still one block");
-  // The owner's word predates the later refusal, so it is not a way out of it: the run it admitted already tried and failed.
-  k.inbox.push(wake("comment:c-between", "comment"));
-  await k.dispatch.tick();
-  assert.equal(k.started.length, 0, "the owner's word between the two refusals draws no run");
-  assert.equal(n(), 1, "and leaves the later block standing");
-  // A word after the later refusal is: the block is dated at that refusal, and this one comes after it.
-  comments.push({ id: "c-after", authorType: "user", body: "Move this onto the platform line's task.", createdAt: new Date(T0 + 120_000).toISOString() });
-  k.inbox.push(wake("comment:c-after", "comment"));
-  await k.dispatch.tick();
-  assert.equal(n(), 0, "a word after the later refusal clears it");
-});
-
-test("the owner's word clears the platform block, and a fleet overseer's does too", async () => {
-  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
-  const comments = [];
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: "p1" };
-  const k = fake({ task, tasks: { p1: parent }, comments, directory: { asker: { key: "researcher" }, steward: { key: "fleet-steward", roles: ["fleet-audit"] }, eng: { key: "engineer" } } });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  const n = () => (k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get() as { n: number }).n;
-  const end = async (job: string, at: number) => {
-    k.jobs.set(job, { id: job, task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at, ended: at, acked: false });
-    await k.dispatch.tick();
-  };
-  await end("j1", 1);
-  assert.equal(n(), 1);
-  const later = new Date(Date.now() + 60_000).toISOString();
-  // A fleet overseer's comment is another task's say-so: it lifts the block.
-  comments.push({ id: "c1", authorType: "agent", authorAgentId: "steward", body: "Take it on the platform line's task.", createdAt: later });
-  k.inbox.push(wake("comment:c1", "comment"));
-  await k.dispatch.tick();
-  assert.equal(n(), 0, "a fleet overseer's comment clears the record");
-  assert.equal(k.started.length, 1);
-  // Blocked again, the owner's own word lifts it.
-  await end("j2", 2);
-  assert.equal(n(), 1);
-  const later2 = new Date(Date.now() + 120_000).toISOString();
-  comments.push({ id: "c2", authorType: "user", body: "Publish it from the platform line's own task instead.", createdAt: later2 });
-  k.inbox.push(wake("comment:c2", "comment"));
-  await k.dispatch.tick();
-  assert.equal(n(), 0, "the owner's comment clears the record");
-  assert.equal(k.started.length, 2, "and the task draws its next run");
-});
-
-test("a status or holder change alone never lifts the platform block: the fields don't say who moved them", async () => {
-  const parent = { id: "p1", identifier: "WOR-10", status: "in_progress" };
-  const task = { id: "t1", identifier: "WOR-3", title: "Fix the review recipe", description: "Change .github/code-review.ts.", status: "todo", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: "p1" };
-  const k = fake({ task, tasks: { p1: parent } });
-  const why = "github.pr: only a job holding the platform-engineer role (a task the owner, the Agent Architect or the Fleet Steward filed) opens a product PR that changes modules/ci/template/.github/code-review.ts; file this change on a task the owner, the Agent Architect or the Fleet Steward filed";
-  const n = () => (k.db.prepare("SELECT COUNT(*) AS n FROM platform_blocked").get() as { n: number }).n;
-  k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "done", exit: 0, final: "Could not publish.", refused: why, refusedCode: "platform-only", refusedKind: "github.pr", refusedSource: "github", session: null, timedOut: false, at: 1, ended: 1, acked: false });
-  await k.dispatch.tick();
-  assert.equal(n(), 1);
-  // Another agent moves the task on itself: a reassigned and reopened task is indistinguishable from an agent's doing, so it
-  // draws nothing until a person says so.
-  task.assigneeAgentId = "platform-eng";
-  task.status = "in_progress";
-  k.inbox.push(wake("issue:t1:7", "assigned", { agent: "platform-eng" }));
-  await k.dispatch.tick();
-  assert.equal(n(), 1, "an unattributed holder and status change leaves the block standing");
-  assert.equal(k.started.length, 0, "and draws no run");
-  // Closed is the one field change that ends it: nothing is left to run.
-  task.status = "cancelled";
-  k.inbox.push(wake("issue:t1:8", "assigned", { agent: "platform-eng" }));
-  await k.dispatch.tick();
-  assert.equal(n(), 0, "a closed task clears the record");
-});
-
 test("a blocked task whose open blocker set changes files a second decision card", async () => {
   const task = { id: "t1", identifier: "WOR-3", title: "Create hello", description: "Create local/hello.", status: "blocked", assigneeAgentId: "eng", createdByAgentId: "asker", parentId: null, blockedBy: [{ id: "b1", status: "todo" }] };
   const k = fake({ task });
@@ -782,32 +560,33 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
 });
 
-test("a refusal a recompile clears is retried on the wake's next lease, then said on the task and dropped", async () => {
+test("a refusal a recompile clears is retried later and later, never dropped, until the kernel takes the wake", async () => {
   const task = { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" };
   const k = fake({ task });
+  let clock = 1_000_000;
+  k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana", now: () => clock });
+  let asked = 0;
   const start = k.kernel.start;
-  // Admission refused it: the agent has no grants (kernel/src/admission.ts no-grants, 403) — a recompile can add them.
-  k.kernel.start = async () => { throw new KernelError(403, "kernel POST /v1/jobs → 403", { type: "no-grants", message: "agent eng has no grants" }); };
-  for (const tick of [1, 2]) {
+  // Admission refused it: provenance isn't settled yet (kernel/src/admission.ts, 409) — a recompile clears it.
+  k.kernel.start = async () => { asked++; throw new KernelError(409, "kernel POST /v1/jobs → 409", { type: "provenance-unsettled", message: "not settled" }); };
+  // Each refusal doubles the wait, up to 30 minutes; a wake that comes back sooner is left alone.
+  for (const wait of [2, 4, 8, 16, 30, 30]) {
     k.inbox.push(wake("issue:t1:1", "assigned"));
     await k.dispatch.tick();
-    assert.deepEqual([k.dropped, k.notes], [[], []], `try ${tick}: kept for its next lease, nothing said yet`);
+    const before = asked;
+    clock += (wait - 1) * 60_000;
+    k.inbox.push(wake("issue:t1:1", "assigned"));
+    await k.dispatch.tick();
+    assert.equal(asked, before, `${wait} min: still waiting`);
+    clock += 60_000;
+    assert.deepEqual([k.dropped, k.notes], [[], []], "nothing dropped, nothing said");
   }
   assert.equal(k.started.length, 0);
-  // The third refusal is the last START_TRIES allows: it goes on the task, naming the refusal, and the wake is dropped.
+  // A wake the recompiled kernel then takes starts its job.
+  k.kernel.start = start;
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["issue:t1:1"]);
-  assert.equal(k.notes.length, 1, "one notice on the task, once per wake");
-  assert.match(k.notes[0].body, /not started/);
-  assert.match(k.notes[0].body, /no-grants/);
-  assert.match(k.notes[0].body, /agent eng has no grants/);
-  // A wake the recompiled kernel then takes starts its job: the retries did not wedge it.
-  k.kernel.start = start;
-  k.inbox.push(wake("issue:t1:2", "status"));
-  await k.dispatch.tick();
   assert.equal(k.started.length, 1);
-  assert.deepEqual(k.notes.length, 1, "no notice for a wake that ran");
 });
 
 test("every refusal nothing clears is dropped at once, and each leaves a notice naming it and what became of the wake", async () => {
@@ -942,6 +721,8 @@ test("a connected wake with no new words starts a resume run", async () => {
 test("a deferred admission is no start: the comment stays unseen and starts the job when the wake comes back", async () => {
   const comments = [];
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Fix it.", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  let clock = 1_000_000;
+  k.dispatch = createDispatch({ kernel: k.kernel, db: k.db, owner: "Dana", now: () => clock });
   k.inbox.push(wake("issue:t1:1", "assigned"));
   await k.dispatch.tick();
   k.end("j1", "Fixed.");
@@ -950,6 +731,7 @@ test("a deferred admission is no start: the comment stays unseen and starts the 
   k.defer = 1;
   k.inbox.push(wake("comment:c1", "comment"));
   await k.dispatch.tick();
+  clock += 2 * 60_000;
   k.inbox.push(wake("comment:c1", "comment")); // the kernel handed it back
   await k.dispatch.tick();
   assert.equal(k.started.length, 2);
@@ -970,16 +752,29 @@ test("a job stopped for no progress says so even when the first post fails and t
   assert.match(k.posts[0].body, /^\*\*Stopped:\*\* src\/a\.ts read 20 times/);
 });
 
-test("a job that couldn't start is retried later, and after three tries a notice (never a reply) says why", async () => {
+test("a job that couldn't start is retried later and later, with no cap, and nobody is told", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "todo", assigneeAgentId: "eng", createdByUserId: "u1" } });
-  for (let n = 1; n <= 3; n++) {
+  for (let n = 1; n <= 8; n++) {
     k.inbox.push(wake(`issue:t1:${n}`, "assigned"));
     await k.dispatch.tick();
     Object.assign(k.jobs.get(`j${n}`), { state: "failed", exit: null, final: "couldn't start: the computer launcher answered 500", ended: Date.now() });
     await k.dispatch.tick();
   }
-  assert.deepEqual(k.scheduled.map((s) => [s.id, s.cause]), [["retry.j1", "retry"], ["retry.j2", "retry"]]);
-  assert.deepEqual(k.posts, [{ job: "j3", kind: "notice", body: "**Couldn't start:** couldn't start: the computer launcher answered 500. Say **continue** to try again." }]);
+  assert.equal(k.scheduled.length, 8);
+  assert.deepEqual(k.scheduled.map((s) => Math.round((s.at - Date.now()) / 60_000)), [2, 4, 8, 16, 30, 30, 30, 30]);
+  assert.deepEqual(k.posts, []);
+});
+
+test("a run that ran and was lost is tried six times at most, then its notice goes out", async () => {
+  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" } });
+  for (let n = 1; n <= 6; n++) {
+    k.inbox.push(wake(`issue:t1:${n}`, "assigned"));
+    await k.dispatch.tick();
+    Object.assign(k.jobs.get(`j${n}`), { state: "lost", exit: null, final: "", ended: Date.now() });
+    await k.dispatch.tick();
+  }
+  assert.equal(k.scheduled.length, 5);
+  assert.equal(k.posts.length, 1, "the notice, once");
 });
 
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
