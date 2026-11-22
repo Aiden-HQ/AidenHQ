@@ -944,7 +944,7 @@ const TOOLS: Record<string, Tool> = {
       const { mine, state, attention, label, updated_since, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const { kinds, attention: one } = stateFilter(state, attention);
-      const max = Math.min(Number(limit) || 100, 200);
+      const max = Math.max(1, Math.min(Math.floor(Number(limit) || 100), 200));
       const q = new URLSearchParams({ status: statusesFor(state) });
       const me = mine ? grant().id : "";
       if (me) q.set("assigneeAgentId", me);
