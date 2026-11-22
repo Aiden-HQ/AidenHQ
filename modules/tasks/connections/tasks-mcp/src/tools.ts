@@ -627,14 +627,22 @@ async function amendGrade(issueId: string, rubric: string[]) {
   if (!res.ok) throw new Error(`the rubric was not amended: ${body.error ?? `grading answered ${res.status}`}`);
   return { amended: true, state: body.state, rubric: body.rubric };
 }
-/** A task's filed grade (the grading module's GET /grades/<task>), or undefined when it can't be read. */
-async function readGrade(issueId: string) {
+/**
+ * A task's filed grade (the grading module's GET /grades/<task>), or undefined when it can't be read. `strict` makes a refused
+ * or failed read an error instead: a caller that is not allowed to see the row must be told so, never told there is no rubric.
+ */
+async function readGrade(issueId: string, strict = false) {
   try {
     const res = await fetch(`${GRADING}/grades/${encodeURIComponent(issueId)}`, { headers: { "x-aidenhq-caller": cx().assertion }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return undefined;
+    if (!res.ok) {
+      if (!strict) return undefined;
+      const body = await res.json().catch(() => ({}));
+      throw new Error(`the task's filed rubric could not be read (grading answered ${res.status}${body.error ? `: ${body.error}` : ""})`);
+    }
     return (await res.json()).grade;
-  } catch {
-    return undefined;
+  } catch (err) {
+    if (!strict) return undefined;
+    throw err;
   }
 }
 /** Whether a filed grade is exactly what this delegation would file. */
@@ -1286,7 +1294,7 @@ const TOOLS: Record<string, Tool> = {
       const i = await api("GET", `/api/issues/${issueRef(issue)}`);
       // The deliverable stays as filed, so the same checks a filing applies are applied against it: an absence claim a diff
       // can't show, a retired repo, and a criterion the grader isn't given the facts for.
-      const filed = await readGrade(i.id);
+      const filed = await readGrade(i.id, true);
       if (!filed?.deliverable?.kind) throw new Error(`the rubric was not amended: ${i.identifier ?? i.id} has no filed rubric to amend (its rubric is filed with its delegation)`);
       const list = rubricCriteria(rubric, filed.deliverable.kind);
       refuseRetiredRepo(filed.deliverable, list, "");

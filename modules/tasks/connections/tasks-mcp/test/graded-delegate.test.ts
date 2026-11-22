@@ -246,3 +246,15 @@ test("an absence criterion is refused at filing and at amendment, naming a diff-
     assert.equal(ok.r.result?.isError, undefined, `${claim}: ${ok.text}`);
   }
 });
+
+test("a refused rubric read is reported as a refusal, not as a task with no rubric", async () => {
+  // The amendment tool reads the filed row to validate against its deliverable. When grading refuses that read (a caller with
+  // no claim on the row), the tool must surface the refusal: reporting "no filed rubric" would send the delegator hunting for
+  // a rubric that is there.
+  const r = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"] }, { gradeReadRefused: true });
+  assert.equal(r.r.result?.isError, true);
+  assert.match(r.text, /filed rubric could not be read/);
+  assert.match(r.text, /403/);
+  assert.doesNotMatch(r.text, /has no filed rubric/);
+  assert.equal(r.amended.length, 0);
+});

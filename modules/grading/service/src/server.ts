@@ -131,9 +131,16 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     return { amended: true, state: g.state, rubric: g.rubric };
   }
 
-  /** A task's filed grade, read by the delegating agent before it re-files (GET /grades/<task>): the row, or null when none. */
+  /**
+   * A task's filed grade, read by the delegating agent before it re-files (GET /grades/<task>): the row, or null when none.
+   * A filing tool reads only a task it delegated (as filing does); an amending tool reads any task, because the amendment
+   * itself decides who may change the row (the delegator, or the recorded filer) and the tool needs the row's deliverable to
+   * validate against. Reading is not changing: the write's own rule still refuses everyone else.
+   */
   async function readGrade(req: http.IncomingMessage, ref: string) {
-    const { issue } = await filingCaller(req, ref);
+    const caller = await rubricCaller(req, [...FILERS, ...AMENDERS], "read");
+    const issue = await kernel.issue(ref);
+    if (FILERS.includes(String(caller.tool ?? "").split(".").pop()!) && issue.createdByAgentId !== caller.agent) throw new HttpError(403, "only the agent that delegated a task reads its rubric before re-filing it");
     return { grade: grades.get(issue.id) ?? null };
   }
 
@@ -154,9 +161,10 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
 
   async function runner(method: string, path: string, body: unknown) {
     if (method === "GET" && path === "/internal/grades") return { grades: grades.due() };
-    const one = /^\/internal\/grades\/([0-9a-f-]{36})$/i.exec(path);
-    // One task's grade state (null: ungraded): a sub-task whose grade will speak keeps its progress to itself.
-    if (method === "GET" && one) return { state: grades.get(one[1]!)?.state || null };
+    // One task's grade state (null: ungraded): a sub-task whose grade will speak keeps its progress to itself. The id is
+    // decoded as the verdict route does: the grade loop encodes whatever id it was given, and task ids are not all UUIDs.
+    const one = /^\/internal\/grades\/([^/]+)$/.exec(path);
+    if (method === "GET" && one) return { state: grades.get(decodeURIComponent(one[1]!))?.state || null };
     const m = /^\/internal\/grades\/([^/]+)\/verdict$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");
     const issue = await kernel.issue(decodeURIComponent(m[1]!));

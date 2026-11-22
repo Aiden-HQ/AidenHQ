@@ -50,7 +50,14 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     while (steps.length) {
       const s = steps[0]!;
       try {
-        if (s.do === "reopen") await pc.setStatus(task, "todo", s.note);
+        if (s.do === "reopen") {
+          // A revision move queued by a verdict on a rubric since amended is stale: the amendment restarted the row (open or
+          // pending), so the task is graded against the new list rather than sent back for a criterion that no longer exists.
+          // The row's state is read here because the store and this queue are separate: the amendment cannot drop this step.
+          const state = (await api.get(`/internal/grades/${encodeURIComponent(task)}`).catch(() => undefined))?.state;
+          if (state && state !== "needs_revision") log("a revision move is stale: the rubric was amended", { issue: task, state });
+          else await pc.setStatus(task, "todo", s.note);
+        }
         else if (s.do === "done") {
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.

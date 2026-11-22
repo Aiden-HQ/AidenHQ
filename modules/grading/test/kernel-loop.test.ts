@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { completionGate } from "../service/src/grades.ts";
+import { completionGate, rubricHash } from "../service/src/grades.ts";
 import { createGrading } from "../service/src/server.ts";
 import { createKernelGradeLoop, verifiedMerges } from "../service/src/kernel-loop.ts";
 
@@ -112,6 +112,33 @@ test("a graded PR task's PR is read through the broker's token and graded; a PR 
   await loop.runGrades();
   assert.deepEqual(calls.resolve.map((c) => c.verdict), ["ok"]);
   assert.equal(grades.get("t2").state, "satisfied");
+});
+
+test("a revision move queued by a verdict on a rubric since amended never reopens the task", async () => {
+  // The store and the owed queue are separate: amend() restarts the row, but a reopen a needs_revision verdict already queued
+  // would still move the task back to todo. The loop reads the row's state first and drops that step.
+  const issue = { id: "t5", identifier: "WOR-5", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t5", filed, { kind: "report", ref: "" });
+  grades.record("t5", { version: "v1", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(filed) });
+  const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
+  grades.amend("t5", corrected, { by: "agent:cos", delegator: "agent:cos" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  // The reopen the old verdict queued, as the pass before the amendment left it.
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t5', ?)").run(JSON.stringify([{ do: "reopen", note: "the grader sent it back" }]));
+  await loop.runGrades();
+  assert.equal(calls.resolve.length, 0, "the stale reopen is dropped, not resolved");
+  assert.equal(issue.status, "in_review");
+  assert.deepEqual(grades.get("t5").rubric, corrected);
+  // A reopen queued for a row still in needs_revision does move the task: the guard is the amended row, not the step.
+  grades.record("t5", { version: "v2", outcome: "needs_revision", model: "m", criteria: [{ id: "1", met: "no", evidence: "missing" }], rubric: rubricHash(corrected) });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t5', ?)").run(JSON.stringify([{ do: "reopen", note: "the grader sent it back" }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "todo");
 });
 
 test("a merge counts only as its executor wrote it on a record that ended ok, never by the args an agent filed", () => {

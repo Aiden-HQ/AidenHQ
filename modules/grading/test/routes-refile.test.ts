@@ -48,7 +48,7 @@ async function harness(t) {
     verdict: (task, body) => runner("POST", `/internal/grades/${encodeURIComponent(task)}/verdict`, body),
     // An agent's filing, as the tasks module files it (its caller assertion, the delegating tool as the tool).
     agentFile: (agent, body) => call("POST", "/grades", { "x-aidenhq-caller": assertion(agent) }, body),
-    agentRead: (agent, task) => call("GET", `/grades/${encodeURIComponent(task)}`, { "x-aidenhq-caller": assertion(agent) }),
+    agentRead: (agent, task, tool = "task_delegate") => call("GET", `/grades/${encodeURIComponent(task)}`, { "x-aidenhq-caller": assertion(agent, tool) }),
     // A module's filing: the kernel's own call, its check key, the module it vouched for in the body.
     moduleFile: (module, body) => call("POST", "/check/rubric", { authorization: `Bearer ${KEYS.check}` }, { ...body, module }),
     // An in-place amendment, as the tasks module makes it (task_amend_rubric as the tool).
@@ -210,4 +210,17 @@ test("a task's delegator amends an older row that kept no filer record", async (
   // Someone who is neither the delegator nor a recorded filer is still refused.
   const stranger = await h.agentAmend("other", { issue: "t1", rubric: ["alpha one", "beta two", "gamma three"] });
   assert.equal(stranger.status, 409);
+});
+
+test("an amending tool reads a row it may amend; a filing tool still reads only the task it delegated", async (t) => {
+  // The amendment tool reads the filed row to validate against its deliverable, so the read route must accept its tool. A
+  // filing tool keeps the older rule (its own delegation only): the read is not a way to see another agent's rubric.
+  const h = await harness(t);
+  assert.equal((await h.agentFile("cos", { issue: "t1", rubric: RUBRIC, deliverable: PR })).status, 200);
+  // The recorded filer's tool is not a filing tool: it may read the row it may amend.
+  assert.equal((await h.agentRead("cos", "t1", "task_amend_rubric")).status, 200);
+  assert.equal((await h.agentRead("other", "t1", "task_amend_rubric")).status, 200, "the write's own rule decides who may amend");
+  // A filing tool still reads only the task it delegated.
+  assert.equal((await h.agentRead("cos", "t1", "task_delegate")).status, 200);
+  assert.equal((await h.agentRead("other", "t1", "task_delegate")).status, 403);
 });
