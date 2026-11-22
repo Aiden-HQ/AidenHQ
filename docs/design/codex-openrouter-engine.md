@@ -26,11 +26,10 @@ sessions. Before every run the kernel removes `AGENTS.md`, `AGENTS.override.md`,
 skills for a later one. Connections are MCP servers in the Codex home at the box's `/c/<connection>/mcp`; there are no
 local stdio servers.
 
-## Private reads and web search
+## Web search
 
-An agent definition opts in with `private_reads: true` (stored as `metadata.privateReads`). A connection capability marked
-`private` (private data) needs it, or compile fails. A job with private reads gets no web search (`web="disabled"`), so
-private data can't leave through search queries; other jobs get `web_search="live"`.
+A job gets `web_search="live"` unless its agent sets `web_search: disabled` (`web="disabled"`). Every jobcap an agent is
+granted applies to its jobs.
 
 ## Tools in the box
 

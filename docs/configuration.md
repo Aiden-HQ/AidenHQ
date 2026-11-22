@@ -102,14 +102,11 @@ outcomes:
   `chat_lane.chat_send`, `owner_channel.notify` (any other name, an entry it doesn't grant, or one on an agent not in
   trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
   and the Engineer commits them after the owner approves.
-- `private_reads: true` on an Engineer (`profile: engineer`): its jobs may hold private data (private grants: Grafana, Slack,
-  Glean, ClickHouse; other tasks) and get no web search. Without it (the Engineer), web search and
-  only the non-private jobcaps (Primer).
 - `image: engineer` on an Engineer (`profile: engineer`): every Engineer has one; its jobs run in that agent computer (a job for an
   agent without one is refused).
-- `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the non-private reads its jobs hold,
+- `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the reads its jobs hold,
   through the kernel's proxy with the box's run token; no connection URL or token enters a job. A module declares them under
-  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
+  `jobcaps:` (`id`, `connection`, `tools` or `read`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
   agent names the engine its jobs run on; without one, the one enabled engine that runs in a computer (compile fails when
   there are none or several).
 - `profile:` on an agent: `crew` (the default), `engineer` or `check`: which tools, writes and computer its kernel jobs get.

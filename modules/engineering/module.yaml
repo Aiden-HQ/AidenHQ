@@ -43,8 +43,6 @@ agents:
     image: engineer
     isolation: code-exec
     max_parallel: 4 # independent changes run side by side, each in its own task workspace
-    # Public reads only (App UI work: web search and web_view on). Data work needs private_reads: true and drops the web
-    # (scripts/computers.ts privateGrants, checked at compile): a separate mode, not this agent's yet.
     connections:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       # GitHub reads, a PR's review threads, and a reply on one: answering a code review finding (write-code skill, Checks).

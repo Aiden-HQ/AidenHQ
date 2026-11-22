@@ -45,8 +45,8 @@ on OpenRouter models through the box's gateway with the box's run token (ZDR onl
 the product's skills, effort low to max (max: DeepSeek). No repo code runs on the host: a repo's checks and the
 reviewer eval run as check jobs in credential-free boxes.
 
-Every job gets Primer read-only. Private reads (Grafana, Slack, Glean, ClickHouse, other tasks) go only to an Engineer
-whose definition sets `private_reads: true`, and such a job has no web search. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
+Every job gets Primer read-only, and every read its agent is granted (Grafana, Slack, Glean, ClickHouse, other tasks);
+web search is on unless the agent sets `web_search: disabled`. See [the codex-openrouter design](design/codex-openrouter-engine.md). Pushes, pull requests and merges are checked in code: allowed
 organizations only, branch and leak checks, a lease on rewritten branches, and a merge queue that requires approved,
 green, mergeable PRs. Each write is an approval record tiered by code from verified state (`kernel/src/tier.ts`):
 Tier 0 runs at once, the AI reviewer decides Tier 1, the owner decides Tier 2; the tier is never taken from untrusted

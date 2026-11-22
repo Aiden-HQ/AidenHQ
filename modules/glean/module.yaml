@@ -24,7 +24,7 @@ connections:
       destructive: [ memory, create_image, edit_image, upload_artifact, update_artifact, share_artifact ]
 # Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.ts jobcapEntries).
 jobcaps:
-  - { id: glean-read, connection: glean, tools: read, private: true, read_url: "http://glean-mcp:8085/mcp/read", read_secret: glean_mcp_read_token }
+  - { id: glean-read, connection: glean, tools: read, read_url: "http://glean-mcp:8085/mcp/read", read_secret: glean_mcp_read_token }
 secrets:
   state: true # its own vault dir, read-write at /state: the registered client and the token pair, refreshed here
   provided:

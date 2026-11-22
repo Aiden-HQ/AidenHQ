@@ -9,7 +9,7 @@ import { join } from "node:path";
  * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
 export const COMPUTER_IMAGES = { browser: null, "agent-base": "browser", engineer: "agent-base" };
 /** The fields of a compiled agent that this file reads. */
-export interface ComputerAgent { image?: string | null; profile?: string; enabled_tools?: Record<string, string[]>; private_reads?: boolean; trial?: unknown; roles?: string[] }
+export interface ComputerAgent { image?: string | null; profile?: string; enabled_tools?: Record<string, string[]>; trial?: unknown; roles?: string[] }
 
 /** The images an agent may name. */
 const AGENT_IMAGES = ["agent-base", "engineer"];
@@ -46,21 +46,6 @@ export function imageTags(productDir: string, names: string[]) {
  * service's URL and the secret file holding its bearer, which stays on the host). Only images some agent names are listed, and
  * always the browser image.
  */
-/**
- * A runner box agent's grants that read private data: every connection but apps and GitHub's (each a private source: Slack,
- * Glean, mail, …) and, in apps, the warehouse and the apps' own data (logs, requests, roles, sources). What stays public is
- * looking at apps and the web, and GitHub reads (as every Engineer has).
- */
-const PUBLIC_APPS = new Set(["app_list", "app_status", "app_view", "app_check", "web_view"]);
-/** The tasks bridge's tools that read no other task's text and write only on the job's own task: its file, its finish and its wait. */
-const PUBLIC_TASKS = new Set(["task_file_upload", "task_finish", "task_wait"]);
-/** Code review's open findings with ids, and its answer to one: it writes only code review's own store. */
-const PUBLIC_CODE_REVIEW = new Set(["code_review_findings", "code_review_resolve"]);
-export const privateGrants = (tools: Record<string, string[]> = {}) =>
-  Object.entries(tools).flatMap(([conn, list]) =>
-    conn === "github" ? [] : conn === "apps" ? list.filter((t) => !PUBLIC_APPS.has(t)).map((t) => `apps.${t}`) : conn === "paperclip_tasks" ? list.filter((t) => !PUBLIC_TASKS.has(t)).map((t) => `${conn}.${t}`) : conn === "code_review" ? list.filter((t) => !PUBLIC_CODE_REVIEW.has(t)).map((t) => `${conn}.${t}`) : list.map((t) => `${conn}.${t}`),
-  );
-
 /** Compile fails on an unknown image, or one given to an agent that can't run in a computer yet. */
 export function validateImages(agents: Record<string, ComputerAgent>) {
   for (const [key, a] of Object.entries(agents)) {
@@ -69,11 +54,6 @@ export function validateImages(agents: Record<string, ComputerAgent>) {
     // An Engineer's jobs run in an `engineer` box.
     if (a.profile === "engineer") {
       if (a.image !== "engineer") throw new Error(`${key}: an Engineer gets a computer only with image: engineer`);
-      // Private data, untrusted input and a way out never meet unchecked in one job (as for every Engineer): a grant that reads
-      // private data needs `private_reads: true`, whose jobs get no web search, and then no web_view either.
-      const priv = privateGrants(a.enabled_tools);
-      if (priv.length && a.private_reads !== true) throw new Error(`${key}: ${priv.join(", ")} read private data: set private_reads: true (its jobs then get no web search and no web_view), or drop them`);
-      if (a.private_reads === true && a.enabled_tools?.apps?.includes("web_view")) throw new Error(`${key}: an agent with private reads gets no web_view (its jobs have no way out to the web)`);
       continue;
     }
     // Until the tasks bridge runs on the host, a trial agent's limits would run inside a box it controls.

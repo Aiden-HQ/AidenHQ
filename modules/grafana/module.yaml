@@ -38,12 +38,11 @@ connections:
       # Listed read-only by mcp-grafana under --disable-write, but they can change things (routing; an API request of any
       # method): destructive, by what they can do, not the vendor's hint.
       destructive: [ alerting_manage_routing, grafana_api_request ]
-# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.ts jobcapEntries):
+# Runner jobs of an Engineer, through the model gateway with their own token (scripts/modules.ts jobcapEntries):
 # Grafana's read tools, served on grafana-mcp's read endpoint, which lists only what the upstream marks read-only.
 jobcaps:
   - id: grafana-read
     connection: grafana
-    private: true
     read_url: "http://grafana-mcp:8087/mcp/read"
     read_secret: grafana_mcp_token
     tools: [ query_loki_logs, query_loki_stats, query_loki_patterns, list_loki_label_names, list_loki_label_values, analyze_loki_labels, query_prometheus, query_prometheus_histogram, list_prometheus_label_names, list_prometheus_label_values, list_prometheus_metric_metadata, list_prometheus_metric_names, search_tempo_traces, get_tempo_trace, diff_tempo_traces, list_tempo_attribute_names, list_tempo_attribute_values, query_tempo_metrics, get_tempo_traceql_docs, query_pyroscope, list_pyroscope_label_names, list_pyroscope_label_values, list_pyroscope_profile_types, query_cloudwatch, list_cloudwatch_namespaces, list_cloudwatch_metrics, list_cloudwatch_dimensions, list_cloudwatch_dimension_values, query_elasticsearch, query_graphite, query_graphite_density, list_graphite_metrics, list_graphite_tags, query_influxdb, query_quickwit, list_datasources, get_datasource, check_datasources_health, get_query_examples, search_dashboards, search_folders, get_dashboard_by_uid, get_dashboard_summary, get_dashboard_property, get_dashboard_panel_queries, list_dashboard_versions, run_panel_query, get_panel_image, alerting_rules_read, alerting_silences_read, list_alert_groups, get_alert_group, list_incidents, get_incident, get_annotations, get_annotation_tags, search_docs, get_doc ]

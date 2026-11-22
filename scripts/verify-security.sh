@@ -859,20 +859,19 @@ rreview="modules/ai-reviewer/service/src/review.ts"
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rplan" \
   && pass "kernel and codehost: a tier is the floor, code's refusals, the owner's veto or save and autonomy off; the AI reviewer decides every reviewed write (malice only, fail open); code's own refusals run before any review; the reviewer eval runs on the reviewer's own code; a CI template copy is Tier 0 only by tree identity with the deployed product ($rreview)" \
   || fail "kernel or codehost: who decides a write changed (the Tier 2 rules, fail open, or code's refusals)"
-# Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its non-private
-# jobcaps through the kernel's proxy with its job token), private reads go only to Engineers whose definition opts in
-# (private_reads), with web search off; a repository is never created outside the code host's approved create_repo; every
+# Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its jobcaps through
+# the kernel's proxy with its job token), with web search off where its agent turns it off (web_search: disabled); a
+# repository is never created outside the code host's approved create_repo; every
 # Primer publish is a primer.publish record at floor 1, and a thread reply a primer.reply record at floor 1.
 [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]\n floor: 1\n tools: [ primer_reply_to_thread, primer_resolve_thread ]')" ] \
   && grep -qF 'mcp: [], env: [],' kernel/src/sandbox.ts \
-  && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.ts \
   && grep -qF 'web: !observes(engine),' kernel/src/sandbox.ts \
-  && grep -qF 'if (c && (!c.private || j.authority.reads === true)) tools[c.connection]' kernel/src/identity.ts \
+  && grep -qF 'for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c) tools[c.connection]' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
   && grep -qF '...(a.web === false ? { reads: true } : {})' kernel/src/jobs.ts \
-  && grep -qF 'web: g.private_reads !== true && g.web_search !== "disabled",' kernel/src/admission.ts \
-  && pass "kernel: jobs hold no connection URL or token, private reads only by opt-in with web search off; Primer publishes are primer.publish records at floor 1" || fail "kernel: jobs' connection reach or the Primer publish kind changed"
-# engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
+  && grep -qF 'web: g.web_search !== "disabled",' kernel/src/admission.ts \
+  && pass "kernel: jobs hold no connection URL or token, web search off by the agent's setting; Primer publishes are primer.publish records at floor 1" || fail "kernel: jobs' connection reach or the Primer publish kind changed"
+# engine@1: the runner writes `web: false` into job.json for a job whose agent turns web search off; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).
 if web_probe="$(node --input-type=module -e '
   const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "m", effort: "" }, sandbox: { kind: "box", writable: [], network: true } };

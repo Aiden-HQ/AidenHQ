@@ -12,8 +12,8 @@ export type Connection = { url: string; auth_secret: string; module: string; ret
   model_as_caller?: boolean;
   /** The module's health probes (module.yaml `health_probes`): name -> one read tool with fixed arguments (health.ts). */
   health_probes?: Record<string, { tool: string; args?: Record<string, unknown> }> };
-/** A read a job may hold on a connection (config/jobcaps.json): its tools, and whether it is private data. */
-export type Jobcap = { connection: string; tools: string[]; private?: boolean };
+/** A read a job may hold on a connection (config/jobcaps.json): its tools. */
+export type Jobcap = { connection: string; tools: string[] };
 export type Identity = {
   kind: "run" | "module";
   agent?: string; key?: string; name?: string; roles: string[];
@@ -55,7 +55,7 @@ export function heldRoles(agents: Record<string, Grant | undefined> | undefined,
 }
 
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
-export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; reads?: boolean; model?: string } };
+export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; model?: string } };
 
 export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, job = () => undefined, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
@@ -80,8 +80,8 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
         const j = job(String(p.id));
         if (!j || j.agent !== p.a || j.task !== p.i || !["admitted", "running"].includes(j.state)) throw new Unknown("this job has ended");
         const tools: Record<string, string[]> = Object.fromEntries(Object.entries(j.authority.tools).map(([c, t]) => [c, [...t]]));
-        // A private jobcap only for a job that reads private data (web search off): private data never meets the web.
-        for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c && (!c.private || j.authority.reads === true)) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
+        // Every jobcap it was granted adds its reads.
+        for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
         const g = grants()[j.agent];
         return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, job: String(p.id), workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
       }

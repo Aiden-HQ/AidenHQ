@@ -141,14 +141,13 @@ test("grants entry: models, graded off by default; a removed spend key fails com
   assert.throws(() => compile(mods, finst(["a"], { ...base, eval_day_usd: 5 })), /settings\.eval_day_usd is gone/);
   assert.throws(() => compile(mods, finst(["a"], { ...base, code_review: { repos: [{ repo: "a/b", on_open: [{ engine: "codex", model: "m", effort: "low", run_usd: 5 }] }] } })), /code_review\.repos\.0\.on_open: run_usd is gone/);
 });
-test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
+test("jobcaps: compiled for the gateway, carried in the grants entry; unknown fails", () => {
   const out = compile(mods, finst(["jc"]));
   assert.deepEqual(out.jobcaps["jc-read"], { connection: "jconn", url: "http://j-mcp:81/mcp/read", bearer_secret: "j_mcp_read_token", tools: ["j_get", "j_list"] });
   assert.equal(out.jobcaps["jc-secret"].tool_timeout_s, 90);
   assert.deepEqual(grantEntry("eng", out.paperclip.agents.eng).jobcaps, ["jc-read"]); // nope-read? is optional
   assert.deepEqual(out.paperclip.agents.deep.jobcaps, ["jc-read", "jc-secret"]);
   assert.throws(() => compile(mods, finst(["jcunknown"])), /lost: unknown jobcap nope-read/);
-  assert.throws(() => compile(mods, finst(["jcpriv"])), /nosy: jobcap jc-secret reads private data: set private_reads: true/);
 });
 test("generated compose: module services from services:, root services only gain board_env, links and secrets; compose fragments fail", () => {
   const a = compile(mods, finst(["a"])).compose;

@@ -3,4 +3,4 @@ description: boxeng
 connections:
   aconn: { url: "http://a-mcp:1/mcp", auth: aconn_service_key, tools: { read: [a_get], write: [a_set] } }
 agents:
-  appeng: { engine: codex-openrouter, profile: engineer, image: engineer, private_reads: true, connections: { aconn: read } }
+  appeng: { engine: codex-openrouter, profile: engineer, image: engineer, connections: { aconn: read } }

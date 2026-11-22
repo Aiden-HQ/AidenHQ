@@ -12,7 +12,7 @@ export interface EngineEntry {
   module: string; dir: string; bin: string; kind: string; label?: string; live_input?: boolean; gateway?: boolean; box?: boolean;
   state?: "shared" | "task"; reset?: string[]; seed?: { from: string; to: string }[];
 }
-/** An engine choice: its kind, model and effort, and whether the job holds private reads (no web search then). */
+/** An engine choice: its kind, model and effort, and whether the job runs without web search (`reads`: web_search: disabled). */
 export interface Engine { kind: string; model?: string; effort?: string; reads?: boolean }
 export interface SandboxConfig {
   workDir: string; stateDir: string; logsDir: string; secretsDir: string;
@@ -20,7 +20,7 @@ export interface SandboxConfig {
   timeout_minutes: number;
 }
 
-/** Whether a job holds private data (an Engineer with `private_reads`): no web search then. */
+/** Whether a job runs without web search (its agent sets web_search: disabled). */
 export const observes = (engine?: Engine) => engine?.reads === true;
 
 /** The engine registry (config/engines.json, compiled from the modules' providers.engine): kind → entry. */
@@ -328,7 +328,7 @@ export function buildJob({ cfg, engine, worktree, jobDir, sessionId, prompt = ""
     contract: "engine@1", job: basename(jobDir), agent: job.agentId ?? "", task: job.issueId ?? "", prompt,
     ...(sessionId && SESSION.test(sessionId) ? { session: sessionId } : {}),
     model: { base_url: `${cfg.boxGatewayUrl}/api/v1`, token_env: "AIDENHQ_RUN_TOKEN", id: engine.model ?? "", effort: engine.effort ?? "" },
-    mcp: [], env: [], limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: !observes(engine), // no web search for a job holding private data
+    mcp: [], env: [], limits: { timeout_s: (cfg.timeout_minutes ?? 60) * 60 }, web: !observes(engine), // no web search when its agent turns it off
     sandbox: { kind: "box", writable: [worktree], network: true },
   };
   writeFileSync(join(jobDir, "job.json"), JSON.stringify(spec), { mode: 0o600, flag: "wx" });

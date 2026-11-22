@@ -1586,9 +1586,6 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ issue, comment }: Args) => {
       const target = issue ?? CURRENT();
       if (!target) throw new Error("no current task");
-      // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
-      const me = dirAgents()[cx().caller.agent];
-      if (issue && me?.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you finish only the task this run is working on: leave out `issue`.");
       if (issue) await refuseMemoryInbox(issue);
       // Your part of the user's task stays open for their replies.
       const current = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);

@@ -51,12 +51,11 @@ services:
         CLICKHOUSE_AUTH_TOKEN_FILE: ${secrets.clickhouse_auth_token}
 generated_secrets:
   - clickhouse_service_key
-# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.ts jobcapEntries).
+# Runner jobs of an Engineer, through the model gateway with their own token (scripts/modules.ts jobcapEntries).
 # Queries run up to two minutes (clickhouse-mcp caps them), past Codex's 60-second tool timeout.
 jobcaps:
   - id: clickhouse-read
     connection: clickhouse
-    private: true
     read_url: "http://clickhouse-mcp:8088/mcp/read"
     read_secret: clickhouse_mcp_token
     tool_timeout_s: 180

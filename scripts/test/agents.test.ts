@@ -119,7 +119,7 @@ test("the Architect: max effort, only its own role, no fleet tools, reads every 
   for (const t of ["fleet_control", "fleet_status", "task_relay_owner_words", "task_update", "task_create"]) assert.ok(!a.enabled_tools.paperclip_tasks.includes(t), t);
 });
 
-test("the web for every crew agent: web_view and app_view granted (an agent may opt its search down); Engineers get only their own grants", () => {
+test("the web for every crew agent: web_view and app_view granted (an agent may opt its search down); Engineers get their own grants and the task reads", () => {
   const dir = withAgents({ "review-chaser": { yaml: { web_search: "disabled" } } }, ["slack", "github", "open-loops", "meetings", "engineering", "primer"]);
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "slack", "github", "open-loops", "meetings", "engineering", "primer"], settings: { ...owner, owner_email: "e@x", product_repo: "acme/aidenhq" } }));
   const r = compile(product, dir);
@@ -140,8 +140,8 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
-  // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file, finishing it and recording its wait.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply"], code_review: ["code_review_findings", "code_review_resolve"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
+  // An Engineer has what it grants itself (attaching its own task's file, finishing it, recording its wait) and the tasks module's reads.
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply"], code_review: ["code_review_findings", "code_review_resolve"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait", "task_get", "task_search"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
@@ -223,14 +223,14 @@ test("the security module's agents may hand a fix task to the Fleet Steward, and
   const s = compile(product, without);
   for (const key of ["security-watch", "red-teamer"]) assert.deepEqual(s.paperclip.agents[key].delegate_to, [], `${key} without the Fleet Steward`);
 });
-test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant: crew yes; trial, check, and an Engineer without private_reads no", () => {
+test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant: crew and Engineer yes; trial and check no", () => {
   const reads = (yaml) => (compile(product, withAgents({ x: { yaml } }, ["slack"])).paperclip.agents.x.enabled_tools.paperclip_tasks ?? []).filter((t) => ["task_get", "task_search"].includes(t)).sort();
   const graduated = { connections: { slack: "read" }, trial: undefined, reports_to: "chief-of-staff" };
   assert.deepEqual(reads(graduated), ["task_get", "task_search"]);
   assert.deepEqual(reads({ ...graduated, image: "agent-base" }), ["task_get", "task_search"]);
   assert.deepEqual(reads({ connections: { slack: "read" } }), [], "a trial agent");
   assert.deepEqual(reads({ ...graduated, profile: "check" }), [], "a check agent");
-  assert.deepEqual(reads({ ...graduated, profile: "engineer" }), [], "an Engineer without private_reads");
+  assert.deepEqual(reads({ ...graduated, profile: "engineer" }), ["task_get", "task_search"], "an Engineer");
 });
 
 test("a setting is the shape of its default: a string where a list is meant fails the compile", () => {

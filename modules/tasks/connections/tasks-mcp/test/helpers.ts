@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
 
-const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "profile", "private_reads"];
+const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "profile"];
 const SERVICE_KEY = "tasks-service-key";
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] };

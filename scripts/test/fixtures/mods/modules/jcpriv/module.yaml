@@ -1,5 +1,0 @@
-name: jcpriv
-description: a private jobcap without private reads
-requires: [jc]
-agents:
-  nosy: { profile: engineer, jobcaps: [ jc-secret ] }

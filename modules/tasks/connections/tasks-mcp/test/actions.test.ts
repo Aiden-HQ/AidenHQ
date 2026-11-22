@@ -93,13 +93,3 @@ test("task_delegate wait blocks the parent on the child", async () => {
   assert.ok(!writes.some(([k]) => k === "PATCH"), "no wait unless asked");
 });
 
-test("task_finish takes `issue` only from an agent that reads private data or is no Engineer", async () => {
-  const pub = world({ me: { profile: "engineer" } });
-  assert.match(parse(await pub.call("task_finish", { issue: "WOR-4", comment: "ok" })).error, /without private reads/);
-  assert.equal(pub.writes.length, 0);
-  parse(await pub.call("task_finish", { comment: "ok" }));
-  assert.equal(pub.writes.at(-1)[1], "cur");
-  const priv = world({ me: { profile: "engineer", private_reads: true } });
-  parse(await priv.call("task_finish", { issue: "WOR-4", comment: "ok" }));
-  assert.equal(priv.writes.at(-1)[1], "kid");
-});

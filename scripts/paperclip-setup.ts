@@ -214,7 +214,6 @@ const readInstructions = (a: Obj) => { try { return readHandbook(cfg, a, { repo,
  * metadata is the board's and the tools' view of it (setupKey is its identity).
  */
 function agentBody(key: string, a: Obj) {
-  if (a.private_reads !== undefined && typeof a.private_reads !== "boolean") fail(`agent ${key}: private_reads is true or false`);
   const models = a.models ?? [];
   if (!Array.isArray(models) || models.some((m: unknown) => typeof m !== "string")) fail(`agent ${key}: models must be a list of model ids`);
   // A kind whose models carry a prefix (a router's) takes only those ids.
@@ -233,7 +232,7 @@ function agentBody(key: string, a: Obj) {
     // brief its delegators read. maxParallel: its parallel jobs (`max_parallel`).
     metadata: {
       setupKey: `aidenhq:${key}`, module: a.module, isolation: a.isolation, profile: a.profile, engine: a.engine, ...(a.model ? { model: a.model } : {}), ...(a.trial ? { trial: true } : {}),
-      ...(engineer ? { runnerEngine: true, ...(a.image ? { box: true } : {}), ...(a.private_reads === true ? { privateReads: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a)!.trim() } : {}) } : {}),
+      ...(engineer ? { runnerEngine: true, ...(a.image ? { box: true } : {}), ...(a.max_parallel ? { maxParallel: a.max_parallel } : {}), ...(models.length ? { models } : {}), ...(a.brief ? { brief: readInstructions(a)!.trim() } : {}) } : {}),
       ...display(key, a),
     },
   };

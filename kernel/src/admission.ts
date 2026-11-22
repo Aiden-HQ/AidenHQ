@@ -24,7 +24,7 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 
 /** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.ts grantEntry). */
 export type AgentGrant = {
-  key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
+  key?: string; roles?: string[]; trial?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
   /** A team record (compile's teams): it never runs; its members do. A member names its team record's key. */
   team?: { name: string; members: string[] }; member_of?: string;
@@ -34,9 +34,7 @@ export type Authority = {
   /** `engines`: the engines a job may ask its next turn to run on (`aidenhq engine`): the grant's, else only its own. */
   profile: Profile; image: string; engine: string; engines: string[]; model: string; effort: string; models: string[]; skills: Skill[];
   tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[];
-  /** The agent reads private data (private_reads): its jobs get no web search, and only they its private jobcaps. */
-  reads: boolean;
-  /** Web search: off for an agent that reads private data or whose definition turns it off (web_search: disabled). */
+  /** Web search: off for an agent whose definition turns it off (web_search: disabled). */
   web: boolean;
 };
 /** A wake in the inbox (wakes.ts): the task and agent it is for and why (`routine:<key>` names the routine whose run it is). */
@@ -139,8 +137,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
-      roles: profile === "check" ? [] : rolesOf(g).filter((r) => platform || r !== PLATFORM), reads: g.private_reads === true,
-      web: g.private_reads !== true && g.web_search !== "disabled",
+      roles: profile === "check" ? [] : rolesOf(g).filter((r) => platform || r !== PLATFORM),
+      web: g.web_search !== "disabled",
     };
   }
 

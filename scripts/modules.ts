@@ -164,7 +164,7 @@ export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
   return {
     name: a.name, models, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
     profile: a.profile ?? "crew", ...(a.reports_to ? { reports_to: a.reports_to } : {}), ...(a.engine ? { engine: a.engine } : {}), ...(a.engines ? { engines: a.engines } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
-    max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
+    max_parallel: a.max_parallel ?? 1, ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
     // Teams (expandTeams): the team record's members and routing weights; a member's team record key and repo preferences.
     ...(a.team ? { team: { name: a.team.name, members: a.team.members, weights: a.team.weights } } : {}),
     ...(a.member_of !== undefined ? { member_of: a.member_of, repos: a.repos ?? [] } : {}),
@@ -199,14 +199,13 @@ export function engineEntries(name: string, def: Obj, root: string, productDir: 
   return out;
 }
 
-const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret", "private"];
+const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret"];
 /**
  * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the kernel's
  * /c/<connection>/mcp with its own token (kernel/src/proxy.ts). `tools`: a list, or `read` for the module's connection
  * of that name's read tools. `read_url` (one of the module's own services' MCP endpoint, http://<service>:<port>/…, which the
  * kernel resolves to the container's address) and `read_secret` (the vault file the kernel forwards
- * as the bearer) bridge to today's read endpoints. `private: true`: private data, so only an Engineer with private_reads (no
- * web search) may hold it. Returns config/jobcaps.json's entries, by id.
+ * as the bearer) bridge to today's read endpoints. Returns config/jobcaps.json's entries, by id.
  */
 export function jobcapEntries(name: string, def: Obj) {
   const out: Obj = {};
@@ -222,8 +221,7 @@ export function jobcapEntries(name: string, def: Obj) {
     if (!/^http:\/\/[a-z][a-z0-9-]*:\d{2,5}\/[\w/.-]*$/.test(j.read_url ?? "")) fail(`${where}: read_url must be an http://<its service>:<port>/ endpoint`);
     if (!/^[a-z0-9_]+_mcp(_read)?_token$/.test(j.read_secret ?? "")) fail(`${where}: read_secret must name a <service>_mcp_token or <service>_mcp_read_token`);
     if (j.tool_timeout_s != null && !(Number.isInteger(j.tool_timeout_s) && j.tool_timeout_s > 0 && j.tool_timeout_s <= 600)) fail(`${where}: tool_timeout_s is 1-600`);
-    if (j.private != null && typeof j.private !== "boolean") fail(`${where}: private is true or false`);
-    out[j.id] = { connection: j.connection, url: j.read_url, bearer_secret: j.read_secret, tools: [...tools], ...(j.tool_timeout_s ? { tool_timeout_s: j.tool_timeout_s } : {}), ...(j.prompt ? { prompt: String(j.prompt) } : {}), ...(j.private ? { private: true } : {}) };
+    out[j.id] = { connection: j.connection, url: j.read_url, bearer_secret: j.read_secret, tools: [...tools], ...(j.tool_timeout_s ? { tool_timeout_s: j.tool_timeout_s } : {}), ...(j.prompt ? { prompt: String(j.prompt) } : {}) };
   }
   return out;
 }
@@ -1035,7 +1033,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         const id = String(raw).replace(/\?$/, "");
         const j = jobcaps[id];
         if (!j) { if (String(raw).endsWith("?")) continue; fail(`${key}: unknown jobcap ${id} (enable its module, or write "${id}?" to make it optional)`); }
-        if (j.private && a.private_reads !== true) fail(`${key}: jobcap ${id} reads private data: set private_reads: true (its jobs then get no web search), or drop it`);
         ids.push(id);
       }
       a.jobcaps = [...new Set(ids)].sort();

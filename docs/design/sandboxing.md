@@ -39,7 +39,7 @@ host: a repo's checks are check jobs.
   (read-only). `repo-checkout` is mounted only for a job whose roles include it. A check box gets only its snapshot (no
   `.git`, no credentials; read-only when the recipe says so) and its out folder.
 - **Codex inside.** The box is the boundary, so Codex's own sandbox is off (`danger-full-access`, approval `never`;
-  [codex-openrouter-engine.md](codex-openrouter-engine.md)). A job with `private_reads` gets no web search.
+  [codex-openrouter-engine.md](codex-openrouter-engine.md)). A job whose agent sets `web_search: disabled` gets no web search.
 - **Lifecycle.** The kernel owns the box: it asks the launcher (`POST /job`, bearer `launcher_kernel_key`), renews the
   lease every 5 minutes (the launcher's lease is 15), and releases it when the job ends; a kernel restart re-adopts from
   the job rows. A box with a lapsed lease is destroyed. Check jobs use `POST /check`.
@@ -55,9 +55,8 @@ host: a repo's checks are check jobs.
   ceilings rather than reservations. Size the pool to the host's memory with no swap, and at least the sum of box agents'
   `max_parallel`.
 
-Compile refuses `image:` on a non-Engineer agent in trial (its limits would run inside a box it controls), and an
-Engineer's private grants require `private_reads: true`, which drops web search and `web_view` (`scripts/computers.ts`,
-checked at compile).
+Compile refuses `image:` on a non-Engineer agent in trial (its limits would run inside a box it controls)
+(`scripts/computers.ts`, checked at compile).
 
 ## Module isolation
 

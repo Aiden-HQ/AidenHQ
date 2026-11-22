@@ -360,13 +360,11 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     const eff = (a: Dict, m: Dict) => a.isolation ?? m.isolation;
     if (iso(eff(now, head)) > iso(key in ba ? eff(was, b) : base ? head.isolation : "untrusted")) owner(`${at}: isolation ${id(eff(now, head) ?? "trusted")}`);
     // Its profile decides the tools, writes and computer its jobs get (admission.ts): any but check (none of them) is the
-    // owner's. private_reads trades web search for private data: the reviewer's.
+    // owner's.
     const profile = (x: Dict) => String(x.profile ?? "crew");
     if (profile(now) !== profile(was) && profile(now) !== "check") owner(`${at}: profile ${id(profile(now))} (the tools, writes and computer its jobs get)`);
     else if (profile(now) !== profile(was)) review(`${at}: profile check (its jobs get no tools or writes)`);
-    if (now.private_reads === true && was.private_reads !== true) review(`${at}: reads private data (its jobs get no web search)`);
-    else if (now.private_reads !== true && was.private_reads === true) review(`${at}: stops reading private data`);
-    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
+    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "profile"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
   }
   if (base) for (const k of [...PLAIN].filter((k) => !eq(b[k], head[k]) && k !== "name")) review(`changes ${id(k)}`);
   if (codeChanged) review("code changes");
