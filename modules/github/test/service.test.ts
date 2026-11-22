@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createService, workflowNeedError, workflowRefusal } from "../service/src/service.ts";
 import { serveOps } from "../service/src/ops.ts";
-import { render } from "../../../kernel/src/writes.ts";
+import { render, validate } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 /** What the in-box `aidenhq publish` does: the branch's bundle at <task>/.aidenhq/bundles/<sha>.bundle. Returns the sha. */
@@ -199,6 +199,57 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
   writeFileSync(join(ws, "lib.js"), "export const z = 4;\n");
   sh(ws, "commit", "--quiet", "-am", "Tweak, see /home/agent/notes");
   assert.match((await pr(boxBundle(ws, "agent/TASK-3/fix"), { title: "Fix the parser", body: "Handles empty input." })).json.error, /commit message on agent\/TASK-3\/fix mentions "\/home\/"/);
+});
+
+// A republish sends the PR's text as a full PATCH, so a blank body coming from the CLI (no --body-file) used to replace the
+// description with the footer alone. An absent or blank body is left out of the PATCH, a blank title too, and when no text
+// remains no PATCH is issued at all: the head is pushed and the PR stays as it is. A real body still replaces it, footered once.
+test("an open PR keeps its description when a republish sends a blank body; a real body still replaces it once", async (t) => {
+  const url = "https://github.com/acme-agents/widget/pull/7";
+  const open = "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature";
+  const { sha, outcomes, ghCalls, call } = await setup(t, {
+    routes: (m, p) =>
+      m === "GET" && p === open ? { status: 200, body: [{ number: 7, html_url: url, head: { sha } }] }
+        : m === "PATCH" && p === "/repos/acme-agents/widget/pulls/7" ? { status: 200, body: { number: 7, html_url: url } }
+          : undefined,
+  });
+  const patches = () => ghCalls.filter((c) => c.method === "PATCH" && c.path === "/repos/acme-agents/widget/pulls/7");
+  let n = 0;
+  const republish = async (text) => {
+    const id = `k-${String(++n).padStart(16, "0")}`;
+    const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }], text };
+    assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id, kind: "github.pr", args, digest: "d", idempotency_key: id })).json, { accepted: true });
+    for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+    const out = outcomes.shift();
+    assert.equal(out?.ok, true, JSON.stringify(out));
+    return out;
+  };
+
+  // The title updates; the blank body is not a field of the PATCH, so GitHub's description is untouched.
+  await republish({ title: "fix(widget): keep the description", body: "" });
+  assert.equal(patches().length, 1);
+  assert.deepEqual(patches()[0].body, { title: "fix(widget): keep the description" }, "a blank body is left out of the PATCH");
+  // Whitespace-only is blank the same way.
+  await republish({ title: "fix(widget): keep the description", body: "  \n\t" });
+  assert.deepEqual(patches()[1].body, { title: "fix(widget): keep the description" });
+  // Nothing of the text remains: no text PATCH at all, and the PR that already exists is returned.
+  const before = patches().length;
+  const out = await republish({ title: " ", body: "" });
+  assert.equal(patches().length, before, "no title and no body: no PATCH is issued");
+  assert.match(out.text, /https:\/\/github\.com\/acme-agents\/widget\/pull\/7/);
+  // A real body replaces the description, carrying the footer exactly once.
+  await republish({ title: "fix(widget): keep the description", body: "Why it changed." });
+  const sent = patches().at(-1).body;
+  assert.equal(sent.title, "fix(widget): keep the description");
+  assert.match(sent.body, /^Why it changed\./);
+  assert.equal(sent.body.split("[AidenHQ](https://aidenhq.ai)").length - 1, 1, "one footer");
+});
+
+// The CLI now sends `text` without `body` when there is no --body-file; the kernel's strict args schema must accept it, or
+// the fix would be refused before the service's guard ever runs.
+test("the pr args schema accepts a text without a body", () => {
+  const schema = JSON.parse(readFileSync(new URL("../schemas/pr.json", import.meta.url), "utf8"));
+  validate(schema, { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha: "a".repeat(40) }], text: { title: "fix(widget): keep the description" } });
 });
 
 test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {

@@ -66,6 +66,10 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "ev.md"), "Why. Closes acme/app#7.\n\n## Evidence\n- ran it");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "ev.md"), "--fixes", "acme/app#7", "--fixes", "acme/app#8");
   assert.equal(seen.at(-1).body.args.text.body, "Why. Closes acme/app#7.\n\nFixes acme/app#8\n\n## Evidence\n- ran it");
+  // No --body-file and no --fixes: the args carry no `body` at all, so a republish never blanks an existing description.
+  await aidenhq("publish", "acme/app", "fix-login");
+  assert.deepEqual(seen.at(-1).body.args.text, { title: "fix(login): stop the loop" });
+  assert.equal("body" in seen.at(-1).body.args.text, false);
   // A republish after a repair commit keeps the title: the branch's own pushed commits still count as its first.
   git("update-ref", "refs/remotes/origin/fix-login", sha);
   git("commit", "-q", "--allow-empty", "-m", "address the failing check");

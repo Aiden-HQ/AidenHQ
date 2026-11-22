@@ -406,8 +406,14 @@ export function createService(o: Options) {
             const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`);
             // The PR's text is signed by the agent that asked for it (spec §4).
             const asker = readAskers()[askerKey(rec.kind, rec.args)];
-            const text = a.text ? { ...a.text, ...(typeof a.text.body === "string" ? { body: withFooter(a.text.body, asker?.requester.name || "AidenHQ") } : {}) } : a.text;
-            const pr = open[0] ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : await api("POST", `/repos/${s.slug}/pulls`, { ...text, head: b.branch, base: def });
+            // A republish that names no text, or only blank text, keeps the PR as it is: a PATCH replaces the whole description,
+            // so a blank body must never be sent (it would leave the footer alone). A real body still replaces it, once footered.
+            const named = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+            const title = named(a.text?.title), body = named(a.text?.body);
+            const text = a.text ? { ...(title ? { title } : {}), ...(body ? { body: withFooter(body, asker?.requester.name || "AidenHQ") } : {}) } : undefined;
+            const pr = open[0]
+              ? (Object.keys(text ?? {}).length ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : open[0])
+              : await api("POST", `/repos/${s.slug}/pulls`, { ...text, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it

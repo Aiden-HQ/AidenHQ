@@ -253,7 +253,8 @@ if (command === "publish" || command === "review") {
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);
-    const args = { only: [{ repo, branch, sha }], text: { title, body } };
+    // No --body-file (and no --fixes line): the PR's text carries no body, so an existing description is kept, never blanked.
+    const args = { only: [{ repo, branch, sha }], text: { title, ...(body ? { body } : {}) } };
     if (command === "publish") lines.push(`${repo} ${branch}: ${(await write("codehost.pr", args))}`);
     else {
       // The reviewer's verdict on the PR this would publish, filed by nothing; its reason is a model's words, shown as data.
