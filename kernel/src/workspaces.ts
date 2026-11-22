@@ -48,14 +48,12 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
   const use = (rows: Row[]): Use | undefined => rows.length ? { pairs: rows.map(({ agent, task }) => ({ agent, task })), last: Math.max(...rows.map((r) => r.last)), started: Math.max(...rows.map((r) => r.started)) } : undefined;
   // Read in the folder's own synchronous step, so a job that ended while the pass yielded counts.
   const useIdent = (identifier: string) => use(db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE identifier = ? GROUP BY agent, task").all(identifier) as Row[]);
-  // An engine home's name is engineState's normalization of its (agent, task); the pairs a name stands for are that engine's
-  // known ones (read at the start of the pass) and any live now, so a first job admitted for it during the pass counts.
+  // An engine home's name is engineState's normalization of its (agent, task): its pairs are that engine's jobs whose pair
+  // normalizes to the name, all read in the folder's own step (each engine has its own state folder).
   type Pair = { agent: string; task: string };
-  const byName = (rows: Pair[]) => { const m = new Map<string, Pair[]>(); for (const r of rows) m.set(homeName(r.agent, r.task), [...(m.get(homeName(r.agent, r.task)) ?? []), r]); return m; };
-  // One engine's homes, by that engine's jobs only (each engine has its own state folder).
-  const liveHome = (kind: string, name: string) => (byName(db.prepare(`SELECT DISTINCT agent, task FROM jobs WHERE engine = ? AND ${LIVE()}`).all(kind) as Pair[]).get(name) ?? []);
-  const useHome = (kind: string, homes: Map<string, Pair[]>) => (name: string) =>
-    use([...(homes.get(name) ?? []), ...liveHome(kind, name)].flatMap(({ agent, task }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE agent = ? AND task = ? AND engine = ? GROUP BY agent, task").all(agent, task, kind) as Row[]));
+  const pairsOf = (kind: string, name: string, live = "1") => (db.prepare(`SELECT DISTINCT agent, task FROM jobs WHERE engine = ? AND ${live}`).all(kind) as Pair[]).filter((r) => homeName(r.agent, r.task) === name);
+  const useHome = (kind: string) => (name: string) =>
+    use(pairsOf(kind, name).flatMap(({ agent, task }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE agent = ? AND task = ? AND engine = ? GROUP BY agent, task").all(agent, task, kind) as Row[]));
   // In use: a job admitted or running, or one that ended within a day whose box is not released yet (release still reads the
   // workspace and the box keeps its mounts until then, boxes.ts tend; a release stuck for longer pins nothing).
   const LIVE = () => `(state IN ('admitted', 'running') OR (box IS NOT NULL AND (released IS NULL OR released < 0) AND COALESCE(ended, at) > ${Math.floor(now() - DAY)}))`;
@@ -78,7 +76,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
       { root: join(workDir, ".cache-layers"), use: useIdent, busy: liveIdent },
       { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
       ...engines().map((kind) => ({
-        root: join(stateDir, kind), use: useHome(kind, byName(db.prepare("SELECT DISTINCT agent, task FROM jobs WHERE engine = ?").all(kind) as Pair[])), busy: (n: string) => liveHome(kind, n).length > 0,
+        root: join(stateDir, kind), use: useHome(kind), busy: (n: string) => pairsOf(kind, n, LIVE()).length > 0,
         gone: (u: Use) => fresh(u, kind),
       })),
     ];
