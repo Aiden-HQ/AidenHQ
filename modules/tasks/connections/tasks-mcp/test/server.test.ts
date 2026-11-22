@@ -107,8 +107,8 @@ test("task_list(attention=\"any\") returns the rows with an attention entry, pas
 });
 
 test("task_list(attention) keeps the default's kinds, so a closed task does not take a slot", async () => {
-  const closed = { ...row("closed-1", "todo"), createdAt: "2026-02-01T00:00:00Z" };
-  const open = { ...row("open-1", "todo"), createdAt: "2026-01-01T00:00:00Z" };
+  const closed = { ...row("closed-1", "done"), updatedAt: "2026-02-01T00:00:00Z" };
+  const open = { ...row("open-1", "todo"), updatedAt: "2026-01-01T00:00:00Z" };
   const states = { "closed-1": state("done", [{ who: "agent", why: "history_expired", ref: "closed-1" }]), "open-1": state("waiting", [{ who: "owner", why: "owner_wait", ref: "open-1" }]) };
   const { call } = bridge({ handler: issueBoard({ rows: [closed, open] }), states });
   const out = parse(await call("task_list", { attention: "any", limit: 1 }));

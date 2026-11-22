@@ -830,10 +830,10 @@ const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;
 /**
  * Paperclip statuses to ask for, given the state filter: these are only the candidate superset, the kernel kind is the filter.
  * An idle row includes `history_expired` (its `task.created` fact pruned), whose Paperclip status can be any, done and
- * cancelled included; a waiting row's can be any open one. So either asks for every status, as does `done`, and `attention`
- * (an expired closed task can still carry attention).
+ * cancelled included; a waiting row's can be any open one. So either asks for every status, and so does `done`. Without one
+ * of them the list stays on open rows, as it always has: a default or `attention`-only query does not want closed tasks.
  */
-const statusesFor = (state: unknown, attention: unknown) => (attention || stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
+const statusesFor = (state: unknown) => (stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
 /** The kinds a list returns when it names none: every task but the done and cancelled ones, as the tool documents. */
 const DEFAULT_KINDS = ["working", "waiting", "idle"];
 /** A `state`/`attention` argument as the kind list and the one attention, validated. */
@@ -954,7 +954,7 @@ const TOOLS: Record<string, Tool> = {
       const { kinds, attention: one } = stateFilter(state, attention);
       const max = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 25));
       const q = new URLSearchParams({ q: String(query).slice(0, 200), excludeRoutineExecutions: "true" });
-      q.set("status", statusesFor(state, attention));
+      q.set("status", statusesFor(state));
       // as with task_list, the kernel kind/attention filter runs per page: search candidates are paged until `limit` matches
       // (Paperclip's ranking order) or the results run out, so a filtered-out closed hit cannot consume a matching result's slot.
       const list: (readonly [Json, Json])[] = [];
@@ -1032,7 +1032,7 @@ const TOOLS: Record<string, Tool> = {
       if (!COMPANY()) throw new Error("no company for this agent");
       const { kinds, attention: one } = stateFilter(state, attention);
       const max = Math.max(1, Math.min(Math.floor(Number(limit) || 100), 200));
-      const q = new URLSearchParams({ status: statusesFor(state, attention) });
+      const q = new URLSearchParams({ status: statusesFor(state) });
       const me = mine ? grant().id : "";
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
@@ -1205,6 +1205,11 @@ const TOOLS: Record<string, Tool> = {
           const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
           isChat = async ([row]) => {
             if (row.assigneeAgentId) return false;
+            // A detail read must not start past the chat scan's budget: leave it unproven and let the answer say it is partial.
+            if (Date.now() > chatUntil) {
+              complete = false;
+              return false;
+            }
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
             const full = row.descriptionTruncated
