@@ -313,7 +313,8 @@ const REASONING: Record<string, string> = { low: "low", medium: "high", high: "h
 export function genieFindings(v: GenieReview) {
   return [...(v.findings ?? []), ...(v.summaryOnlyFindings ?? [])].filter((f) => f.publication !== "suppressed" && typeof f.path === "string" && Number.isInteger(f.anchor?.line)).map((f) => ({
     severity: GENIE_SEVERITY[String(f.severity)] ?? "nit", path: f.path, line: f.anchor!.line, title: String(f.title ?? ""),
-    why: [f.failureMode, f.whyThisMatters].filter(Boolean).join("\n\n"), evidence: String(f.evidence?.changedCode ?? ""), fix_brief: String(f.suggestedFix ?? ""),
+    // Its failure mode is the failure scenario an important finding needs (review.ts clean).
+    failure_scenario: String(f.failureMode ?? ""), why: String(f.whyThisMatters ?? ""), evidence: String(f.evidence?.changedCode ?? ""), fix_brief: String(f.suggestedFix ?? ""),
   }));
 }
 
@@ -355,7 +356,8 @@ export function nativeReview(rollouts: string[]): NativeReview | undefined {
   return found;
 }
 
-/** codex review's findings as our finder JSON: P0-P2 important, P3 (or none) a nit; its absolute paths made relative to `roots`. */
+/** codex review's findings as our finder JSON: P0-P2 important, P3 (or none) a nit; its absolute paths made relative to `roots`.
+ * Its body is the why: an important one's failure scenario is the body's "Failure scenario:" line the brief asks for (clean). */
 export function nativeFindings(v: NativeReview, roots: string[]) {
   return (v.findings ?? []).flatMap((f) => {
     const p = f.code_location?.absolute_file_path, start = f.code_location?.line_range?.start, end = f.code_location?.line_range?.end;
