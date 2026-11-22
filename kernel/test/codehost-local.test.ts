@@ -131,15 +131,36 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   git(ws, "switch", "--quiet", "-c", "other");
   const publish = async (file) => { writeFileSync(join(ws, file), "x\n"); git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", file); const sha = git(ws, "rev-parse", "HEAD"); bundle(sha, "other"); await file_pr(sha); return sha; };
   const file_pr = (sha) => file({ kind: "codehost.pr", args: { only: [{ repo: "local/hello", branch: "other", sha }], text: { title: "Other", body: "Why." } } });
-  const first = await publish("a.txt"), second = await publish("b.txt");
+  const first = await publish("a.txt");
+  // The default branch moves before the change is pushed again: a push must not move the recorded opening base to the new tip.
+  const opened = git(dir, "--git-dir", bare, "rev-parse", "main");
+  const mainTree = git(dir, "--git-dir", bare, "rev-parse", "main^{tree}");
+  const advanced = git(dir, "--git-dir", bare, "commit-tree", mainTree, "-p", "main", "-m", "main moves");
+  git(dir, "--git-dir", bare, "update-ref", "refs/heads/main", advanced);
+  assert.notEqual(git(dir, "--git-dir", bare, "rev-parse", "main"), opened, "the default branch really moved between the two publishes");
+  const second = await publish("b.txt");
   await file({ kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 2 }] } });
   const of = (type) => flowFacts.filter((f) => f.type === type && f.subject === "pr:local/hello#2");
   assert.deepEqual([of("pr.opened")[0].data.title, of("pr.opened")[0].data.author_kind, of("pr.opened")[0].data.head], ["Other", "agent", first]);
   assert.deepEqual(of("pr.pushed").map((f) => [f.version, f.data.before, f.data.forced]), [[second, first, false]]);
-  // A push moves the head only: the change's recorded base stays the commit it was opened against, as GitHub's baseRefOid does.
+  // A push moves the head only: the change's recorded opening base stays the commit it was opened against, as GitHub's baseRefOid does.
   const bare2 = host.bare("local/hello");
-  assert.equal(git(dir, "--git-dir", bare2, "rev-parse", "refs/changes/2/base"), git(dir, "--git-dir", bare2, "rev-parse", "refs/heads/main"), "the recorded base is still the tip it opened against");
+  assert.equal(git(dir, "--git-dir", bare2, "rev-parse", "refs/changes/2/opened"), opened, "the recorded opening base is still the tip it opened against");
+  assert.notEqual(git(dir, "--git-dir", bare2, "rev-parse", "refs/changes/2/base"), opened, "the merge base ref moved with the push");
   assert.deepEqual(of("pr.closed").map((f) => [f.version, f.data.merged]), [[second, false]]);
+
+  // A change written before `opened` existed has no recorded opening base: its old `base` ref was rewritten on every push, so it is
+  // never read as one, and the grader's fact says the base commit was not established instead of naming a later tip. Written by hand
+  // in the shape the old `openChange` left: a head, a `base` rewritten to the tip it was last pushed against, and no `opened` ref.
+  const legacyMeta = execFileSync("git", ["--git-dir", bare2, "hash-object", "-w", "--stdin"], { input: JSON.stringify({ title: "Legacy", body: "Old.", branch: "legacy", base: "main", task: "TASK-1", opened_at: "2026-01-01T00:00:00Z", draft: false }) , encoding: "utf8" }).trim();
+  const legacyN = 9;
+  git(dir, "--git-dir", bare2, "update-ref", `refs/changes/${legacyN}/head`, second);
+  git(dir, "--git-dir", bare2, "update-ref", `refs/changes/${legacyN}/base`, advanced);
+  git(dir, "--git-dir", bare2, "update-ref", `refs/changes/${legacyN}/meta`, legacyMeta);
+  const read = await host.readChange("local/hello", legacyN);
+  assert.equal(read.baseRef, "", "a legacy change has no opening base");
+  assert.notEqual(read.baseRef, advanced, "the tip it was last pushed against is never passed off as the opening base");
+  assert.equal(git(dir, "--git-dir", bare2, "rev-parse", `refs/changes/${legacyN}/base`), advanced, "its old base ref is still there, and still not read as the opening base");
 
   // Repos on two code hosts in one write are refused before anything is filed.
   await assert.rejects(writes.request(job, { kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 1 }, { repo: "acme/app", number: 2 }] } }), /more than one code host/);

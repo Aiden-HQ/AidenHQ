@@ -148,7 +148,9 @@ test("a local change request's recorded base ref commit is its base commit, neve
   assert.doesNotMatch(fact, new RegExp(`base commit ${SHA("4")}`), "and its merge commit is not passed off as the base");
 });
 
-test("a local change read with no recorded base ref establishes no base commit", async () => {
+// A change written before the opening base was recorded has only the old `base` ref, which was rewritten on every push: it is not
+// read as the base commit, so the fact says nothing is established instead of naming the tip it was last pushed against.
+test("a legacy local change, with only a rewritten base ref, establishes no base commit", async () => {
   const checks = [{ name: "ci-required", ok: true, pending: false }];
   const pr = localPullRequest(
     { number: 8, url: "codehost:local/app/change/8", state: "merged", head: SHA("3"), base: SHA("2"), into: "main", branch: "fix", title: "Fix", body: "Fixes it.", merged: SHA("4") },

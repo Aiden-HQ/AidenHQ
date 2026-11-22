@@ -296,8 +296,9 @@ export async function presentNow(deliverable: any, deps: any) {
  * module's PR_QUERY data): its state, head, base and words, its merge commit, and its checks receipt on the head as the named
  * checks, a required one with no entry yet still running. `mergedAt`: the merge commit's date.
  *
- * `baseRef` is the change's recorded base ref commit (codehost-local's refs/changes/<n>/base: the default branch's tip when the
- * change was opened or last moved), carried as `baseRefOid` so `baseCommitOf` reads both code hosts by one rule. `base` is the
+ * `baseRef` is the change's recorded opening base (codehost-local's refs/changes/<n>/opened: the default branch's tip when the
+ * change was opened, which a push never moves), carried as `baseRefOid` so `baseCommitOf` reads both code hosts by one rule. A
+ * change written before that ref existed carries none, so it states no base commit rather than naming a later tip. `base` is the
  * git merge base and is never carried as the base commit.
  */
 export function localPullRequest(c: any, checks: { name: string; ok: boolean; pending: boolean }[], required: string[], mergedAt = "") {
