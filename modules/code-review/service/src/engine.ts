@@ -432,15 +432,15 @@ export function createEngine(d: EngineDeps) {
 
   /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
    * combo (openOnly), the PR's opening review stands for every later head: its latest mandatory opening run per combo, at any head,
-   * with the mandatory runs at the head itself (a claim's recheck) and any mandatory run of the PR still queued, running or on its
-   * first post (a recheck at an earlier head whose findings aren't posted yet). */
+   * with the mandatory runs at the head itself (a claim's recheck) and any mandatory run of the PR on its first post (a recheck at
+   * an earlier head whose findings aren't posted yet; one still running there is superseded and never posts). */
   const gateRuns = (cfg: Repo, repo: string, n: number, head: string) => {
     const at = reviewers(repo, n, head);
     if (!openOnly(cfg)) return at;
     const seen = new Set<string>();
     const opening = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' ORDER BY created DESC", repo, n)
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}`; return !seen.has(k) && !!seen.add(k); });
-    const pending = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND (status IN ('queued', 'running') OR (status = 'done' AND posted = 'pending' AND post_tries = 0)) ORDER BY created DESC", repo, n);
+    const pending = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND status = 'done' AND posted = 'pending' AND post_tries = 0 ORDER BY created DESC", repo, n);
     const out = [...opening];
     for (const r of [...at, ...pending]) if (!out.some((o) => o.id === r.id)) out.push(r);
     return out;
@@ -1369,9 +1369,11 @@ export function createEngine(d: EngineDeps) {
     const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
     // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
     if (openOnly(cfg)) {
-      // Its opening review lacks a mandatory run (a push superseded one): the newest head gets the opening review.
+      // Its opening review lacks a mandatory run (a push superseded one): the newest head gets the mandatory combos (as a batch of
+      // its own, so the push's queued advice stays).
       if (!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND status != 'skipped'", p.repo, p.number)
-        && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number)) trigger(cfg, p, "open");
+        && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number))
+        queue(p, cfg.on_open.filter((c) => c.mandatory), "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });
       return;
     }
     if (!mandatory(p.head)) trigger(cfg, p, pushed(p) && mandatory() ? "push" : "open");
