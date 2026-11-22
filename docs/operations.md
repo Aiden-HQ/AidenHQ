@@ -207,7 +207,8 @@ peak between prunes is what crossed the alert line), so the space peak between p
 removes one-off containers — a container with no compose service and no `aidenhq.computer` label, the class a
 `docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
 `docker container prune --filter until=`, which filters on created time and so would delete a compose service that an
-apply's generation snapshot had just stopped, and its own check reads `State.FinishedAt`; no volume is touched (`docker rm`
+apply's generation snapshot had just stopped, and its own check reads `State.FinishedAt`; a container with no stop time
+(created and never started) is kept, since the day cannot be measured against it. No volume is touched (`docker rm`
 without `-v`). Apply installs changed prune units and runs the same script after its rebuilds.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside

@@ -67,9 +67,9 @@ for id in $ids; do
   stopped="$(date -u -d "$finished" +%s 2>/dev/null)" || { fail "container $id: stop time unreadable ($finished), left alone"; continue; }
   age=$(( now - stopped ))
   if [ "$stopped" -le 0 ]; then
-    # The zero time: created and never started. No writable layer to reclaim, and nothing runs it.
-    say "container $id: never started, removed"
-    "$DOCKER" rm "$id" >/dev/null 2>&1 || fail "container $id: never started but could not be removed"
+    # The zero time: created and never started. It has no stop time to measure the day against, so the rule gives no
+    # reason to remove it: kept, never guessed at.
+    say "container $id: never started, kept (no stopped time to measure $(( STOPPED_SECS / 3600 )) h against)"
   elif [ "$age" -lt "$STOPPED_SECS" ]; then
     say "container $id: stopped $(( age / 3600 )) h ago, kept (under $(( STOPPED_SECS / 3600 )) h)"
   elif out="$("$DOCKER" rm "$id" 2>&1)"; then

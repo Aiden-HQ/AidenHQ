@@ -150,7 +150,10 @@ test("only disposable containers stopped over a day are removed, and never with 
     ],
   });
   assert.match(r.calls, /^rm old$/m, r.calls);
-  assert.match(r.calls, /^rm never$/m, "a created-never-started one-off holds no layer");
+  // A container created and never started has no stopped time to measure the day against: the retention rule gives no
+  // reason to remove it, so it stays.
+  assert.doesNotMatch(r.calls, /^rm never$/m, r.calls);
+  assert.match(r.out, /never: never started, kept/, r.out);
   // A stopped compose service may be one an apply's generation snapshot stopped a moment ago, and a computer box has its
   // own lifecycle: neither is a one-off, however long ago they were created.
   assert.doesNotMatch(r.calls, /^rm (running|young|service|box)$/m, r.calls);
