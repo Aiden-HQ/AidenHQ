@@ -1,6 +1,6 @@
 ---
 name: fleet-check
-description: Load on a "Fleet Ops: check" run (the fleet detector tripped or recovered), or to settle a stuck item, file a product bug or decide whether to tell the owner.
+description: "Load on a \"Fleet Ops: check\" run (the fleet detector tripped or recovered), or to settle a stuck item, file a product bug or decide whether to tell the owner."
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -29,8 +29,9 @@ recovered item: one log line; if you alerted the owner, one `notify` (`kind: fyi
 ## Deciding
 
 Decide from the brief, its done condition, the delegator's task, the last comments and the PR's and cards' state, and verify
-the work landed before accepting it. A reviewer's or grader's note outside the brief doesn't hold the work: accept, and file
-the note as its own task. Unsure: take the call easiest to undo and log `deep-look` for the evening digest. A call truly the
+the work landed before accepting it. Wrong or missing work goes back to its agent (`task_route`) with what to change; work in progress is never closed over its
+agent (cancel or route it). A reviewer's or grader's note outside the brief doesn't hold the work: accept it, and file the
+note as its own task only once you verified it is a real issue. Unsure: take the call easiest to undo and log `deep-look` for the evening digest. A call truly the
 owner's (money past a limit, a credential, a security trade-off) is `owner-call` in the log, and goes to the chief of staff (`task_comment` on their task) when no card exists.
 
 ## Settling each kind
@@ -39,7 +40,7 @@ owner's (money past a limit, a credential, a security trade-off) is `owner-call`
   with nothing asked is logged once and left; a step asked of the owner goes by `task_route` to the agent that can do it,
   else to the Engineer with "make this work without a person". Only a sign-in or credential stays theirs.
 - `loop:<task>:<branch>` (repeated malice rejections): read `task_approvals`, then `task_cancel` the work and have the agent
-  looked at, or file the false reject as a planted reviewer case (product-bug path) and cancel naming a new task. Never change the reviewer's verdict.
+  looked at, or file the false reject as a planted reviewer case (product-bug path) and cancel naming a new task for the same agent, written in your own words without the flagged content. Never change the reviewer's verdict.
 - `unresumed:<task>`: `task_route` (no `to`) naming the answer; still not resuming: product bug, slug `answered-wait`.
 - `run:<agent>:stuck|failing|silent`, `idle`, `stuck:<task>`: comment once with what changed; the second time `task_route` a
   fresh start or cancel and refile; a third is a product bug. `unpolled` or a paused/gone agent: `task_route` to a same-team
@@ -84,8 +85,9 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
    email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in the brief's body, title and evidence too
    (name things by role, leave task ids out): the `github_product_issue` card's reviewer holds the post to the brief's text,
    so a literal value there loops the filing.
-3. Log `log · <time> · product-bug · <slug> · <task id>`. No Maintainer or GitHub: `github_issue_link` with fingerprint,
-   title, body and `evidence`, send the owner the link, log `link sent` (never resent; digest lists it as waiting).
+3. Log `log · <time> · product-bug · <slug> · <task id>`. GitHub connected but no Maintainer: `github_issue_link` with fingerprint,
+   title, body and `evidence`, send the owner the link, log `link sent` (never resent; digest lists it as waiting). No GitHub
+   module: log the report on Fleet issues with the same fields, as the internal record.
 
 > ## Ask
 > File one GitHub issue on the product repository `Aiden-HQ/AidenHQ` with `github_product_issue`: fingerprint `product-bug:<slug>`, the title and body below, and the evidence fields given. Nothing else is asked for; do not fix it in this task.

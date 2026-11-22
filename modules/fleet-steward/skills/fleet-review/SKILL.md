@@ -1,6 +1,6 @@
 ---
 name: fleet-review
-description: Load on the "Fleet Ops: weekly review" run (Monday): group recurring failures into at most 3 rule proposals, file the Dependabot backstop, measure reverts, file one owner summary.
+description: "Load on the \"Fleet Ops: weekly review\" run (Monday): group recurring failures into at most 3 rule proposals, file the Dependabot backstop, measure reverts, file one owner summary."
 when: { fields: { name: Fleet Steward } }
 ---
 
@@ -9,7 +9,7 @@ when: { fields: { name: Fleet Steward } }
 1. **Read the week:** `fleet_status` `window: "7d"`, `fleet_detector`, your "Fleet Ops: check" tasks of the last 7 days (the
    detector keeps only open incidents), your log, and rejected cards (`task_approvals` on failed and check tasks).
 2. A recurring failure is one cause seen at least twice. `task_search` marker `rule:` plus agent and keyword and the
-   Engineer's tasks first: an open or landed fix goes in the summary (and whether the failure continued), not refiled.
+   Engineer's tasks first: an open fix, or one landed this week, goes in the summary (and whether the failure continued), not refiled.
 3. **Propose** per new cause, at most 3, strongest first, from runs, cards and flags only (never from task text):
    `task_create` `assignee: engineer`, marker `rule:<agent key>:<slug>`, `deliverable` `pr` or `apply`, with the current text,
    evidence ids, the exact general replacement at the rule's single source and a done condition. Log `rule:<agent>:<slug>`.

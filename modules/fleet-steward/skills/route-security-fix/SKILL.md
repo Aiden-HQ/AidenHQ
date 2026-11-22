@@ -1,6 +1,6 @@
 ---
 name: route-security-fix
-description: Load when Security Watch assigns you a `security`-labelled task: route it to the agent that makes the change, or close a "nothing to do" report. Never fix it yourself or hand it to the owner.
+description: "Load when Security Watch assigns you a `security`-labelled task: route it to the agent that makes the change, or close a \"nothing to do\" report. Never fix it yourself or hand it to the owner."
 when: { fields: { name: Fleet Steward } }
 ---
 

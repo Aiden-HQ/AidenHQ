@@ -1,6 +1,6 @@
 ---
 name: agent-review
-description: Load on an "Agent Coach: review" run (every 6 hours): review the agents `coach_due` lists, file at most 2 fixes, `coach_record` each.
+description: "Load on an \"Agent Coach: review\" run (every 6 hours): review the agents `coach_due` lists, file at most 2 fixes, `coach_record` each."
 when: { fields: { name: Fleet Steward } }
 ---
 
