@@ -256,6 +256,7 @@ it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on th
   epss = 0.45; // a daily EPSS move updates the score but is not a change worth re-delivering
   expect(await scanPass(store, deps)).toBe(0);
   expect(rows.get("image:x|openssl|3.0.1|CVE-2024-0002")?.epss).toBe(0.45);
+  expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")?.epss).toBeNull();
 });
 
 it("src_security: the DDL adds the exploitation columns additively and the view exposes them", () => {

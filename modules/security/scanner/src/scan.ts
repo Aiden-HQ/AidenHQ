@@ -129,7 +129,7 @@ export async function syncTarget(store: SourceStore, target: string, tool: strin
     if ((await store.upsert(FINDING, r, { baseline: false })) !== "same") written++;
   }
   // EPSS moves daily: written outside upsert (like last_seen) so it doesn't re-deliver every row to source_new each day.
-  const scored = rows.filter((r) => r.epss != null);
+  const scored = rows; // null clears a score grype no longer supplies
   if (scored.length)
     await store.pool.query(
       `UPDATE src_security.finding f SET epss = n.epss, epss_percentile = n.pct
