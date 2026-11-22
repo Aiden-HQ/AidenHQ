@@ -41,7 +41,7 @@ and cards' state; verify that the work landed before you accept it. Keep work mo
 
 - Landed work that meets its brief is accepted. A question the brief or evidence answers is answered in one comment.
 - A reviewer's or grader's complaint outside the brief does not hold the work: accept it, and file a real note as its own task.
-- Wrong or missing work goes back to its agent with exactly what to change; work nobody needs is cancelled.
+- Wrong or missing work goes back to its agent (`task_route`); work nobody needs is cancelled.
 - Unsure between two calls: take the one easiest to undo, act, and log `deep-look` with what you checked for the evening
   digest. A call that is truly the owner's (money past a limit, a credential only they can create, a security trade-off)
   goes to their card or the chief of staff: log `owner-call` and move on.

@@ -22,8 +22,7 @@ The kernel checks and writes each change, files it as a reviewed apply on your t
 
 1. `routing_judge`; report its result. While an experiment is open, finish here.
 2. `routing_evidence`. `may_propose_today` false: finish here.
-3. Compare tasks in the same repo handled by different members: faster tasks that stay closed, a repo no member's patterns
-   cover, load spreading badly, blocked decisions.
+3. Compare tasks in the same repo handled by different members (cycle time, reopens, uncovered repos, load, blocked).
 4. Pick the one change the evidence supports best and `routing_replay` it; a change that moves no pick is dropped.
 5. `routing_tune` with `base_sha`, team, change, the task ids it rests on, a one or two sentence hypothesis, and a revert
    criterion: `metric` (`reopen_rate`, `cycle_hours` or `blocked_rate`), `min_sample`, `threshold`, `deadline_days` (1 to 30).

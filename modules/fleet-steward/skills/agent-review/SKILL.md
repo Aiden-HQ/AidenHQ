@@ -28,20 +28,17 @@ Review each listed agent's outcomes the way an engineer asked to "improve this a
 
 ## The review
 
-Restate in two sentences what the agent is for, then check:
+Check precision (sampled claims against their sources) and recall (what it missed in the same window), then:
 
-- **Precision:** each sampled claim against its source (a wrong fact, stale state, a broken owner rule).
-- **Recall:** scan the same sources for the same window and count what it missed ("71 rows this week, 12 in its report").
 - **Inputs:** grants never used, a source it needs but lacks; an owned app that reads callers other than through
   `modules/apps-platform/starter/aidenhq-identity.mjs` is an app finding for its owner.
-- **Behaviour and cost:** failures, loops, empty runs, cost per useful result, scorecard trend.
-- **Feedback and instructions:** owner corrections, other agents' complaints, a rule broken twice, handbook against behaviour.
+- **Behaviour and cost:** loops (`wakes`), empty runs, scorecard trend; **feedback:** owner corrections, a rule broken twice.
 - **Earlier fixes:** re-check each against its verification condition first.
 
 Missing evidence makes a point `inconclusive`, never a defect; a review that can't be done is recorded `inconclusive` and retries after a cooldown.
 
-A finding holds: the observed claim (one quoted line, linked), the source evidence, the discrepancy in one sentence, the
-proposed fix as exact text at the rule's single source, and a verification condition.
+A finding holds the observed claim (one quoted line, linked), the source evidence, the proposed fix as exact text at the
+rule's single source, and a verification condition.
 
 ## Where the fix goes
 
