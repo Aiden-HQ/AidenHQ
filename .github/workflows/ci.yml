@@ -405,7 +405,7 @@ jobs:
           echo "dockerfiles=${found# }" >> "$GITHUB_OUTPUT"
 
   # The 7-day rule (lockfile entries, images, actions, apt packages and global installs this change adds or alters must be
-  # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the base)
+  # 7+ days old, unless an owner-approved security exception in .github/supply-chain-exceptions.yaml (read from the head)
   # covers them, and every one is pinned: scripts/supply-chain/pins.ts) and the PR title. Beside the plan, never before
   # the tests: only ci-required waits for it.
   policy:

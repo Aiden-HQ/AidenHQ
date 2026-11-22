@@ -50,8 +50,8 @@ jobs:
           node-version: 24.x
       # The 7-day rule: everything is pinned, and what this PR adds or bumps (lockfile entries, images, actions, global
       # installs) is 7+ days old or a security exception in .github/supply-chain-exceptions.yaml. Before any install.
-      # The checks and the exceptions come from the base commit, so a PR can't loosen its own check (the PR that adds
-      # them runs its own copies).
+      # The checks come from the base commit, so a PR can't loosen its own check (the PR that adds them runs its
+      # own copies); the exceptions file is the head's, so a fix and its exception land in one PR.
       - name: Supply chain
         run: |
           d="$RUNNER_TEMP/supply-chain"; mkdir -p "$d"

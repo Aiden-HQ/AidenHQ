@@ -37,7 +37,7 @@ export const GVISOR_URL = "https://storage.googleapis.com/gvisor/releases";
 const gvisorSource = (version: string) => `${GVISOR_URL} ${String(version).split(".")[0]} main`;
 
 export interface FetchInit extends RequestInit { timeout?: number }
-export interface FetchError extends Error { status?: number; response?: Response; undated?: boolean; notListed?: boolean }
+export interface FetchError extends Error { status?: number; response?: Response; undated?: boolean; notListed?: boolean; mismatch?: boolean }
 // Registry JSON is untyped, so the result is any.
 export async function getJson(url: string, headers: Record<string, string> = {}): Promise<any> {
   return (await fetchRetry(url, { headers: { accept: "application/json", ...headers } })).json();
@@ -353,7 +353,7 @@ export async function publishedAt(kind: string, name: string, { version, digest,
   if (kind === "github-action") {
     if (!version) throw new Error(`${name}@${sha}: no version comment (# vX.Y.Z) to date it by`);
     const got = await tagSha(name, version);
-    if (got !== sha) throw new Error(`${name}@${sha}: tag ${version} is commit ${got}, not the pinned one`);
+    if (got !== sha) throw Object.assign(new Error(`${name}@${sha}: tag ${version} is commit ${got}, not the pinned one`), { mismatch: true });
     const r = await getJson(`https://api.github.com/repos/${name}/releases/tags/${encodeURIComponent(version)}`);
     if (!r.published_at) throw new Error(`${name} ${version}: no published release`);
     return { published: r.published_at, via: "GitHub release" };
