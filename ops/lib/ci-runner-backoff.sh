@@ -42,11 +42,15 @@ ci_runner_backoff_read() {
 # Persist this refusal's wait, clamped to the cap. A data dir that can't take it is said, not fatal: the unit still exits and
 # restarts (at RestartSec=1), and that oscillation is what CiRunnerRestartLooping alerts on.
 ci_runner_backoff_write() {
-  local marker delay="$2"
+  local marker delay="$2" tmp
   marker="$(ci_runner_backoff_marker "$1")"
   [ "$delay" -ge 1 ] || delay=1
   [ "$delay" -le "$CI_RUNNER_BACKOFF_MAX" ] || delay=$CI_RUNNER_BACKOFF_MAX
-  if ! mkdir -p "$(dirname "$marker")" 2>/dev/null || ! printf '%s\n' "$delay" > "$marker" 2>/dev/null; then
+  # Written beside the marker and renamed into place, so the exporter reads either the old delay or the new one, never a
+  # truncated file (which would drop the series and restart CiRunnerBackoff's pending interval mid-loop).
+  tmp="$marker.tmp.$$"
+  if ! mkdir -p "$(dirname "$marker")" 2>/dev/null || ! printf '%s\n' "$delay" > "$tmp" 2>/dev/null || ! mv -f "$tmp" "$marker" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
     echo "ci runner $1: could not record the ${delay}s backoff at $marker" >&2
   fi
 }

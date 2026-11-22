@@ -418,7 +418,10 @@ marker sits under the host's data dir, which `ops/lib/data-dir.sh` resolves from
 writes each unit's `EnvironmentFile=` (`~/.config/aidenhq-ci-runner.env`, `~/.config/aidenhq-host-metrics.env`) from the
 host's own `.env`, so the runner and the exporter never read a settings file themselves. A relative value is the
 checkout's and a leading `~` is the home directory, with a trailing slash dropped but a lone `/` kept, so the marker is
-the same file `ops/host-metrics.sh` exports its backoff series from. The missing permission also reaches the owner: a codehost op's `needs_owner` answer is recorded
+the same file `ops/host-metrics.sh` exports its backoff series from. The marker is written beside itself and renamed
+into place, so the exporter never reads a half-written file, and the exporter only reports a marker for a runner unit
+systemd still declares, so a runner retired at the cap does not keep the alert pending. The missing permission also
+reaches the owner: a codehost op's `needs_owner` answer is recorded
 as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
 scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
 `CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat

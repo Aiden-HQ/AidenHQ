@@ -3,7 +3,7 @@
 // at once: RestartSec=1 stays the job-to-job path.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -157,6 +157,17 @@ test("one marker per unit, under the data dir, from both scripts", async () => {
   assert.equal(r.status, 1, r.out);
   assert.ok(existsSync(join(dir, "data/ci-runner/acme_.._x.backoff")), "the id is reduced to filename characters");
   assert.ok(!existsSync(join(dir, "data/x.backoff")));
+});
+
+// The marker is written beside itself and renamed into place, so a reader sees the old delay or the new one, never a
+// truncated file: no temp file is left behind after a refusal writes its delay.
+test("the marker is published atomically, with no temp file left", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "fail"), "");
+  assert.equal((await run(dir)).status, 1);
+  const left = readdirSync(join(dir, "data/ci-runner"));
+  assert.deepEqual(left, ["1.backoff"], `only the marker is left: ${left.join(", ")}`);
+  assert.equal(readFileSync(marker(dir), "utf8").trim(), "1");
 });
 
 test("each unit has its own delay", async () => {

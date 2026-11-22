@@ -63,6 +63,9 @@ write() { # name: atomic, so node-exporter never reads half a file
   # changes() can stay at zero; CiRunnerBackoff reads this instead and cannot miss a loop that is backing off.
   echo "# HELP aidenhq_unit_backoff The CI runner unit's wait after a refused registration token, in seconds (0 when there is none)."
   echo "# TYPE aidenhq_unit_backoff gauge"
+  # The runner units systemd still has enabled: a marker a retired unit left behind (disabled just after reaching the cap)
+  # must not keep CiRunnerBackoff pending for its 15-minute life when nothing is retrying any more.
+  declared_runners="$(systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | awk '{print $1}' | clean)"
   for backoff_dir in "$data"/ci-runner; do
     [ -d "$backoff_dir" ] || continue
     for marker in "$backoff_dir"/*.backoff; do
@@ -74,7 +77,10 @@ write() { # name: atomic, so node-exporter never reads half a file
       [ $(( $(date +%s) - stamp )) -le 900 ] || continue
       # Not a delay this version writes (the cap): no series rather than a wait the runner itself would not serve.
       [ "$delay" -le 60 ] || continue
-      echo "aidenhq_unit_backoff{scope=\"user\",unit=\"aidenhq-ci-runner@$(basename "$marker" .backoff).service\"} $delay"
+      unit_name="aidenhq-ci-runner@$(basename "$marker" .backoff).service"
+      # A runner systemd no longer declares has been retired: its marker is not a loop still running.
+      printf '%s\n' "$declared_runners" | grep -qxF -- "$unit_name" || continue
+      echo "aidenhq_unit_backoff{scope=\"user\",unit=\"$unit_name\"} $delay"
     done
   done
   # The declared set: the enabled user units above. A per-unit `is-enabled` reads a unit systemd unloaded after a stop as absent, which

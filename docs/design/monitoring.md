@@ -53,8 +53,9 @@ Images (pinned by digest in each folder's Dockerfile; Dependabot bumps them; rel
 - Kernel jobs (relayed by the Fleet Steward's `/metrics`, role `kernel.work-read`): `aidenhq_kernel_jobs_running`, `_oldest_seconds`,
   `_duration_seconds` (histogram over every job on record).
 - Host: `aidenhq_unit_active|failed{scope,unit}`, `aidenhq_unit_backoff{scope="user",unit}` (a CI runner's persisted wait
-  after a refused registration token, seconds; absent when none), `aidenhq_unit_declared{scope="user",unit}` (the enabled set
-  an apply keeps running, so `CiRunnerUnitMissing` ignores a retired unit), `aidenhq_fleet_draining`,
+  after a refused registration token, seconds; absent when none, and never for a runner systemd no longer declares),
+  `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps running, so `CiRunnerUnitMissing` ignores a
+  retired unit), `aidenhq_fleet_draining`,
   `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`, `aidenhq_apply_failed{n,reason,log,health}`.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on

@@ -17,8 +17,9 @@ function host() {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
-  // One running runner unit; every other read is empty.
-  fake("systemctl", `case "$*" in *"list-units"*) echo "aidenhq-ci-runner@3.service active running" ;; *"list-unit-files"*) echo "aidenhq-ci-runner@.service enabled" ;; esac\nexit 0`);
+  // One running runner unit; every other read is empty. The enabled set can be narrowed with $DECLARED (one unit per line),
+  // which pins that a retired runner's marker is not exported; by default both runner units are declared.
+  fake("systemctl", `case "$*" in *"list-units"*) echo "aidenhq-ci-runner@3.service active running" ;; *"list-unit-files"*) if [ -f "$DECLARED" ]; then cat "$DECLARED"; else printf 'aidenhq-ci-runner@3.service enabled\naidenhq-ci-runner@4.service enabled\n'; fi ;; esac\nexit 0`);
   fake("docker", "exit 0");
   const data = join(root, "data");
   mkdirSync(join(data, "modules/monitoring/textfile"), { recursive: true });
@@ -93,6 +94,21 @@ test("the exporter's data dir comes from the unit environment, not a checkout .e
   });
   assert.match(readFileSync(join(data, "modules/monitoring/textfile/units.prom"), "utf8"), /^# TYPE aidenhq_unit_backoff gauge$/m, "written where the unit environment points");
   assert.ok(!existsSync(join(root, "srv/elsewhere")), "the checkout's .env is not read");
+});
+
+// A runner retired while its marker sat at the cap must not keep CiRunnerBackoff pending: a marker systemd no longer
+// declares (the unit disabled and stopped) is not a loop that is still retrying.
+test("a retired runner's marker is not exported", async () => {
+  const h = host();
+  const dir = join(h.data, "ci-runner");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "3.backoff"), "60\n");
+  writeFileSync(join(dir, "4.backoff"), "60\n");
+  // Only unit 3 is still declared: unit 4's marker is a leftover.
+  writeFileSync(join(h.root, "declared"), "aidenhq-ci-runner@3.service enabled\n");
+  const text = await run(h, { DECLARED: join(h.root, "declared") });
+  assert.match(text, /^aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@3\.service"\} 60$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_backoff\{scope="user",unit="aidenhq-ci-runner@4\.service"/, "a retired unit's marker is not a series");
 });
 
 test("no runner state writes a backoff metric with no series", async () => {
