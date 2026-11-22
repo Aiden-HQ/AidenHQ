@@ -10,8 +10,8 @@ description: How code is changed here, in any repository - starting the branch, 
 - Before your first commit, refresh with `aidenhq clone <org/repo>` (the only fetch that works here). A first clone
   (`cloned into`) holds exactly the code host's branches; on a refresh, a remote branch exists only if an
   `origin/<branch> is at …` line names it.
-  - The task's branch exists: `git switch --create <branch> --track origin/<branch>`, or fast-forward your local one
-    (`git merge --ff-only origin/<branch>`).
+  - The task's branch exists: `git switch --create <branch> --track origin/<branch>`, or `git switch <branch>` to your local
+    one and fast-forward it (`git merge --ff-only origin/<branch>`).
   - It doesn't: start a new branch, or keep your local one as it is.
   - A failed clone or fast-forward: stop and report. Build on the branch's existing commits (rebasing is fine).
 - A PR stays under about 1,500 changed lines. Plan bigger work as stacked PRs: `references/large-changes.md`.

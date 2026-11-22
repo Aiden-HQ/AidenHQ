@@ -8,8 +8,9 @@ const read = (s: string) => readFileSync(new URL(`../../modules/engineering/skil
 
 test("the reply states the change, its evidence, what was left out and the non-blocking findings", () => {
   const publish = read("publish");
-  assert.match(publish, /Your reply\*\* states the change, its evidence, what you left out and why, and any "Non-blocking code-review findings"/);
-  assert.match(publish, /The AI reviewer reads it as context/);
+  assert.match(publish, /it states the change, its evidence, what you left out and why, and any "Non-blocking code-review findings"/);
+  assert.match(publish, /context for the AI reviewer, never part of the request/, "the reply is context, not the request");
+  assert.match(publish, /The task alone sets the change's scope and approval, and the reviewer gives the verdict/, "the reply neither widens, authorises nor predicts");
   assert.match(read("write-code"), /in your reply under "Non-blocking code-review findings"/, "write-code sends the findings to the reply");
 });
 
