@@ -136,6 +136,7 @@ it("owners: every page of search_owners, active or not, by owner id, checkpointe
   const pages: Record<string, unknown> = {
     "": { owners: [{ ownerId: 11, name: "Ada Lovelace", isActive: false }, { ownerId: 12, name: " ", isActive: true }], hasMore: true, offset: 20 },
     "20": { owners: [{ ownerId: 20, name: "Grace Hopper", isActive: true }], hasMore: false, offset: 21 },
+    "12": { owners: [{ ownerId: 12, name: " ", isActive: true }], hasMore: true, offset: 20 },
   };
   const seen: unknown[] = [];
   const call = async (tool: string, args: Record<string, any>) => (expect(tool).toBe("search_owners"), seen.push(args.offset), json(pages[String(args.offset ?? "")]));
@@ -164,6 +165,12 @@ it("owners: every page of search_owners, active or not, by owner id, checkpointe
   now2.mockRestore();
   expect(mid.writes.map((w) => w.row.user_id)).toEqual(["11"]);
   expect((await mid.store.scope("owners")).cursor).toBe("12");
+  seen.length = 0;
+  mid.writes.length = 0;
+  await syncReference(mid.store, call, ["contacts"]); // resumes at 12 (not page one), writes the rest, clears the cursor
+  expect(seen).toEqual([12, 20]);
+  expect(mid.writes.map((w) => w.row.user_id)).toEqual(["12", "20"]);
+  expect((await mid.store.scope("owners")).cursor).toBe("");
   writes.length = 0;
   seen.length = 0;
   await syncReference(store, call, ["contacts"]); // the next pass resumes there and, reaching the end, clears it
