@@ -13,7 +13,7 @@ import type { GitHubApp } from "./github-app.js";
 import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, reviewCommentId, type Ref } from "./github.js";
 import {
   ACK_HEAD, FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, ReplyArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
-  renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type ReplyArgs, type StatusArgs,
+  redact, renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type ReplyArgs, type StatusArgs,
 } from "./review-render.js";
 
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
@@ -338,7 +338,7 @@ export class ReviewPoster {
     const w = await this.writer(a.repo);
     await this.pull(ref);
     if (!(await this.threads(ref)).some((t) => t.comment === a.comment && t.ours)) throw new GitHubRefused(`comment ${a.comment} isn't the first comment of one of Aiden's own review threads on ${a.repo}#${a.pr}`);
-    const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(`<!-- aidenhq-mirror -->\n${a.body}`, AGENT) } });
+    const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(`<!-- aidenhq-mirror -->\n${redact(a.body)}`, AGENT) } });
     return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, reply: r.html_url }), objects: [`${objectRef(ref)}/comment/${r.id}`] };
   }
 

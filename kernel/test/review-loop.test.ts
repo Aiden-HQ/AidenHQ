@@ -495,5 +495,7 @@ test("a code review post or reply that names an instance host, home path or addr
   assert.deepEqual(check({ details: "Looks fine: the retry bound is read before it is defaulted (src/plan.ts line 41)." }), { verdict: "ok" });
   const denied = check({ details: "The agent ran on agents.acme.ts.net (10.0.0.7), log /home/sam/run.log" });
   assert.equal(denied.verdict, "deny");
-  assert.match(String(denied.reason), /agents\.acme\.ts\.net.*10\.0\.0\.7.*\/home\/sam\/run\.log/);
+  for (const found of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log"]) assert.ok(String(denied.reason).includes(found), found);
+  assert.equal(check({ details: "fine", args: { review: { findings: [{ why: "seen on 10.0.0.7" }] } } }).verdict, "deny", "args are read too");
+  assert.equal(check({ details: "version 1.2.3.456 is not an address" }).verdict, "ok");
 });

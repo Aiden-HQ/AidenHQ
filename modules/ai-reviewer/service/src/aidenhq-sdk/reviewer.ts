@@ -101,6 +101,7 @@ export function instanceDetailsIn(text: string, versions = new Set<string>()): s
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
+      .filter((m) => m[0].split(".").every((o) => Number(o) <= 255))
       .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !(versions.has(m[0]) && !addressShaped(text, m.index ?? 0, m[0].length))),
   ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
   return [...new Set(found)];

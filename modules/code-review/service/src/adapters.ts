@@ -159,6 +159,14 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     }
     return tasks.get(key)!;
   };
+  // A filing the kernel refuses (422: a check's deny or a plan refusal) is deterministic: asking again sends the same text, so
+  // the refusal is final (no `retry`), and the run's notice says so at once.
+  const filed = async (file: () => Promise<{ id: string; state: string }>): Promise<Posted> => {
+    try { const r = await file(); return { ...settled(r), write: r.id }; } catch (e) {
+      if ((e as { status?: number }).status === 422) return { state: "refused", why: String((e as Error).message).slice(0, 300) };
+      throw e;
+    }
+  };
   return {
     async post(p) {
       const t = p.target;
@@ -168,16 +176,14 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
       const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
-      const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
-      return { ...settled(r), write: r.id };
+      return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string });
     },
     async status(s: Status) {
       const r = (await kernel.call("POST", "/v1/writes", { kind: STATUS_KIND, args: { repo: s.repo, pr: s.number, head: s.head, reason: s.reason, important: s.important, running: s.running.slice(0, 8), ...(s.partial ? { partial: true } : {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
     async reply(p) {
-      const r = (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: { repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }, task: await taskOf(p.repo, p.number) })) as { id: string; state: string };
-      return { ...settled(r), write: r.id };
+      return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: { repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }, task: await taskOf(p.repo, p.number) })) as { id: string; state: string });
     },
     async outcome(write) {
       return settled((await kernel.call("GET", `/v1/writes/${write}`)) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null });
