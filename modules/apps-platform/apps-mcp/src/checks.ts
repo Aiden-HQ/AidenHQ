@@ -416,18 +416,31 @@ export function processUids(top: string): number[] {
 }
 
 /**
- * One container's scans, one per uid, merged: a socket listens when any scan attributed it (the first such answer is
- * kept), a process stays denied only when every scan was refused it, and TLS evidence from any scan is kept. The TLS answer
- * is what decides the app-level skip, so a later scan that owns the socket (one uid can attribute a listener another could
- * not read) must never drop the "tls" an earlier scan saw, nor may one uid's timeout hide another's answer.
+ * One container's scans, one per uid, merged. Any scan's evidence counts, whichever one attributed the listener: one uid can
+ * read a socket another could not, so a later scan must never erase an earlier one's answer. A socket listens when any scan
+ * attributed it; a process stays denied only when every scan was refused it. HTTP evidence is joined too — a probe that got
+ * a status, or a plaintext look that saw `HTTP/`, is kept even if the scan that owns the socket got nothing — because an
+ * HTTP listener must never be waved through as a skip. The TLS answer is `tls` if any scan saw a TLS record, `no` if any
+ * answered `no`, and absent only when no scan answered; it is what decides the app-level skip (identityPorts).
  */
 export function mergeScans(scans: { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; tls?: PortAnswers["tls"]; statuses: number[] }[]; denied?: string[] }[]) {
   const sockets = new Map<string, (typeof scans)[number]["sockets"][number]>();
   for (const sc of scans) for (const k of sc.sockets) {
     const key = `${k.host} ${k.port}`, had = sockets.get(key);
     if (!had) { sockets.set(key, k); continue; }
-    const owner = k.listening && !had.listening ? k : had; // the scan that attributed the listener keeps its own fields
-    sockets.set(key, { ...owner, listening: had.listening || k.listening, ...(had.tls || k.tls ? { tls: had.tls === "tls" || k.tls === "tls" ? "tls" : "no" } : {}) });
+    // The scan that attributed the listener keeps the socket's own fields; everything that is evidence is joined.
+    const owner = k.listening && !had.listening ? k : had;
+    const raws = [had.raw, k.raw];
+    const raw = raws.includes("http") ? "http" : owner.raw ?? raws.find((r) => r !== undefined);
+    const statuses = (had.statuses.length > k.statuses.length ? had.statuses : k.statuses)
+      .map((_, i) => had.statuses[i] || k.statuses[i] || 0);
+    sockets.set(key, {
+      ...owner,
+      listening: had.listening || k.listening,
+      ...(raw ? { raw } : {}),
+      statuses,
+      ...(had.tls || k.tls ? { tls: had.tls === "tls" || k.tls === "tls" ? "tls" : "no" } : {}),
+    });
   }
   const denied = (scans[0]?.denied ?? []).filter((p) => scans.every((sc) => (sc.denied ?? []).includes(p)));
   return { sockets: [...sockets.values()], denied };

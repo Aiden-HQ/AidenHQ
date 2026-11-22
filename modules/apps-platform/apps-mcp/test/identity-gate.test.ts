@@ -276,7 +276,14 @@ describe("identity gate", () => {
     expect(mergeScans([{ sockets: [t(false, "tls")] }, { sockets: [t(true, "no")] }]).sockets).toEqual([t(true, "tls")]);
     expect(mergeScans([{ sockets: [t(true, "no")] }, { sockets: [t(false, "tls")] }]).sockets).toEqual([t(true, "tls")]);
     // A "no" from one scan and no answer from another is still "no"; nothing invented, nothing lost.
-    expect(mergeScans([{ sockets: [t(false, "no")] }, { sockets: [{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0] }] }]).sockets).toEqual([{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0], tls: "no" }]);
+    expect(mergeScans([{ sockets: [t(false, "no")] }, { sockets: [{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0] }] }]).sockets).toEqual([{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0, 0], tls: "no" }]);
+    // HTTP evidence is joined the same way: a later scan that owns the socket must not erase a status an earlier one got,
+    // nor the plaintext look's HTTP/ reply. Either is a hard answer, so losing it could turn an HTTP listener into a skip.
+    const h = (listening: boolean, statuses: number[], raw?: "http" | "closed") => ({ port: 8080, host: "127.0.0.1", listening, statuses, ...(raw ? { raw } : {}) });
+    expect(mergeScans([{ sockets: [h(false, [401, 0])] }, { sockets: [h(true, [0, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 0] }]);
+    expect(mergeScans([{ sockets: [h(true, [0, 0], "http")] }, { sockets: [h(false, [0, 0], "closed")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0, 0], raw: "http" }]);
+    // Two answers at the same index keep the one that answered; no scan's "0" hides another's status.
+    expect(mergeScans([{ sockets: [h(false, [0, 403])] }, { sockets: [h(true, [401, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 403] }]);
   });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {
