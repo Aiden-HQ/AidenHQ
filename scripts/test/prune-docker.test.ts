@@ -499,6 +499,23 @@ test("the cache snapshot and its status are one record, so a stale snapshot cann
   assert.match(r2.out, /record is from another run/);
 });
 
+test("the verification reads the record once, so it cannot pair this run's status with another run's rows", () => {
+  // The step publishes with `mv`, so the file itself is never half-written; but a reader that opened it twice could read
+  // the header before a manual run replaced it and the rows after, and pass an over-cap run on the replacement's rows.
+  // The verification must take both from one read: it never calls `tail` on the record, and an over-cap record is still
+  // judged over the cap however the file changes afterwards.
+  assert.doesNotMatch(commands(verify), /\btail\b/, "the record's rows are read from the same bytes as its status");
+  const state = mkdtempSync(join(tmpdir(), "prune-one-read-"));
+  mkdirSync(join(state, "prune-docker"));
+  // This run pruned and the cache was 30 GB with 5 GB still reclaimable: over the cap, so the unit must fail.
+  writeFileSync(join(state, "prune-docker/images"), "inv-timer 0\n");
+  writeFileSync(join(state, "prune-docker/build-cache"), 'inv-timer 0\n{"Type":"Build Cache","Size":"30GB","Reclaimable":"5GB"}\n');
+  const d = fakeDocker({ cache: "1GB", reclaimable: "0B" });
+  const r = d.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-timer", DOCKER: join(d.bin, "docker") });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /still reclaimable after the prune/);
+});
+
 test("the cap is judged on the cache right after pruning, not on a later read a build has grown", () => {
   const state = mkdtempSync(join(tmpdir(), "prune-snapshot-"));
   const step = (d, name = "build-cache", ...cmd) => spawnSync("bash", [join(repo, "ops/prune-docker-step.sh"), name, ...(cmd.length ? cmd : ["docker", "system", "df", "--format", "{{json .}}"])],

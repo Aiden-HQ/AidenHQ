@@ -67,8 +67,15 @@ df_out=""
 # `case "$cache"` below must not then read an empty reading as "nothing cached".
 df_ok=1
 if [ -f "$df_file" ] && [ -n "${INVOCATION_ID:-}" ]; then
-  read -r run rc < "$df_file" || { run=""; rc=""; }
-  df_out="$(tail -n +2 "$df_file" 2>/dev/null)"
+  # One read of the file, then the header and the rows are split from those same bytes: the step replaces the record with
+  # `mv`, so opening it once can never pair this run's status with another run's rows the way a second open could.
+  record="$(cat -- "$df_file" 2>/dev/null)"
+  run=""; rc=""; df_out=""
+  if [ -n "$record" ]; then
+    header="${record%%$'\n'*}"
+    read -r run rc <<< "$header" || true
+    [ "$header" = "$record" ] || df_out="${record#*$'\n'}"
+  fi
   if [ "$run" != "$INVOCATION_ID" ]; then
     bad+=("the build-cache record is from another run ($run, not $INVOCATION_ID), so the snapshot the cap is judged on is unknown"); df_ok=""
   else
