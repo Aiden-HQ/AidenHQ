@@ -76,12 +76,15 @@ description: How code is written, tested and published here, in any repository -
   same PR comment) are not this change's work: list them in your reply under "Non-blocking code-review findings" with
   the PR link, so they become one backlog task.
 - When a check refuses a PR, read its complaint and fix that cause before filing again.
-- A rejection of a change names a defect: fix it and publish the changed branch, because the same commits stay rejected. When a
-  second rejection of the same change names nothing still wrong with the current head (it repeats the first note after that
-  defect was fixed, or names nothing this change can fix), the run stops republishing: comment on the task with both rejection
-  ids, then `task_wait` (`for` the delegator) to ask whoever delegated the task to clarify what the change must do, quoting
-  what the two notes said and what it would change. It publishes the next head once that answer arrives. A note that names a
-  defect still present is answered by a changed branch, not by a wait.
+- A rejection of a change names a defect: fix it and publish the changed branch, because the same commits stay rejected. The
+  rejection arrives as a comment on the task, carried in the next run's prompt with the notes it names, so a run reads an
+  earlier note there. When a second rejection of the same change names nothing still wrong with the current head (it repeats
+  the first note after that defect was fixed, or names nothing this change can fix), the run stops republishing. It
+  `task_wait`s with `for` the delegator (the owner when nobody delegated the task) and puts the whole question in its
+  `question`: both rejection ids, what the two notes said, what it would change, and what the change must do. The Engineer
+  cannot comment, so the final reply repeats the two ids and the question onto the task. It publishes the next head once the
+  answer arrives. A note that names a defect still present is answered by a changed branch,
+  not by a wait.
 - Aiden's code review findings: the merge waits on each important one until it is answered on its thread. Find them in the
   merge's wait reason or the review (`github_pr_threads`), then answer each with `github_pr_thread_reply`: after fixing it,
   `fixed: <what changed, commit>`; for one you judge wrong, `disputed: <reason, file:line>`.

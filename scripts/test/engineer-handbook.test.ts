@@ -1,6 +1,6 @@
 // The Engineer's repair-loop rule: a second review rejection of the same change that names nothing still wrong with the
-// current head stops the republish, and the run asks whoever delegated the task to clarify. The rule is one
-// sentence in the mission handbook and its steps live in the write-code skill (CLAUDE.md: a handbook links the skill).
+// current head stops the republish, and the run asks whoever delegated the task to clarify. The mission handbook states
+// the rule and points at the skill; its steps live in the write-code skill (CLAUDE.md: a handbook links the skill).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -34,7 +34,8 @@ test("the compiled handbook carries the repair-loop rule and leaves its steps to
   const text = engineer();
   const start = text.indexOf("**A repair loop stops at two rejections.**");
   assert.notEqual(start, -1, "the handbook has the repair-loop rule");
-  const rule = text.slice(start, text.indexOf("\n\n", start));
+  const end = text.indexOf("\n\n", start);
+  const rule = text.slice(start, end === -1 ? text.length : end);
   assert.match(rule, /names nothing still wrong with the current head/, "the stop is judged against the current head");
   assert.match(rule, /asks whoever delegated the task to clarify/, "the delegator is asked to clarify");
   assert.match(rule, /`write-code` holds the steps/, "the steps are the skill's, not the handbook's");
@@ -43,12 +44,13 @@ test("the compiled handbook carries the repair-loop rule and leaves its steps to
 
 test("the write-code skill holds the stop steps, including the wait for the delegator", () => {
   const skill = readFileSync(join(product, "modules/engineering/skills/write-code/SKILL.md"), "utf8");
-  const start = skill.indexOf("When a\n  second rejection of the same change names nothing still wrong");
+  const start = skill.indexOf("- A rejection of a change names a defect");
   assert.notEqual(start, -1, "the skill holds the repair-loop steps");
-  const steps = skill.slice(start, skill.indexOf("by a wait", start)).replace(/\s+/g, " ");
+  const steps = skill.slice(start, skill.indexOf("\n- ", start + 1)).replace(/\s+/g, " ");
   assert.match(steps, /both rejection ids/, "both rejection ids go on the task");
-  assert.match(steps, /`task_wait` \(`for` the delegator\)/, "the run waits on the delegator");
-  assert.match(steps, /clarify what the change must do, quoting what the two notes said/, "the question is a clarification");
-  assert.match(steps, /publishes the next head once that answer arrives/, "no third head before the answer");
+  assert.match(steps, /`task_wait`s with `for` the delegator \(the owner when nobody delegated the task\)/, "the run waits on the delegator, or the owner when there is none");
+  assert.match(steps, /both rejection ids, what the two notes said, what it would change, and what the change must do/, "the question carries the ids and the clarification");
+  assert.match(steps, /the final reply repeats the two ids and the question onto the task/, "the reply records the ids, since the Engineer cannot comment");
+  assert.match(steps, /publishes the next head once the\s+answer arrives/, "no third head before the answer");
   assert.doesNotMatch(steps, /accept it as it stands/, "the delegator is asked to clarify, not to accept the change as it is");
 });
