@@ -10,7 +10,7 @@
 //   it resolved; a pending deepsec setup branch's files) and the deepsec setup PR (`setup`: github files its own Tier 1 write).
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -325,7 +325,9 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
       const dir = mkdtempSync(join(tmpdir(), "deepsec-setup-"));
       try {
         if (!(await snapshot(repo, listed.sha, ["-xzf", "-", "-C", dir, "--no-same-owner", "--", ...listed.value], () => undefined))) return undefined;
-        for (const p of listed.value) files[p] = readFileSync(join(dir, p), "utf8");
+        // A name the archive lists twice (a regular file, then a link of the same name) unpacks as the last: only what is a regular
+        // file on disk is read, never what a link points at.
+        for (const p of listed.value) if (lstatSync(join(dir, p)).isFile()) files[p] = readFileSync(join(dir, p), "utf8");
         return { tip: listed.sha, files };
       } finally { rmSync(dir, { recursive: true, force: true }); }
     },

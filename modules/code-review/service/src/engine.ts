@@ -121,6 +121,8 @@ const BOX_SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|data\
 const SETUP_RETRY = 24 * 3600_000;
 /** The most a check's json spec field holds (kernel/src/checkjobs.ts: 16,384 characters), with room. */
 const SETUP_FILES_MAX = 16_000;
+/** The longest a request waits for a repo's snapshot listing: under the board's 15 seconds. */
+const TREE_WAIT_MS = 12_000;
 const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"];
 /** deepsec's efforts (recipe/engines.ts). */
 const DEEPSEC_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
@@ -581,6 +583,11 @@ export function createEngine(d: EngineDeps) {
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
 
   /** A tree run's coverage as the report reads it: `options` (the tools that ran) a list of ids, `failed` a list of { id, why }, when present. */
+  /** A model run's file counts: how many files were eligible and how many it confirmed reading, never more than eligible. Without them it can't be called clean. */
+  const validCounts = (k: unknown) => {
+    const v = (k ?? {}) as { eligible?: unknown; reviewed?: unknown };
+    return Number.isInteger(v.eligible) && Number.isInteger(v.reviewed) && (v.reviewed as number) >= 0 && (v.reviewed as number) <= (v.eligible as number);
+  };
   const treeCoverageOk = (c: unknown, r: RunRow, withheld: unknown) => {
     const v = (c ?? {}) as { options?: unknown; failed?: unknown; reviewed?: unknown; excluded?: unknown; incomplete?: unknown };
     const w = (withheld ?? {}) as Record<string, unknown>;
@@ -590,7 +597,7 @@ export function createEngine(d: EngineDeps) {
     const ids = (x: unknown) => typeof x === "string" && x.length > 0;
     return (v.options === undefined || (Array.isArray(v.options) && v.options.every(ids)))
       && (v.failed === undefined || (Array.isArray(v.failed) && v.failed.every((f) => ids((f as { id?: unknown })?.id) && typeof (f as { why?: unknown }).why === "string")))
-      && (r.profile !== "code-review-tools" || Array.isArray(v.options));
+      && (r.profile !== "code-review-tools" ? validCounts((c as { counts?: unknown } | undefined)?.counts) : Array.isArray(v.options));
   };
   async function finish(r: RunRow, res: { state: "failed"; why: string; billed_usd?: number } | { state: "done"; review: Review; billed_usd?: number }) {
     live.delete(r.id);
@@ -604,7 +611,7 @@ export function createEngine(d: EngineDeps) {
       else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string" && (f.end_line === undefined || Number.isInteger(f.end_line)) && ["why", "evidence", "fix_brief", "option", "lens"].every((k) => (f as Record<string, unknown>)[k] === undefined || typeof (f as Record<string, unknown>)[k] === "string")))
         res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title, and its optional text and end line)", billed_usd: res.billed_usd };
       else if (r.target === "tree" && !treeCoverageOk(v.coverage, r, v.withheld))
-        res = { state: "failed", why: "the review's result isn't for this run: its coverage or withheld counts aren't in the shared shape", billed_usd: res.billed_usd };
+        res = { state: "failed", why: "the review's result isn't for this run: its coverage, file counts or withheld counts aren't in the shared shape", billed_usd: res.billed_usd };
       // A tools run's findings each name one of the options it was asked for (a box's word for another's is no word at all).
       else if (r.target === "tree" && r.profile === "code-review-tools" && !v.findings!.every((f) => typeof f.option === "string" && r.option!.split(",").includes(f.option)))
         res = { state: "failed", why: "the review's result isn't for this run: a finding names an option the run wasn't asked for", billed_usd: res.billed_usd };
@@ -1375,8 +1382,10 @@ export function createEngine(d: EngineDeps) {
       waiting.delete(r.id);
       const res = await d.runner.result(r.check_job!).catch((e) => ({ state: "running" as const, err: e }));
       if (res.box_at && !("err" in res)) run("UPDATE runs SET box_at = COALESCE(box_at, ?) WHERE id = ?", res.box_at, r.id);
-      if (res.state !== "running") await finish(r, res);
-      else {
+      if (res.state !== "running") {
+        // One run that can't be applied now (the catalog unreadable) is asked again next tick; it never stops the others.
+        await finish(r, res).catch((e) => void log("a finished run couldn't be applied; the next tick asks again", { run: r.id, err: String((e as Error).message).slice(0, 200) }));
+      } else {
         if (res.waiting && !("err" in res)) waiting.add(r.id);
         if (res.billed_usd !== undefined && !("err" in res)) live.set(r.id, res.billed_usd);
         else live.delete(r.id);
@@ -1649,13 +1658,33 @@ export function createEngine(d: EngineDeps) {
 
   const lensesOn = () => { if (!d.config().lenses) throw new RequestError("repo reviews are off: they turn on with settings.code_review.lenses (the owner's)"); };
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
+  /**
+   * A repo's snapshot listing, read once and kept for two minutes. A cold read of a big repo can outlast the board's deadline: the
+   * request then says so and the read goes on, so asking again a moment later finds it ready (nothing is queued before it is).
+   */
+  const treeReads = new Map<string, { p: Promise<{ sha: string; paths: string[] }>; at: number }>();
+  async function treeOf(repo: string, ref: string) {
+    const key = `${repo}@${ref}`;
+    let e = treeReads.get(key);
+    if (!e || now() - e.at > 120_000) {
+      const p = d.codehost.tree(repo, ref);
+      e = { p, at: now() };
+      treeReads.set(key, e);
+      p.catch(() => { if (treeReads.get(key)?.p === p) treeReads.delete(key); });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
+    const t = await Promise.race([e.p, slow]).finally(() => clearTimeout(timer));
+    if (t === "slow") throw new Error("it is still being read: ask again in a minute");
+    return t;
+  }
   async function readTree(repoIn: unknown, commit: unknown) {
     const repo = String(repoIn ?? "").toLowerCase();
     if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo)) throw new RequestError("repo is owner/name");
     if (commit !== undefined && commit !== null && commit !== "" && !(typeof commit === "string" && /^[0-9a-f]{40}$/i.test(commit))) throw new RequestError("commit is a full 40-character commit sha (or leave it out for the default branch's head)");
     const ref = commit ? String(commit).toLowerCase() : "HEAD";
     let tree: { sha: string; paths: string[] };
-    try { tree = await d.codehost.tree(repo, ref); } catch (e) { throw new RequestError(`${repo} can't be read at ${ref === "HEAD" ? "its default branch" : ref.slice(0, 12)}: ${String((e as Error).message).slice(0, 200)} (a repo snapshot needs the github or codehost-local module)`); }
+    try { tree = await treeOf(repo, ref); } catch (e) { throw new RequestError(`${repo} can't be read at ${ref === "HEAD" ? "its default branch" : ref.slice(0, 12)}: ${String((e as Error).message).slice(0, 200)} (a repo snapshot needs the github or codehost-local module)`); }
     if (ref !== "HEAD" && !tree.sha.startsWith(ref)) throw new RequestError(`the snapshot of ${repo} is of ${tree.sha.slice(0, 12)}, not ${ref.slice(0, 12)}`);
     return { repo, tree };
   }
@@ -1769,15 +1798,16 @@ export function createEngine(d: EngineDeps) {
         if (!efforts.includes(combo.effort as string)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${String(combo.effort)}`);
       }
       const asBatch = (batch: string) => ({ batch, repo, sha: tree.sha, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", batch).map((r) => view(r)) });
-      // The same review asked again while it runs (a request the board gave up on, asked once more) is that review, never a second one.
-      const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo));
-      if (same) return asBatch(same.id);
       const id = `b-${randomBytes(6).toString("hex")}`;
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
       // deepsec scans when the commit has any of its files; else a pending setup branch's files (its PR not merged yet) are scanned with.
       const deepsec = tree.paths.some((p) => p.startsWith(".deepsec/")) ? 1 : 0;
       const pending = !deepsec && picked.some((o) => o.kind === "engine" && o.run.engine === "deepsec") && setupBranchOf(repo) ? await d.codehost.setupBranch(repo, setupBranchOf(repo)!).catch((e) => void log("deepsec setup branch not read", { repo, err: String((e as Error).message).slice(0, 200) })) : undefined;
-      tx(() => {
+      const made = tx(() => {
+        // The same review asked again while it runs (a request the board gave up on, asked once more) is that review, never a second
+        // one: looked for in the same step as the insert, after every await above.
+        const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo));
+        if (same) return same.id;
         run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
         const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, full, due, created, author, batch, target, option, profile)
           VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', 'queued', 1, ?, ?, ?, ?, 'tree', ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, repo, tree.sha, tree.sha, engine, model, effort, now(), now(), author, id, option, profile);
@@ -1785,8 +1815,9 @@ export function createEngine(d: EngineDeps) {
         const tools = picked.filter((o) => o.kind === "tool").map((o) => o.id);
         if (tools.length) add("tools", "", "", tools.join(","), "code-review-tools");
         for (const o of picked.filter((o) => o.kind !== "tool")) add(o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`, combo.model as string, combo.effort as string, o.id, "code-review");
+        return id;
       });
-      return asBatch(id);
+      return asBatch(made);
     },
     /** Repo reviews, newest first (the board's TreeBatch): commit, spend, status and why, and once ended the verdict, the report
      * the service serves and its Primer document. */
@@ -1794,6 +1825,9 @@ export function createEngine(d: EngineDeps) {
       return all<BatchRow & { cost: number }>(`SELECT b.*, (SELECT COALESCE(SUM(cost_usd), 0) FROM runs r WHERE r.batch = b.id) cost FROM batches b ${q.repo ? "WHERE b.repo = ?" : ""} ORDER BY b.created DESC LIMIT ?`, ...(q.repo ? [q.repo.toLowerCase()] : []), Math.min(Math.max(1, q.limit ?? 50), 500))
         .map((b) => ({ id: b.id, repo: b.repo, sha: b.sha, sha7: b.sha.slice(0, 7), verdict: b.verdict, cost_usd: round(b.cost), status: b.status, why: b.report_why,
           started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], combo: JSON.parse(b.combo),
+          // `published`: the report's Primer outcome is in (a link or a refusal); the board follows the batch until then.
+          published: b.report_url !== null || b.report_why !== null,
+          runs: all<{ id: string; option: string; status: string; important: number; nit: number; pre_existing: number }>("SELECT id, option, status, important, nit, pre_existing FROM runs WHERE batch = ? ORDER BY rowid", b.id),
           ...(b.status === "done" ? { report_url: `/reviews/${b.id}/report` } : {}), ...(b.report_url ? { primer_url: b.report_url } : {}) }));
     },
     /** A finished repo review's report (markdown), as Primer has it. */

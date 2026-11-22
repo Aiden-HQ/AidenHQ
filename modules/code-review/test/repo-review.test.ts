@@ -36,7 +36,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
   });
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
-    review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : {}) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
+    review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : { counts: { eligible: 0, reviewed: 0 } }) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
@@ -92,7 +92,7 @@ test("a tools result naming an option the run wasn't asked for, or a coverage th
   await v.tick();
   v.finish(0, { coverage: { reviewed: [], excluded: [], incomplete: null, options: {} } });
   await v.tick();
-  assert.match(v.db.prepare("SELECT why FROM runs WHERE status = 'failed'").get().why, /coverage or withheld counts aren't in the shared shape/);
+  assert.match(v.db.prepare("SELECT why FROM runs WHERE status = 'failed'").get().why, /file counts or withheld counts aren't in the shared shape/);
 });
 
 test("display groups the same lens, file and overlapping lines, but storage keeps each option's observation", async () => {
@@ -246,4 +246,19 @@ test("finding text reaches the fix prompt only as fenced data; a finding with a 
   await x.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });
   await x.tick();
   assert.ok(x.started[0].run);
+});
+
+test("an option gone from the catalog while queued fails that run, and the report still comes; a repo review asked twice at once is one batch", async () => {
+  const w = world();
+  const [a, b] = await Promise.all([w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] }), w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] })]);
+  assert.equal(a.batch, b.batch);
+  await w.tick();
+  const i = CATALOG.findIndex((o) => o.id === "sec.cloudflare"), gone = CATALOG.splice(i, 1);
+  try {
+    w.finish(0);
+    await w.tick(); await w.tick();
+  } finally { CATALOG.splice(i, 0, ...gone); }
+  assert.match(w.db.prepare("SELECT why FROM runs WHERE option = 'sec.cloudflare'").get().why, /isn't in the option catalog/);
+  assert.equal(w.engine.batches({})[0].status, "done");
+  assert.equal(w.engine.batches({})[0].published, true);
 });

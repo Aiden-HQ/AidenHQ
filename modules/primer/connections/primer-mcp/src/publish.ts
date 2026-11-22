@@ -9,6 +9,7 @@
 // from the request. Revising its own document is Tier 1: the AI reviewer decides.
 import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
+import { fileLedger, type Ledger } from "./ledger.js";
 import { fileOwners, type Owner, type Owners } from "./owners.js";
 
 export type Publish = { title?: string; content: string; format: "markdown" | "html"; description?: string; documentId?: string; versionNote?: string; baseVersionNumber?: number; path?: string; own?: true; private?: true; repo_key?: string; by?: Owner };
@@ -27,6 +28,7 @@ export function normalise(a: any, fromRunner = false): Publish {
   if (a?.private === true) {
     if (!str(a.repo_key)) throw new Error("a private publish names its repo_key");
     if (args.documentId) throw new Error("a private report is always a new document: it names no documentId");
+    if (!args.versionNote) throw new Error("a private report names its versionNote: it is the key that keeps a retry from making a second document");
     args.private = true;
     args.repo_key = str(a.repo_key)!.trim().toLowerCase();
   } else if (str(a?.repo_key)) throw new Error("repo_key goes with private");
@@ -66,12 +68,13 @@ export function versionResult(documentId: string, text: string): string {
 const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agent && task ? { agent: r.agent, task } : undefined);
 
 /** What publishing a private report needs of Primer beyond its MCP tools: narrowing a new document to the owner. */
-export interface Private { makePrivate(documentId: string, title: string): Promise<void> }
+export interface Private { makePrivate(documentId: string, title: string): Promise<void>; done: Ledger }
 /** A report's document is created with this title, before it is private: it names no repo. Its real title is set once private. */
 export const NEUTRAL_TITLE = "Repo review";
 const PLACEHOLDER = "This private report is being prepared.";
+const locks = new Map<string, Promise<unknown>>();
 
-export function publisher(call: Call, owners: Owners = fileOwners(), priv: Private = { makePrivate: async () => {} }): Executor {
+export function publisher(call: Call, owners: Owners = fileOwners(), priv: Private = { makePrivate: async () => {}, done: fileLedger() }): Executor {
   return {
     async plan(req) {
       const args = normalise(req.args, req.requester?.kind === "job");
@@ -107,20 +110,40 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       const a = normalise(rec.args, true);
       const by: Owner | undefined = rec.args?.by?.agent && rec.args.by.task ? { agent: String(rec.args.by.agent), task: String(rec.args.by.task) } : undefined;
       if (!a.private) return write(a, by);
-      // A new document each time: created with a placeholder, made private, and only then given the report. It has no collaborators
-      // until the owner shares it, so the report is never readable by anyone else, not even for a moment.
-      const made = await write({ ...a, content: PLACEHOLDER, description: undefined, title: NEUTRAL_TITLE }, undefined);
-      if (!made.ok) return made;
-      const id = /\(document ([A-Za-z0-9-]+)\)/.exec(made.text)?.[1];
-      if (!id) return { ok: false, text: `${made.text}: its id wasn't in Primer's answer, so the report wasn't added` };
-      try {
-        await priv.makePrivate(id, a.title ?? `Repo review: ${a.repo_key}`);
-      } catch (e) {
-        return { ok: false, text: `${made.text} (a placeholder), but it couldn't be made private (${(e as Error).message.slice(0, 200)}), so the report wasn't added` };
-      }
-      return applied(await write({ ...a, documentId: id }, undefined));
+      // A new document per report, once: the report is keyed by its repo and version note (which names its batch), so a write filed
+      // again (its answer lost, a restart) finds what the first one did. Created with a placeholder, made private, and only then
+      // given the report: it has no collaborators until the owner shares it, so nobody else can read it, not even for a moment.
+      const key = `${a.repo_key}|${a.versionNote}`;
+      return serial(key, async () => {
+        const had = priv.done.get(key);
+        if (had) return { ok: true, text: had };
+        let id = priv.done.get(`${key}#doc`);
+        if (!id) {
+          const made = await write({ ...a, content: PLACEHOLDER, description: undefined, title: NEUTRAL_TITLE }, undefined);
+          if (!made.ok) return made;
+          id = /\(document ([A-Za-z0-9-]+)\)/.exec(made.text)?.[1];
+          if (!id) return { ok: false, text: `${made.text}: its id wasn't in Primer's answer, so the report wasn't added` };
+          priv.done.set(`${key}#doc`, id);
+        }
+        try {
+          await priv.makePrivate(id, a.title ?? `Repo review: ${a.repo_key}`);
+        } catch (e) {
+          return { ok: false, text: `document ${id} (a placeholder) couldn't be made private (${(e as Error).message.slice(0, 200)}), so the report wasn't added` };
+        }
+        const out = applied(await write({ ...a, documentId: id }, undefined));
+        if (out.ok) priv.done.set(key, out.text);
+        return out;
+      });
     },
   };
+
+  /** Publications on one key never overlap, so a duplicate waits for the first and then finds its document. */
+  function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const run = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+    locks.set(key, run);
+    void run.finally(() => { if (locks.get(key) === run) locks.delete(key); }).catch(() => {});
+    return run;
+  }
 
   /** A private report is published only when Primer made a version of it: "nothing was applied" is a failure, never a done write. */
   function applied(r: { ok: boolean; text: string }) {

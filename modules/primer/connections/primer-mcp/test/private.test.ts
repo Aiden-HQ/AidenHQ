@@ -17,7 +17,8 @@ function primer(o: { noVersion?: boolean } = {}) {
     if (name === "primer_add_version") return o.noVersion ? { text: JSON.stringify({ reconciliation: { conflict: 1 } }) } : { text: JSON.stringify({ versionNumber: 1, url: `https://primer.example/d/${a.documentId}` }) };
     throw new Error(name);
   };
-  const ex = publisher(call, noOwners, { makePrivate: async (id, title) => void privates.push(`${id}:${title}`) });
+  const done = new Map<string, string>();
+  const ex = publisher(call, noOwners, { makePrivate: async (id, title) => void privates.push(`${id}:${title}`), done: { get: (k) => done.get(k), set: (k, v) => void done.set(k, v) } });
   const file = (a: object, id: string) => ex.execute({ id, kind: "primer.publish", args: a, digest: "d", idempotency_key: id });
   return { ex, file, calls, privates };
 }
@@ -29,7 +30,7 @@ describe("a module's private report (primer.publish with private)", () => {
     expect(plan.raise).toBeUndefined();
     expect(plan.card?.changes).toContain("only its owner can read");
     expect((await p.file(plan.args as object, "k-0000000000000001")).text).toMatch(/^New version v\d on Primer \(document doc-1-aaaa/);
-    expect((await p.file(plan.args as object, "k-0000000000000002")).text).toMatch(/\(document doc-2-aaaa/);
+    expect((await p.file({ ...(plan.args as object), versionNote: "def5678" }, "k-0000000000000002")).text).toMatch(/\(document doc-2-aaaa/);
     expect(p.privates.map((x) => x.split(":")[0])).toEqual(["doc-1-aaaa", "doc-2-aaaa"]);
     // Created with a placeholder under a title naming no repo; the report arrives only as a version, after the document is private.
     const created = p.calls.filter((c) => c[0] === "primer_create_document");
@@ -54,5 +55,15 @@ describe("a module's private report (primer.publish with private)", () => {
     const out = await primer({ noVersion: true }).file(args(), "k-0000000000000099");
     expect(out.ok).toBe(false);
     expect(out.text).toMatch(/No new version on Primer[\s\S]*wasn't published/);
+  });
+
+  it("a write filed again, even at once, for the same report finds its document and makes no second", async () => {
+    const p = primer();
+    const [a, b] = await Promise.all([p.file(args(), "k-0000000000000020"), p.file(args(), "k-0000000000000021")]);
+    const c = await p.file(args(), "k-0000000000000022");
+    expect([a.text, b.text, c.text].every((t) => t === a.text)).toBe(true);
+    expect(p.calls.filter((c) => c[0] === "primer_create_document")).toHaveLength(1);
+    expect(p.calls.filter((c) => c[0] === "primer_add_version")).toHaveLength(1);
+    await expect(p.ex.plan({ kind: "primer.publish", args: args({ versionNote: undefined }), requester: codeReview, task: "T-1" })).rejects.toThrow(/versionNote/);
   });
 });

@@ -119,7 +119,7 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
       groups.forEach((g, i) => { if (g.lens === lens && shown[i]) out.push(texts[i]!); });
     }
     const left = Object.entries(dropped).filter(([, n]) => n).map(([s, n]) => `${n} ${s === "nit" ? "nits" : s === "pre_existing" ? "pre-existing findings" : "important findings"}`);
-    if (left.length) out.push(`_Not shown, to keep the report within Primer's size: ${left.join(", ")}. Every finding is on the board's Reviews page._`, "");
+    if (left.length) out.push(`_Not shown, to keep the report within Primer's size: ${left.join(", ")}. Every finding is on this review's page on the board, under each option._`, "");
     out.push("## Coverage", "");
     for (const id of coverage.ran) out.push(`- ${flat(id, 80)}: ran`);
     for (const f of coverage.failed) out.push(`- ${flat(f.id, 80)}: **failed**: ${flat(f.why, 400)}`);
