@@ -15,10 +15,13 @@ description: How code is written, tested and published here, in any repository -
 - The AidenHQ product repository: skill `aidenhq-product`. UI for AidenHQ apps and the board, and every new app: skill
   `design-system`. Adding or bumping a dependency, image, action or tool: skill `supply-chain`. App code standards:
   `references/apps.md`.
-- Before your first commit, fetch the task's branch from origin and start from its remote head when it has one
-  (`git fetch origin <branch>`, then `git switch -C <branch> origin/<branch>`): an earlier run of the same task may
-  already have pushed commits there, and yours go on top of them. Never rebuild the branch from your own workspace
-  history and force that result over the remote.
+- Before your first commit, fetch the task's branch from origin (`git fetch origin <branch>`) and, when origin has it,
+  start from its remote head (`git switch --create <branch> --track origin/<branch>`): an earlier run of the same task
+  may already have pushed commits there, and yours go on top of them. If a local branch of that name already exists,
+  switch to it and fast-forward it (`git merge --ff-only origin/<branch>`); if that fails, stop and report rather than
+  reset or force the branch. If the fetch fails because origin has no such branch, start a new branch; any other fetch
+  failure stops the run. Never rebuild the branch's changes from your workspace history and force that copy over the
+  remote; rebasing the branch's existing commits is not rebuilding it.
 
 ## Work fast, in few big steps
 
