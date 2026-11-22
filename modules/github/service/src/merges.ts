@@ -14,7 +14,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
-import { mergeable, withTrailer } from "./git-auth.ts";
+import { randomUUID } from "node:crypto";
+import { mergeable, trailer } from "./git-auth.ts";
 import { DESIGN_REVIEW, PR_QUERY, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
@@ -72,7 +73,9 @@ export function createMerges(d: {
   }
   async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
-    const message = method === "rebase" ? {} : { commit_message: withTrailer(body.trim(), `merge queue ${token}`) };
+    // The trailer goes on whatever the body says (withTrailer would keep a body's own AidenHQ trailer and drop ours), and it
+    // carries this call's nonce (mergedBy).
+    const message = method === "rebase" ? {} : { commit_message: [body.trim(), trailer(`merge queue ${token}`)].filter(Boolean).join("\n\n") };
     const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
     if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
@@ -82,9 +85,10 @@ export function createMerges(d: {
    * A rebase merge makes no commit of its own (the PR's commits land as they are), so nothing tells this queue's merge from anyone
    * else's and it is never counted as ours. A squash or merge commit carries the trailer this call put in its `commit_message`,
    * naming this record's id: an owner's or auto-merge, or a commit that merely carries an AidenHQ trailer from the PR's own
-   * commits, does not. The token, not the whole message, is what is checked, because GitHub normalises a squash message
-   * (co-author lines, whitespace, a `(#N)` suffix) and an exact match would drop a merge the queue really made. `call` (a PUT that
-   * went unanswered, kept while the poll may still see it) is the only source of that token, so what is proved is this call's.
+   * commits, does not. The nonce, not the whole message, is what is checked, because GitHub normalises a squash message
+   * (co-author lines, whitespace, a `(#N)` suffix) and an exact match would drop a merge the queue really made. It is a random
+   * id made for this one call and kept only here, never in the PR's title or body, so a PR author cannot plant it in their text
+   * and have another writer's merge credited: `call` (a PUT that went unanswered) is the only source of it.
    */
   function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, call: { token: string } | undefined): string | undefined {
     if (!call || method === "rebase") return undefined;
@@ -92,10 +96,11 @@ export function createMerges(d: {
   }
 
   /**
-   * The token this record's merge commit carries in its trailer (`merge queue <id>`, mergePut's commit_message): the record id, so
-   * only this queue's own call is proved by it, and short enough to survive GitHub's normalisation of a squash message.
+   * The token this record's merge commit carries in its trailer (`merge queue <token>`, mergePut's commit_message): a random id
+   * made for this one call, so it is unguessable from the record, the PR's title or its body, and short enough to survive
+   * GitHub's normalisation of a squash message.
    */
-  const mergeToken = (id: string) => `queue-${id}`;
+  const mergeToken = () => `queue-${randomUUID()}`;
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
   async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
@@ -195,7 +200,7 @@ export function createMerges(d: {
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy).
       const body = String(pull?.body ?? "");
-      const token = mergeToken(q.id);
+      const token = mergeToken();
       p.mergeCall = { token, at: now().toISOString() };
       try {
         p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);

@@ -120,7 +120,13 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   prs["acme-agents/widget"].checks = "SUCCESS";
   await handle.stepMerges();
   await settle();
-  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: HEAD, commit_message: "Co-authored-by: AidenHQ merge queue queue-k-00000000000000a1 <noreply@aidenhq.ai>" }], "the trailer names the record, so only this record's merge is its own");
+  // The trailer carries a nonce made for this one call: not the record id (which is knowable), so it cannot be planted in a PR's text.
+  const sent = github.merges()[0].body.commit_message;
+  assert.equal(github.merges().length, 1);
+  assert.match(sent, /^Co-authored-by: AidenHQ merge queue queue-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12} <noreply@aidenhq\.ai>$/);
+  assert.doesNotMatch(sent, /k-00000000000000a1/, "never the record id, which a PR author can know");
+  assert.deepEqual(github.merges()[0].body.merge_method, "squash");
+  assert.equal(github.merges()[0].body.sha, HEAD);
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/);
   const [line] = outcomes[0].text.split("\n");
@@ -208,7 +214,10 @@ test("a product PR that changes the reviewer merges on green checks at its bound
   await merge("k-00000000000000b4", [{ repo: "acme/aidenhq", number: 5, head }]);
   await handle.stepMerges();
   await settle();
-  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: head, commit_message: "Co-authored-by: AidenHQ merge queue queue-k-00000000000000b4 <noreply@aidenhq.ai>" }], "merged at the bound head");
+  assert.equal(github.merges().length, 1, "merged at the bound head");
+  assert.deepEqual([github.merges()[0].body.merge_method, github.merges()[0].body.sha], ["squash", head]);
+  assert.match(github.merges()[0].body.commit_message, /^Co-authored-by: AidenHQ merge queue queue-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12} <noreply@aidenhq\.ai>$/);
+  assert.doesNotMatch(github.merges()[0].body.commit_message, /k-00000000000000b4/, "never the record id");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
 
   // A PR outside our repos: the App is PR-only there, whatever the record says.
@@ -359,6 +368,56 @@ test("a squash merge someone else made is never the queue's, even when its commi
   assert.equal(outcomes[0].objects, undefined, "its commit names no object as made here");
   // Still the task's own evidence at the bound head: the grader credits what landed the task, whoever merged it.
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "a1".repeat(20) }]);
+});
+
+test("a PR body that already carries an AidenHQ trailer, or a planted token, cannot make another writer's merge the queue's", async (t) => {
+  // A stranger's PR body ends with an AidenHQ trailer and a token-shaped string: withTrailer would have kept its trailer and
+  // dropped ours, and a record-id token could be planted here. The trailer this queue appends carries a nonce made for the call,
+  // so neither the body's trailer nor a token an author could guess proves anything.
+  const planted = "queue-k-00000000000000c9";
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", body: `Improve the widget\n\nCo-authored-by: AidenHQ merge queue ${planted} <noreply@aidenhq.ai>` } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let timeouts = 1;
+  const gh = async (m, p, b) => {
+    const r = await github.gh(m, p, b);
+    if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
+    return r;
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-planted-")), gh, fleetOrg: "acme-agents",
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000c9", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step(); // the PUT times out, though GitHub merged with our message
+  assert.match(String(github.merges()[0].body.commit_message), /Co-authored-by: AidenHQ merge queue queue-[0-9a-f]{8}-/, "our own trailer is appended even though the body has one");
+  assert.ok(!String(github.merges()[0].body.commit_message).endsWith(planted + " <noreply@aidenhq.ai>"), "the planted token is not what proves the merge");
+  await merges.step(); // the re-poll sees it merged
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(merges.status("k-00000000000000c9").state, "done");
+  assert.match(reports[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/, "the queue's own merge is still credited");
+  assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"]);
+});
+
+test("a planted record-id token in the PR body does not credit another writer's squash merge to the queue", async (t) => {
+  // The exact attack: the record id is knowable, so a PR body can name it. GitHub's default squash message keeps the body, so a
+  // third party's merge after our PUT times out has the record id in its commit message — and must still not be the queue's.
+  const planted = "queue-k-00000000000000ca";
+  const body = `Improve the widget\n\nCo-authored-by: AidenHQ merge queue ${planted} <noreply@aidenhq.ai>`;
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", merged: "b2".repeat(20), body, message: `${body}\n\n(#1)` } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-planted-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  // Our PUT times out and changed nothing; someone else merges with GitHub's default message (which carries the PR body).
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir, putFails: () => true });
+  await merge("k-00000000000000ca", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges(); // the PUT goes unanswered: the PR is still open and the call is pending
+  prs["acme-agents/widget"].state = "MERGED"; // someone else merges it, GitHub's default message carrying the PR body
+  await handle.stepMerges(); // the poll sees it merged with the planted token in the message
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/, "someone else's merge, not this queue's");
+  assert.doesNotMatch(outcomes[0].text, /Merged https:/);
+  assert.equal(outcomes[0].objects, undefined, "never named as a commit the queue made");
 });
 
 test("a maximum-size mixed batch keeps the whole evidence line: the queue's merges and linked already-merged PRs, whole JSON under the kernel's cap", async (t) => {

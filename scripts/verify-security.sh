@@ -787,10 +787,10 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
   && grep -qF 'mergedAt mergedBy { login } mergeCommit { oid message }' "$rm_" \
   && grep -qF 'return call.token && String(mergeCommit?.message ?? "").includes(call.token) ? sha : undefined;' "$rq" \
-  && grep -qF 'const token = mergeToken(q.id);' "$rq" \
-  && grep -qF 'const mergeToken = (id: string) => `queue-${id}`;' "$rq" \
+  && grep -qF 'const token = mergeToken();' "$rq" \
+  && grep -qF 'const mergeToken = () => `queue-${randomUUID()}`;' "$rq" \
   && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);' "$rq" \
-  && grep -qF 'const message = method === "rebase" ? {} : { commit_message: withTrailer(body.trim(), `merge queue ${token}`) };' "$rq" \
+  && grep -qF 'trailer(`merge queue ${token}`)' "$rq" \
   && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
   && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
   && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
