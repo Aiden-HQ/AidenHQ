@@ -157,93 +157,81 @@ describe("GitHub", () => {
   });
 
   describe("review thread replies", () => {
-    const page = (nodes: unknown[], hasNextPage = false) => ({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage, endCursor: hasNextPage ? "C1" : null }, nodes } } } } });
-    /** A comment's id arrives as `fullDatabaseId` (a BigInt, a JSON string): `databaseId` isn't read. */
-    const comment = (id: number) => ({ fullDatabaseId: String(id), url: "u", body: "b", author: { __typename: "User", login: "owner1" } });
-    const node = (first: number, replies: number[] = [], commentsMore = false) => ({ id: "T1", isResolved: false, isOutdated: false, viewerCanResolve: true, path: "src/a.ts", line: 3, comments: { pageInfo: { hasNextPage: commentsMore }, nodes: [first, ...replies].map(comment) } });
-    /** A fake GitHub whose review threads are `threads` and whose reply write answers with `answer`. */
-    function fakeThreads(threads: unknown[], answer: () => Response = () => new Response(JSON.stringify({ id: 77, html_url: "https://github.com/a/b/pull/7#discussion_r77" }), { status: 201 }), threadPages: unknown[][] = []) {
+    const PR_URL = "https://api.github.com/repos/a/b/pulls/7";
+    const reply = (id: number, parent?: number, pull = PR_URL) => ({ id, pull_request_url: pull, ...(parent === undefined ? { in_reply_to_id: null } : { in_reply_to_id: parent }) });
+    /**
+     * A fake GitHub that answers a direct read of each comment in `comments` (by id), the reply write with `answer`, and any
+     * other read with a 404. No review threads are listed at all: the lookup must not depend on that listing.
+     */
+    function fakeReplies(comments: Record<number, unknown>, answer: () => Response = () => new Response(JSON.stringify({ id: 77, html_url: "https://github.com/a/b/pull/7#discussion_r77" }), { status: 201 })) {
       const calls: { method: string; path: string; body?: any }[] = [];
-      let read = 0;
       const impl = (async (input: URL | string, init?: RequestInit) => {
         const url = new URL(String(input));
         const method = init?.method ?? "GET";
         calls.push({ method, path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-        if (url.pathname === "/graphql") {
-          const nodes = threadPages.length ? threadPages[Math.min(read, threadPages.length - 1)]! : threads;
-          const more = threadPages.length ? read < threadPages.length : false;
-          read++;
-          return new Response(JSON.stringify(page(nodes, more)), { status: 200 });
-        }
         if (method === "POST" && /\/pulls\/7\/comments\/\d+\/replies$/.test(url.pathname)) return answer();
-        return new Response("Not Found", { status: 404 });
+        const m = url.pathname.match(/^\/repos\/a\/b\/pulls\/7\/comments\/(\d+)$/);
+        if (method === "GET" && m && comments[Number(m[1])]) return new Response(JSON.stringify(comments[Number(m[1])]), { status: 200 });
+        return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
       }) as typeof fetch;
       return { impl, calls };
     }
+    const posts = (calls: { method: string; path: string; body?: any }[]) => calls.filter((c) => c.method === "POST" && !c.path.endsWith("/graphql"));
 
     it("a reply id resolves to its thread's first comment, which the POST names", async () => {
-      const { impl, calls } = fakeThreads([node(100, [101, 102])]);
+      const { impl, calls } = fakeReplies({ 100: reply(100), 101: reply(101, 100), 102: reply(102, 100) });
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 101, "fixed: abc1234.", "Aiden")).resolves.toEqual({ id: 77, url: "https://github.com/a/b/pull/7#discussion_r77" });
-      const post = calls.find((c) => c.method === "POST" && c.path !== "/graphql")!;
+      const post = posts(calls)[0]!;
       expect(post.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
       expect(post.body.body).toContain(`fixed: abc1234.\n\n${FOOTER("Aiden")}`);
     });
 
     it("a thread root's id is used as it is", async () => {
-      const { impl, calls } = fakeThreads([node(100, [101])]);
+      const { impl, calls } = fakeReplies({ 100: reply(100) });
       await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "disputed: see src/a.ts:3.", "Aiden");
-      expect(calls.find((c) => c.method === "POST" && c.path !== "/graphql")!.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
+      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
     });
 
-    it("resolves ids past the 32-bit range from fullDatabaseId", async () => {
-      const { impl, calls } = fakeThreads([node(4_657_268_819, [4_657_373_830])]);
+    it("resolves ids past the 32-bit range", async () => {
+      const { impl, calls } = fakeReplies({ 4_657_268_819: reply(4_657_268_819), 4_657_373_830: reply(4_657_373_830, 4_657_268_819) });
       await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 4_657_373_830, "fixed: 58099a73.", "Aiden");
-      expect(calls.find((c) => c.method === "POST" && c.path !== "/graphql")!.path).toBe("/repos/a/b/pulls/7/comments/4657268819/replies");
+      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/4657268819/replies");
     });
 
-    it("a comment found on a later page of threads resolves", async () => {
-      const { impl, calls } = fakeThreads([], undefined, [[node(100, [101])], [node(200, [201])]]);
-      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 201, "fixed: abc1234.", "Aiden");
-      expect(calls.find((c) => c.method === "POST" && c.path !== "/graphql")!.path).toBe("/repos/a/b/pulls/7/comments/200/replies");
+    it("a root far past any thread listing still resolves: the lookup reads the comment itself", async () => {
+      const { impl, calls } = fakeReplies({ 9_000_001: reply(9_000_001) });
+      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 9_000_001, "fixed: abc1234.", "Aiden");
+      expect(calls.some((c) => c.path === "/graphql")).toBe(false);
+      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/9000001/replies");
     });
 
-    it("an id on no thread of the pull request fails with its reason, and nothing is posted", async () => {
-      const { impl, calls } = fakeThreads([node(100, [101])]);
-      const gh = owner(impl);
-      await expect(gh.reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(GitHubRefused);
-      await expect(gh.reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't on a review thread of a\/b#7/);
-      expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
+    it("walks a longer reply chain to its top-level comment", async () => {
+      const { impl, calls } = fakeReplies({ 100: reply(100), 101: reply(101, 100), 102: reply(102, 101) });
+      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 102, "fixed: abc1234.", "Aiden");
+      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
     });
 
-    it("a comment past the read's pages is unknown, not reported missing, and nothing is posted", async () => {
-      const pages = Array.from({ length: 10 }, (_, i) => [node(100 + i, [101 + i])]);
-      const { impl, calls } = fakeThreads([], undefined, pages);
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/couldn't confirm whether comment 999 is on a review thread of a\/b#7/);
-      expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
+    it("an id that isn't a review comment of the pull request fails with its reason, and nothing is posted", async () => {
+      const { impl, calls } = fakeReplies({});
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(GitHubRefused);
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't a review comment of a\/b#7/);
+      expect(posts(calls)).toHaveLength(0);
     });
 
-    it("a thread whose comments were cut short leaves the id unknown, not missing", async () => {
-      const { impl, calls } = fakeThreads([node(100, [101], true)]);
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/couldn't confirm whether comment 999 is on a review thread of a\/b#7/);
-      expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
+    it("a comment on another pull request is refused, and nothing is posted", async () => {
+      const { impl, calls } = fakeReplies({ 100: reply(100, undefined, "https://api.github.com/repos/a/b/pulls/8") });
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden")).rejects.toThrow(/is on https:\/\/api\.github\.com\/repos\/a\/b\/pulls\/8, not a\/b#7/);
+      expect(posts(calls)).toHaveLength(0);
     });
 
-    it("a thread whose root has no usable fullDatabaseId is skipped, and the search goes on", async () => {
-      const noId = { ...node(100), comments: { pageInfo: { hasNextPage: false }, nodes: [{ fullDatabaseId: null, url: "u", body: "b", author: { __typename: "User", login: "owner1" } }] } };
-      const { impl, calls } = fakeThreads([noId, node(200, [201])]);
-      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 201, "fixed: abc1234.", "Aiden");
-      expect(calls.find((c) => c.method === "POST" && c.path !== "/graphql")!.path).toBe("/repos/a/b/pulls/7/comments/200/replies");
-    });
-
-    it("an id only a thread without a usable root could name is missing, never matched as 0", async () => {
-      const noId = { ...node(100), comments: { pageInfo: { hasNextPage: false }, nodes: [{ fullDatabaseId: null, url: "u", body: "b", author: { __typename: "User", login: "owner1" } }] } };
-      const { impl, calls } = fakeThreads([noId]);
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 0, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 0 isn't on a review thread/);
-      expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
+    it("a broken reply chain is refused, and nothing is posted", async () => {
+      const { impl, calls } = fakeReplies({ 100: reply(100, 101), 101: reply(101, 100) });
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden")).rejects.toThrow(/broken reply chain/);
+      expect(posts(calls)).toHaveLength(0);
     });
 
     it("a 422 surfaces GitHub's errors[] field and code", async () => {
-      const { impl } = fakeThreads([node(100)], () => new Response(JSON.stringify({ message: "Validation Failed", errors: [{ resource: "PullRequestReviewComment", field: "body", code: "custom", message: "body is too long" }] }), { status: 422 }));
+      const { impl } = fakeReplies({ 100: reply(100) }, () => new Response(JSON.stringify({ message: "Validation Failed", errors: [{ resource: "PullRequestReviewComment", field: "body", code: "custom", message: "body is too long" }] }), { status: 422 }));
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "x", "Aiden")).rejects.toThrow(/Validation Failed; PullRequestReviewComment\.body: custom: body is too long/);
     });
   });

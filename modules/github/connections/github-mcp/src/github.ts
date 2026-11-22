@@ -35,6 +35,8 @@ export const ROUTES: { method: Method; path: RegExp }[] = [
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews$`) },
   // A review's own line comments (review-post.ts records their ids).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/reviews/${RUN}/comments$`) },
+  // One review comment by id: whether it is on this pull request, and (a reply) which comment it answers.
+  { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/comments/${NUM}$`) },
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/files$`) },
   // A PR's commits (code-review-read.ts messages: the agents its trailers name).
   { method: "GET", path: new RegExp(`^/repos/${NAME}/${NAME}/pulls/${NUM}/commits$`) },
@@ -462,33 +464,34 @@ export class GitHub {
   }
 
   /**
-   * The first comment of the pull request's review thread that `comment` belongs to, or a refusal naming why it has none.
-   * GitHub takes a reply only on a thread root, so an id from a reply resolves to its thread's first comment.
+   * The first comment of the pull request's review thread that `comment` is in, or a refusal naming why it has none.
+   * GitHub takes a reply only on a thread root: a direct read of the comment says whether it is on this pull request and,
+   * for a reply, which comment it answers, so the top of that chain is the root — no dependence on where a thread is listed.
    */
   private async threadRoot(ref: Ref, comment: number): Promise<number> {
-    type Threads = { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { comments: { pageInfo?: { hasNextPage: boolean }; nodes: { fullDatabaseId?: string | null }[] } }[] } } | null } | null };
-    type ThreadsPage = NonNullable<NonNullable<Threads["repository"]>["pullRequest"]>["reviewThreads"];
-    let after: string | null = null;
-    // Only an exhaustive read may say the comment is missing: a capped page or a thread whose comments were cut short
-    // leaves the answer unknown, and that is reported as such.
-    let complete = true;
-    for (let page = 0; page < 10; page++) {
-      const d: Threads = await this.graphql<Threads>("reviewThreads", { owner: ref.owner, name: ref.repo, number: ref.number, after });
-      const threads: ThreadsPage | null = d.repository?.pullRequest?.reviewThreads ?? null;
-      if (!threads) throw new GitHubRefused(`couldn't read ${ref.owner}/${ref.repo}#${ref.number}'s review threads to resolve comment ${comment}`);
-      for (const t of threads.nodes) {
-        if (t.comments.pageInfo?.hasNextPage) complete = false;
-        const [first, ...rest] = t.comments.nodes;
-        const root = first ? reviewCommentId(first) : null;
-        if (root === null) continue; // no id to reply on: a comment of this thread can't resolve to a root
-        if (root === comment || rest.some((c) => reviewCommentId(c) === comment)) return root;
+    type Comment = { id: number; pull_request_url: string; in_reply_to_id?: number | null };
+    const base = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`;
+    const read = async (id: number): Promise<Comment> => {
+      try {
+        return await this.request<Comment>("GET", `${base}/${id}`);
+      } catch (e) {
+        throw new GitHubRefused(`comment ${id} isn't a review comment of ${ref.owner}/${ref.repo}#${ref.number} (${(e as Error).message.slice(0, 240)}): there is no thread to reply on`);
       }
-      if (!threads.pageInfo.hasNextPage) break;
-      after = threads.pageInfo.endCursor;
-      if (page === 9) complete = false;
+    };
+    let current = await read(comment);
+    const seen = new Set([comment]);
+    // A reply names the comment it answers; walk to the top-level one GitHub takes replies on. A cycle or a very long chain is
+    // refused rather than looped on.
+    for (let depth = 0; current.in_reply_to_id; depth++) {
+      const parent = current.in_reply_to_id;
+      if (depth >= 20 || seen.has(parent)) throw new GitHubRefused(`comment ${comment} on ${ref.owner}/${ref.repo}#${ref.number} has a broken reply chain (in_reply_to_id ${parent}): there is no thread root to reply on`);
+      seen.add(parent);
+      current = await read(parent);
     }
-    if (!complete) throw new GitHubRefused(`couldn't confirm whether comment ${comment} is on a review thread of ${ref.owner}/${ref.repo}#${ref.number}: its review threads or a thread's comments run past the one read this resolves from`);
-    throw new GitHubRefused(`comment ${comment} isn't on a review thread of ${ref.owner}/${ref.repo}#${ref.number} at its current head (a standalone file comment, a comment on a force-pushed or closed review, or another pull request's): there is no thread to reply on`);
+    // The comment's own URL is the pull request it is on: a 404 already covers another pull request or repository.
+    const want = `${API}/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
+    if (current.pull_request_url.toLowerCase() !== want.toLowerCase()) throw new GitHubRefused(`comment ${comment} is on ${current.pull_request_url}, not ${ref.owner}/${ref.repo}#${ref.number}: there is no thread here to reply on`);
+    return current.id;
   }
 
   /** A reply on a pull request's review thread (its first comment's id, or any comment in it), signed by the agent. */
