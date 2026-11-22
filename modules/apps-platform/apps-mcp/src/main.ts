@@ -152,17 +152,21 @@ const http = createServer(async (req, res) => {
       const r = await d.pool.query(
         "SELECT source, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
       );
-      // A scope still recording runs (one within 8 days: the weekly ones too) whose passes have all failed for 24 hours, counted from
-      // its first failure after the last good pass: a source with one healthy scope hides it in the rows above. Its latest error,
-      // cut short, goes to the detector, which fences it. A scope that stops running drops out after 8 days (retired).
-      const f = await d.pool.query(
-        `SELECT source, scope, left(err, 500) AS error, last_ok AS since FROM (
-           SELECT source, scope, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, max(finished_at) AS last_at,
-                  (array_agg(error ORDER BY finished_at DESC))[1] AS err,
-                  min(finished_at) FILTER (WHERE error IS NOT NULL AND finished_at > COALESCE((SELECT max(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = r.source AND i.scope = r.scope AND i.error IS NULL), '-infinity')) AS failing_since
-           FROM src_meta.ingest_run r GROUP BY source, scope) s
-         WHERE err IS NOT NULL AND last_at > now() - interval '8 days' AND failing_since < now() - interval '24 hours'`,
-      );
+      // The detail (scope and error text) goes only to the board's internal token and the Fleet Steward (the module that
+      // reads the warehouse's health); other apps.read callers get the summary rows. A scope still recording runs (one within 8
+      // days: weekly ones too) whose passes have all failed for 24 hours, counted from its first failure after its last good
+      // pass; a scope that stops running drops out after 8 days (retired). The last good pass is found once per scope.
+      const detail = internalAuthorized(req) || ((await readerIdentity(req)) as { module?: string }).module === "fleet-steward";
+      const f = detail
+        ? await d.pool.query(
+            `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL GROUP BY source, scope),
+                  latest AS (SELECT DISTINCT ON (source, scope) source, scope, error, finished_at FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)
+             SELECT l.source, l.scope, left(l.error, 500) AS error, ok.last_ok AS since
+             FROM latest l LEFT JOIN ok USING (source, scope)
+             WHERE l.error IS NOT NULL AND l.finished_at > now() - interval '8 days'
+               AND (SELECT min(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = l.source AND i.scope = l.scope AND i.error IS NOT NULL AND i.finished_at > COALESCE(ok.last_ok, '-infinity')) < now() - interval '24 hours'`,
+          )
+        : { rows: [] };
       return send(res, 200, { sources: r.rows, failing_scopes: f.rows });
     }
     // Each app's quality checks from its last health probe (quality.ts): name, ok and count only, never samples (app data,

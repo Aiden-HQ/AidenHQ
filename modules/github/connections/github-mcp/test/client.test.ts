@@ -543,3 +543,15 @@ it("maps a GraphQL FORBIDDEN flagged saml_failure to an sso need, and leaves an 
   expect(body.errors).toHaveLength(1);
   expect(ip.status().problems).toEqual([]);
 });
+
+it("attributes a restriction to the org GitHub names, keeps a refusal inside one item's content non-fatal, and rejects a failed answer", async () => {
+  const msg = "Although you appear to have the correct authorization credentials, the `other` organization has enabled OAuth App access restrictions.";
+  const inContent = answer(200, { data: { organization: { projectV2: { items: { nodes: [{ id: "1", content: null }] } } } }, errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 0, "content"], extensions: { saml_failure: false }, message: msg }] });
+  const a = createAccess({ auth: auth(), clientId: "cid", fetchImpl: async () => inContent });
+  const body = await a.graphql("items", { org: "acme" });
+  expect(body.data.organization.projectV2.items.nodes).toHaveLength(1);
+  expect(a.status().problems).toMatchObject([{ org: "other", cause: "restricted" }]);
+  expect(a.status().lines.find((l) => l.label === "other")?.value).toContain("the `other` organization");
+  const bad = createAccess({ auth: auth(), fetchImpl: async () => new Response("<html>", { status: 502 }) });
+  await expect(bad.graphql("q", { org: "acme" })).rejects.toThrow(/answered 502/);
+});

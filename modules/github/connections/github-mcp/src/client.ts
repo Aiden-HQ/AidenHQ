@@ -203,6 +203,8 @@ export function createAccess(o: {
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string }>();
+  /** The GraphQL query that set an org's problem: only that read succeeding clears it (REST's per-org clear leaves it). */
+  const read = new Map<string, string>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
@@ -399,7 +401,7 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path)) problems.delete(ownerOf(path)!.toLowerCase());
+    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && !read.has(ownerOf(path)!.toLowerCase())) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -425,10 +427,21 @@ export function createAccess(o: {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;
       if (opts.as) return body;
+      // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
+      if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
       const org = typeof variables.org === "string" ? variables.org : "";
-      const need = org ? graphqlNeed(body?.errors, org, o.clientId) : undefined;
-      if (need) fail(need); // GraphQL answers 200 with the refusal inside `errors`: it is the same need REST's 403 is
-      if (org && res.status === 200 && body?.data && !body.errors?.length) problems.delete(org.toLowerCase());
+      const { need, fatal } = graphqlNeed(body?.errors, org, o.clientId);
+      if (need) {
+        // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content
+        // (an issue of another org) is recorded but leaves the rest of the board readable.
+        read.set(need.org.toLowerCase(), query);
+        if (fatal) fail(need);
+        problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}) });
+      } else if (org && body?.data && !body.errors?.length && read.get(org.toLowerCase()) === query) {
+        // Cleared only by the read that was refused succeeding again.
+        problems.delete(org.toLowerCase());
+        read.delete(org.toLowerCase());
+      }
       return body;
     },
     async identity() {
@@ -460,17 +473,22 @@ export function createAccess(o: {
 /**
  * The need a GraphQL `FORBIDDEN` error means: single sign-on (GitHub flags it), or an org that restricts OAuth apps (its message
  * opens "Although you appear to have the correct authorization credentials"; an IP allow list sets its own flag and is no
- * sign-in problem). Any other error is just an error. The full message is kept.
+ * sign-in problem). The org is the one the message names (as REST's classifier reads it), else the one asked about. Any other
+ * error is just an error. The full message is kept. `fatal`: the refusal hit the read itself, not one item's `content`.
  */
-function graphqlNeed(errors: unknown, org: string, clientId?: string): Need | undefined {
+function graphqlNeed(errors: unknown, org: string, clientId?: string): { need?: Extract<Need, { cause: "sso" | "restricted" }>; fatal: boolean } {
   for (const e of Array.isArray(errors) ? errors : []) {
     if (e?.type !== "FORBIDDEN") continue;
     const message = String(e.message ?? "").slice(0, 1000);
-    if (e.extensions?.saml_failure === true) return { cause: "sso", org, url: `https://github.com/orgs/${org}/sso`, message };
+    const named = /the [`'"]?([A-Za-z0-9-]+)[`'"]? organization/i.exec(message)?.[1];
+    const who = named ?? org;
+    if (!who) continue;
+    const fatal = !(Array.isArray(e.path) && e.path.includes("content"));
+    if (e.extensions?.saml_failure === true) return { need: { cause: "sso", org: who, url: `https://github.com/orgs/${who}/sso`, message }, fatal };
     if (e.extensions?.ip_allow_list_failure === true) continue;
-    if (/OAuth App|authorization credentials/i.test(message)) return { cause: "restricted", org, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message };
+    if (/OAuth App|authorization credentials/i.test(message)) return { need: { cause: "restricted", org: who, url: `https://github.com/settings/connections/applications/${clientId ?? ""}`, message }, fatal };
   }
-  return undefined;
+  return { fatal: false };
 }
 
 const RECONNECT = { label: "Reconnect", reconnect: true } as const;
@@ -487,7 +505,7 @@ function statusLines(have: string[], problems: GitHubStatus["problems"], rate: G
     { label: "Fleet repos", value: fleetOrg ? `in ${fleetOrg}` : "on this server", state: "ok", action: { label: "Change", href: "#/modules/github/settings" } },
     ...(ci ? [needs("CI runners", "admin:org")] : []),
     needs("Projects boards", "project"),
-    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: "the org restricts OAuth apps", state: "warn", action: { label: "Grant access", href: p.url } })),
+    ...problems.map((p): StatusLine => (p.cause === "sso" ? { label: p.org, value: p.message ? `GitHub needs you to authorize single sign-on: ${p.message.slice(0, 300)}` : "GitHub needs you to authorize single sign-on", state: "warn", action: { label: "Authorize", href: p.url } } : { label: p.org, value: p.message ? `the org restricts OAuth apps: ${p.message.slice(0, 300)}` : "the org restricts OAuth apps", state: "warn", action: { label: "Grant access", href: p.url } })),
   ];
   if (rate) {
     lines.push({ label: "Rate limit", value: `${rate.remaining.toLocaleString("en-US")} of ${rate.limit.toLocaleString("en-US")} left, resets`, time: new Date(rate.reset).toISOString(), state: rate.remaining < rate.limit * 0.2 ? "warn" : "ok" });
