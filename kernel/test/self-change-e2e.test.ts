@@ -155,7 +155,18 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   g.agents[COS].roles = [];
   writeFileSync(k.grantsFile, JSON.stringify(g));
   await refused("aiden", [{ kind: "profile", text: "# Owner\n" }], /only fleet-admin \(Aiden\) changes the owner profile/);
-  assert.deepEqual(branches(), before);
+  // A run an event routine fired read outside text: its self_change is refused before any branch, even with no batch bound
+  // yet (the job's routine is an event subscription); the same agent's run of a plain routine is not refused for it.
+  k.records.db.exec("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, routine TEXT)");
+  k.records.db.prepare("INSERT OR REPLACE INTO jobs (id, routine) VALUES ('job-chaser', 'review-chaser-watch')").run();
+  g.routine_events = { "r-watch": { key: "review-chaser-watch", agent: RC, connection: "github", resource: "acme/widgets", filter: { kind: "issues.opened" } } };
+  writeFileSync(k.grantsFile, JSON.stringify(g));
+  await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n\nYou chase reviews.\n" }], /a run fired by events changes nothing about its agent/);
+  g.routine_events = {};
+  writeFileSync(k.grantsFile, JSON.stringify(g));
+  const plain = await self("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n\nYou chase reviews.\n" }]);
+  assert.doesNotMatch(JSON.stringify(plain.body), /fired by events/);
+  assert.deepEqual(branches().filter((b) => !before.includes(b)).length <= 1, true);
   assert.equal(applies().length, 2);
   // A fresh install has no library module: the first skill writes its module.yaml too.
   const fresh = planFiles([{ kind: "skill", name: "nudge", text: skillText }], { read: () => undefined, localOf: () => undefined, teamOf: () => undefined, moduleHandbook: () => undefined, bundle: [] });
