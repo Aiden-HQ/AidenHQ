@@ -357,12 +357,6 @@ test("exposure: unset is tailscale (installs before the setting), one mode reach
   assert.throws(() => compile(product, pinst([], { ...owner, exposure: ["public", "local"] })), /exposure/);
 });
 
-test("routine autonomy: full by default, tier0 for a webhook routine unless it says otherwise; an override must be a known value", () => {
-  const { routines } = compile(mods, finst(["wiper"])).paperclip;
-  assert.deepEqual([routines.sweep.autonomy, routines.hook.autonomy, routines.hookfull.autonomy], ["full", "tier0", "full"]);
-  assert.throws(() => compile(mods, finst(["wiper"], base, { overrides: { routines: { sweep: { autonomy: "yes" } } } })), /routine sweep: autonomy is off, tier0, full/);
-});
-
 test("enumeration (spec §9): every shipped write or destructive tool maps to a kind or to conn.tool, each tool to at most one kind", () => {
   const product = join(here, "../..");
   const kinds = {};

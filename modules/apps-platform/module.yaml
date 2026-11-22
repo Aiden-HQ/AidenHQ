@@ -114,7 +114,6 @@ routines:
     webhook: true # fired by apps-mcp
     webhook_base: http://paperclip:3100 # apps-mcp calls it from inside the compose network
     secrets_prefix: apps_incident_webhook # setup saves <prefix>_url / _secret for apps-mcp
-    autonomy: tier0 # app logs are untrusted: Tier 1 work from an incident is the owner's (restarts and rollbacks are direct tools)
   app-request:
     title: App requests
     agent: app-maintainer
@@ -126,7 +125,6 @@ routines:
     webhook: true # fired by the kernel when a request arrives
     webhook_base: http://127.0.0.1:3100 # the kernel calls it from the host
     secrets_prefix: app_request_webhook # setup saves <prefix>_url / _secret for the kernel
-    autonomy: tier0 # app users' text drives it: Tier 1 work from a request is the owner's
 # The apps' tailnet node's join key (compose.yaml apps-edge; docs/setup.md): optional. Without it the node signs in once
 # through a link sent to the owner.
 optional_secrets:

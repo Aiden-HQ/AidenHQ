@@ -66,7 +66,7 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
   const closing = s.earlier.length ? ` The earlier setup PR${s.earlier.length === 1 ? "" : "s"} (${s.earlier.map((p) => `"${p.title}" ${p.html_url}`).join(", ")}) will be closed.` : "";
   return {
     args: bound,
-    // The files this adds, as push and PR plans return them: the kernel raises the tier by the path inventory.
+    // The files this adds, as push and PR plans return them: the kernel runs the platform check on them.
     paths: [{ repo: a.repo, files: s.missing.map((path) => ({ path })) }],
     targets: { [`${a.repo} ${s.def}`]: { repo: a.repo, ref: s.def, commit: s.head } },
     facts: {

@@ -92,22 +92,8 @@ outcomes:
   model for a frequent sweep, the agent's stronger one for everything else). Compile writes it into the agent's grants
   entry (`routines`), and the kernel's admission gives a routine run's job that model. `reasoning_effort:` on a routine
   works the same way (generated heartbeats use both).
-- **Autonomy per routine:** `autonomy: off | tier0 | full` on a routine (module, instance agent, or
-  `overrides.routines.<key>.autonomy`) caps the approval cards of the tasks its runs start: the run task itself and every
-  task traced back to it, through parents and the kernel's provenance (the job that created an issue), so an unparented
-  `task_create` from a routine's run keeps the cap. The strictest of the routines found and
-  the instance's `autonomy` applies, in code (`kernel/src/tier.ts`, `computeTier`):
-  `tier0` makes Tier 1 the owner's after the AI reviewer has read it (its reject is final; Tier 0 still runs),
-  `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
-  routines (today's behaviour: the AI reviewer decides Tier 1 when the instance runs `full`) and `tier0` for a
-  `webhook: true` routine, which something outside fires, often with untrusted text (`app-incident` and `app-request`
-  also set it explicitly). Set `tier0` on any other unattended routine to have its risky writes drafted for the owner.
-  Agents-org app merges are Tier 0, so a `tier0` cap mostly holds product and fleet cards. It fails closed: setup writes
-  each routine's autonomy into the grants table before adding its triggers, and the kernel treats a routine it doesn't
-  find there, an invalid value, or a trace past 24 issues as `off`. It caps cards only (push, PR, merge, apply, deploy, app_run): direct tools such as `slack_post` and
-  `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
 - **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
-  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `max_parallel`,
+  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules and `model` only), `max_parallel`,
   `image`, `trial`, `trial_writes`, `heartbeat` and `skills` (module skill ids). They cannot have roles. An agent that writes
   or designs code lists `engineering.write-code` in `skills` (how code is written here), plus `engineering.publish` when it runs `aidenhq publish`; every agent gets "How we work".
   `trial: true` keeps writes to reporting on the

@@ -128,8 +128,6 @@ routines:
       yesterday's team routing decisions with `routing_evidence`, and file at most one routing change. Then close this
       task with one line.
     concurrency: skip_if_active
-    # Its routing changes are AI-approved under the instance's full autonomy (owner, 2026-11-19); autonomy off still holds them.
-    autonomy: full
     schedules:
       - { cron: "15 0 * * *", timezone: "UTC", label: "after each UTC day" }
   librarian-weekly:

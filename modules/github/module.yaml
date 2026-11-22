@@ -14,12 +14,6 @@ requires:
 # with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
 # holds no kernel role and can't report a write's outcome.
 privileged: [ git-credential ]
-# The merge queue, its gate rules and the reviewer's code list (evalgate.ts) are the gate's own core: the reviewer reads them
-# (the path inventory, paths.yaml; the rest of the code host part is the reviewer's too).
-paths:
-  - sensitivity: 1
-    owner_role: platform-engineer
-    patterns: [ service/src/merges.ts, service/src/merge-gate.ts, service/src/evalgate.ts ]
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own, once GitHub is connected.
 provides: [ codehost ]
 # Its sign-in and setup flow on the board (modules/board/schemas/), and its schema and the views agents read with source_new
@@ -314,17 +308,16 @@ providers:
 prompts:
   - { id: product-bugs, file: prompts/product-bugs.md, when: { tools: [ github.github_issue_link ] } }
 writes:
-  # push, pr and merge are repository writes (paths: true): plan.ts returns the files each changes, read from git, and the
-  # kernel raises their tier by the path inventory (paths.yaml) and runs the platform check on them (writes.ts).
-  push: { args: schemas/push.json, floor: 0, paths: true, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
-  pr: { args: schemas/pr.json, floor: 0, paths: true, card: *card }
-  merge: { args: schemas/merge.json, floor: 0, paths: true, card: *card }
+  # push, pr and merge are repository writes: plan.ts returns the files each changes, read from git, and the kernel runs the
+  # platform check on them (writes.ts).
+  push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
+  pr: { args: schemas/pr.json, floor: 0, card: *card }
+  merge: { args: schemas/merge.json, floor: 0, card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
-  # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts). Repository write: its plan returns the files it
-  # changes, and the path inventory raises its tier like a push's.
-  setup: { args: schemas/setup.json, floor: 1, paths: true, card: *card }
+  # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
+  setup: { args: schemas/setup.json, floor: 1, card: *card }
 # github_service_key: the kernel's bearer for github-mcp (both connections). github_auth_token: the board's, for its sign-in.
 # codehost_github_token: the code host's own token (the kernel knows the module by it; the name it had as codehost-github).
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates them when missing.

@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.ts";
+import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit } from "./modules.ts";
 import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.ts";
 import { routineDrift, syncAgents } from "./paperclip-diff.ts";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.ts";
@@ -409,15 +409,11 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
       webhook = { prefix, label, existing: routine?.triggers?.find((t: Obj) => t.kind === "webhook" && t.label === label) };
       if (routine && (!webhook.existing || !readSecret(`${prefix}_secret${companySuffix}`))) drift.push("webhook");
     }
-    if (routine) {
-      // Its cap is in the grants table before any trigger can fire it (the runner treats an unknown routine as off).
-      routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
-      routineKeys[routine.id] = key;
-    }
+    if (routine) routineKeys[routine.id] = key;
     if (drift.length) { work.push({ key, r, body, routine, webhook }); step(`Routine ${r.title}: ${drift.join(", ")}${routine ? " changed" : ""}`); }
   }
   step(`setup: ${work.length} routines changed, ${Object.keys(cfg.routines ?? {}).length - work.length} unchanged`);
-  // A routine's autonomy is the kernel's alone (never Paperclip's), so it lands here even when the routine itself is unchanged.
+  // A routine's key is the kernel's alone (never Paperclip's), so it lands here even when the routine itself is unchanged.
   writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
   // One routine's calls are independent of the next one's: a few side by side.
   await mapLimit(work, 4, async ({ key, r, body, routine, webhook }: (typeof work)[number]) => {
@@ -425,7 +421,6 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
     if (!routine) {
       routine = (await api("POST", `/api/companies/${companyId}/routines`, body)).json as Obj;
       step(`Created routine ${r.title}`);
-      routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
       routineKeys[routine.id] = key;
       writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
     }
@@ -523,11 +518,7 @@ function appendRevs(table: Obj) {
  * Paperclip lets agents edit their own metadata (setupKey, roles). Written in place, never renamed: the board bind-mounts
  * its directory read-only.
  */
-/**
- * Each routine's `autonomy` by Paperclip routine id (the runner caps the tasks its runs start; tiers.mjs routineCap). Starts
- * as the last table's, so the first write of an apply keeps it; ensureRoutines adds each routine's and writes the grants
- * again before that routine's triggers are added (the runner treats a routine it doesn't find here as off).
- */
+/** The last grants table: the first write of an apply keeps its routine keys until ensureRoutines adds each routine's. */
 const lastGrants = (() => {
   try {
     return JSON.parse(readFileSync(join(configDir, "grants", "grants.json"), "utf8"));
@@ -535,7 +526,6 @@ const lastGrants = (() => {
     return {};
   }
 })();
-const routineAutonomy = { ...lastGrants.routines };
 /** Each routine's compiled key by Paperclip routine id: a routine run's wake names it (`routine:<key>`), so its own model applies. */
 const routineKeys = { ...lastGrants.routine_keys };
 
@@ -546,7 +536,6 @@ function writeGrants(agents: Record<string, Obj>, memoryInboxes: Record<string, 
   const table: Obj = { autonomy: cfg.autonomy ?? "off", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
   if (fleetIssues) table.fleet_issues = fleetIssues;
-  table.routines = { ...routineAutonomy };
   table.routine_keys = { ...routineKeys };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
   for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
@@ -622,7 +611,7 @@ const cfgChanged = isWork ? updateSystemYaml(company.id) : false;
 if (opsAgent && (keyChanged || cfgChanged)) restartOpsMcp(); // ops-mcp exists only with the meetings module
 writeCatalog();
 lap("keys");
-await ensureRoutines(company.id, agents); // writes each routine's autonomy into the grants table before its triggers
+await ensureRoutines(company.id, agents); // writes each routine's key into the grants table before its triggers
 await retireUnconfigured({ api, companyId: company.id, cfg, step });
 lap("routines");
 

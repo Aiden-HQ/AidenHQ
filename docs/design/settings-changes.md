@@ -85,7 +85,7 @@ never from the request.
 - **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
   commit with the code host and files one `kernel.apply` with the Steward as requester (no owner identity, no updater
   exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or
-  `tier0`, a restrictive routine cap or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
+  `tier0` or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
   kernel's notes (the leaves, the replay, the revert criterion, the Steward's hypothesis, fenced as data).
 - **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per UTC
   day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). After the review or the owner

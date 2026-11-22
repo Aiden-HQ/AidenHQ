@@ -11,7 +11,7 @@ const OWNER_COMMENT = { body: "please read my inbox", authorUserId: "u1", create
 function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}) {
   let clock = Date.parse("2026-11-20T10:00:00Z");
   const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT); CREATE TABLE provenance (task TEXT PRIMARY KEY, created_by_job TEXT)");
+  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT)");
   const queued: any[] = [], waits: any[] = [], opened: any[] = [];
   const state = {
     failQueue: false,
@@ -228,18 +228,16 @@ test("a background need never makes routines skip the connection, so a success c
   assert.deepEqual(w.s.downFor("a1"), [], "but agents keep calling it");
 });
 test("a routine's run and its delegated child are background", async () => {
-  // r1 is a routine run (no chat marker, no owner comment); c1 was created by a job on r1 (provenance, no parent link).
-  const w = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync", createdByUserId: "u1" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail" } });
-  w.db.exec("INSERT INTO jobs VALUES ('j1', 'r1', 'a1'); INSERT INTO provenance VALUES ('c1', 'j1')");
+  // r1 is a routine run (no chat marker, no owner comment); c1 is its delegated child.
+  const w = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync", createdByUserId: "u1" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail", parentId: "r1" } });
   await w.s.hit(w.who("r1"), "google", { cause: "not_connected", detail: "" });
   await w.s.hit(w.who("c1"), "google", { cause: "not_connected", detail: "" });
   assert.deepEqual(w.queued, []);
   w.tick(LASTED);
   assert.equal(w.s.needs().length, 1, "one row for the connection, whoever hit it");
   assert.equal(w.waits.length, 0);
-  // With the owner's comment on r1, its child's need is the owner's: the chain resolves through provenance.
-  const v = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail" } }, { r1: [OWNER_COMMENT] });
-  v.db.exec("INSERT INTO jobs VALUES ('j1', 'r1', 'a1'); INSERT INTO provenance VALUES ('c1', 'j1')");
+  // With the owner's comment on r1, its child's need is the owner's: the chain resolves through the parent.
+  const v = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail", parentId: "r1" } }, { r1: [OWNER_COMMENT] });
   await v.s.hit(v.who("c1"), "google", { cause: "not_connected", detail: "" });
   assert.equal(v.queued[0].kind, "decision");
   assert.equal(v.queued[0].task, "WOR-5");

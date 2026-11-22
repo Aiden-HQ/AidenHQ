@@ -21,7 +21,7 @@ export type Issue = { id: string; title?: string; description?: string | null; p
 export type Comment = { body?: string | null; authorType?: string; authorUserId?: string | null; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null };
 /**
  * The control plane as the owner (the board key): the task, its comments, the key's own user, and a notice on the task.
- * `delegator`: the agent that created the task (escalate.ts creatorAgent: the kernel's provenance, else the control plane's
+ * `delegator`: the agent that created the task (escalate.ts creatorAgent: the control plane's
  * creator; never its parent's assignee, which the requester could move); `agent`: an agent's key and roles (the grants table).
  */
 export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string): Promise<Comment[]>; me(): Promise<string>; notify(task: string, text: string): Promise<void>;

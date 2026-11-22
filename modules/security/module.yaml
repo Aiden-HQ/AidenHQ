@@ -62,7 +62,6 @@ routines:
     webhook: true # fired by security-scanner after a pass that wrote anything
     webhook_base: http://paperclip:3100 # the scanner calls it from inside the compose network
     secrets_prefix: security_scan_webhook # setup saves <prefix>_url / _secret for the scanner
-    autonomy: full # fired by our own scanner over advisories, not outside text: CVE fixes stay the AI reviewer's
     schedules:
       - { cron: "0 10 * * *", timezone: "${settings.timezone}", label: "daily" }
   security-weekly:

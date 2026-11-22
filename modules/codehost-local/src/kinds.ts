@@ -6,8 +6,7 @@
 //
 // The floors are codehost-github's (modules/github/module.yaml): every kind files at 0 and plan.ts raises what it must. A
 // `local/*` merge is Tier 1 `local-merge` (modules/github/service/src/plan.ts mergeParts), so the AI reviewer still reads its
-// diff; `paths: true` on push, pr and merge is what makes the path inventory (kernel/src/paths.ts) tier a change to a
-// sensitive file as it tiers codehost-github's.
+// diff.
 import type { Kind } from "../../../kernel/src/writes.ts";
 
 type Schema = Record<string, unknown>;
@@ -22,11 +21,11 @@ const BRANCHES = obj({
 const CHANGES = (head: boolean) => obj({ prs: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, number: { type: "integer", minimum: 1 }, ...(head ? { head: { type: "string", pattern: "^[0-9a-f]{40}$" } } : {}) }, head ? ["repo", "number", "head"] : ["repo", "number"]) } }, ["prs"]);
 const CARD = { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" };
 
-/** The actions, their args and their repository-write flag: what a local change may ask for. */
-export const LOCAL_ACTIONS: { action: "push" | "pr" | "merge" | "close" | "create_repo"; args: Schema; paths?: true }[] = [
-  { action: "push", args: BRANCHES, paths: true },
-  { action: "pr", args: BRANCHES, paths: true },
-  { action: "merge", args: CHANGES(true), paths: true },
+/** The actions and their args: what a local change may ask for. */
+export const LOCAL_ACTIONS: { action: "push" | "pr" | "merge" | "close" | "create_repo"; args: Schema }[] = [
+  { action: "push", args: BRANCHES },
+  { action: "pr", args: BRANCHES },
+  { action: "merge", args: CHANGES(true) },
   { action: "close", args: CHANGES(false) },
   { action: "create_repo", args: obj({ repo: { type: "string", pattern: "^local/[a-z][a-z0-9-]{0,62}$" } }, ["repo"]) },
 ];
@@ -38,9 +37,9 @@ export const LOCAL_ACTIONS: { action: "push" | "pr" | "merge" | "close" | "creat
  * `routeKind`), and what grants an Engineer job the kinds it may ask for (kernel/src/admission.ts, its CODEHOSTS).
  */
 export function localKinds(): Record<string, Kind> {
-  return Object.fromEntries(LOCAL_ACTIONS.map(({ action, args, paths }) => [
+  return Object.fromEntries(LOCAL_ACTIONS.map(({ action, args }) => [
     `codehost-local.${action}`,
-    { module: "codehost-local", floor: 0, ...(paths ? { paths: true } : {}), tools: [], args, card: CARD } as Kind,
+    { module: "codehost-local", floor: 0, tools: [], args, card: CARD } as Kind,
   ]));
 }
 

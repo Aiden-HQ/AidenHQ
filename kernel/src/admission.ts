@@ -11,7 +11,6 @@ import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { JobError, queueFacts } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
-import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
 import type { Pool } from "./pool.ts";
 
@@ -71,15 +70,11 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, release, facts, log }: {
+export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, nextTurn, launch, release, facts, log }: {
   /** Flow's fact log (facts.ts): job.queued and wake.bound with a job's first start (jobs.ts queueFacts) or its couldn't-start end, job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
-  /** Kernel provenance (provenance.ts): a task the kernel's plugin made runs only with its provenance row. */
-  provenance: { settled(issue: { id: string; originKind?: string | null; originId?: string | null }): boolean; filedBy(issue: { id: string; originKind?: string | null; originId?: string | null }): string | undefined };
-  /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
-  routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
   db: DatabaseSync;
   grants: () => Record<string, AgentGrant | undefined>;
@@ -93,7 +88,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   /** The spend limits a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
-  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null } | undefined> };
+  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; createdByAgentId?: string | null } | undefined> };
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
@@ -118,10 +113,14 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
   };
 
-  /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
-  function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
-    const by = provenance.filedBy(t);
-    return by === undefined || (by !== "" && heldRoles(grants(), by).some((r) => PLATFORM_FILERS.includes(r)));
+  /**
+   * Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the
+   * Architect or the Fleet Steward filed. The filer is the control plane's creator (a routine's run has none): the kernel's
+   * plugin creates a job's task as that job's agent, and no write changes it.
+   */
+  function platformTask(t: { originKind?: string | null; createdByAgentId?: string | null }): boolean {
+    const by = t.originKind === "routine_execution" ? undefined : t.createdByAgentId;
+    return !by || heldRoles(grants(), by).some((r) => PLATFORM_FILERS.includes(r));
   }
 
   function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {
@@ -157,9 +156,6 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     const identifier = String(t.identifier ?? "");
     if (!/^[\w.-]{1,100}$/.test(identifier)) throw new JobError(400, "bad-task", `task ${task} has no identifier`);
 
-    // The routine cap is traced now and frozen on the row: never recomputed from mutable parents later, never the dispatcher's.
-    // A trace the control plane couldn't answer (a 5xx, a timeout) is no cap to freeze: the wake waits for its lease and comes back.
-    const cap = await routineCap(task).catch((e: Error) => { throw new JobError(503, "trace-unavailable", `task ${task}'s routine trace couldn't be read now (${String(e.message).slice(0, 200)}); try again shortly`); });
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
@@ -169,8 +165,6 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       const w = wakes.claimed(module, b.wake);
       if (!w || w.task !== task || w.agent !== agent) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
-      // A task the plugin made with no provenance behind it: its routine cap is unknown, so nothing runs on it.
-      if (!provenance.settled(t)) throw new JobError(409, "provenance-unsettled", `task ${task} was made through the kernel's plugin with no provenance; it doesn't run`);
       const own = grants()[agent];
       if (!own) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
@@ -191,8 +185,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
         else Object.assign(authority, { engine: asked.engine.kind }, asked.engine.model ? { model: asked.engine.model } : {});
       }
       const fresh = asked?.fresh === true;
-      db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
-        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
+      db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
+        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), /^routine:(.+)$/.exec(w.cause)?.[1] ?? null, identifier);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };

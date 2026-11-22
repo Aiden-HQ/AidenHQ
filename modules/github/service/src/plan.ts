@@ -2,9 +2,8 @@
 // (the requester the runner looked up, the repos, branches, files, heads and checks git and GitHub report). Pure: no I/O.
 // Code refuses (`reject`) what nobody may do and the agent can fix (the instance repo, a default branch outside the agents
 // org, a head that moved); Tier 0 runs at once, Tier 1 goes to the AI reviewer.
-// What a change to particular files needs (the gate's core, compose files, the owner-approval records) is never decided here:
-// `plan` returns the files each push, PR and merge changes (`paths`), and the kernel raises the tier by the path inventory
-// (paths.yaml, kernel/src/paths.ts) and runs the platform check (modules/platform/src/check.ts) on them (writes.ts).
+// `plan` returns the files each push, PR and merge changes (`paths`), and the kernel runs the platform check
+// (modules/platform/src/check.ts) on them (writes.ts).
 //
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.

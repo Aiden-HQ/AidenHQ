@@ -10,7 +10,6 @@
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
-//   config/kernel/paths.json   → the kernel's tier function: each path's sensitivity and owning role (paths.yaml, modules' paths:)
 //   config/kernel/checks.json  → the kernel: modules' task.finish checks (url, key secret, label, scope) and write.filed ones (kinds)
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (settings),
 //                                each enabled module's compose services and its setup secrets
@@ -32,7 +31,6 @@ import YAML from "yaml";
 import type { Obj } from "./modules.ts";
 import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostDirs, migrateSettings } from "./modules.ts";
 import { computersConfig } from "./computers.ts";
-import { pathInventory } from "./paths.ts";
 import { checkIngress } from "./edge.ts";
 import { caddyfile, caddyService, publicUrls } from "./front-door.ts";
 import { ensureIdentityKeys } from "./identity.ts";
@@ -185,7 +183,6 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
-try { writeFileSync(join(cfgOut, "kernel/paths.json"), JSON.stringify(pathInventory(repo), null, 2) + "\n"); } catch (e) { die((e as Error).message); }
 // Always written ({} when no module checks): the kernel's finish gate refuses every close when it is missing.
 writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");

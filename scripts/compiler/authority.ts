@@ -7,7 +7,6 @@
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
 import { forksOf, marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
-import { SENSITIVITIES } from "../../kernel/src/paths.ts";
 import { heir } from "../../kernel/src/successor.ts";
 
 type Dict = Record<string, unknown>;
@@ -38,7 +37,7 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs", "settings", "validate"]);
+const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "codehost", "check_jobs", "settings", "validate"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -69,9 +68,6 @@ const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, t
 
 /** Each setting a module lets roles write (settings.<key>.writers), as [key, roles]. */
 const settingWriters = (def: Dict) => Object.entries(map(def.settings)).flatMap(([k, d]) => (isMap(d) && d.writers != null ? [[k, list(d.writers).map(String)] as [string, string[]]] : []));
-
-/** A module's `paths:` as `repo|pattern` → its sensitivity's rank (an unknown sensitivity ranks lowest: fails closed). */
-const pathRanks = (v: unknown) => new Map(list(v).flatMap((g) => list(map(g).patterns).map((p) => [`${map(g).repo ?? "product"}|${String(p)}`, SENSITIVITIES.indexOf(map(g).sensitivity as never)] as const)));
 
 /**
  * A grant is wider when it newly reaches tools it did not: a new connection, read → write or a list, a list with new names,
@@ -219,7 +215,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const k of keys(hw)) {
     if (!(k in bw)) owner(`adds write kind ${id(k)}`);
     else if (Number(map(hw[k]).floor ?? 1) < Number(map(bw[k]).floor ?? 1)) owner(`lowers the floor of write kind ${id(k)}`);
-    else if (map(bw[k]).paths === true && map(hw[k]).paths !== true) owner(`write kind ${id(k)} stops reading its paths`);
     else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
   }
   for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
@@ -231,12 +226,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   // lands on. Any new or changed recipe is the owner's; dropping one hands out nothing.
   if (head.check_jobs != null && !eq(b.check_jobs, head.check_jobs)) owner("changes its check job recipes (check_jobs: what a signed receipt means)");
   else if (!eq(b.check_jobs, head.check_jobs)) review("drops its check job recipes");
-  // Its path inventory (paths:, kernel/src/paths.ts): a path read less carefully than before, or no longer listed, is the
-  // owner's; a new or stricter entry the reviewer's.
-  const [bp, hp] = [pathRanks(b.paths), pathRanks(head.paths)];
-  for (const [k, r] of bp) if (!((hp.get(k) ?? -1) >= r)) owner(`lowers the sensitivity of path ${id(k)}`);
-  if (!eq(b.paths, head.paths)) review("changes its path inventory");
-  // Dropping privileged also drops its folder's floor in the path inventory (scripts/paths.ts): the owner's too.
   for (const p of added(head.privileged, b.privileged)) owner(`drops privileged ${id(p)}`);
 
   // Secrets: every name it may mount (generated, optional, provided, connection service keys, jobcap read secrets).
@@ -378,10 +367,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     else if (now.private_reads !== true && was.private_reads === true) review(`${at}: stops reading private data`);
     for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
   }
-  // Routines: a routine's autonomy (its cap on approvals) is the owner's, as everywhere.
-  const [bro, hro] = [map(b.routines), map(head.routines)];
-  for (const r of keys(hro)) if (!eq(map(bro[r]).autonomy, map(hro[r]).autonomy)) owner(`routine ${id(r)}: autonomy`);
-
   if (base) for (const k of [...PLAIN].filter((k) => !eq(b[k], head[k]) && k !== "name")) review(`changes ${id(k)}`);
   if (codeChanged) review("code changes");
   if (!changes.length) review("text only");

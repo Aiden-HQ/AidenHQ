@@ -3,8 +3,8 @@ description: "The product's own gate: the platform check on every push, PR and m
 requires: [ engineering ] # the Engineer holds the platform-engineer role its fork routine and pin bumps are filed to
 license: MIT
 # A check (P5, spec §3.5) at write.filed on the code hosts' pushes, PRs and merges: it raises or denies, never lowers.
-# src/check.ts, which the kernel runs in process on every filing of these kinds (kernel/src/writes.ts), beside the path
-# inventory (paths.yaml); a hard gate (kernel/src/gates.ts): it always enforces.
+# src/check.ts, which the kernel runs in process on every filing of these kinds (kernel/src/writes.ts); a hard
+# gate (kernel/src/gates.ts): it always enforces.
 checks:
   - id: product-gate
     at: write.filed
@@ -21,7 +21,7 @@ check_jobs:
     spec: { path: dir }
     cwd_from: path
 # Carry-your-patch forks (spec §6.9b): once a fork's upstream PR is merged and an official sha contains it, the daily run
-# switches the instance back. Its apply card is tiered by code (leaving a fork is the reviewer's); no autonomy of its own.
+# switches the instance back. Its apply is the AI reviewer's.
 # Compiled only while instance.yaml has a fork (`when`), so an instance without one has no routine and no run.
 routines:
   fork-switchback:

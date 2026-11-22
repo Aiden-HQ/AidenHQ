@@ -9,7 +9,6 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { createApply } from "../src/apply.ts";
 import { applyParts, createApplyPlanner, routingDiff } from "../src/apply-tier.ts";
-import { highest } from "../src/tier.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { openRecords } from "../src/records.ts";
 import { createRouting } from "../src/routing-tune.ts";
@@ -69,7 +68,7 @@ function world({ autonomy = "full", reviewer = "approve" } = {}) {
   const planner = createApplyPlanner({
     instanceRepo: () => REPO, read: (s) => host.read(s),
     product: { onMain: async () => true, isAncestor: async () => true, log: async () => "" },
-    modules: () => ({}), roles: () => ({}), connections: () => ({}), moduleApps: () => [], verifyRelease: async () => null,
+    modules: () => ({}), verifyRelease: async () => null,
     notes: (sha, requester, task) => routing.notes(sha, requester, task),
   });
   // Each launch is an apply that ends at once in a good generation of the instance's main, which contains the commit.
@@ -150,13 +149,13 @@ test("the one routing gate: only members' repos and weights move; anything else,
   assert.ok("problem" in routingDiff(INSTANCE, `${INSTANCE}  engineering:\n    template: x.y\n`), "a repeated key");
   const aliased = INSTANCE.replace("kai: { name: Kai }", "kai: &k { name: Kai, repos: [acme/api] }").replace("        repos: [acme/web]\n", "        repos: [acme/web]\n    defaults: *k\n");
   assert.ok("problem" in routingDiff(INSTANCE, aliased), "an alias");
-  // The planner's rules: the loop's own commit, proven, is the reviewer's (routing-only), and one that moves more is refused;
-  // anyone else's teams change keeps its rule, routing leaves included.
-  const parts = (h, routingTune = true) => highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": INSTANCE }, head: { "instance.yaml": h }, routingTune }));
+  // The planner's refusals: the loop's own commit, proven, is the reviewer's, and one that moves more is refused; anyone
+  // else's teams change is the reviewer's.
+  const refusals = (h, routingTune = true) => applyParts({ files: ["instance.yaml"], base: { "instance.yaml": INSTANCE }, head: { "instance.yaml": h }, routingTune }).refusals;
   const repos = head((t) => (t.members.kai.repos = ["acme/api"]));
-  assert.deepEqual([parts(repos).rule, parts(repos).tier], ["routing-only", 1]);
-  assert.equal(parts(repos, false).rule, "teams");
-  assert.equal(parts(head((t) => (t.members.kai.model = "~x/y"))).reject, true);
+  assert.deepEqual(refusals(repos), []);
+  assert.deepEqual(refusals(head((t) => (t.members.kai.model = "~x/y")), false), []);
+  assert.equal(refusals(head((t) => (t.members.kai.model = "~x/y"))).length, 1);
 });
 
 test("POST /v1/routing/<op>: only a kernel.routing module, serving a routing-tuner job's call in flight; the job comes from its own token", async (t) => {

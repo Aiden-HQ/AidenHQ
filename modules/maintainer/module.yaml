@@ -67,7 +67,6 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "30 7 * * *", timezone: "${settings.timezone}", label: "daily" }
-    autonomy: full
   maintainer-improve:
     title: "Improve Maintainer"
     agent: maintainer
@@ -77,7 +76,6 @@ routines:
     concurrency: skip_if_active
     schedules:
       - { cron: "0 8 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
-    autonomy: full
 # The issue watcher (service/src/watcher.ts): every maintainer_poll_minutes it asks github-mcp for the issues labelled (and
 # the new unlabelled ones) on each maintained repo and files one task per issue for the Maintainer (kernel.tasks: fixed text
 # naming the repo and number, never the issue's own words; filing the same issue twice is one task). github-mcp knows the

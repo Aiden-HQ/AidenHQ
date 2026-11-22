@@ -7,7 +7,7 @@ import { deciderWords } from "./timeline.js";
 /** The kernel's record as GET /v1/writes/:id gives the board (kernel/src/records.ts Rec), as far as an explanation reads it. */
 export type RecordWhole = {
   id: string; kind: string; tier: 0 | 1 | 2; merit?: 0 | 1 | 2 | null; state: string; review: string | null; review_code?: string | null;
-  rule?: string | null; cap?: { by: "autonomy" | "routine"; value: string; routine?: string } | null; decided_by: string | null; via?: string | null; decided_at?: string | null; owner_reason?: string | null;
+  rule?: string | null; cap?: { by: "autonomy"; value: string } | null; decided_by: string | null; via?: string | null; decided_at?: string | null; owner_reason?: string | null;
   outcome: { ok: boolean; text: string } | null; created_at: string; identifier?: string | null; task: string;
   card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { name?: string; key?: string };
 };
@@ -34,15 +34,10 @@ export interface Explanation {
   outcome: { ok: boolean; text: string } | null;
 }
 
-/** The kernel's own tier rules (kernel/src/tier.ts, paths.ts) in words; a module's own rule shows as its code and reason. */
+/** The kernel's own tier rules (kernel/src/tier.ts) in words; a module's own rule shows as its code and reason. */
 const RULES: Record<string, string> = {
   "autonomy-off": "Autonomy is off, so every write is yours to approve.",
-  "routine-autonomy": "A routine with its own autonomy cap started this task.",
-  "owner-path": "It changes one of your paths (paths.yaml sensitivity 2): the AI reviewer reads it.",
-  "reviewed-path": "It changes a path the AI reviewer reads first (paths.yaml).",
-  "gate-list-unknown": "The path inventory couldn't be read: the AI reviewer reads it.",
   "unknown-files": "The files it changes weren't known: the AI reviewer reads it.",
-  "unknown-repos": "Its repository couldn't be told apart from the product's: the AI reviewer reads it.",
 };
 
 /** The AI reviewer's reason codes (services/shared/reason-codes.ts REVIEW_CODES) in words. */
@@ -63,7 +58,7 @@ const REVIEW_WORDS: Record<string, string> = {
   stale_head: "Its head moved before review, so nothing ran.",
 };
 
-const capWords = (c: NonNullable<RecordWhole["cap"]>) => (c.by === "autonomy" ? `Autonomy is ${c.value}.` : c.routine ? `A routine's run (${c.routine}) started this task and its autonomy is ${c.value}.` : `The task's routine couldn't be traced, so it counts as a routine set to ${c.value}.`);
+const capWords = (c: NonNullable<RecordWhole["cap"]>) => `Autonomy is ${c.value}.`;
 const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:kernel/code" ? [by.slice("reviewer:".length)] : []);
 const verdict = (state: string) => (["approved", "claimed", "done", "failed", "unknown"].includes(state) ? "approved it" : state === "stale" ? "closed it: its head moved, so nothing ran" : "rejected it");
 

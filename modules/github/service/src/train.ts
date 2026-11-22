@@ -1,7 +1,7 @@
 // The release train's loop (W3; the runner's runReleases, moved): once a minute, the instance target's bump decided by
 // release.ts trainStep, written by code and filed as a kernel.apply through the kernel's /v1/writes with this module's own
-// token (role kernel.apply). The kernel plans it (kernel/src/apply-tier.ts) and tiers it like any apply: the instance rules,
-// the module authority the move brings and the path inventory, with no branch for who filed it. Its task is one the kernel
+// token (role kernel.apply). The kernel plans it (kernel/src/apply-tier.ts) and tiers it like any apply, with no branch for who
+// filed it. Its task is one the kernel
 // files for the agent holding the platform-engineer role (POST /v1/tasks, role kernel.tasks), once per tip.
 //
 // No apply runs twice: the bump's commit is deterministic for the same instance main and pins, the bump being filed is

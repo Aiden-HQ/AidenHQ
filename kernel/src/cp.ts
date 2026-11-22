@@ -20,7 +20,6 @@
 //   agent's comment does.
 // - A status change to `done` is for the job's own task, a task the job's agent holds (from an earlier run that left it
 //   open), or a fleet settler's task to settle; it passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
-// - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
 // A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), and only a fleet
 // settler's hands it to another agent.
 // Every open task has a holder, an agent or the owner (leavesNoHolder): a create or a change that would leave one with neither
@@ -36,7 +35,6 @@ import { TYPED } from "./cplimit.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
 import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
-import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
 import { isLogTask, logTasks, scopeOf as taskScopeOf } from "./task-scope.ts";
 
@@ -73,7 +71,7 @@ export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: 
 }
 export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, observe, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, appOwners, facts, observe, log = () => {} }: {
   /** The wake inbox's observe (wakes.ts): a task this route just changed has its facts recorded at once, from the issue the write returned. */
   observe?: (issue: Issue, actor: string) => Promise<void>;
   /** Flow's fact log (facts.ts): task.commented for each comment a job writes through here. */
@@ -89,7 +87,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
   fleetIssues?: () => string;
   /** The keys of the agents that own an app (apps-mcp's registry), for a `delegate_to` that names app-owners. */
   appOwners?: () => Promise<string[]>;
-  controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
+  controlUrl: string; checks?: Checks; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const fact = factWriter(facts, log);
   /** `who`: the module and the agent the call is for, as soon as they are known (a refusal's log line names them). */
@@ -212,11 +210,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
       const child = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
-      // The cap goes on record under the new task's origin (its tag) before the task exists.
-      provenance.intend(tag.slice(5, -4), await provenance.carried({ agent, task }));
       const d = await send({ tag, ...(parent ? { issueId: parent.id, scope } : {}), child, delegateTo });
       if (!d) return;
-      provenance.record(d.child!, tag.slice(5, -4));
       return issueAnswer(d.child!, 201, { deduplicated: d.found });
     }
 

@@ -8,7 +8,6 @@ import { openFacts } from "../src/facts.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createPool } from "../src/pool.ts";
 import { createWakes } from "../src/wakes.ts";
-import { createProvenance, ORIGIN } from "../src/provenance.ts";
 import { createJobTools } from "../src/jobtools.ts";
 
 function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
@@ -32,11 +31,10 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
   const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5" };
   const launched = [], released = [];
-  // Kernel provenance over the same db; a task's origin (`origins`: what the plugin gave it) and traced routine cap, per task.
-  const provenance = createProvenance({ db, cap: async () => undefined });
-  const origins = {}, caps = {};
+  // What the control plane says of a task beyond its assignee (`origins`: its creator), per task.
+  const origins = {};
   const adm = createAdmission({
-    provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
+    nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, facts, grants: () => grants, capacity: () => capacity, pool: createPool({ capacity: () => capacity, agentLive: () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get().n }), spend: (...a) => spend(...a),
     kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "github.pr": { module: "github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
@@ -47,7 +45,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     release: async (id) => void released.push(id),
     log: () => {},
   });
-  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, released, origins, provenance, caps };
+  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, released, origins };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -105,13 +103,3 @@ test("a module that doesn't dispatch the agent → 403; a wake it didn't claim �
   await assert.rejects(adm.admit("acme-other", req(wake("w2", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "wake-not-claimed");
 });
 
-test("a task the kernel's plugin made runs only with its provenance: with no intent behind it → 409; its intent settles it", async () => {
-  const { adm, wake, db, origins, provenance } = setup();
-  origins["task-1"] = { originKind: ORIGIN, originId: "aidenhq:op=forged" };
-  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "provenance-unsettled");
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
-  // The kernel recorded the cap under the op before the create; the plugin's answer was lost: the first read completes it.
-  provenance.intend("aidenhq:op=forged", { job: "j-parent", cap: { cap: "off", routine: "digest" } });
-  assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "admitted");
-  assert.deepEqual({ ...db.prepare("SELECT created_by_job, routine_cap FROM provenance WHERE task = 'task-1'").get() }, { created_by_job: "j-parent", routine_cap: "off" });
-});

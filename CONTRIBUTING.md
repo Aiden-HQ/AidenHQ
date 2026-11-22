@@ -121,8 +121,8 @@ or apt/git source: any other host is that other vendor's registry whatever it ca
 under that name, and the same repository copied onto such a host is still a new source. When they approve one for one package and one source, record it in
 `.github/supply-chain-source-exceptions.yaml`, in the same flow style, in a PR of its own:
 `- { ecosystem: apt, package: gh, from: "Debian sid main", to: "https://cli.github.com/packages stable main", version: 2.104.0, approved_by: owner, reference: "where the owner said so", reason: "CVE-…" }`.
-The AI reviewer reads that file from the base branch, and a change to the file itself is the owner's own tap in every repo
-(the path inventory's `owner-path`, never the reviewer's, and the platform check refuses it bundled with other files), so no PR can record or edit its own approval. The reviewer
+The AI reviewer reads that file from the base branch, and a change to the file itself goes alone (the platform check refuses
+it bundled with other files), so no PR can record or edit its own approval. The reviewer
 treats a record that names the diff's package and its new source as satisfying its new-source rule; without one, a new
 source is still rejected. The record approves that one package and source, nothing else.
 

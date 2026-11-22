@@ -41,8 +41,8 @@ is `kernel/src/updates.ts`.
   token yields). The planner tiers it like any apply. Only the updater's own filing, while auto-updates are on, whose head is
   exactly the pin its own verification writes for
   this base (`verify`: tag on the distro's main, newer than the current release, the tested stamp, the kernel descending), is the
-  AI reviewer's (`release-pin`, Tier 1: the owner's standing authority). Every other release move is the owner's after the
-  reviewer. The autonomy and routine caps limit what agents do, so they don't hold a write the kernel itself requests: with
+  AI reviewer's (Tier 1: the owner's standing authority). Every other release move is the owner's after the
+  reviewer. The autonomy cap limits what agents do, so they don't hold a write the kernel itself requests: with
   `auto_update` on, a verified release installs on the reviewer's yes with no owner approval (owner, 2026-11-18). The code host
   that owns the instance repo lands it and the kernel's apply executor runs `ops/apply-config.sh` once.
 - **The outcome.** The kernel follows the record: done is installed; anything else (a rejected card, a failed apply) is failed
@@ -61,7 +61,7 @@ is `kernel/src/updates.ts`.
   failed and missing each say so; `ciRefusal` in release.ts is the one judge); and the pinned instance resolves (release.ts). Then it is asked for as Update now asks for
   a release: the check verifies it again on the instance's main, puts it on the product checkout's origin main, commits
   `product: <sha>` with `release:` unchanged on `update/main-<sha12>`, and the kernel files, follows and reports it with the
-  same notices. The planner tiers it as any forward product move (`pin-forward`, Tier 1, plus the module authority diff):
+  same notices. It is reviewed as any forward product move (Tier 1, with the module authority diff on the card):
   `release:` doesn't move. With `product:` after the release's kernel, release.ts resolves the release only while that
   commit's CI is green (checked again on every apply) and with no images, so
   apply builds every image from the checkout. The install still follows its release: a newer release whose kernel is behind

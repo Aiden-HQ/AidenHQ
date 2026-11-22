@@ -172,7 +172,7 @@ const explanation = (id: string) => ({
   id, sentence: "An AI reviewer approved this push.",
   decider: { kind: id === "w2" ? "pending-owner" : "reviewer", words: "The AI reviewer read it and approved.", models: ["openai/gpt-luna-latest"] },
   path: ["Engineer filed the push.", "The kernel put it at Tier 1.", "The AI reviewer approved it.", "The runner pushed the branch."],
-  tier: { tier: 1, merit: 2, rule: "reviewed-path", ruleWords: "It changes a path the AI reviewer reads first (paths.yaml).", reason: "Touches the export module.", cap: null, panel: false },
+  tier: { tier: 1, merit: 2, rule: "product-pr", ruleWords: null, reason: "Touches the export module.", cap: null, panel: false },
   review: { note: "In scope: it adds the CSV export the task asked for. No secrets, no gate changes.", code: "in_scope", codeWords: "In scope: it does what the task asked.", },
   checklist: [{ id: "tests-run", result: "holds" }, { id: "scope", result: "holds" }, { id: "rollback", result: "not reported" }],
   ownerReason: null,

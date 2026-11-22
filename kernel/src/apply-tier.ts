@@ -1,29 +1,19 @@
-// kernel.apply's planner (spec §4.4 "Land", §5.7): what an instance change is, read from git by the code host, and its tier on
-// its merits. The kernel plans every kernel.apply with these rules (writes.ts `planners`), whoever files it: the release
-// train, the updater, an agent's job.
-// The plan is the record's args (the commit, its files and the module changes it brings), its card (the diff whole, bound by
-// its hash in the targets), the files for the path inventory, and a raise from the rules below; computeTier adds the floor,
-// the owner's veto and the caps. A change the rules refuse is refused at filing, saying why.
-//
-// The rules are each file's own (instance.yaml settings, overrides, pins; apps.yaml; an agent's definition, handbook or
-// memory) and the module authority diff (scripts/compiler/authority.ts) a product or modules move brings. Pure, except createApplyPlanner.
+// kernel.apply's planner (spec §4.4 "Land", §5.7): what an instance change is, read from git by the code host. The kernel
+// plans every kernel.apply with it (writes.ts `planners`), whoever files it: the release train, the updater, an agent's job.
+// The plan is the record's args (the commit, its files and the module changes it brings) and its card (the diff whole, bound by
+// its hash in the targets). Its tier is the kind's floor (1: the AI reviewer reads every apply) and computeTier's; this file adds
+// only code's hard refusals (a file that doesn't parse, a pin off product main, module changes it can't read, a routing commit
+// that moves more than routing) and the authority lines the card and the reviewer read. Pure, except createApplyPlanner.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import YAML from "yaml";
 import { readDigest, strayFiles, untrialedNewAgents, productPin, bumpTitle, type Read, type Source } from "./apply.ts";
 import { applyCard, repoKey } from "./kinds.ts";
-import { heldRoles } from "./identity.ts";
-import { authorityLines, classifyModules, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
+import { authorityLines, diffAll, forkChanges, grantOverrides, marketplaceChanges, moduleInputs, withGrantOverrides, type ModuleInput } from "../../scripts/compiler/authority.ts";
 import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
-import { REJECT, T, highest, type Part } from "./tier.ts";
 import { UPDATER, canonical, type Requester } from "./records.ts";
 import { DEFAULT_WEIGHTS, teamProblems } from "./team-routing.ts";
-
-/** The spend settings and their defaults (kernel/settings.json): raising one is the owner's. */
-const SPEND_DEFAULTS: Record<string, number> = Object.fromEntries(["spend_day_usd", "spend_month_usd", "task_usd"].map((k) => [k, JSON.parse(readFileSync(new URL("../settings.json", import.meta.url), "utf8"))[k].default]));
 
 export const parse = (text: any) => {
   try {
@@ -36,226 +26,52 @@ export const eq = (a: any, b: any) => JSON.stringify(a ?? null) === JSON.stringi
 export const changedKeys = (a: any = {}, b: any = {}) => [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].filter((k) => !eq(a?.[k], b?.[k]));
 
 /**
- * Grants `head` gives that `base` didn't: a connection added, or a wider grant (read → write, more tools). `conns` is each
- * connection's tags ({ name: { tools: { read, write, destructive } } }, from the compiled config): where `write` was, a list
- * is wider when it names any tool outside the connection's read and write tags (a destructive one: `write` never covers it),
- * and wider whenever the connection's tags aren't known (fail closed).
+ * Code's hard refusals on an apply (each a reason; any refuses it at filing) and the authority lines its card carries (the
+ * module authority diff, authorityArgs). `s`: the commit's files and both sides' texts, the product pin's move, the module
+ * state (moduleTierState), whether it is the routing loop's commit and whether the updater verified its release move.
  */
-export function newGrants(base: any = {}, head: any = {}, conns: any = {}) {
-  const out = [];
-  for (const [conn, g] of Object.entries(head ?? {})) {
-    const was = (base ?? {})[conn];
-    if (eq(was, g) || (was === "read" && g === "read")) continue;
-    if (was === "write" && g === "read") continue;
-    const tags = conns?.[String(conn).replace(/\?$/, "")]?.tools;
-    if (was === "write" && Array.isArray(g) && tags && g.every((t) => [...(tags.read ?? []), ...(tags.write ?? [])].includes(t))) continue;
-    if (Array.isArray(g) && Array.isArray(was) && g.every((t) => was.includes(t))) continue;
-    out.push(conn);
-  }
-  return out;
-}
-
-/** Routines whose `autonomy` (their cap on approvals) is set, changed or dropped: always the owner's. */
-export const routineAutonomyChanges = (b: any = {}, h: any = {}) => [...new Set([...Object.keys(b ?? {}), ...Object.keys(h ?? {})])].filter((r) => (b?.[r]?.autonomy != null || h?.[r]?.autonomy != null) && !eq(b?.[r]?.autonomy, h?.[r]?.autonomy) && h?.[r]);
-
-const AGENT_SAFE = new Set(["name", "description", "model", "reasoning_effort", "timeout_sec", "routines", "max_parallel", "heartbeat"]);
-const OVERRIDE_SAFE: Record<string, Set<string>> = { agents: new Set(["model", "reasoning_effort", "timeout_sec", "heartbeat"]), routines: new Set(["schedules", "status", "model"]) };
-
-export function applyParts(s: any) {
-  const parts = [];
+export function applyParts(s: any): { refusals: string[]; authority: string[] } {
+  const refusals: string[] = [];
   const def = (key: any, side: any) => s[side]?.[`agents/${key}/agent.yaml`];
   for (const f of s.files ?? []) {
     let m: any;
-    if (f === "instance.yaml") parts.push(...instanceParts(s));
-    else if (f === "apps.yaml") {
-      const [b, h] = [parse(s.base?.[f]), parse(s.head?.[f])];
-      parts.push(...(b === null || h === null ? [REJECT("unparseable", "apps.yaml doesn't parse")] : appsParts(b?.apps ?? [], h?.apps ?? [], s.moduleApps)));
-    } else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f))) parts.push(agentDefPart(m[1], parse(def(m[1], "base")), parse(def(m[1], "head")), s));
-    // A curated memory (the Librarian's proposal; compiled into the agent's handbook as lessons and facts, never authority): the
-    // reviewer decides, for a role holder too (owner, 2026-11-14), and flags one that redirects authority.
-    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/memory\.md$/.exec(f))) parts.push((s.roles?.[m[1]] ?? []).length ? T(1, "role-memory", `memory of ${m[1]}, which holds a role`) : T(1, "agent-memory", `memory of ${m[1]}, an agent without a role`));
+    if (f === "instance.yaml") refusals.push(...instanceRefusals(s));
+    else if (f === "apps.yaml" && (parse(s.base?.[f]) === null || parse(s.head?.[f]) === null)) refusals.push("apps.yaml doesn't parse");
+    else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/agent\.yaml$/.exec(f)) && (parse(def(m[1], "base")) === null || parse(def(m[1], "head")) === null)) refusals.push(`agents/${m[1]}/agent.yaml doesn't parse`);
     else if ((m = /^agents\/([a-z0-9][a-z0-9-]*)\/AGENTS\.md$/.exec(f))) {
       const key = m[1];
-      const base = parse(def(key, "base"));
-      const head = parse(def(key, "head"));
-      if ((s.roles?.[key] ?? []).length) parts.push(T(1, "role-handbook", `handbook of ${key}, which holds a role`));
-      // A module agent's forked handbook (overrides.agents.<key>.handbook_fork, on either side: made, edited or dropped):
-      // a handbook change like its additions; a handbook grants no authority.
-      else if (base === undefined && head === undefined && forked(s, key)) parts.push(T(1, "module-handbook", `forked handbook of ${key}, an agent without a role`));
-      else if (base === undefined) {
-        // A new agent's handbook: only alongside its new agent.yaml, in trial, in this same change; anything else is refused.
-        const added = (s.files ?? []).includes(`agents/${key}/agent.yaml`) && head?.trial === true;
-        parts.push(!added ? REJECT("handbook-without-agent", `${key}'s handbook, without a new trial agent.yaml in the change`) : s.ownerStarted ? T(0, "trial-agent-new", `${key}'s handbook, with its new trial agent, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `${key}'s handbook, with its new trial agent, on an agent-origin task`));
-      } else if (base === null) parts.push(REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`));
-      else if (base.trial === true) parts.push(s.trialNoTap ? T(0, "trial-handbook", `handbook of ${key}, an agent in trial`) : T(1, "trial-handbook-agent-task", `handbook of ${key}, an agent in trial, on an agent-origin task`));
-      else parts.push(T(1, "agent-handbook", `handbook of ${key}, a graduated agent without a role`));
-    } else if ((m = /^agents\/([\w.-]+)\.md$/.exec(f))) {
-      const roles = s.roles?.[m[1]] ?? [];
-      parts.push(roles.length ? T(1, "role-handbook", `handbook of ${m[1]}, which holds a role`) : T(1, "module-handbook", `handbook additions for ${m[1]}, an agent without a role`));
-    } else parts.push(T(1, "unrecognised-file", `${f} isn't a file apply recognises`));
+      const [base, head] = [parse(def(key, "base")), parse(def(key, "head"))];
+      // A new agent's handbook comes only with its new agent.yaml, in trial, in this same change (or as a module agent's fork).
+      if (base === undefined && !(head === undefined && forked(s, key)) && !((s.files ?? []).includes(`agents/${key}/agent.yaml`) && head?.trial === true)) refusals.push(`${key}'s handbook, without a new trial agent.yaml in the change`);
+      else if (base === null) refusals.push(`agents/${key}/agent.yaml doesn't parse`);
+    }
   }
-  return parts;
+  const release = standingRelease(parse(s.base?.["instance.yaml"]), parse(s.head?.["instance.yaml"]), s.releaseVerified === true, Boolean(s.pin?.back));
+  return { refusals, authority: authorityArgs(s, release).authority ?? [] };
 }
 
 /** Whether instance.yaml on either side forks this module agent's handbook (overrides.agents.<key>.handbook_fork). */
 const forked = (s: any, key: any) => ["base", "head"].some((side) => parse(s[side]?.["instance.yaml"])?.overrides?.agents?.[key]?.handbook_fork != null);
 
-/**
- * A routine's effective status as compile gives it (scripts/modules.ts): the instance override, else the definition's own
- * `status`, else active. Compile's quiet-start pause covers module agents only, never an instance agent's own routines.
- */
-const instanceRoutineStatus = (key: any, def: any, rk: any, instance: any) => instance?.overrides?.routines?.[`${key}-${rk}`]?.status ?? def?.routines?.[rk]?.status ?? "active";
-
-/**
- * What an instance agent's definition starts running under quiet start (instance.yaml `settings.quiet_start: on`): a heartbeat
- * turned on, or a scheduled routine whose effective status is active at head and wasn't at base. Empty when quiet start is off.
- */
-function quietWakes(key: any, base: any, head: any, instance: any) {
-  if (instance?.settings?.quiet_start !== "on" || !head) return [];
-  const beats = (d: any) => d?.heartbeat != null && d.heartbeat !== false;
-  const active = (d: any, rk: any) => Boolean(d?.routines?.[rk]?.schedules?.length) && instanceRoutineStatus(key, d, rk, instance) === "active";
-  return [...(beats(head) && !beats(base) ? ["turns a heartbeat on"] : []), ...Object.keys(head.routines ?? {}).filter((rk) => active(head, rk) && !active(base, rk)).map((rk) => `starts routine ${rk}`)];
-}
-
-/** Every gate on one definition change, the highest wins: none returns before the others have run. */
-function agentDefPart(key: any, base: any, head: any, s: any) {
-  if (base === null || head === null) return REJECT("unparseable", `agents/${key}/agent.yaml doesn't parse`);
-  if (head === undefined) return T(1, "agent-removed", `removes agent ${key}`);
-  const parts = [agentDefFields(key, base, head, s)];
-  const caps = routineAutonomyChanges(base?.routines, head.routines);
-  if (caps.length) parts.push(T(1, "routine-autonomy", `${key}: routine autonomy changes (${caps.join(", ")})`));
-  const woken = quietWakes(key, base, head, parse(s.head?.["instance.yaml"]));
-  if (woken.length) parts.push(T(2, "quiet-start", `${key}: ${woken.join(", ")} under quiet start, the owner's authority`));
-  return highest(parts);
-}
-
-/** A definition's own fields: new agent, grants, privileged fields, trial, tuning. */
-function agentDefFields(key: any, base: any, head: any, s: any) {
-  if (base === undefined) {
-    if (head.trial !== true) return T(1, "untrialed-agent", `new agent ${key} isn't in trial`);
-    // Only the safe fields (no roles, image or other privileges); any write grant goes to the reviewer at least.
-    const other = Object.keys(head).filter((k) => k !== "trial" && k !== "connections" && !AGENT_SAFE.has(k));
-    if (other.length) return T(1, "new-agent-fields", `new agent ${key} sets ${other.join(", ")}`);
-    if (Object.values(head.connections ?? {}).some((g) => g !== "read")) return T(1, "trial-agent-new-writes", `adds ${key} in trial, with write or tool-level grants`);
-    return s.ownerStarted ? T(0, "trial-agent-new", `adds ${key} in trial, on a task the owner started`) : T(1, "trial-agent-new-agent-task", `adds ${key} in trial, on an agent-origin task`);
-  }
-  const keys = changedKeys(base, head);
-  const wider = newGrants(base.connections, head.connections, s.connections);
-  if (wider.length) return T(1, "new-grants", `${key} gets new grants: ${wider.join(", ")}`);
-  const other = keys.filter((k) => k !== "connections" && k !== "trial" && !AGENT_SAFE.has(k));
-  if (other.length) return T(1, "agent-fields", `${key} changes ${other.join(", ")}`);
-  if (keys.includes("trial")) {
-    if (base.trial === true && head.trial !== true) return T(1, "graduation", `${key} graduates, keeping only the tools and connections it had in trial`);
-    return T(1, "agent-into-trial", `${key}'s trial flag changes`);
-  }
-  return T(1, "agent-tuning", `${key}: ${keys.join(", ") || "no field"} changes`);
-}
-
-/**
- * The modules a product bump or a `modules:` edit changes (spec §5.7): `s.modules` is each module's def before and after and
- * whether its code changed (the runner read them at both product commits); `s.modulesError` when it couldn't. Every module
- * change is the AI reviewer's; new authority is merit 2 (labelled for it).
- * The instance's third-party marketplace changes are read here from both instance.yaml sides; a new one is the owner's. With a
- * release, `s.effective` is each side with the release's official marketplace (the runner read it at its distro sha).
- */
-function moduleAuthorityParts(s: any, base: any, head: any, release?: string) {
-  if (s.modulesError || !s.modules) return [REJECT("unknown-content", `couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`)];
-  let markets, forks;
-  try { markets = marketplaceChanges(s.effective?.base ?? base, s.effective?.head ?? head); } catch (err: any) { return [REJECT("unparseable", `instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`)]; }
-  // Forks (spec §6.9b): read here from both sides, so entering one is the owner's whatever its code diff reads as.
-  try { forks = forkChanges(base, head); } catch (err: any) { return [REJECT("unparseable", `instance.yaml forks: ${String(err.message ?? err).slice(0, 200)}`)]; }
-  const diffs = [...markets, ...forks, ...diffAll(s.modules)];
-  // A grants override that moved but reached no module's diff was not judged: the owner's.
-  const [bo, ho] = [grantOverrides(base), grantOverrides(head)];
-  const moved = changedKeys(bo, ho);
-  const folded = (key: any) => Object.values(s.modules as Record<string, any>).some((i) => i.base?.agents?.[key] && i.head?.agents?.[key] && !eq(i.base.agents[key].connections, i.head.agents[key].connections));
-  const unjudged = moved.filter((k) => !folded(k));
-  // Not judged by any module's diff: merit 2, beside (never instead of) what the diffs say.
-  const extra = unjudged.length ? [T(2, "grants-unjudged", `the grants override of ${unjudged.join(", ")} changes, and no module's authority diff covers it`)] : [];
-  // The official marketplace moving with every module's folder tree id unchanged (the 5b switch): no authority, the reviewer's.
-  if (!diffs.length) return [...extra, ...(changedKeys(base, head).includes("marketplaces") ? [T(1, "marketplace-same-trees", "the official marketplace moves; every module's folder tree id is unchanged")] : [])];
-  // The owner's auto-updates taking an official release (owner, 2026-11-20: "auto update implies you are accepting new
-  // authority and anything else not actively malicious from the official releases"): when every change is an official
-  // module's, all of them are accepted, and the AI reviewer judges
-  // only whether the update is malicious or compromised, reading every line, never
-  // the owner. Anything else (a module that isn't official, a marketplace or fork line, an unjudged grants override) goes
-  // as below.
-  if (release && !extra.length && diffs.every((d) => d.official && d.changes.every((c) => !c.ownerOnly))) {
-    const all = diffs.flatMap((d) => d.changes);
-    // Short enough that the record's reason (writes.ts, 300 characters) is never cut: the lines carry the detail.
-    const part = T(1, "release-update", `official release ${release}, verified by the updater, under the owner's auto-updates: ${all.length} module changes, ${all.filter((c) => c.owner).length} new authority, every line after the diff; check it is not malicious or compromised`);
-    return [part];
-  }
-  const c = classifyModules(diffs);
-  return [...extra, T(c.tier, c.rule, c.reason)];
-}
-
-/**
- * A module setting's owner rules (module.yaml settings.<key>.owner): what an agent's change may not do without the owner.
- * `default`: the value the module uses where the field is unset (a new entry's, an unset or removed field's).
- */
-export type OwnerRule = { path: string; raise?: true; change?: true; to?: unknown; new?: true; before?: string; default?: unknown };
-/** A setting as its module's service reads it: the instance's value over the module's default, maps merged (lists replace). */
-const merged = (dflt: unknown, v: unknown): unknown => (isDict(dflt) && isDict(v) ? Object.fromEntries([...new Set([...Object.keys(dflt), ...Object.keys(v)])].map((k) => [k, k in v ? merged(dflt[k], v[k]) : dflt[k]])) : v === undefined ? dflt : v);
-/**
- * The values a path pattern reaches (`*`: any map key or list item; a list of maps is keyed by its items' repo, id, name or
- * key), and whether a list along the way holds one key twice (then which entry a rule compares is ambiguous).
- */
-function reach(v: unknown, path: string[], at = "", dup = { found: false }): { values: Map<string, unknown>; dup: boolean } {
-  const out = new Map<string, unknown>();
-  const walk = (x: unknown, rest: string[], here: string) => {
-    if (!rest.length) return void out.set(here, x);
-    const [seg, ...more] = rest;
-    const kids: [string, unknown][] = Array.isArray(x) ? x.map((y, i) => [String(isDict(y) ? y.repo ?? y.id ?? y.name ?? y.key ?? i : i).toLowerCase(), y]) : isDict(x) ? Object.entries(x) : [];
-    if (new Set(kids.map(([k]) => k)).size !== kids.length) dup.found = true;
-    for (const [k, y] of kids) if (seg === "*" || k === seg) walk(y, more, `${here}.${k}`);
-  };
-  walk(v, path, at);
-  return { values: out, dup: dup.found };
-}
-/**
- * What an agent's change to a setting does that its module makes the owner's (OwnerRule), each value read as the module runs
- * it (unset or removed: the rule's default; the setting's default under both sides): `raise`, a number above what it was (a
- * new entry: above the default); `change`, any different value; `to`, the value newly set to that (an entry removed holds its
- * default from then: removing one that held another value sets it to the default); `new`, a value (its part before `before`)
- * none had before. A list holding one key twice is the owner's too.
- */
-export function ownerRaises(key: string, rules: OwnerRule[], dflt: unknown, base: unknown, head: unknown): string[] {
-  // A value of another shape than its default (a string where a list is meant) is one the rules can't read: the owner's.
-  const shape = (v: unknown) => (Array.isArray(v) ? "list" : isDict(v) ? "map" : typeof v);
-  if (head != null && dflt != null && shape(head) !== shape(dflt)) return [`${key}: a ${shape(head)} where its default is a ${shape(dflt)}`];
-  const [b, h] = [merged(dflt, base), merged(dflt, head)];
+/** instance.yaml's refusals: either side unparseable, module changes that can't be read, a pin off product main, a routing commit that moves more. */
+function instanceRefusals(s: any): string[] {
+  const base = parse(s.base?.["instance.yaml"]);
+  const head = parse(s.head?.["instance.yaml"]);
+  if (!base || !head) return ["instance.yaml doesn't parse"];
   const out: string[] = [];
-  for (const r of rules) {
-    const path = String(r.path).split(".").filter(Boolean);
-    if (r.new) {
-      const [bv, hv] = [reach(b, path), reach(h, path)];
-      if (hv.dup) out.push(`${key}: an entry listed twice`);
-      const norm = (x: unknown) => (typeof x === "string" ? (r.before ? x.split(r.before)[0]! : x).toLowerCase() : JSON.stringify(x));
-      const had = new Set([...bv.values.values()].map(norm));
-      for (const [at, now] of hv.values) if (!had.has(norm(now))) out.push(`${key}${at}: new ${JSON.stringify(norm(now)).slice(0, 60)}`);
-      continue;
-    }
-    // The entries holding the field (the setting itself for a top-level field), and the field's value in each, or its default.
-    const leaf = path.at(-1)!;
-    const [bv, hv] = [reach(b, path.slice(0, -1)), reach(h, path.slice(0, -1))];
-    if (hv.dup) out.push(`${key}: an entry listed twice`);
-    const val = (e: unknown) => (isDict(e) && e[leaf] !== undefined ? e[leaf] : r.default);
-    for (const [at, entry] of hv.values) {
-      if (entry === null) continue; // switched off (a default reviewer set to null): it runs nothing
-      const now = val(entry);
-      const was = bv.values.has(at) ? val(bv.values.get(at)) : r.default;
-      const hit = r.raise ? typeof now === "number" && now > (typeof was === "number" ? was : 0)
-        : r.change ? !eq(was, now)
-        : "to" in r ? eq(now, r.to) && !eq(was, r.to) : false;
-      if (hit) out.push(`${key}${at}.${leaf}: ${r.raise ? "raised" : r.change ? "changed" : "set"} to ${JSON.stringify(now).slice(0, 60)}`);
-    }
-    if ("to" in r) for (const [at, entry] of bv.values) {
-      if (hv.values.has(at) || entry === null || !eq(r.default, r.to) || eq(val(entry), r.to)) continue;
-      out.push(`${key}${at}.${leaf}: removed, so ${JSON.stringify(r.to).slice(0, 60)}`);
-    }
+  const keys = changedKeys(base, head);
+  if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) {
+    if (s.modulesError || !s.modules) out.push(`couldn't read the module changes${s.modulesError ? ` (${s.modulesError})` : ""}; try again`);
+    try { marketplaceChanges(s.effective?.base ?? base, s.effective?.head ?? head); } catch (err: any) { out.push(`instance.yaml marketplaces: ${String(err.message ?? err).slice(0, 200)}`); }
+    try { forkChanges(base, head); } catch (err: any) { out.push(`instance.yaml forks: ${String(err.message ?? err).slice(0, 200)}`); }
   }
-  return [...new Set(out)];
+  if (keys.includes("product") && !s.pin?.forward && !s.pin?.back) out.push("the product pin moves, and not along product main");
+  // The routing learning loop's own commit (the kernel wrote it: `s.routingTune`) moves only members' repos and routing weights.
+  if (keys.includes("teams") && s.routingTune) {
+    const routing = routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]);
+    if ("problem" in routing) out.push(`a routing change moves only members' repos and routing weights: ${routing.problem}`);
+  }
+  return out;
 }
 
 /**
@@ -268,83 +84,6 @@ export function standingRelease(base: any, head: any, verified: boolean, back: b
   const auto = (i: any) => i?.settings?.auto_update !== "off";
   const ok = verified && base?.release != null && head?.release != null && eq(base.release?.source, head.release?.source) && auto(base) && auto(head) && !back;
   return ok && typeof head.release.name === "string" ? head.release.name : undefined;
-}
-
-function instanceParts(s: any) {
-  const base = parse(s.base?.["instance.yaml"]);
-  const head = parse(s.head?.["instance.yaml"]);
-  if (!base || !head) return [REJECT("unparseable", "instance.yaml doesn't parse")];
-  const parts = [];
-  const keys = changedKeys(base, head);
-  // Module authority: what the modules hand out moves with the pins and lists, and with an agent's grants override
-  // (overrides.agents.<key>.connections, folded into its module's def, so the authority diff judges it like a module grant).
-  const release = standingRelease(base, head, s.releaseVerified === true, Boolean(s.pin?.back));
-  if (["product", "modules", "marketplaces", "release", "product_fork"].some((k) => keys.includes(k)) || !eq(grantOverrides(base), grantOverrides(head))) parts.push(...moduleAuthorityParts(s, base, head, release));
-  // Following a release is the owner's (docs/design/release-updates.md). The one exception: the kernel's release updater moving
-  // the pin along the same source, forward, while auto-updates are on (both sides; unset is on), to exactly the instance.yaml
-  // it verified itself for this base (`s.releaseVerified`: the planner checked it, never the requester's say-so). That is the
-  // owner's standing authority, so the reviewer's. Any other add or move is the owner's after the reviewer; the module parts
-  // above still raise new authority to the owner. Dropping the pin leaves the module parts above to judge.
-  if (keys.includes("release") && head.release != null) {
-    parts.push(release
-      ? T(1, "release-pin", "the release updater moves this instance to the next release it verified, while auto-updates are on: the owner's standing authority")
-      : T(2, "release-pin", "adds or moves the release this instance follows: the owner's authority, unless it is the updater's verified move while auto-updates are on"));
-  }
-  else if (keys.includes("release") && !parts.length) parts.push(T(1, "release-pin", "the release pin is removed; what it resolved to is unchanged"));
-  for (const k of keys) {
-    if (k === "modules" || k === "marketplaces" || k === "release" || k === "product_fork") continue; // the module parts above (a release by what it resolves to)
-    // A rollback can undo a security fix: the reviewer reads it. A pin off product main is refused.
-    if (k === "product") parts.push(s.pin?.forward ? T(1, "pin-forward", "the product pin moves forward along product main") : s.pin?.back ? T(1, "pin-backwards", "the product pin moves backwards (a rollback)") : REJECT("pin-unknown", "the product pin moves, and not along product main"));
-    else if (k === "settings") {
-      // Every setting is the reviewer's. (Slack channels agents post to are no special case since 2f: a post to a channel off
-      // slack_post_channels is itself a Tier 2 slack.post record.)
-      for (const sk of changedKeys(base.settings, head.settings)) {
-        parts.push(T(1, "settings", `changes the setting ${sk}`));
-        // An agent's change (never the owner's own, nor the kernel's) that does what the setting's module makes the owner's:
-        // more spend, a wider reach (settings.<key>.owner, compiled into the catalog).
-        const def = s.settingDefs?.[sk];
-        const raised = s.byAgent && Array.isArray(def?.owner) ? ownerRaises(sk, def.owner, def.default, base.settings?.[sk], head.settings?.[sk]) : [];
-        if (raised.length) parts.push(T(2, "setting-owner", `an agent's change the owner decides: ${raised.join("; ")}`.slice(0, 600)));
-      }
-      // Spend is the owner's authority under every autonomy: raising the install's limits or the task cap. Only a finite positive
-      // number at or under the old value tightens it; unset is the default (SPEND_DEFAULTS, kernel/settings.json).
-      for (const [sk, dflt] of Object.entries(SPEND_DEFAULTS)) {
-        const [was, now] = [base.settings?.[sk] ?? dflt, head.settings?.[sk] ?? dflt];
-        const tighter = typeof now === "number" && Number.isFinite(now) && now > 0 && now <= Number(was);
-        if (!eq(was, now) && !tighter) parts.push(T(2, "spend-cap", `raises ${sk} (${JSON.stringify(was).slice(0, 40)} → ${JSON.stringify(now).slice(0, 40)}): spend is the owner's authority`));
-      }
-      if (base.settings?.quiet_start === "on" && head.settings?.quiet_start !== "on") parts.push(T(2, "quiet-start", "turns quiet start off, so every module schedule and heartbeat starts: the owner's authority"));
-      // Release updates (docs/design/release-updates.md): auto-updates on is the owner's standing authority to install releases.
-      if (base.settings?.auto_update === "off" && head.settings?.auto_update !== "off") parts.push(T(2, "auto-update", "turns release auto-updates back on, so each new release installs itself at night: the owner's authority"));
-      // Autonomy is the owner's authority: any loosening (off → tier0 or full, tier0 → full; unset is off) is theirs to tap.
-      const rank = (v: unknown) => ({ tier0: 1, full: 2 } as Record<string, number>)[String(v)] ?? 0;
-      if (rank(head.settings?.autonomy) > rank(base.settings?.autonomy)) parts.push(T(2, "autonomy", `loosens autonomy (${base.settings?.autonomy ?? "off"} → ${String(head.settings?.autonomy).slice(0, 20)}): the owner's authority`));
-    } else if (k === "overrides") {
-      for (const kind of changedKeys(base.overrides, head.overrides)) {
-        const safe = OVERRIDE_SAFE[kind];
-        for (const name of changedKeys(base.overrides?.[kind], head.overrides?.[kind])) {
-          const all = changedKeys(base.overrides?.[kind]?.[name], head.overrides?.[kind]?.[name]);
-          // An agent's grants are the module parts' (above); its handbook fork is a handbook change like its additions.
-          const fields = kind === "agents" ? all.filter((x) => x !== "connections" && x !== "handbook_fork") : all;
-          if (kind === "agents" && all.includes("handbook_fork")) parts.push((s.roles?.[name] ?? []).length ? T(1, "role-handbook", `handbook fork of ${name}, which holds a role`) : T(1, "module-handbook", `handbook fork of ${name}, an agent without a role`));
-          if (!fields.length) continue;
-          // Under quiet start, what the owner hasn't turned on stays off until they tap: a routine to active, a heartbeat on.
-          const [b, h] = [base.overrides?.[kind]?.[name] ?? {}, head.overrides?.[kind]?.[name] ?? {}];
-          if (head.settings?.quiet_start === "on" && (kind === "routines" ? fields.includes("status") && h.status === "active" && b.status !== "active" : kind === "agents" && fields.includes("heartbeat") && h.heartbeat != null && h.heartbeat !== false))
-            parts.push(T(2, "quiet-start", `overrides ${kind} ${name}: turns on scheduled work under quiet start, the owner's authority`));
-          parts.push(safe && fields.every((x) => safe.has(x)) ? T(1, kind === "agents" ? "model-change" : "routine-schedule", `${kind} ${name}: ${fields.join(", ")}`) : T(1, "overrides", `overrides ${kind} ${name}: ${fields.join(", ")}`));
-        }
-      }
-    } else if (k === "teams") {
-      // The routing learning loop's own commit (the kernel wrote it: `s.routingTune`), proven by the one routing gate to move
-      // only members' repos and routing weights: routing data, the reviewer's; anything more is refused. Any other change:
-      // members, repos, weights and the rest: the reviewer's.
-      const routing = s.routingTune ? routingDiff(s.base?.["instance.yaml"], s.head?.["instance.yaml"]) : undefined;
-      if (routing) parts.push("leaves" in routing ? T(1, "routing-only", `team routing only: ${routing.leaves.map((l) => l.path.slice(1).join(".")).join(", ")}`.slice(0, 300)) : REJECT("routing-scope", `a routing change moves only members' repos and routing weights: ${routing.problem}`));
-      else for (const t of changedKeys(base.teams, head.teams)) parts.push(T(1, "teams", `changes team ${t}`));
-    } else parts.push(T(1, "instance-key", `changes ${k} in instance.yaml`));
-  }
-  return parts;
 }
 
 // ---- Team routing (the learning loop, routing-tune.ts): the one routing gate ----
@@ -399,61 +138,10 @@ export function routingDiff(baseText: string | undefined, headText: string | und
 }
 
 /**
- * An app entry as apps-mcp's AppSchema leaves it (modules/apps-platform/apps-mcp/src/registry.ts): defaults, and `database` / `api` adding
- * their network and secrets. Kept in step with it by hand; the tiers test pins the cases.
- */
-export function normalizeApp(raw: any) {
-  const a = { caps: [], connects: [], secrets: [], stateful: false, untrusted: false, ...(raw ?? {}) };
-  if (a.database) a.connects = [...new Set([...a.connects, a.database])];
-  a.secrets = [...new Set([...a.secrets, ...(a.database ? ["DATABASE_URL"] : [])])];
-  return a;
-}
-
-/** apps-mcp's isSensitive, as a list of reasons: access, database, stateful, untrusted, caps, or connects to paperclip or a restricted app. */
-export function sensitiveTraits(app: any, all: any) {
-  return [
-    app.access && "access",
-    app.share && "share (people outside the tailnet)",
-    app.panel && "panel (owner's nav pin)",
-    app.database && "database",
-    app.stateful && "stateful",
-    app.untrusted && "untrusted",
-    app.caps.length && "caps",
-    app.connects.some((c: any) => c === "paperclip" || c === "sources" || all.find((x: any) => x.name === c && (x.access || x.share))) && "connects to paperclip, the sources network, or a restricted or shared app",
-  ].filter(Boolean);
-}
-
-/**
- * The registry change, per app: everything apps-mcp calls sensitive is authority-expanding (labelled for the reviewer), except the spec's
- * one carve-out (an app whose only sensitive trait is `database: warehouse`, ordinary DB provisioning: Tier 1). New secrets
- * (after the schema's additions) and an API write path are labelled too. Removing an app is the reviewer's.
- * `moduleApps`: the module apps, for restricted-app lookups.
- */
-export function appsParts(base: any, head: any, moduleApps: any = []) {
-  const list = (l: any) => (Array.isArray(l) ? l : []).map(normalizeApp);
-  const was = new Map(list(base).map((a) => [a.name, a]));
-  const now = new Map(list(head).map((a) => [a.name, a]));
-  const all = [...now.values(), ...list(moduleApps)];
-  const parts = [];
-  for (const name of [...was.keys()].filter((n) => !now.has(n))) parts.push(T(1, "app-removed", `removes app ${name}`));
-  for (const [name, a] of now) {
-    const b = was.get(name);
-    if (eq(a, b)) continue;
-    const traits = sensitiveTraits(a, all);
-    const secrets = a.secrets.filter((x: any) => !(b?.secrets ?? []).includes(x) && !(x === "DATABASE_URL" && a.database === "warehouse"));
-    const warehouseOnly = traits.length === 1 && traits[0] === "database" && a.database === "warehouse";
-    const why = [...(warehouseOnly ? [] : traits), a.api && "an API write path", secrets.length && `new secrets ${secrets.join(", ")}`].filter(Boolean);
-    if (why.length) parts.push(T(1, "sensitive-app", `app ${name}: ${why.join(", ")}`));
-    else parts.push(T(1, warehouseOnly ? "app-warehouse" : "app-registry", `${b ? "changes" : "adds"} app ${name}${warehouseOnly ? " (a warehouse database)" : ""}`));
-  }
-  return parts;
-}
-
-/**
- * The module side of an apply (moduleAuthorityParts, spec §5.7): when the product pin, the `modules:` list, a marketplace, a
+ * The module side of an apply (its authority lines, spec §5.7): when the product pin, the `modules:` list, a marketplace, a
  * release, a fork or an agent's grants override moves, each module's manifest on both sides (the loader reads them at the
  * product commits, which `product` must hold) and whether its code changed. { modulesError } when anything can't be read: the
- * tier fails closed.
+ * apply is refused.
  */
 export function moduleTierState(baseText: string | undefined, headText: string | undefined, product: string) {
   if (baseText === undefined || headText === undefined) return {};
@@ -525,8 +213,7 @@ export async function productBump(from: string | undefined, to: string | undefin
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
   args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; release?: string };
-  targets: { diff: string; content: string }; card: Record<string, string>; paths: { repo: string; files: { path: string }[] }[];
-  raise?: { tier: 1 | 2; reason?: string; rule?: string };
+  targets: { diff: string; content: string }; card: Record<string, string>;
 };
 export class Refused extends Error {
   status = 422;
@@ -549,14 +236,6 @@ export function createApplyPlanner(h: {
   product: ProductGit;
   /** The module side of an instance.yaml change (moduleTierState over the product checkout). */
   modules(baseText: string | undefined, headText: string | undefined): ReturnType<typeof moduleTierState>;
-  /** Each agent's roles, by its key (the grants table). */
-  roles(): Record<string, string[]>;
-  /** Each connection's tool tags (config/kernel/connections.json). */
-  connections(): Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
-  /** The module apps (config/apps.modules.yaml), for restricted-app lookups. */
-  moduleApps(): unknown[];
-  /** The enabled modules' setting declarations by key (config/modules.json): each one's default and owner rules. */
-  settingDefs?(): Record<string, { default?: unknown; owner?: OwnerRule[] }>;
   /**
    * The instance.yaml the release updater would write for release `name` at distro commit `sha` on this base, after every
    * check it makes (updates.ts verify); null when the release fails one or can't be checked.
@@ -575,7 +254,7 @@ export function createApplyPlanner(h: {
   return async function plan({ args, requester, task, workspace }: { args: unknown; requester?: Requester; task?: string; workspace?: string }): Promise<ApplyPlan> {
     const a = (args ?? {}) as { repo?: unknown; branch?: unknown; sha?: unknown };
     if (typeof a.repo !== "string" || typeof a.branch !== "string" || typeof a.sha !== "string") throw new Refused("name the commit to apply: {repo, branch, sha}");
-    // The configured instance repo, never the requester's spelling of it: what is read, tiered by path and landed.
+    // The configured instance repo, never the requester's spelling of it: what is read and landed.
     const repo = h.instanceRepo();
     if (!repo || !repoKey(repo)) throw new Refused("the instance repo isn't set here (AIDENHQ_INSTANCE_REPO), so nothing can be applied");
     if (repoKey(a.repo) !== repoKey(repo)) throw new Refused(`an apply lands only on the instance repo (${repo}), not ${a.repo.slice(0, 100)}`);
@@ -595,22 +274,16 @@ export function createApplyPlanner(h: {
     const notes = h.notes?.(a.sha, requester, task);
     // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
-    // The kind's floor is 1 (every apply is read by the reviewer), so the rules' Tier 0 trial exceptions (ownerStarted,
-    // trialNoTap) never lower anything here.
-    // An agent's settings change meets its module's owner rules: only the owner's settings change and the kernel's own (kind
-    // kernel) are exempt; no requester counts as an agent (fail closed).
     const releaseVerified = !eq(parse(baseI)?.release, parse(headI)?.release) && (await updaterMove(requester, baseI, headI));
-    const t = highest(applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), roles: h.roles(), connections: h.connections(), moduleApps: h.moduleApps(), settingDefs: h.settingDefs?.() ?? {}, byAgent: requester?.kind !== "kernel", ownerStarted: false, trialNoTap: false, releaseVerified, ...st }));
-    if (t.reject) throw new Refused(String(t.reason));
+    const { refusals, authority } = applyParts({ files: c.files, base: c.texts.base, head: c.texts.head, pin: bump ? { forward: bump.forward, back: bump.back } : null, routingTune: Boolean(notes), releaseVerified, ...st });
+    if (refusals.length) throw new Refused(refusals.join("; "));
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
-    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...authorityArgs(st, release), ...(release ? { release } : {}) };
+    const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...(authority.length ? { authority } : {}), ...(release ? { release } : {}) };
     const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote, c.trial].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const card = applyCard(full, details);
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
-      paths: [{ repo, files: c.files.map((path) => ({ path })) }],
-      ...(t.tier >= 1 ? { raise: { tier: t.tier as 1 | 2, ...(t.reason ? { reason: String(t.reason) } : {}), ...(t.rule ? { rule: String(t.rule) } : {}) } } : {}),
     };
   };
 }
@@ -628,18 +301,11 @@ export const hostProduct = (repo: string): ProductGit => ({
   log: (range) => git(repo, ["log", "--oneline", "--no-decorate", range]),
 });
 
-/** The planner on this host: the code host's read, the product checkout, and the compiled grants, connections and apps. */
-export function hostPlanner({ repo, instanceRepo, configDir, read, grants, connections, verifyRelease, notes }: {
-  repo: string; instanceRepo: () => string | undefined; configDir: string; read: (s: Source) => Promise<Read>;
+/** The planner on this host: the code host's read and the product checkout. */
+export function hostPlanner({ repo, instanceRepo, read, verifyRelease, notes }: {
+  repo: string; instanceRepo: () => string | undefined; read: (s: Source) => Promise<Read>;
   verifyRelease: (baseText: string, name: string, sha: string) => Promise<string | null>;
-  grants: () => Record<string, { key?: string; roles?: string[] } | undefined>;
-  connections: () => Record<string, { tools: { read: string[]; write: string[]; destructive: string[] } }>;
   notes?: (sha: string, requester: Requester | undefined, task: string | undefined) => string | undefined;
 }): ApplyPlanner {
-  return createApplyPlanner({
-    instanceRepo, read, notes, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), connections, verifyRelease,
-    roles: () => Object.fromEntries(Object.entries(grants()).flatMap(([id, a]) => (a?.key ? [[a.key, heldRoles(grants() as never, id)]] : []))),
-    moduleApps: () => { try { return ((YAML.parse(readFileSync(join(configDir, "apps.modules.yaml"), "utf8")) ?? {}).apps ?? []).filter(Boolean); } catch { return []; } },
-    settingDefs: () => Object.assign({}, ...(JSON.parse(readFileSync(join(configDir, "modules.json"), "utf8")) as { enabled?: boolean; settings?: Record<string, unknown> }[]).filter((m) => m.enabled).map((m) => m.settings ?? {})),
-  });
+  return createApplyPlanner({ instanceRepo, read, notes, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), verifyRelease });
 }
