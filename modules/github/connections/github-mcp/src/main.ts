@@ -101,9 +101,16 @@ const tokenGeneration = () => {
     return "";
   }
 };
-const needs = needQueue({ kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json"), generation: tokenGeneration });
+const needs = needQueue({
+  kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json"), generation: tokenGeneration,
+  // A kept scope need the fresh grant now covers is the owner's fix already made (empty scopes say nothing: never "fixed").
+  covers: (scope) => access.scopes().includes(scope),
+});
 // tellOwner is fire-and-forget (the poster's best-effort reads must not wait); each route awaits `needs.tell(err)` itself where
 // the reply must carry the report. Needs kept from an earlier failure are flushed at the top of those routes, never before auth.
+// A retry of its own, so an install without code-review still retries a kept report after the kernel comes back (no route needed).
+const needRetry = setInterval(() => void needs.flush(), 30_000);
+needRetry.unref?.();
 const tellOwner = (err: unknown) => void needs.tell(err);
 
 const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);

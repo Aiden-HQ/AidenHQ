@@ -65,6 +65,24 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     ]);
   });
 
+  // The owner reconnects with `workflow` ticked while the notice is kept: replaying it would mark the fresh grant down.
+  it("a kept workflow-scope need the fresh grant covers is dropped, not replayed", async () => {
+    let scope = "repo, read:org, project";
+    const k = replies([busy()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, covers: (s) => scope.split(", ").includes(s) });
+    const need = new GitHubNeed({ cause: "scope", scope: "workflow" }, "GitHub needs the `workflow` permission");
+    await q.tell(need);
+    expect(q.pending()).toBe(1);
+    scope = "repo, read:org, workflow, project";
+    await q.flush();
+    expect(k.seen, "the fixed grant was not told it lacks the scope").toHaveLength(1);
+    expect(q.pending()).toBe(0);
+    // A need met after the grant is not staged at all.
+    await q.tell(need);
+    expect(q.pending()).toBe(0);
+    expect(k.seen).toHaveLength(1);
+  });
+
   it("a permanent refusal (a 4xx) is dropped, not retried on every request", async () => {
     const k = replies([bad()]);
     const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
