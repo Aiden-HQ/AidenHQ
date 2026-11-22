@@ -306,6 +306,26 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   writeFileSync(join(c2.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/24:h24:m1": "ok" } } }));
   await c2.watch.tick(); await c2.watch.tick();
   assert.equal(c2.gh.filter((g) => g.includes("24/update-branch")).length, 0, "an acceptance the older version recorded is carried over, not re-asked");
+  // The migrated timestamp is persisted before it is waited on: a restart a moment later still waits rather than re-asking.
+  {
+    const migrated = await rig(t, { behind: 2 });
+    migrated.set([migrated.agentPr(26, redPr(26))]);
+    writeFileSync(join(migrated.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/26:h26:m1": "ok" } } }));
+    await migrated.watch.tick();
+    const db = JSON.parse(readFileSync(join(migrated.cacheDir, "pr-watch.json"), "utf8"));
+    assert.ok(db["acme/app"]?.updatedOk?.["https://github.com/acme/app/pull/26:h26"], "the migrated acceptance is on disk after the poll that waited on it");
+    await migrated.watch.tick();
+    assert.equal(migrated.gh.filter((g) => g.includes("26/update-branch")).length, 0, "and it is still waited for");
+  }
+  // A silent update GitHub made must not spend the head's wake budget: the counter is untouched, so the red-check and rebase asks
+  // later at the same head still have all three.
+  {
+    const budget = await rig(t, { behind: 2, update: 201 });
+    budget.set([budget.agentPr(27, redPr(27))]);
+    await budget.watch.tick();
+    const db = JSON.parse(readFileSync(join(budget.cacheDir, "pr-watch.json"), "utf8"));
+    assert.equal(db["acme/app"]?.wakes?.["https://github.com/acme/app/pull/27"]?.n ?? 0, 0, "an update GitHub made is not a wake to the task");
+  }
   // But a waiter is not forever: an accepted update GitHub never applied is asked again, and repeated accepts end in the wake.
   const lost = await rig(t, { behind: 2, update: 201 });
   lost.set([lost.agentPr(25, redPr(25))]);

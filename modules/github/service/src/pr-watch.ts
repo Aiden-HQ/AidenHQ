@@ -152,7 +152,10 @@ export function startPrWatch(o: PrWatchOptions) {
      * GitHub updated instead). "sent" and "capped" are settled; "failed" (the kernel didn't take it: a restart) counts nothing,
      * and the caller records nothing, so the next tick sends it again.
      */
-    async function wake(pr: Json, task: string, text?: string): Promise<"sent" | "capped" | "failed"> {
+    async function wake(pr: Json, task: string, text?: string, { counts = true } = {}): Promise<"sent" | "capped" | "failed"> {
+      // A silent wake (an update GitHub made) is not an ask to a task: it must not spend the head's budget of real wakes. Every
+      // wake taken from it leaves the extra ones for the red-check and rebase asks later at the same head.
+      if (!counts) { save(); return "sent"; }
       const w = state.wakes[pr.url.toLowerCase()]?.head === pr.headRefOid ? state.wakes[pr.url.toLowerCase()] : { head: pr.headRefOid, n: 0 };
       if (w.n >= MAX_WAKES) {
         log("wake cap reached", { pr: pr.url, head: pr.headRefOid });
@@ -264,7 +267,7 @@ export function startPrWatch(o: PrWatchOptions) {
       // head yet, and main advancing meanwhile must not send a second request for a head that is already being updated. A queue
       // written before this field existed kept "ok" in `updated`: that acceptance is carried over here, so an update in flight
       // when the module was upgraded is still waited for rather than asked again.
-      if (priorOk) state.updatedOk[tries] ??= new Date().toISOString();
+      if (priorOk && !state.updatedOk[tries]) { state.updatedOk[tries] = new Date().toISOString(); save(); } // persisted before it is waited on
       const accepted = state.updatedOk[tries];
       if (accepted && Date.now() - Date.parse(accepted) < UPDATE_OK_WAIT_MIN * 60_000) return true; // waited for, not asked about
       if (accepted) {
@@ -308,7 +311,7 @@ export function startPrWatch(o: PrWatchOptions) {
           // Clearing it here would let a GitHub that keeps accepting without applying reset the count on every poll.
           delete state.updated[key];
           state.updatedOk[tries] = new Date().toISOString();
-          await wake(pr, "");
+          await wake(pr, "", undefined, { counts: false });
           log("branch updated in code", { pr: pr.url, head: pr.headRefOid, base, update_method });
           return true;
         }
