@@ -252,7 +252,9 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
   // Length-preserving, so an index into `clean` is the same index into `code`.
-  const clean = code.replace(/\d*>&\d+/g, (d: string) => " ".repeat(d.length));
+  // A duplication's operand may be quoted too (`2>&"1"` is the same as `2>&1`), and a quoted run is masked here, so
+  // the quoted content is read back to tell a descriptor number from an ambiguous redirect, which bash rejects.
+  const clean = code.replace(/\d*>&(?:\uE000(\d+)\uE001|(\d+))/g, (d: string, q: string | undefined) => (q === undefined || /^\d+$/.test(quoted[Number(q)]!)) ? " ".repeat(d.length) : d);
   // The pipeline elements of the line, with the operator before each: one ends a chain (`;`), the next reads the previous
   // one's stdout (`|`).
   const parts: { text: string; start: number; end: number; op?: string }[] = [];

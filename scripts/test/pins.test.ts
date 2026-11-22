@@ -290,6 +290,13 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   assert.match(fdResult.problems[0], /install foo/);
   const fdPin = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&1 /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
   assert.deepEqual(scanFile("Dockerfile", fdPin).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // A quoted descriptor is the same duplication (`2>&"1"`), so the operand list does not end at its `&`.
+  const fdQuoted = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&"1" /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  const fdQuotedResult = scanFile("Dockerfile", fdQuoted);
+  assert.equal(fdQuotedResult.problems.length, 1);
+  assert.match(fdQuotedResult.problems[0], /install foo/);
+  const fdQuotedPin = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&"1" /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", fdQuotedPin).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
   const unfed = `FROM debian:bookworm${d}\nRUN echo 'deb https://discarded.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo=1.0\n`;
   const unfedResult = scanFile("Dockerfile", unfed);
   assert.deepEqual(unfedResult.problems, []);
