@@ -55,7 +55,7 @@ async function gate(app: typeof tailnet, base: string, node = true) {
 function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ips?: string[]; keep?: number[]; proc?: string } = {}) {
   const probes = identityProbes(app, true, app.health.url ? new URL(app.health.url).pathname : undefined);
   const forged = forgedIdentity(app.name, noKey);
-  const input = { ports: exposed, ips: o.ips ?? [], tls: noHttpSurface(app), ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+  const input = { ports: exposed, ips: o.ips ?? [], tls: true, ...(o.proc ? { proc: o.proc } : {}), probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
@@ -374,6 +374,17 @@ describe("identity gate", () => {
     const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false });
     expect(noHttpSurface(db)).toBe(true);
     const r = await scan(db, [await tlsResponder()]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS \(a TLS ClientHello got a TLS record\)/) });
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("judges TLS-wrapped HTTP hard on an exposed app too: the ClientHello runs on every app shape", async () => {
+    // The doc's promise is unconditional: a socket that answers HTTP over TLS is judged, never skipped, on every app shape.
+    // An exposed app does not get the app-level skip, but its plaintext look reads a TLS alert as a plain banner, which is a
+    // non-hard skip. Without the ClientHello here an HTTPS listener on an exposed app would pass with a warning. hello2 is
+    // exposed (parseApp's default) with no health.url, the shape the banner skip used to cover.
+    expect(noHttpSurface(hello2)).toBe(false);
+    const r = await scan(hello2, [await tlsResponder()]);
     expect(r.ok).toBe(false);
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS \(a TLS ClientHello got a TLS record\)/) });
   }, 60_000);

@@ -217,7 +217,7 @@ export function judgeIdentity(answers: { probe: IdentityProbe; status: number }[
 export interface PortAnswers {
   service: string; port: number; host: string; listening: boolean;
   raw?: "banner" | "refused" | "http" | "closed" | "silent";
-  /** On an app the skip may cover: what a TLS ClientHello got, `tls` a TLS record header, `no` anything else. */
+  /** What a TLS ClientHello got on a socket that answered no HTTP: `tls` a TLS record header, `no` anything else. */
   tls?: "tls" | "no";
   answers: { probe: IdentityProbe; status: number }[];
 }
@@ -228,10 +228,10 @@ export interface PortAnswers {
  * didn't is skipped when it clearly isn't HTTP (a non-HTTP banner), when nothing listens on an exposed port, or when the
  * app serves no HTTP at all (`noHttp`: not exposed, not shared, no health.url, no api), so its ports are recorded as
  * non-hard "not probed" findings; never on a port the registry says is HTTP (required). The plaintext look cannot tell a
- * database from a TLS listener that hangs up on a GET, so for such an app a TLS ClientHello decides: a TLS record is
- * "answers HTTPS" and hard, and only a socket that answered no HTTP and no TLS is skipped. Any other silence, `closed`
- * and `silent` included, fails closed. No socket at all: nobody can reach the app, the one skip, every skip a non-hard
- * finding.
+ * database from a TLS listener that hangs up on a GET, so every socket that answered no HTTP gets a TLS ClientHello too,
+ * on every app shape: a TLS record is "answers HTTPS" and hard before any skip, and a socket on an app the skip may cover
+ * is only skipped when the ClientHello says no TLS. Any other silence, `closed` and `silent` included, fails closed. No
+ * socket at all: nobody can reach the app, the one skip, every skip a non-hard finding.
  */
 export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = [], noHttp = false): ProbeResult {
   const name = (p: { service: string; port: number | string }) => `${p.service}:${p.port}`;
@@ -253,6 +253,12 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
       hard("answers HTTP (a plaintext GET got an HTTP reply), so it isn't a database speaking its own protocol: not skipped");
       continue;
     }
+    // A TLS record in answer to a ClientHello is an HTTPS listener on any app shape: never skipped, whatever the plaintext
+    // look read its alert as.
+    if (p.tls === "tls") {
+      hard("answers HTTPS (a TLS ClientHello got a TLS record), so it isn't a database speaking its own protocol: not skipped");
+      continue;
+    }
     // A port nothing listens on on an exposed app is a skip, on any app shape, before the app-level rule.
     if (p.raw === "refused" && !p.listening && !req) {
       findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
@@ -263,14 +269,13 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
     // skipped: the TLS ClientHello does, because a TLS listener hangs up on a GET exactly as a database does.
     const why = req ? undefined
       : noHttp ? (p.tls === "no" ? "the app isn't exposed, isn't shared and has no health.url or api, so it isn't expected to serve HTTP (not HTTP, not TLS)" : undefined)
-      : p.raw === "banner" ? "speaks something other than HTTP"
+      : p.raw === "banner" && p.tls === "no" ? "speaks something other than HTTP"
       : undefined;
     if (why) {
       findings.push({ hard: false, what: `${at(p)}: not probed: ${why}` });
       continue;
     }
-    if (noHttp && p.tls === "tls") hard("answers HTTPS (a TLS ClientHello got a TLS record), so it isn't a database speaking its own protocol: not skipped");
-    else if (noHttp) hard(`${UNCONFIRMED}: the TLS probe didn't answer, so a listener that serves HTTPS can't be ruled out (no HTTP answer: ${p.raw ?? "none"})`);
+    if (noHttp) hard(`${UNCONFIRMED}: the TLS probe didn't answer, so a listener that serves HTTPS can't be ruled out (no HTTP answer: ${p.raw ?? "none"})`);
     else hard(`${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})`);
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
@@ -285,7 +290,7 @@ export const PORT_PROBE_MS = 3_000;
  * process of this pid namespace holds it: its inode appears as a `socket:[<inode>]` fd of some /proc/<pid>/fd. A listener
  * no fd attributes (it vanished between the two reads) is dropped too; the registry's required doors are still checked.
  * stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
- * headers }[], tls: boolean (the app may be skipped, so a TLS ClientHello decides), and `proc`, the proc root those pids and
+ * headers }[], tls: boolean (send a TLS ClientHello to a socket that answered no HTTP: an HTTPS listener is never skipped), and `proc`, the proc root those pids and
  * net tables are read from (the platform leaves it unset: /proc; a test passes a fixture tree). Every such socket (but
  * Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a wildcard bind on loopback and every container
  * address; a given port nothing listens on, on the same. Every probe is sent to every socket; one that answered none gets a

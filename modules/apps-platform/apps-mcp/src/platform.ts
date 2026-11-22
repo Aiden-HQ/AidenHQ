@@ -456,8 +456,8 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       const service = String(c.Config?.Labels?.["com.docker.compose.service"] ?? "");
       const exposed = Object.keys(c.Config?.ExposedPorts ?? {}).filter((k) => k.endsWith("/tcp")).map((k) => parseInt(k, 10));
       const ips = Object.values<any>(c.NetworkSettings?.Networks ?? {}).flatMap((n) => [n.IPAddress, n.GlobalIPv6Address]).filter(Boolean);
-      // `tls`: the app may be skipped, so the socket gets a ClientHello and a TLS listener stays hard instead of skipped.
-      const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, tls: noHttp, probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
+      // `tls`: every socket that answered no HTTP gets a ClientHello, so a TLS listener is hard on any app shape, never skipped.
+      const input = { ports: [...exposed, ...required.filter((d) => d.service === service).map((d) => Number(d.port))], ips, tls: true, probes: probes.map((p) => ({ method: p.method, path: p.path, headers: p.forged ? { [IDENTITY_HEADER]: forged } : {} })) };
       const scans = [];
       for (const uid of processUids(await exec(["top", c.Id, "-eo", "uid,pid"]))) scans.push(JSON.parse(await exec(identityProbeArgs(cfg.healthImage, c.Id, uid), { input: JSON.stringify(input), timeout: 300_000 })));
       const scan = mergeScans(scans);
