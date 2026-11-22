@@ -124,10 +124,10 @@ async function kernelWait(body: Json) {
  * The kernel's one state of each task (GET /v1/tasks/state, role kernel.flow-read), by task id: one read per call, at most 200
  * ids each. A task the kernel has no facts for has no row.
  */
-async function stateRows(ids: string[]) {
+async function stateRows(ids: string[], ms = 20_000) {
   const rows = new Map<string, Json>();
   for (let n = 0; n < ids.length; n += 200) {
-    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(Math.max(1_000, ms)) });
     const text = await res.text();
     if (!res.ok) throw new Error(`the kernel refused the task state read (${res.status}): ${text.slice(0, 300)}`);
     for (const r of JSON.parse(text).tasks) rows.set(r.task, r);
@@ -846,9 +846,9 @@ function stateFilter(state: unknown, attention: unknown) {
 const matchesState = (s: Json | undefined, kinds: string[], attention: string) =>
   (!kinds.length || (s && kinds.includes(s.kind))) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention)));
 /** `list` paired with its kernel rows that pass the filter, in Paperclip's order. */
-async function matchingStates(list: Json[], kinds: string[], attention: string) {
+async function matchingStates(list: Json[], kinds: string[], attention: string, ms?: number) {
   if (!list.length) return [] as (readonly [Json, Json])[];
-  const rows = await stateRows(list.map((i) => i.id));
+  const rows = await stateRows(list.map((i) => i.id), ms);
   return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => matchesState(s, kinds, attention)) as (readonly [Json, Json])[];
 }
 /** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`; a task with no row passes only without a filter. */
@@ -944,18 +944,23 @@ const TOOLS: Record<string, Tool> = {
       // as with task_list, the kernel kind/attention filter runs per page: search candidates are paged until `limit` matches
       // (Paperclip's ranking order) or the results run out, so a filtered-out closed hit cannot consume a matching result's slot.
       const list: (readonly [Json, Json])[] = [];
-      for (let offset = 0, repeats = 0; list.length < max; ) {
+      const seen = new Set<string>();
+      let repeats = 0;
+      for (let offset = 0; list.length < max; ) {
         const p = new URLSearchParams(q);
         p.set("limit", String(PAGE));
         p.set("offset", String(offset));
         const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
         if (!Array.isArray(page) || !page.length) break;
-        list.push(...(await matchingStates(page, kinds, one)));
+        // Every candidate is tracked, whether or not it matches: that catches a repeat even when none of the page matched.
+        const fresh = page.filter((i: Json) => !seen.has(i.id));
+        for (const i of fresh) seen.add(i.id);
         // A ranking that ignores `offset` repeats its page: stop rather than search it forever.
-        const known = new Set(list.map(([i]) => i.id));
-        repeats = page.every((i: Json) => known.has(i.id)) ? repeats + 1 : 0;
+        repeats = fresh.length ? 0 : repeats + 1;
         if (repeats > 1) break;
-        offset += PAGE;
+        list.push(...(await matchingStates(fresh, kinds, one)));
+        // Advance by what came back, not by what was asked: a server capping its page size would skip the rows between.
+        offset += page.length;
       }
       return { tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
     },
@@ -1000,7 +1005,16 @@ const TOOLS: Record<string, Tool> = {
             return kept;
           }
           const ready = (await Promise.all(page.map(prepare))).filter(Boolean) as Json[];
-          const matches = await matchingStates(ready, kinds, one);
+          // The page's kernel read is bounded by the scan's remaining budget, so a slow read leaves the results collected so
+          // far with `incomplete` rather than failing the call.
+          let matches: (readonly [Json, Json])[];
+          try {
+            matches = await matchingStates(ready, kinds, one, deadline - Date.now());
+          } catch (err) {
+            if (Date.now() < deadline) throw err;
+            complete = false;
+            return kept;
+          }
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > deadline) {
             complete = false;
