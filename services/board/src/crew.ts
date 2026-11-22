@@ -89,7 +89,8 @@ export function issueState(i: Issue, input: CrewInput): CrewState {
   if (s?.reason === "job_queued" || s?.reason === "job_held") return "queued";
   return closedIssue(i) || s?.kind === "done" ? "done" : "waiting";
 }
-const closedIssue = (i: Issue) => i.status === "done" || i.status === "cancelled";
+/** Paperclip has it done or cancelled. */
+export const closedIssue = (i: Pick<Issue, "status">) => i.status === "done" || i.status === "cancelled";
 
 /**
  * The crew of one card: the card's own agent when it's assigned to one (older tasks), then

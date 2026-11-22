@@ -20,7 +20,7 @@ import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef,
 import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
-import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
+import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
@@ -528,7 +528,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const shown = [...byId.values()].filter((i) => isWork(i) && !logs.has(i.id) && !logs.has(i.identifier));
     // Done: the kernel's row is done and Paperclip's own close time is in the window (a close fact the kernel dated by a later
     // edit never brings an old task back).
-    const cards = shown.filter((i) => !(i.status === "done" || i.status === "cancelled") || (states.get(i.id)?.lane === "done" && closedAt(i) >= inv.since));
+    const cards = shown.filter((i) => !closedIssue(i) || (states.get(i.id)?.lane === "done" && closedAt(i) >= inv.since));
     // A parent outside the inventory (closed before the window) is read by id, a few at a time (issueSummary caches each a
     // minute), for at most PARENTS_MS: a link still missing then shows on the next read.
     const missing = [...new Set(cards.flatMap((i) => (i.parentId && !byId.has(i.parentId) ? [i.parentId] : [])))];
@@ -539,7 +539,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     await Promise.race([lookup, new Promise((r) => setTimeout(r, PARENTS_MS).unref())]);
     const out: WorkCard[] = [];
     for (const i of cards) {
-      const closed = i.status === "done" || i.status === "cancelled";
+      const closed = closedIssue(i);
       // An open issue whose row still says done was reopened after the snapshot: no state yet.
       const state = !closed && states.get(i.id)?.lane === "done" ? null : (states.get(i.id) ?? null);
       const parent = i.parentId ? (byId.get(i.parentId)?.identifier ?? parents.get(i.parentId) ?? null) : null;

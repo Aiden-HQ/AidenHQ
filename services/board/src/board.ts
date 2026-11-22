@@ -1,7 +1,7 @@
 // Board logic: which tasks show where, who they're assigned to, and how edits map onto Paperclip.
 // Pure functions (unit-tested); I/O is in app.ts.
 import { z } from "zod";
-import { crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
+import { closedIssue, crewOf, foldedChildren, type CrewInput, type CrewMember } from "./crew.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { type Agent, type Comment, type Issue, type Label } from "./paperclip.js";
 import { BUCKETS, type Bucket, type Placement } from "./store.js";
@@ -149,7 +149,7 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
 
 /** Its assignee is the issue's own (an agent removed from the roster stays its holder, named from the kernel's row). */
 export function workCard(issue: Issue, list: Assignee[], state: ShownState | null, parent: string | null, crewIds: string[]): WorkCard {
-  const closed = issue.status === "done" || issue.status === "cancelled";
+  const closed = closedIssue(issue);
   const assignee = issue.assigneeAgentId ?? (issue.assigneeUserId ? "me" : null);
   return { ...toCard(issue, list, ""), assignee, unread: false, state, parent, crewIds, closedAt: closed ? closedAt(issue) : null };
 }
