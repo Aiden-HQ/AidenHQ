@@ -505,7 +505,7 @@ export function createService(o: Options) {
   }
   // Why a claimed record is still running, to the kernel (its task hears it, once per distinct reason): 409 is a record no
   // longer claimed, which is not an error here.
-  async function waiting(id: string, reason: string) {
+  async function waiting(id: string, reason: string | null) {
     const r = await fetch(`${o.kernelUrl}/v1/writes/${id}/wait`, { method: "POST", headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify({ reason }), signal: AbortSignal.timeout(15_000) });
     if (!r.ok && r.status !== 409) throw new Error(`the kernel answered ${r.status}`);
   }

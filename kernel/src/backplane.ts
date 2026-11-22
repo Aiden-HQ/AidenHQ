@@ -226,7 +226,7 @@ export const ROUTES = [
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
-const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved"], recent: ALL, finished: ["done", "failed", "unknown"] };
+const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
 
 async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
@@ -955,8 +955,10 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             const b = await json(req);
             // The whole reason identifies the wait, so a change past the display cap still reaches the task: only the card and the
             // notice truncate what they show (the same 200_000 bound the outcome route puts on its text).
-            const reason = String(b.reason ?? "").split("\u0000").join("").trim().slice(0, 200_000);
-            if (!reason) throw fail(400, "bad_request", "send {reason}: why the record is still running");
+            const raw = String(b.reason ?? "").split("\u0000").join("").trim();
+            // `{reason: ""}` clears a wait the executor no longer has (the review passed, or another wait replaces it): nothing is
+            // shown and no notice goes out, so the card never keeps a reason the record has left.
+            const reason = raw ? raw.slice(0, 200_000) : null;
             // Idempotent for an unchanged reason (200, `new: false`), and a record that has left `claimed` is a conflict.
             const fresh = writes.waiting(id, reason);
             if (!fresh && record(id).state !== "claimed") throw fail(409, "conflict", `this record is ${record(id).state}`);

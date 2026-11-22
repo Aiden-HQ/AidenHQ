@@ -453,6 +453,8 @@ test("a claimed record's wait reason comes from its own module only, and its tas
   await until(() => k.notices.length === 1);
   assert.equal(k.notices[0].task, "TASK-1");
   assert.match(k.notices[0].text, /^\*\*Still running\*\* \(approval k-[0-9a-f]{16}, github\.post\)[\s\S]*```\ncode review: 1 important finding open\n```/);
+  // The notice also carries the wake marker, so dispatch reads the module's words as a notice, never as the owner's own.
+  assert.match(k.notices[0].text, /<!-- aidenhq-wake -->/);
   // A repeat of the same reason is idempotent and tells nobody again.
   assert.deepEqual((await wait(r.id, "code review: 1 important finding open")).json, { ok: true, new: false });
   await new Promise((res) => setTimeout(res, 20));
@@ -468,9 +470,22 @@ test("a claimed record's wait reason comes from its own module only, and its tas
   assert.equal((await wait(r.id, `${long} B`)).json.new, true, "a reason that differs past 2000 characters is a new wait");
   await until(() => k.notices.length === 4);
   assert.match(k.notices[3].text, /x{2500} B/);
+  // A reason that recurs (A → B → A) is still a new transition, so the task gets the last A after the B, not a duplicate of the
+  // first one dropped behind it.
+  assert.equal((await wait(r.id, "code review: 1 important finding open")).json.new, true);
+  await until(() => k.notices.length === 5);
+  assert.match(k.notices[4].text, /1 important finding open/);
+  assert.equal(k.records.get(r.id).waits, 5);
+  assert.equal(k.records.get(r.id).wait, "code review: 1 important finding open");
   // Another module's key may not report it (the same guard as the outcome route).
   assert.equal((await wait(r.id, "not mine", "other-key")).status, 403);
-  assert.equal(k.records.get(r.id).wait, `${long} B`);
+  // The executor that owns it clears the reason when its wait ends (the review passed): `""` clears, and nobody is told.
+  const before = k.notices.length;
+  assert.deepEqual((await wait(r.id, "")).json, { ok: true, new: true });
+  assert.equal(k.records.get(r.id).wait, null);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(k.notices.length, before, "clearing a wait is not a notice");
+  assert.deepEqual((await wait(r.id, "")).json, { ok: true, new: false }, "an empty reason on an already-clear record changes nothing");
   // A record that isn't claimed refuses a wait: an outcome's record, and one still open for review.
   k.records.finish(r.id, true, "merged");
   assert.equal((await wait(r.id, "late")).status, 409);

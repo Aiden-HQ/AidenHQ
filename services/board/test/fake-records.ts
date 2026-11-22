@@ -9,9 +9,11 @@ export const card = (o: Partial<Approval> & { id: string }): Approval => ({
 
 export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[]; settings: { task: string; changes: unknown[]; credential?: unknown }[] } {
   const settings: { task: string; changes: unknown[]; credential?: unknown }[] = [];
-  const list: Records["list"] = async (state, { task, limit = 100 } = {}) =>
+  const list: Records["list"] = async (state, { task, limit = 100, tier0 } = {}) =>
     cards
-      .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : true))
+      .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : state === "approved" ? a.state === "approved" || a.state === "running" : true))
+      // As the kernel's reads: `tier0` adds the Tier 0 rows, and leaving it off drops them.
+      .filter((a) => tier0 || a.tier !== 0)
       .slice(0, limit);
   return { cards, settings, list, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

@@ -812,7 +812,7 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   await merges.step();
   await merges.step();
   await merges.step();
-  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)"], "once per distinct reason, not per poll");
+  assert.deepEqual(waits.map((w) => w.reason), [`${"https://github.com/acme-agents/widget/pull/1"}: code review: 1 important finding open: t (a.ts:3) (fix and push)`], "once per distinct reason, not per poll");
   assert.equal(merges.status("k-00000000000000h1").state, "running");
   // A week later the same reason: still no second post, and the gate's Infinity limit never stops the wait.
   clock.t += 7 * 24 * 3600_000;
@@ -823,12 +823,17 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "2 important findings open: t, u", unblock: "fix and push" }] } };
   await merges.step();
   await merges.step();
-  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)", "code review: 2 important findings open: t, u (fix and push)"]);
+  assert.deepEqual(waits.map((w) => w.reason), [
+    "https://github.com/acme-agents/widget/pull/1: code review: 1 important finding open: t (a.ts:3) (fix and push)",
+    "https://github.com/acme-agents/widget/pull/1: code review: 2 important findings open: t, u (fix and push)",
+  ]);
   assert.equal(github.merges().length, 0, "never merged while the gate waits");
   verdict = { status: 200, body: { verdict: "pass", reasons: [] } };
   await merges.step();
   assert.deepEqual(github.merges().map((w) => w.body.sha), [HEAD]);
-  assert.deepEqual(waits.map((w) => w.id), ["k-00000000000000h1", "k-00000000000000h1"]);
+  assert.deepEqual(waits.map((w) => w.id), ["k-00000000000000h1", "k-00000000000000h1", "k-00000000000000h1"]);
+  // The wait ended (review passed): the record's reason is cleared, so no stale "code review: …" sits on a merging record.
+  assert.equal(waits.at(-1).reason, null);
 });
 
 test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
