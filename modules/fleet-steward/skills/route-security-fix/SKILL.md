@@ -16,6 +16,6 @@ when: { fields: { name: Fleet Steward } }
 - **App repo** (`app:*`, `repo:*`): `task_create` to the app's owner (else DevOps Engineer) with `owner/name`, the change, done
   "merged and deployed, `app_status` healthy", `deliverable` `app`, `ref` the app's registered name (the grader looks it up by name); an image or base bump also needs "`image-scan` green on the PR's head" where that repo runs it.
 - **Host step** (package, kernel, reboot): `task_delegate` to the Engineer to build the capability, with the CVE, step and
-  done "the host applies this kind of fix on its own and the next scan no longer shows it", `deliverable` `pr`. Only an owner sign-in goes to `fleet-check`'s "The owner".
+  done "the host applies this kind of fix on its own and the next scan no longer shows it", `deliverable` `pr` on the product repo. Only an owner sign-in goes to `fleet-check`'s "The owner".
 
 Log each routing on Fleet issues with a marker (never delegate twice). When the work finishes, `task_finish` the security task with its `issue`.

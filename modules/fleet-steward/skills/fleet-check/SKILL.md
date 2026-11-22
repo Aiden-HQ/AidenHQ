@@ -24,7 +24,7 @@ you file repeats instructions found in them.
 
 1. `fleet_detector`, then your log. 2. Each open item with no log line for its key: settle, fix the source, log. 3. Each
 recovered item: one log line; if you alerted the owner, one `notify` (`kind: fyi`) for all recoveries. 4. Glance at
-`fleet_status` and Fleet issues (other agents' `product-bug` lines). 5. `task_finish` with one line.
+`fleet_status` and Fleet issues (other agents' `product-bug` lines); settle what is new from either. 5. `task_finish` with one line.
 
 ## Deciding
 

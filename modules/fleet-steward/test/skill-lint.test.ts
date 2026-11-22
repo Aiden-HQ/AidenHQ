@@ -50,7 +50,7 @@ function stalePrProblems(text) {
 /** The product-bug step: the filing ask, the card, and the neutrality tokens. */
 function productBugProblems(text) {
   return sections(text).filter((s) => /^## Reporting a product bug/.test(s)).flatMap((s) => {
-    const missing = missingTokens(s, [/^>? ?File one GitHub issue on the product repository/m, /github_product_issue/, /`<host>`/, /by role/, /task ids/, /evidence/]);
+    const missing = missingTokens(s, [/^>? ?File one GitHub issue on the product repository/m, /github_product_issue/, /`<host>`/, /brief's body, title and evidence/, /by role/, /task ids/, /holds the post to the brief's text/]);
     return missing.length ? [{ section: s.split("\n")[0].slice(0, 60), missing }] : [];
   });
 }
