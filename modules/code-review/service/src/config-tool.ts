@@ -29,7 +29,7 @@ export interface Change {
  * the owner-readable reason when the result wouldn't validate.
  */
 export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: string[] } {
-  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])], ...(raw.lenses !== undefined ? { lenses: raw.lenses } : {}) };
+  const value: Dict = { repos: [...((raw.repos as Dict[]) ?? [])] };
   let repos = value.repos as Dict[];
   const summary: string[] = [];
   const key = (r: unknown) => String(r).toLowerCase();

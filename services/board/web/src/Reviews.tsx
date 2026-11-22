@@ -199,7 +199,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const spent = repos?.day_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
-  if ("create" in route) return repos && !repos.lenses ? <RepoReviewsOff /> : repos && engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
+  if ("create" in route) return repos && engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
   if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} reload={loadRuns} />;
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
 
@@ -777,15 +777,6 @@ const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
   performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
 };
 const SHA = /^[0-9a-f]{40}$/i;
-/** The service refuses repo reviews until settings.code_review.lenses is on; the page says so instead of failing. */
-function RepoReviewsOff() {
-  return (
-    <Page className="rv-page" label="New repo review">
-      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
-      <EmptyState action={<LinkButton href="#/modules/code-review">Open Code review settings</LinkButton>}>Repo reviews are off until enabled in Code review settings.</EmptyState>
-    </Page>
-  );
-}
 function RepoReviewPage({ config, engines }: { config: CodeReview | null; engines: EngineCatalog }) {
   const [repo, setRepo] = useState("");
   const [commit, setCommit] = useState("");

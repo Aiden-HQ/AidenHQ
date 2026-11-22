@@ -23,7 +23,7 @@
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
-// its own. Everything here is off until settings.code_review.lenses is on.
+// its own.
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
@@ -1753,7 +1753,6 @@ export function createEngine(d: EngineDeps) {
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------
 
-  const lensesOn = () => { if (!d.config().lenses) throw new RequestError("repo reviews are off: they turn on with settings.code_review.lenses (the owner's)"); };
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   /**
    * A repo's snapshot listing, read once and kept for two minutes. A cold read of a big repo can outlast the board's deadline: the
@@ -1852,7 +1851,7 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_spent_usd: round(spent()), errors: c.errors, lenses: c.lenses,
+      return { day_spent_usd: round(spent()), errors: c.errors,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
@@ -1867,7 +1866,6 @@ export function createEngine(d: EngineDeps) {
     engines() { return ENGINES; },
     /** The options a repo's tree fits at a commit (default: its default branch's head, resolved now), and the commit. */
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
-      lensesOn();
       const { repo, tree } = await readTree(q.repo, q.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
@@ -1877,7 +1875,6 @@ export function createEngine(d: EngineDeps) {
      * (default: the recommended ones the tree fits), and the combo for the model options.
      */
     async repoReview(b: { target?: unknown; options?: unknown; combo?: unknown; author?: unknown }) {
-      lensesOn();
       const t = (b.target ?? {}) as { repo?: unknown; commit?: unknown };
       const c = (b.combo ?? {}) as { model?: unknown; effort?: unknown };
       const combo = { model: c.model ?? DEFAULT_MODEL, effort: c.effort ?? "medium" };

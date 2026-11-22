@@ -100,8 +100,6 @@ export interface RepoRow {
 }
 export interface ReposView {
   repos: RepoRow[];
-  /** Repo reviews and the option catalog are on (settings.code_review.lenses); the service refuses both while off. */
-  lenses?: boolean;
   day_spent_usd: number;
   errors?: string[];
 }
@@ -204,8 +202,6 @@ export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z
   .object({
     repos: z.array(RepoSchema).max(100),
-    /** Repo reviews and the option catalog are on (the service refuses both while this is off). */
-    lenses: z.boolean().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -236,7 +232,7 @@ export function upgradeConfig(raw: unknown): CodeReview | null {
     const use = ok.success ? ok : fallback;
     if (use.success && !repos.some((x) => x.repo.toLowerCase() === use.data.repo.toLowerCase())) repos.push(use.data);
   }
-  return { repos, ...(typeof v.lenses === "boolean" ? { lenses: v.lenses } : {}) };
+  return { repos };
 }
 /** A combo's short label: "Codex · deepseek-flash-latest · medium". */
 export const comboLabel = (c: Pick<Combo, "engine" | "model" | "effort">, catalog?: EngineCatalog) =>

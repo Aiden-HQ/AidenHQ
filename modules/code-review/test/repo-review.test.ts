@@ -19,12 +19,12 @@ const CATALOG = [
 ];
 
 /** The engine over fakes, for repo reviews: a code host whose default branch can move, a runner finished by hand, a Primer that records. */
-function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true } = {}) {
+function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
   let t = Date.parse("2026-11-22T10:00:00Z");
   const heads = { HEAD: sha("1") };
   const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined, asked: [] };
   const engine = createEngine({
-    db, config: () => readConfig(JSON.stringify({ repos: [], lenses })), now: () => t,
+    db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" } },
     poster: {},
@@ -40,8 +40,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
-test("repo reviews are off until lenses is on; options must fit the tree", async () => {
-  await assert.rejects(world({ lenses: false }).engine.repoReview({ target: { repo: REPO } }), /repo reviews are off/);
+test("options must fit the tree", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO } });
   // Recommended and fitting the tree: knip (package.json), gitleaks and the Cloudflare skill; never vulture (no Python).
