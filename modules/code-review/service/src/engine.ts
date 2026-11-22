@@ -659,8 +659,6 @@ export function createEngine(d: EngineDeps) {
     // Reopened findings this run only carries for its post: never stored as this run's own row, so each reopens at the severity
     // and gating its own rows have (an advisory combo's finding stays advice).
     const carried = new Set<string>();
-    // The refused answers' texts (read before they are cleared): their own replies on GitHub are never read as new answers.
-    const refused = new Map(unsafe.map((id) => [id, (one<{ claim: string }>("SELECT claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ? LIMIT 1", r.repo, r.number, id, r.started ?? "")?.claim ?? "").replace(/['’]/g, "").toLowerCase()]));
     for (const id of unsafe) {
       const f = one<Omit<Finding, "fix_brief">>(`SELECT f.id, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
         JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, id);
@@ -699,8 +697,6 @@ export function createEngine(d: EngineDeps) {
       for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
     });
-    // The replies on a reopened finding's thread that are the refused answer's own text (its mirror): never read as a new answer (a newer reply is a correction, left for claims()).
-    if (unsafe.length) for (const t of await d.source.threads(r.repo, r.number).catch(() => [])) if (t.finding && refused.get(t.finding)) for (const x of t.replies) if (x.body.replace(/['’]/g, "").toLowerCase().startsWith(refused.get(t.finding)!)) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", r.repo, `reply:${x.id}`);
     if (!stale) cover(r);
     // A run that posts says nothing here: afterPost writes its state, its reason and (when it is filed again) its retry deadline
     // together, once the post's outcome is known.
