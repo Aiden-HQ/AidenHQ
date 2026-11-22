@@ -305,14 +305,14 @@ export class ReviewPoster {
     return kind === "post" ? this.post(target(PostArgsSchema.parse(args))) : this.notice(NoticeArgsSchema.parse(args));
   }
 
-  /** The reply goes only on a thread that is Aiden's own (its first comment carries our marker, by the posting identity). */
+  /** The reply goes only on a thread that is Aiden's own (its first comment carries our marker, by the posting identity), as code review's writer. */
   private async reply(a: ReplyArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const ref = { ...split(a.repo), number: a.pr };
-    const who = await this.identity();
-    await this.pull(ref, who);
+    const w = await this.writer(a.repo);
+    await this.pull(ref);
     if (!(await this.threads(ref)).some((t) => t.comment === a.comment && t.ours)) throw new GitHubRefused(`comment ${a.comment} isn't the first comment of one of Aiden's own review threads on ${a.repo}#${a.pr}`);
-    const r = await this.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(a.body, AGENT) } });
-    return { ok: true, text: JSON.stringify({ identity: "owner", login: who.login, reply: r.html_url }), objects: [`${objectRef(ref)}/comment/${r.id}`] };
+    const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(a.body, AGENT) } });
+    return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, reply: r.html_url }), objects: [`${objectRef(ref)}/comment/${r.id}`] };
   }
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
