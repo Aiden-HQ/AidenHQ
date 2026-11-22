@@ -4,10 +4,10 @@ import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
 import type { Catalog, CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run, TreeBatch, TreeRequest } from "../../src/reviews";
-import type { BrowseModule, GrantConnection, MarketplaceRow } from "./types";
+import type { BrowseModule, GrantConnection, MarketplaceRow, SavedView, ViewSpec } from "./types";
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+async function call<T>(method: string, path: string, body?: unknown, answered?: Response): Promise<T> {
+  const res = answered ?? await fetch(path, {
     method,
     headers: { accept: "application/json", ...(method === "GET" ? {} : { "content-type": "application/json", "x-aidenhq-board": "1" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -18,6 +18,18 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if ((res.status === 401 && data.error === "sign in") || (res.status === 403 && data.error === "totp")) throw new SignInRequired();
   if (!res.ok) throw new HttpStatusError(res.status, data.error ?? `${res.status}`);
   return data as T;
+}
+
+/** A saved board written at a stale revision: `current` is the row now (null: deleted elsewhere). */
+export class ViewConflict extends Error {
+  constructor(readonly current: SavedView | null) {
+    super(current ? "This board changed elsewhere" : "This board was deleted elsewhere");
+  }
+}
+async function viewWrite<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, { method, headers: { accept: "application/json", "content-type": "application/json", "x-aidenhq-board": "1" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.status !== 409) return call<T>(method, path, body, res);
+  throw new ViewConflict(((await res.json()) as { current: SavedView | null }).current);
 }
 
 /** A file's bytes as base64 (uploads are JSON, like every other write: checkRequest). */
@@ -225,6 +237,11 @@ export const api = {
   /** The board's own session ends (the kernel's sign-in stays; sign out there too from Password). */
   signOut: () => call<{ ok: boolean }>("POST", "/api/sign-out", {}),
   board: () => call<Board>("GET", "/api/board"),
+  views: () => call<{ views: SavedView[] }>("GET", "/api/views"),
+  addView: (name: string, spec: ViewSpec) => call<SavedView>("POST", "/api/views", { name, spec }),
+  /** A 409 (changed or deleted elsewhere) throws ViewConflict with the row as it is now. */
+  updateView: (v: { id: string; rev: number; name?: string; spec?: ViewSpec }) => viewWrite<SavedView>("PUT", `/api/views/${v.id}`, { rev: v.rev, ...(v.name ? { name: v.name } : {}), ...(v.spec ? { spec: v.spec } : {}) }),
+  deleteView: (v: { id: string; rev: number }) => viewWrite<{ ok: true }>("DELETE", `/api/views/${v.id}?rev=${v.rev}`),
   chats: () => call<{ chats: ChatRow[]; agents: ChatAgent[] }>("GET", "/api/chats"),
   /** `peek`: a prefetch, which leaves the chat unread. */
   chat: (ref: string, peek = false) => call<ChatDetail>("GET", `/api/chats/${encodeURIComponent(ref)}${peek ? "?peek" : ""}`),

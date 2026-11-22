@@ -36,6 +36,7 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
   return (
     <section className="attn" aria-label="What needs attention">
       <div className="attn-head">
+        <b className="attn-title">Fleet attention</b>
         <Segmented
           label="Needs attention"
           value={which}

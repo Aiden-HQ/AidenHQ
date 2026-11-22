@@ -1,6 +1,6 @@
 # Agent work board (Tasks page, second layout and saved views)
 
-Status: design, owner-approved direction (extend the Tasks page, no separate board). Nothing built.
+Status: built (owner-approved direction: extend the Tasks page, no separate board). Follow-up: agent project assignment.
 
 ## Why
 
@@ -35,7 +35,8 @@ from the primary `reason` (which a running job or a higher-ranked wait can mask)
 5. reason `scheduled`, `backlog`, `owner_task`, `chat_turn`, or `kind` idle: **idle** (the first four are `kind: "waiting"`).
 6. otherwise **waiting** (`job_queued`, `job_held`, `card_review`, `delegator_wait`, `agent_wait`, `module_wait`).
 
-All 22 reasons land in exactly one lane. `lane` is part of the shared wire type: the board's copy (`services/board/src/task-state.ts`,
+All 22 reasons land in exactly one lane. A blocker a queued job or another wait outranks still needs a name on the card, so the
+row also carries `blocker` (`task:<id>`) whenever a blocked obligation is open, whatever the primary reason. `lane` is part of the shared wire type: the board's copy (`services/board/src/task-state.ts`,
 `web/src/types.ts`, "change them together") gains it, and the filter, the lane, the swimlane and every count read it. A task with no
 kernel row shows in Idle with "No reported state". `web/src/lanes.ts` does not exist.
 
@@ -49,14 +50,17 @@ The kernel row alone decides lane membership and Done expiry: a task is in Done 
 time, so an old task edited later cannot reappear. Paperclip supplies title, labels, priority, assignee, project.
 
 Both layouts are built from one issue inventory (`inventory()` in `src/app.ts`: open + recently closed issues, the kernel snapshot,
-labels, agents), built before My day's own filters (`mine()` drops unassigned issues, `unsettled()` hides settled ones); each layout applies its visibility rules to its projection, and Agent work excludes only the brief and settings tasks (`isBrief`, `isSettings`). My day folds agents' sub-tasks into the parent card (`foldedChildren`, `src/crew.ts`) as today. Agent work does
+labels, agents), built before My day's own filters (`mine()` drops unassigned issues, `unsettled()` hides settled ones); each layout applies its visibility rules to its projection, and Agent work excludes the brief and settings tasks (`isBrief`, `isSettings`) and setup's log tasks an agent holds (`logTasks()`:
+memory inboxes, review logs, a fast chat's task: logs, never work). My day folds agents' sub-tasks into the parent card (`foldedChildren`, `src/crew.ts`) as today. Agent work does
 not fold: every issue is its own card, placed once under its assignee, with a "part of WOR-7790" parent link (kernel state of its
 own, so a child waiting on the owner shows in Needs you). The crew line on My day cards reads the child's kernel state, never
 unread activity alone (`crew.ts` `issueState` today can say "needs" from unread activity).
 
 Bounds: Paperclip list reads cap at 500 open and 100 closed (`src/paperclip.ts`). The inventory pages them (offset until a short
 page, hard limit 2000) and sets `incomplete: true` if a bound is hit; the page then shows "Showing the newest 2,000 tasks" in a
-`Banner`. Closed issues are hydrated by id from the kernel's recent-close ids (not listed by `updatedSince`, which cannot order by close time). "No reported state" applies to open issues only.
+`Banner`. Closed issues come from one paged list of those updated in the window (under the same bound), and the kernel's recent-close rows
+decide which show: a closed issue shows in Done only while its kernel row is `done` with its close inside the window, so an old task
+edited later never reappears. (One paged read instead of one read per closed id; paging to the bound makes the list's order moot.) "No reported state" applies to open issues only.
 
 On failure the page keeps the last good snapshot and shows its age ("As of 10:42, 3 min ago") with the existing offline banner. The
 page reloads about every ten seconds while visible (`App.tsx`), so lanes are the latest successful response, never My day's
@@ -168,7 +172,7 @@ resolved from the `attention` entry or the state, and each a link to what it nam
 | Needs you | amber callout "Needs you": the question (3 lines, opens the answer form), or "Your approval: <sentence>" (opens the approval) |
 | Working | green breathing dot, the kernel stage, elapsed time |
 | Waiting | blue dot and the kernel's words (`stateWords`: "AI review", "CI checks", "an answer from Research Lead") |
-| Blocked | red callout "Failed: <how the job ended>" (opens the run), or "Blocked by WOR-7744" (opens that task) |
+| Blocked | red callout "Failed: <how the job ended>" (opens the run), or "Blocked by WOR-7744" (opens that task); a chat run that ended with no reply (`fail` ref `no_reply`, no job) is "Failed: Run ended without a reply", opening the task's drawer (its activity) |
 | Idle | grey dot and why ("Backlog", "Scheduled for tomorrow 08:00", "Your task", "No reported state") |
 | Done | quiet title, "Done, graded pass" or "Stopped" |
 
