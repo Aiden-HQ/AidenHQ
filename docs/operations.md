@@ -427,7 +427,9 @@ again before each save and again before each scan. It empties the work dir after
 recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
 older daemon, or a single-platform
 store) is read on the Docker server platform, and the pass says on stderr how many it did that for; a Docker API older
-than 1.48 (which has no `image save --platform`) exports the plain single-platform image instead, also said on stderr.
+than 1.48 (which has no `image save --platform`) exports only a proven single image (an immutable id) with a plain save —
+a tag that may hold several platforms is a line, never an archive holding variants the container is not running — also
+said on stderr.
 Its descriptor is the authority on what a container runs: the tag is a target only while it names that manifest, and the
 Compose label or the container's own id only answer for a daemon that reports none. A second pass started
 while one holds `.lock` skips rather than running two at once.

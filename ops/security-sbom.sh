@@ -184,9 +184,9 @@ if ! platform="$(docker_call 15 version -f '{{.Server.Os}}/{{.Server.Arch}}')" |
   rm -rf "$next" "$work" "$archives"
   exit 0
 fi
-# `docker image save --platform` needs API 1.48. A daemon older than that has no multi-platform store either, so a plain
-# save exports the one image it holds; asking for a platform would fail every image and turn a usable batch into error
-# rows. Read once, and say so: the pass runs on the server platform throughout such a daemon (it reports no descriptor).
+# `docker image save --platform` needs API 1.48. A daemon older than that may still use the containerd image store and hold
+# several platforms of one image, so a plain save is only safe for a reference proven to be a single image (an immutable
+# id), never for a tag. Read once, and say so: the pass then exports proven-single images and records the rest.
 save_platform=1
 if api="$(docker_call 15 version -f '{{.Server.APIVersion}}' 2>/dev/null)" && [ -n "$api" ]; then
   api_major="${api%%.*}"; api_rest="${api#*.}"; api_minor="${api_rest%%.*}"
@@ -252,6 +252,13 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
       rm -f "$dest"; return 1
     fi
   else
+    # No platform selection on this daemon: a plain save of a tag on the containerd store writes every platform it holds,
+    # so the archive would hold variants the container is not running and the size check would not cover it. Only an
+    # immutable image id is known to be one variant.
+    case "$ref" in
+      sha256:*) ;;
+      *) export_err="this daemon cannot select a platform to save, and $ref may hold several; not scanning it"; return 1 ;;
+    esac
     if ! export_err="$(docker_call 900 image save -o "$dest" "$ref" 2>&1)"; then
       rm -f "$dest"; return 1
     fi
@@ -402,6 +409,15 @@ snapshot() {
     # exported instead of dropped as unreadable.
     if ! ref="$(resolve_ref "$pin" "$image" "$plat")"; then
       plan_add "image:$key" "fail:docker save: no local image exports $want" "$pin" "$image"; continue
+    fi
+    # A daemon without `image save --platform` cannot pick one variant out of an index: only an immutable image id is
+    # known to be a single image, and a tag that may hold several is a line instead of an archive holding variants the
+    # container is not running (whose size the check above would not have covered).
+    if [ "$save_platform" = 0 ]; then
+      case "$ref" in
+        sha256:*) ;;
+        *) plan_add "image:$key" "fail:docker save: this daemon cannot select a platform to save, and $ref may hold several" "$pin" "$ref"; continue ;;
+      esac
     fi
     # Size the very variant the save will write, through the very reference it will read: `docker image inspect` on an
     # index reports the index's total, while `docker save --platform` writes one platform manifest.

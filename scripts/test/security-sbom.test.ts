@@ -846,3 +846,23 @@ test("security-sbom: a later scan's space is measured with the archives its pred
   assert.equal(scanned.length, 3, `all three archives fit and scan:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.equal(calls.filter((c) => c.startsWith("save ")).length, 3);
 });
+
+test("security-sbom: a pre-1.48 daemon does not plain-save a tag that may hold several platforms", { skip: NOT_LINUX }, async () => {
+  // On a containerd store an old daemon's plain save of a tag writes every platform it holds; the archive would contain
+  // variants the container does not run and the size check would not cover it. Only an immutable single image may be
+  // exported that way, and a tag that cannot be proven single is a line instead.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    // The container's own id is gone, so the only reference that can export is the tag itself.
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, `no tag target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "a possibly multi-platform tag was not saved");
+  assert.match(line[2], /may hold several/, line[2]);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a plain save of a tag ran:\n${calls.join("\n")}`);
+});
