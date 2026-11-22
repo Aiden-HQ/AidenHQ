@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, noHttpSurface, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, unprobedServices, type Door } from "../src/checks.js";
+import { finishedJob, IDENTITY_SCRIPT, identityDoors, identityPorts, identityProbeArgs, mergeScans, noHttpSurface, processUids, identityProbes, judgeIdentity, NO_SIGN_IN, strongestRaw, strongestStatus, unprobedServices, type Door } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
 
@@ -280,17 +280,29 @@ describe("identity gate", () => {
     // HTTP evidence is joined the same way: a later scan that owns the socket must not erase a status an earlier one got,
     // nor the plaintext look's HTTP/ reply. Either is a hard answer, so losing it could turn an HTTP listener into a skip.
     const h = (listening: boolean, statuses: number[], raw?: "http" | "closed" | "banner" | "refused") => ({ port: 8080, host: "127.0.0.1", listening, statuses, ...(raw ? { raw } : {}) });
-    expect(mergeScans([{ sockets: [h(false, [401, 0])] }, { sockets: [h(true, [0, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 0] }]);
     expect(mergeScans([{ sockets: [h(true, [0, 0], "http")] }, { sockets: [h(false, [0, 0], "closed")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0, 0], raw: "http" }]);
-    // Two answers at the same index keep the one that answered; no scan's "0" hides another's status.
-    expect(mergeScans([{ sockets: [h(false, [0, 403])] }, { sockets: [h(true, [401, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 403] }]);
-    // The strongest answer wins, not the first non-zero: a 200 (the app served without the sign-in) must never be replaced
-    // by another scan's 401, or the hard "answers without the sign-in" finding would be lost.
-    expect(mergeScans([{ sockets: [h(false, [401])] }, { sockets: [h(true, [200])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [200] }]);
-    expect(mergeScans([{ sockets: [h(true, [200, 401])] }, { sockets: [h(false, [401, 0])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [200, 401] }]);
-    // A plaintext look that hung up (hard) also outranks one that saw a banner (a skip), and a refusal is the weakest.
-    expect(mergeScans([{ sockets: [h(true, [0], "banner")] }, { sockets: [h(false, [0], "closed")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0], raw: "closed" }]);
-    expect(mergeScans([{ sockets: [h(false, [0], "refused")] }, { sockets: [h(true, [0], "banner")] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [0], raw: "banner" }]);
+    // The strongest evidence wins at each index, in the order judgeIdentity needs: a served status (hard on its own) beats
+    // silence, silence (hard) beats any other answer, and every answer beats a refusal (the only answer that lets the gate
+    // pass). A refusal from one scan must never clear another scan's served answer, silence or 5xx.
+    // Merged against a silent scan, silence (hard on its own) never lifts a refusal, and never lowers a served answer.
+    const withSilent = (status: number) => mergeScans([{ sockets: [h(false, [status])] }, { sockets: [h(true, [0])] }]).sockets[0]!.statuses[0];
+    expect([withSilent(200), withSilent(0), withSilent(401)]).toEqual([200, 0, 0]);
+    expect(strongestStatus(200, 0)).toBe(200); // served beats silence
+    expect(strongestStatus(0, 200)).toBe(200);
+    expect(strongestStatus(0, 401)).toBe(0); // silence beats a refusal: a 401 alone must not clear it
+    expect(strongestStatus(401, 0)).toBe(0);
+    expect(strongestStatus(500, 401)).toBe(500); // a 5xx beats a refusal
+    expect(strongestStatus(401, 500)).toBe(500);
+    expect(strongestStatus(200, 401)).toBe(200);
+    expect(strongestStatus(401, 200)).toBe(200);
+    // Each probe index is merged on its own: a refusal at one index does not touch another index's served answer, and a
+    // supplied answer survives a silent scan.
+    expect(mergeScans([{ sockets: [h(false, [401, 200])] }, { sockets: [h(true, [401, 401])] }]).sockets).toEqual([{ port: 8080, host: "127.0.0.1", listening: true, statuses: [401, 200] }]);
+    // The plaintext look ranks the same way: http, then a hang-up or silence, then a banner, then a refusal (nothing listens).
+    expect(strongestRaw(["closed", "banner"])).toBe("closed");
+    expect(strongestRaw(["banner", "refused"])).toBe("banner");
+    expect(strongestRaw(["refused", "http"])).toBe("http");
+    expect(strongestRaw([undefined, "refused"])).toBe("refused");
   });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {

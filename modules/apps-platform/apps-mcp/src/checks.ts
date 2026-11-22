@@ -429,14 +429,18 @@ export function mergeScans(scans: { sockets: { port: number; host: string; liste
   for (const sc of scans) for (const k of sc.sockets) {
     const key = `${k.host} ${k.port}`, had = sockets.get(key);
     if (!had) { sockets.set(key, k); continue; }
-    // The scan that attributed the listener keeps the socket's own fields; everything that is evidence is joined.
+    // The scan that attributed the listener supplies the socket's own fields; every piece of evidence is joined, so no
+    // scan can weaken another's answer.
     const owner = k.listening && !had.listening ? k : had;
+    const raw = strongestRaw([had.raw, k.raw]);
+    const tls = had.tls || k.tls ? (had.tls === "tls" || k.tls === "tls" ? "tls" as const : "no" as const) : undefined;
     sockets.set(key, {
-      ...owner,
+      port: owner.port,
+      host: owner.host,
       listening: had.listening || k.listening,
-      raw: strongestRaw([had.raw, k.raw]) ?? owner.raw,
       statuses: Array.from({ length: Math.max(had.statuses.length, k.statuses.length) }, (_, i) => strongestStatus(had.statuses[i] ?? 0, k.statuses[i] ?? 0)),
-      ...(had.tls || k.tls ? { tls: had.tls === "tls" || k.tls === "tls" ? "tls" : "no" } : {}),
+      ...(raw ? { raw } : {}),
+      ...(tls ? { tls } : {}),
     });
   }
   const denied = (scans[0]?.denied ?? []).filter((p) => scans.every((sc) => (sc.denied ?? []).includes(p)));
@@ -444,12 +448,14 @@ export function mergeScans(scans: { sockets: { port: number; host: string; liste
 }
 
 /**
- * Which of two answers to the same probe is stronger evidence, never weaker: served (a status under 400, so the app may
- * answer without the sign-in), then a refusal, then any other answer, then none. Keeping the first non-zero answer instead
- * would let one scan's 401 hide another's 200.
+ * Which of two answers to the same probe is stronger evidence, never weaker. The order follows what judgeIdentity needs to
+ * pass: a served status (under 400) is hard on its own; silence is hard on its own; an answer that is not a refusal is hard
+ * when no counted request was refused; and a refusal is the only answer that lets the gate pass. So a served status beats
+ * silence, silence beats other answers, and every answer beats a refusal. Keeping the first non-zero answer let one scan's
+ * 401 hide another scan's 200, and ranking a refusal above other answers let the same 401 clear a 500 or a silence.
  */
 export function strongestStatus(a: number, b: number): number {
-  const rank = (s: number) => (s > 0 && s < 400 ? 4 : REFUSED.has(s) ? 3 : s > 0 ? 2 : 1);
+  const rank = (s: number) => (s > 0 && s < 400 ? 4 : s === 0 ? 3 : REFUSED.has(s) ? 1 : 2);
   return rank(a) >= rank(b) ? a : b;
 }
 
