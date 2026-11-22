@@ -17,7 +17,8 @@ const REPO = { type: "string", pattern: "^local/[\\w.-]+$" };
 const BRANCHES = obj({
   workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" },
   only: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, branch: { type: "string", minLength: 1, maxLength: 200, pattern: "^[\\w./-]+$" }, sha: { type: "string", pattern: "^[0-9a-f]{40}$" } }, ["repo", "branch", "sha"]) },
-  text: obj({ title: { type: "string", maxLength: 300 }, body: { type: "string", maxLength: 60000 } }, ["title", "body"]),
+  // `body` is optional: `aidenhq publish` without --body-file names no body, and an open change keeps its description.
+  text: obj({ title: { type: "string", maxLength: 300 }, body: { type: "string", maxLength: 60000 } }, ["title"]),
 }, ["workspace", "only"]);
 const CHANGES = (head: boolean) => obj({ prs: { type: "array", minItems: 1, maxItems: 30, items: obj({ repo: REPO, number: { type: "integer", minimum: 1 }, ...(head ? { head: { type: "string", pattern: "^[0-9a-f]{40}$" } } : {}) }, head ? ["repo", "number", "head"] : ["repo", "number"]) } }, ["prs"]);
 const CARD = { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" };

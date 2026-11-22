@@ -98,7 +98,10 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         // A push moves the head only: the recorded opening base (`opened`) stays the commit the change was opened against, as
         // GitHub's baseRefOid does, and `base` keeps tracking the tip the merge is checked against.
         const lines = [`update refs/changes/${n}/head ${head}`, `update refs/changes/${n}/base ${tip}`];
-        if (text) lines.push(`update refs/changes/${n}/meta ${await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...c.meta, ...text }) })}`);
+        // A republish that names no text, or only blank text, keeps the change's title and description (as on GitHub): a blank
+        // body must never replace the one a reader depends on.
+        const named = { ...(text?.title?.trim() ? { title: text.title } : {}), ...(text?.body?.trim() ? { body: text.body } : {}) };
+        if (Object.keys(named).length) lines.push(`update refs/changes/${n}/meta ${await g(repo, ["hash-object", "-w", "--stdin"], { input: JSON.stringify({ ...c.meta, ...named }) })}`);
         await refs(repo, lines);
         return { url: changeUrl(repo, n), title: String(text?.title ?? c.meta.title ?? branch), before: c.head };
       }

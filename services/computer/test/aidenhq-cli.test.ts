@@ -66,6 +66,14 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "ev.md"), "Why. Closes acme/app#7.\n\n## Evidence\n- ran it");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "ev.md"), "--fixes", "acme/app#7", "--fixes", "acme/app#8");
   assert.equal(seen.at(-1).body.args.text.body, "Why. Closes acme/app#7.\n\nFixes acme/app#8\n\n## Evidence\n- ran it");
+  // No --body-file and no --fixes: the args carry no `body` at all, so a republish never blanks an existing description.
+  await aidenhq("publish", "acme/app", "fix-login");
+  assert.deepEqual(seen.at(-1).body.args.text, { title: "fix(login): stop the loop" });
+  assert.equal("body" in seen.at(-1).body.args.text, false);
+  // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
+  const before = seen.length;
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--fixes", "acme/app#8"), (e) => e.code === 2 && /--fixes needs --body-file/.test(e.stderr));
+  assert.equal(seen.length, before, "nothing was filed");
   // A republish after a repair commit keeps the title: the branch's own pushed commits still count as its first.
   git("update-ref", "refs/remotes/origin/fix-login", sha);
   git("commit", "-q", "--allow-empty", "-m", "address the failing check");
