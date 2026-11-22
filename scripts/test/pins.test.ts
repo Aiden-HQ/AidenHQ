@@ -1060,3 +1060,30 @@ test("pins: COPY --parents records only the names APT loads", () => {
   }
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY --parents vendor.sources /etc/apt/sources.list.d/\n${unpinned}\n`).problems.length, 1);
 });
+
+test("pins: a normalised COPY path, a guarded mv and the last overwrite flag", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const src = "/etc/apt/sources.list.d/vendor.list";
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > ${src}`;
+  const unpinned = "RUN apt-get install -y foo";
+  // `.` components and repeated slashes are the same directory to the shell: APT loads what lands there.
+  for (const dest of ["/etc/apt/./sources.list.d/", "/etc//apt/sources.list.d/", "/etc/apt/sources.list.d/."]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY --parents vendor.list ${dest}\n${unpinned}\n`).problems.length, 1, dest);
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY vendor.list ${dest}vendor.list\n${unpinned}\n`).problems.length, 1, dest);
+  }
+  // A guarded move may be skipped: the repository may still be loaded, so the next line is checked against it.
+  const guarded = `FROM debian:bookworm${d}\n${write}\nRUN test -f /tmp/marker && mv ${src} ${src}.disabled\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", guarded).problems.length, 1);
+  // ...and when it certainly runs (`true &&`, or on its own line) the move disables it.
+  for (const mv of [`mv ${src} ${src}.disabled`, `true && mv ${src} ${src}.disabled`]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN ${mv}\n${unpinned}\n`).problems, [], mv);
+  }
+  // The last overwrite flag wins, as in the shell: `-f` after `-n` forces the rename, `-n` after `-f` keeps the file.
+  for (const flags of ["-n -f", "--no-clobber --force", "-nf"]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN mv ${flags} ${src} ${src}.disabled\n${unpinned}\n`).problems, [], flags);
+  }
+  // `-fn` is `f` then `n`: the no-clobber stays in force.
+  for (const flags of ["-f -n", "--force --no-clobber", "-fn"]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN mv ${flags} ${src} ${src}.disabled\n${unpinned}\n`).problems.length, 1, flags);
+  }
+});
