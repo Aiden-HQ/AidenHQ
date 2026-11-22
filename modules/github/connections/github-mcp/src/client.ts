@@ -430,7 +430,7 @@ export function createAccess(o: {
       // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
       if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
       const org = typeof variables.org === "string" ? variables.org : "";
-      const key = JSON.stringify([query, variables]);
+      const key = JSON.stringify([query, { ...variables, after: undefined }]); // a board's pages are one read: the cursor isn't part of it
       const { need, fatal } = graphqlNeed(body?.errors, org, o.clientId);
       if (need) {
         // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content
@@ -440,8 +440,9 @@ export function createAccess(o: {
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}) });
       } else if (read.has(key) && body?.data && !body.errors?.length) {
         // Cleared only by the request that was refused succeeding again.
-        problems.delete(read.get(key)!);
+        const orgOf = read.get(key)!;
         read.delete(key);
+        if (![...read.values()].includes(orgOf)) problems.delete(orgOf); // another refused request keeps the org's warning
       }
       return body;
     },

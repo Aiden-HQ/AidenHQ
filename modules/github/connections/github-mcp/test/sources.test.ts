@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { syncOrg } from "../src/sources.js";
+import { itemRow, syncOrg } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
 // The writer side against a fake store: what lands, and with which baseline flag (the SQL itself was smoke-run on postgres:17).
@@ -56,4 +56,9 @@ it("src_github: an org's first sync is a baseline (issues, PRs, boards); later p
   expect(queries[0]).toContain("updated:>=2026-11-10T00:00:00Z");
   expect(writes.find((w) => w.table === "issue")).toMatchObject({ row: { number: 2 }, baseline: false });
   expect(writes.filter((w) => w.table === "project_item")).toEqual([{ table: "project_item", row: { project: "o/5", item_id: "I1", removed: true }, baseline: false }]);
+});
+
+it("an item whose content GitHub refused writes only the board's own columns", () => {
+  const row = itemRow("acme/1", { id: "i1", content: null, updatedAt: "t", fieldValues: { nodes: [] } });
+  expect(Object.keys(row).sort()).toEqual(["archived", "fields", "item_id", "project", "removed", "source_updated_at"]);
 });

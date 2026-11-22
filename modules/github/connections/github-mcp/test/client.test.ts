@@ -555,3 +555,19 @@ it("attributes a restriction to the org GitHub names, keeps a refusal inside one
   const bad = createAccess({ auth: auth(), fetchImpl: async () => new Response("<html>", { status: 502 }) });
   await expect(bad.graphql("q", { org: "acme" })).rejects.toThrow(/answered 502/);
 });
+
+it("keeps an org's warning while another refused request still fails, and clears a board's across cursors", async () => {
+  const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
+  let refuse = new Set(["a", "b"]);
+  const a = createAccess({ auth: auth(), fetchImpl: async (_u, init) => {
+    const v = JSON.parse(String((init as RequestInit).body)).variables;
+    return refuse.has(v.n) ? forbidden({ saml_failure: false }, msg) : answer(200, { data: { ok: 1 } });
+  } });
+  for (const n of ["a", "b"]) await a.graphql("q", { org: "acme", n }).catch(() => undefined);
+  refuse = new Set(["b"]);
+  await a.graphql("q", { org: "acme", n: "a" });
+  expect(a.status().problems).toHaveLength(1);
+  refuse = new Set();
+  await a.graphql("q", { org: "acme", n: "b", after: "cursor" }); // a later full read has no cursor the refused page carried
+  expect(a.status().problems).toHaveLength(0);
+});

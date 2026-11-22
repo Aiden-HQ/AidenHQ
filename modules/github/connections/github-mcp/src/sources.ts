@@ -103,6 +103,9 @@ export function itemRow(project: string, n: any): Row {
     if (!name) continue;
     fields[name] = v.__typename.includes("Iteration") ? { title: v.title, start: v.startDate } : (v.name ?? v.date ?? capText(v.text).text ?? v.number ?? null);
   }
+  // No content at all: GitHub refused it (an issue of an org the sign-in can't read). Only the board's own columns are written,
+  // so what was stored for the item stays.
+  if (n.content == null) return { project, item_id: n.id, fields, archived: !!n.isArchived, removed: false, source_updated_at: n.updatedAt ?? null };
   return {
     project, item_id: n.id, content_type: c.__typename ?? null, title: capText(c.title ?? null).text, url: c.url ?? null, repo: c.repository?.nameWithOwner ?? null,
     number: c.number ?? null, state: c.state ?? null, assignees: logins(c.assignees?.nodes), labels: (c.labels?.nodes ?? []).map((l: any) => l.name).sort(),
