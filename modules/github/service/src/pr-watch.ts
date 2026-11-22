@@ -203,14 +203,20 @@ export function startPrWatch(o: PrWatchOptions) {
         unstarted.push(n);
       }
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
-      if (state.reran[key]) return true;
-      state.reran[key] = new Date().toISOString();
-      save();
+      const prior = state.reran[key];
+      // Re-ran at this head, or a refusal still backing off: either way nothing is asked this tick.
+      if (prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) return true;
       const runs = new Set(unstarted.map((n) => n.checkSuite?.workflowRun?.databaseId).filter(Boolean));
+      let refused = false;
       for (const run of runs) {
         const r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {});
         log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
+        if (r.status >= 300) refused = true;
       }
+      // Only a re-run GitHub took is recorded as done: one it refused would otherwise leave the head marked as handled with its
+      // jobs still never started, so it backs off and is asked again instead of being lost.
+      state.reran[key] = refused ? `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}` : new Date().toISOString();
+      save();
       return true;
     }
     /**
@@ -264,7 +270,9 @@ export function startPrWatch(o: PrWatchOptions) {
       // head yet, and main advancing meanwhile must not send a second request for a head that is already being updated. A queue
       // written before this field existed kept "ok" in `updated`: that acceptance is carried over here, so an update in flight
       // when the module was upgraded is still waited for rather than asked again.
-      if (priorOk) state.updatedOk[tries] ??= new Date().toISOString();
+      // The legacy marker is moved, not copied: left in `updated`, every expired wait would re-seed a fresh acceptance, and an
+      // update GitHub accepted and never applied would be waited for for ever instead of counting as a try.
+      if (priorOk) { state.updatedOk[tries] ??= new Date().toISOString(); delete state.updated[key]; save(); }
       const accepted = state.updatedOk[tries];
       if (accepted && Date.now() - Date.parse(accepted) < UPDATE_OK_WAIT_MIN * 60_000) return true; // waited for, not asked about
       if (accepted) {

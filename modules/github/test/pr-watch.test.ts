@@ -131,7 +131,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204 } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -154,6 +154,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
       return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) };
     }
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
+    if (method === "POST" && path.endsWith("/rerun-failed-jobs")) return { status: rerun(), body: {} };
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
   };
@@ -207,6 +208,20 @@ test("red checks whose job never started are re-run once at the head, with no wa
   await c.watch.tick(); await c.watch.tick();
   assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 1);
   assert.equal(c.woke.length, 0);
+});
+
+test("a check re-run GitHub refused is asked again rather than recorded as handled", async (t) => {
+  const c = await rig(t, { steps: [], rerun: () => 502 });
+  c.set([c.agentPr(33, redPr(33))]);
+  await c.watch.tick();
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  assert.match(String(db["acme/app"].reran["https://github.com/acme/app/pull/33:h33"]), /^retry:/, "a refusal is not recorded as a re-run");
+  await c.watch.tick();
+  const asks = () => c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length;
+  assert.equal(asks(), 1, "inside the backoff nothing is asked again");
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { "https://github.com/acme/app/pull/33:h33": `retry:${new Date(Date.now() - 6 * 60_000).toISOString()}` } } }));
+  await c.watch.tick();
+  assert.equal(asks(), 2, "past the backoff it is asked again instead of staying unhandled");
 });
 
 test("a behind, non-conflicting red PR is updated by GitHub, not woken; a refused update falls back to the wake", async (t) => {
@@ -307,6 +322,17 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await c2.watch.tick(); await c2.watch.tick();
   assert.equal(c2.gh.filter((g) => g.includes("24/update-branch")).length, 0, "an acceptance the older version recorded is carried over, not re-asked");
   // But a waiter is not forever: an accepted update GitHub never applied is asked again, and repeated accepts end in the wake.
+  // The legacy marker is consumed as it is carried over: left in `updated`, every expired wait re-seeds a fresh acceptance.
+  {
+    const carried = await rig(t, { behind: 2 });
+    carried.set([carried.agentPr(29, redPr(29))]);
+    writeFileSync(join(carried.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/29:h29:m1": "ok" } } }));
+    await carried.watch.tick();
+    assert.equal(carried.gh.filter((g) => g.includes("29/update-branch")).length, 0, "the acceptance is waited for, not asked again");
+    const db = JSON.parse(readFileSync(join(carried.cacheDir, "pr-watch.json"), "utf8"));
+    assert.equal(db["acme/app"]?.updated?.["https://github.com/acme/app/pull/29:h29:m1"], undefined, "and the legacy marker is gone, so it cannot re-seed");
+    assert.ok(db["acme/app"]?.updatedOk?.["https://github.com/acme/app/pull/29:h29"], "the acceptance now lives on the PR's head");
+  }
   const lost = await rig(t, { behind: 2, update: 201 });
   lost.set([lost.agentPr(25, redPr(25))]);
   const stale = new Date(Date.now() - 11 * 60_000).toISOString();
