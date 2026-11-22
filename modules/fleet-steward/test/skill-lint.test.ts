@@ -150,7 +150,7 @@ const PARK_PERMISSION = /\b(?:may|can|could|should|is (?:fine|ok|okay) to|okay t
  * `until` at least 15 minutes and at most 7 days ahead, `on` only for a real event), the arming being the run's last act
  * instead of `task_finish`,
  * re-arming a run that a brief would park, the `Monitor:` title as the signal, the new fix task when the earlier one is
- * closed, and no sentence in the form of a ban or that permits a park.
+ * closed or none exists yet, and no sentence in the form of a ban or that permits a park.
  */
 function monitorProblems(text) {
   const section = monitorsSection(text);
@@ -164,6 +164,8 @@ function monitorProblems(text) {
   if (!/this rule supersedes it/.test(section)) missing.push("the sentence that supersedes a parking brief");
   if (!/Every monitor's title starts `Monitor:`/.test(section) || !/secondary signal/.test(section)) missing.push("the `Monitor:` title as the signal, with the source marker secondary");
   if (!/files a new fix task and routes that/.test(section)) missing.push("the new fix task for a closed earlier one");
+  // A monitor's first qualifying result has no earlier fix task: the rule files one then too.
+  if (!/When no fix task\b[^.]{0,80}exists yet[^.]{0,160}files a new fix task and routes that/.test(section)) missing.push("the new fix task for a monitor's first qualifying result");
   const sentences = section.split(/(?<=[.:])\s+/);
   const bans = sentences.filter((sentence) => AVOID_LIST.test(sentence)).map((sentence) => sentence.slice(0, 80));
   const permits = sentences.filter((sentence) => PARK_PERMISSION.test(sentence)).map((sentence) => sentence.slice(0, 80));
@@ -338,7 +340,7 @@ test("the monitor lint bites: the handbook without the section fails, and a head
   // A heading with prose that neither arms nor names the exception is missing every sentence, in one message.
   const headingOnly = old.replace("\n## Done\n", "\n## Monitors\n\nA monitor checks a condition and comes back.\n\n## Done\n");
   const bare = monitorProblems(headingOnly);
-  assert.deepEqual(bare.missing, ["the `task_wait` arming sentence", "the `until`/`on` bounds", "the `task_finish` exception for monitor runs", "the sentence that supersedes a parking brief", "the `Monitor:` title as the signal, with the source marker secondary", "the new fix task for a closed earlier one"]);
+  assert.deepEqual(bare.missing, ["the `task_wait` arming sentence", "the `until`/`on` bounds", "the `task_finish` exception for monitor runs", "the sentence that supersedes a parking brief", "the `Monitor:` title as the signal, with the source marker secondary", "the new fix task for a closed earlier one", "the new fix task for a monitor's first qualifying result"]);
   assert.equal(monitorMessage("x", bare).length, 1, "the missing items are one message, not one per item");
   // The real section passes.
   assert.deepEqual(monitorProblems(stewardHandbook).missing, []);
@@ -359,6 +361,14 @@ test("the monitor lint bites: the arming sentence without the 15-minute floor fa
     "`until` at least 15 minutes ahead",
   );
   assert.equal(monitorProblems(floorOnly).missing.length, 1);
+});
+
+test("the monitor lint bites: a rule without the first-issue case fails, and naming it passes", () => {
+  const noFirst = stewardHandbook.replace("When no fix task\nexists yet, or the earlier one is done or cancelled,", "When the earlier\nfix task is done or cancelled,");
+  assert.notEqual(noFirst, stewardHandbook, "the first-issue clause was removed");
+  const problems = monitorProblems(noFirst);
+  assert.deepEqual(problems.missing, ["the new fix task for a monitor's first qualifying result"], "everything else is intact");
+  assert.match(monitorMessage("x", problems)[0], /first qualifying result/);
 });
 
 test("the monitor lint bites: a section written as a ban fails, and the positive wording passes", () => {

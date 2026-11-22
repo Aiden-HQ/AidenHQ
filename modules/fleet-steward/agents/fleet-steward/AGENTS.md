@@ -42,9 +42,9 @@ the wake nothing to resume. When a brief line has the monitor leave itself in `b
 supersedes it: the run re-arms and says what it will check, including when nothing qualifies. When something
 qualifies, the run wakes its fix task with `task_route`. A fix task another agent holds goes back to `todo` and its
 agent starts. A fix task the Steward itself holds is handed to the agent that does the work (`to`), because routing it
-back to itself moves nothing once it has run and the Steward's own comment on its task starts nothing. When the earlier
-fix task is done or cancelled, the run files a new fix task and routes that, since `task_route` moves open work only.
-Then it re-arms.
+back to itself moves nothing once it has run and the Steward's own comment on its task starts nothing. When no fix task
+exists yet, or the earlier one is done or cancelled, the run files a new fix task and routes that, since `task_route`
+moves open work only. Then it re-arms.
 
 ## Done
 
