@@ -626,6 +626,42 @@ test("a notice the kernel refuses outright is asked again a few times, then ends
   assert.equal(w.acks.filter((a) => a.state === "failed").length, 0);
 });
 
+test("a notice dropped for a newer head keeps a write it already filed, so its outcome is still read and no second acknowledgement is made", async () => {
+  // A's notice is filed (its write is live on GitHub) when the author pushes B. A's notice then comes due and is dropped, because
+  // the write it speaks for is gone. The write itself can't be cancelled, so its record stays on the row and holds the PR's slot
+  // until its outcome is read: were it cleared at the drop, B's notice could make the one acknowledgement first, and A's still-live
+  // write would edit it afterwards to say A's review was not posted.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.ackPending = "k-9"; // A's notice write is filed; its comment's id isn't known yet
+  await w.tick({ github: false });
+  const a = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9");
+  // B arrives, and A's notice comes due: it is dropped, but its filed write stays on the row (and its slot is kept).
+  w.ackPending = "";
+  w.acks.length = 0;
+  w.pr(3, sha("4"));
+  w.db.prepare("UPDATE runs SET notice_due = NULL WHERE id = ?").run(a.id);
+  await w.tick();
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "failed");
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, "k-9", "a filed write is still tracked after its notice is dropped");
+  // A restart in between: the write's slot is rebuilt from the row (not only from rows still `pending`), so its outcome is still read.
+  w.restart();
+  w.pr(3, sha("4"));
+  // Its outcome lands: the comment's id is recorded, and only then is the record given up.
+  w.outcomes.set("k-9", { state: "posted", ack: 424 });
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT ack FROM prs WHERE repo = ? AND number = 3").get(REPO).ack, 424);
+  assert.equal(w.db.prepare("SELECT notice_write FROM runs WHERE id = ?").get(a.id).notice_write, null);
+  assert.deepEqual(w.acks.filter((x) => x.head === sha("3")), []);
+});
+
 test("a restart between filing a notice and learning its comment's id does not make a second acknowledgement", async () => {
   // Two reviewers on the PR, both posts refused: each run wants a notice. The first notice's write is filed and still pending
   // (its comment's id isn't known yet), and it is waiting out a backoff, so only the second run's notice is due this tick. If the

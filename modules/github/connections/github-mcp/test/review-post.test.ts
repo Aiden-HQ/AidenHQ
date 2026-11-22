@@ -396,6 +396,28 @@ describe("posting", () => {
     expect(w.state.ack?.body).toMatch(/was not posted/);
   });
 
+  it("a comment that merely quotes a notice is never taken for the acknowledgement, so a later notice can't overwrite it", async () => {
+    // The owner posts an ordinary comment quoting a notice's raw Markdown (marker and all). With no recorded acknowledgement id the
+    // recovery looks for the notice's own header, not the marker anywhere: the quote is not one Aiden may edit, so a new notice is
+    // made (and the quote is left untouched).
+    const w = world();
+    const quote = { id: 8, body: "Here is the raw text:\n\n> " + (renderNotice({ repo: "acme/payments", pr: 12, head: HEAD, phase: "failed", reason: "post_refused" }) as string), html_url: "u" };
+    const impl = (async (u: URL | string, i?: RequestInit) => {
+      const path = new URL(String(u)).pathname, method = i?.method ?? "GET";
+      if (method === "GET" && path.endsWith("/issues/12/comments")) return new Response(JSON.stringify([{ ...quote, user: { login: "owner1" } }]), { status: 200 });
+      // The quoting comment is readable and editable, so a lookup that took it for a notice would edit it here, in place.
+      if (path.endsWith("/issues/comments/8") && method === "GET") return new Response(JSON.stringify({ ...quote, html_url: "u" }), { status: 200 });
+      if (path.endsWith("/issues/comments/8") && method === "PATCH") { quote.body = JSON.parse(String(i!.body)).body; return new Response(JSON.stringify({ html_url: "u" }), { status: 200 }); }
+      return w.impl(u, i);
+    }) as typeof fetch;
+    const access = accessFor((u, i) => impl(u, i));
+    const p = new ReviewPoster(new GitHub(access, impl), access);
+    const out = JSON.parse((await p.execute("notice", { repo: "acme/payments", pr: 12, head: HEAD, phase: "failed", reason: "post_refused" })).text);
+    expect(out.ack_id).toBe(7);
+    expect(quote.body).toMatch(/^Here is the raw text:/);
+    expect(w.calls.some((c) => c.method === "PATCH" && c.path.endsWith("/issues/comments/8"))).toBe(false);
+  });
+
   it("a notice is the acknowledgement alone, from fixed words", async () => {
     const w = world();
     const p = poster(w);

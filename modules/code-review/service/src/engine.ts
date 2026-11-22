@@ -189,7 +189,12 @@ export function createEngine(d: EngineDeps) {
           if (o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
           // A refused post's waiting notice whose own write the shared queue read as done is told; another notice on the same PR
           // is not (its delivery reads its own record).
-          if (write) run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
+          if (write) {
+            run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
+            // A notice dropped because the head moved keeps its filed write's record only until that write settles: now it has,
+            // so the record (and the slot it held) is given up, and a notice for the newer head is free to speak.
+            run("UPDATE runs SET notice_write = NULL WHERE notice = 'failed' AND notice_write = ?", write);
+          }
         });
       } catch (e) {
         // Neither half landed, and the comment on the pull request has no id recorded: the PR's slot stays taken by that comment's
@@ -217,7 +222,9 @@ export function createEngine(d: EngineDeps) {
   // A restart between filing a notice and learning its comment's id leaves the record in its run row: that write still holds its
   // PR's slot, so a second notice waits for it (two in flight would each make their own acknowledgement comment, and the one
   // without the id could never be edited in place). Restored here, before any notice is accepted.
-  for (const r of all<{ notice_write: string; repo: string; number: number }>("SELECT notice_write, repo, number FROM runs WHERE notice = 'pending' AND notice_write IS NOT NULL"))
+  // A write filed for a notice that was then dropped (its head moved) is still live on GitHub: its record is restored too, so its
+  // outcome is read and its slot given up only once it settles.
+  for (const r of all<{ notice_write: string; repo: string; number: number }>("SELECT notice_write, repo, number FROM runs WHERE notice_write IS NOT NULL"))
     acking.set(r.notice_write, { repo: r.repo, number: r.number });
   const ackNext = new Map<string, Ack>();
   const acking_ = (repo: string, n: number) => [...acking.values()].some((t) => t.repo === repo && t.number === n);
@@ -653,7 +660,14 @@ export function createEngine(d: EngineDeps) {
       // head that is refused has its own notice.
       const now = prRow(r.repo, r.number);
       if (now?.open && now.head !== r.head) {
-        run("UPDATE runs SET notice = 'failed', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
+        // A write already filed can't be cancelled: GitHub may still land it. Its record stays on the row (and its PR slot stays
+        // taken, by the write's id) until its outcome is read, so a notice for the newer head can't make a second comment while
+        // A's is still live and have it edited out from under it. Only a notice nothing was filed for releases the slot now.
+        if (r.notice_write) {
+          run("UPDATE runs SET notice = 'failed', notice_due = NULL WHERE id = ?", r.id);
+          return log("refused post's notice dropped: the pull request moved to a newer head; its filed write is still tracked", { repo: r.repo, pr: r.number, run: r.id, head: r.head.slice(0, 12), now: now.head.slice(0, 12) });
+        }
+        run("UPDATE runs SET notice = 'failed', notice_due = NULL WHERE id = ?", r.id);
         release(r.repo, r.number);
         return log("refused post's notice dropped: the pull request moved to a newer head", { repo: r.repo, pr: r.number, run: r.id, head: r.head.slice(0, 12), now: now.head.slice(0, 12) });
       }
