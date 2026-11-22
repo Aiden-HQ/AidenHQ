@@ -762,13 +762,13 @@ test("a one-off only where a review can post; a refused read passes the comment 
   assert.deepEqual(w.started.map((s) => s.full), [true]);
 });
 
-test("a database from before combos starts fresh (data version 1)", () => {
+test("a database from before combos starts fresh (at the current data version)", () => {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, reviewer TEXT NOT NULL); INSERT INTO runs VALUES ('cr-1', 'deep'); CREATE TABLE prs (repo TEXT, number INTEGER, triage TEXT)");
   world({ db });
   assert.ok((db.prepare("PRAGMA table_info(runs)").all()).some((c) => c.name === "engine"));
   assert.equal(db.prepare("SELECT COUNT(*) n FROM runs").get().n, 0);
-  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
+  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
 });
 
 test("a one-off of a merged PR runs and posts on a task of its own, closed once settled; one closed unmerged is refused", async () => {

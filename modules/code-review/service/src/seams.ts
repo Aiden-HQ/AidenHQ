@@ -2,17 +2,19 @@
 // from (github-mcp's internal read, as this module), what runs a review (the kernel's credential-free check job, lane E's recipe)
 // and what posts it (the github module's poster, lane P's). main.ts wires the real ones; the tests use fakes.
 /** A run's engine, model and effort. */
-export type ComboRef = { engine: string; model: string; effort: string };
+export type ComboRef = { engine: string; model: string; effort: string; /** a skill option's, from the catalog */ harness?: string; skill?: string };
 
 /** The review recipe's output and the poster's input (the shared contract, version 1). */
 export type Finding = {
   id: string; severity: "important" | "nit" | "pre_existing"; path: string; line: number; end_line?: number;
   title: string; why: string; evidence: string; fix_brief: string;
+  /** The catalog option that found it and its lens (a lens-option run's findings; a combo's have none). */
+  option?: string; lens?: string;
 };
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
-  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null };
+  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null; /** a tree run's eligible files and how many it confirmed reading */ counts?: { eligible: number; reviewed: number }; /** tools that failed in a tools run */ failed?: { id: string; why: string }[]; /** the tools that ran in a tools run */ options?: string[] };
   findings: Finding[];
   withheld: { important: number; nit: number; pre_existing: number };
   cost_usd: number; stale_guidance: string[];
@@ -22,6 +24,10 @@ export type Review = {
   fixed?: string[];
   /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again. */
   unsafe?: string[];
+  /** deepsec's set-up files when it set the repo up this run (path → content, `.deepsec/` only): filed as a setup PR. */
+  setup?: Record<string, string>;
+  /** A tree review's target (a whole repo at a commit); a PR review's is the PR. */
+  target?: "tree" | "pr";
 };
 
 /** An open (or just closed) pull request as the watcher needs it. `base` is the base branch's commit the PR is against. */
@@ -68,6 +74,18 @@ export type Thread = { finding: string | null; comment: number; replies: { id: n
 /** What one review run reviews: the check job's spec (lane E's recipe takes exactly these). */
 export type ReviewSpec = {
   repo: string; number: number; base: string; head: string; combo: ComboRef;
+  /** What it reviews: a PR's change, or a whole tree at `head` (number 0, no merge base). */
+  target: "pr" | "tree";
+  /** The check job: `code-review` (one model option or combo, metered) or `code-review-tools` (the selected tool options, token-free). */
+  profile: "code-review" | "code-review-tools";
+  /** A repo review run's id: part of its check's spec, so two reviews of one commit are two checks. */
+  run?: string;
+  /** The tools run's selected tool options, as the recipe runs them (catalog.ts toolSpec). */
+  tools?: Record<string, unknown>;
+  /** A model option's catalog id and lens (stamped on its findings); none for a combo. */
+  option?: string; lens?: string;
+  /** A pending deepsec setup branch's files (path → text): deepsec scans with them instead of setting up. */
+  setup_files?: Record<string, string>;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
@@ -143,4 +161,21 @@ export interface Poster {
   /** One message to whoever asked for a one-off batch: a notice on their task when an agent asked from one (it wakes it), else
    * the owner. "closed": the task was already closed, so the caller has to reach the owner instead. */
   notify(n: { task?: string; text: string; dedupe_key: string }): Promise<"sent" | "closed">;
+}
+
+/** The code host through the kernel (/v1/codehost/:op, this module's grant). */
+export interface CodeHost {
+  /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
+  tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
+  /** The files of a deepsec setup PR's branch (the one `setup` answered); undefined when that branch is gone. */
+  setupBranch(repo: string, branch: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
+  /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, on a new branch off the default branch's head, and closes an earlier setup PR. */
+  setup(b: { repo: string; files: Record<string, string> }): Promise<unknown>;
+}
+/** A report to Primer (a `primer.publish` write record): a new private document; filed, then its outcome. */
+export type ReportIn = { repo: string; title: string; content: string; versionNote: string };
+export type ReportOut = { state: "pending" | "done" | "refused"; write: string; documentId?: string; url?: string; version?: number; why?: string };
+export interface Publisher {
+  file(r: ReportIn): Promise<ReportOut>;
+  outcome(write: string): Promise<ReportOut>;
 }

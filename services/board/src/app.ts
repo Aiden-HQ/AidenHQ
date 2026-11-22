@@ -2535,6 +2535,6 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
 const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
-const CatalogQuerySchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), commit: z.string().regex(/^[0-9a-f]{7,40}$/i).optional() }).strict();
+const CatalogQuerySchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), commit: z.string().regex(/^[0-9a-f]{40}$/i).optional() }).strict();
 const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();
 const DismissSchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), number: z.number().int().min(1), id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), reason: z.string().trim().min(1).max(1000) }).strict();

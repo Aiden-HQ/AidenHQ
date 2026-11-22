@@ -6,17 +6,26 @@
 // - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post (Tier 1, the AI reviewer
 //   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
 //   /internal/review routes.
+// - The code host through the kernel (/v1/codehost/:op, this module's `codehost:` grant): snapshots (a tree's paths and the commit
+//   it resolved; a pending deepsec setup branch's files) and the deepsec setup PR (`setup`: github files its own Tier 1 write).
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
-import type { Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
+import type { CodeHost, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
 
-export const RECIPE = "code-review";
 /** This module's write kinds (module.yaml writes), executed by this service through github-mcp's review routes. */
 export const POST_KIND = "code-review.post";
 export const ACK_KIND = "code-review.notice";
 export const STATUS_KIND = "code-review.status";
 export const REPLY_KIND = "code-review.reply";
+/** The only files a deepsec setup PR may hold: what deepsec means to be committed (recipe/deepsec.ts setupPath; module.yaml
+ * codehost.setup lists the same paths). */
+export const SETUP_PATH = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 /** A dedupe key as a wake's `id`: the kernel takes `[\w.-]{1,80}` and keys the row by it, so a resend is the same wake. */
@@ -49,13 +58,22 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
 }
 
 /**
- * The check job's spec (module.yaml check_jobs.code-review; every field a string of its kind): base is the merge base, and a full
- * review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the combo; the previous findings are
- * those the recipe rechecks (and the finders take as already reported), full reviews included.
+ * The check job's spec, by profile (module.yaml check_jobs; every declared field always sent, each a string of its kind).
+ * `code-review` (a combo, or one model option: combo.engine `skill:<id>` with the catalog's harness and skill, or an engine):
+ * base is the merge base, and a full review's incremental_from is that base too; the repo's ignore globs and max_nits ride in the
+ * combo; the previous findings are those the recipe rechecks (and the finders take as already reported), full reviews included.
+ * A tree review has no merge base: base and incremental_from are its head (the recipe diffs against the empty tree), and pr is
+ * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
+ * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
  */
 export function checkSpec(s: ReviewSpec): Record<string, string> {
+  const tree = s.target === "tree";
+  const base = tree ? s.head : s.merge_base;
+  // `run` keeps two reviews of one commit with one spec apart (the kernel reuses a check for an identical spec): empty for a PR run.
+  if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}), run: s.run ?? "" };
   return {
-    base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
+    base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
+    option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
@@ -66,7 +84,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
 export function kernelRunner(kernel: KernelClient): ReviewRunner {
   return {
     async start(s) {
-      const v = await kernel.call("POST", "/v1/checks", { repo: s.repo, head: s.head, run: RECIPE, spec: checkSpec(s) });
+      const v = await kernel.call("POST", "/v1/checks", { repo: s.repo, head: s.head, run: s.profile, spec: checkSpec(s) });
       return { check: String(v.id) };
     },
     async result(check): Promise<RunResult> {
@@ -244,6 +262,88 @@ export function reviewExecutor(github: (op: "preview" | "execute", body: unknown
         throw e;
       }
       return { ok: v.ok === true, text: String(v.text ?? "") };
+    },
+  };
+}
+
+const SETUP_BODY = "deepsec's own set-up files (`.deepsec/`), written by `deepsec init` during a code review of this repository: its config, the matchers it generated and its summary of the repo. Merging them lets later reviews scan with them instead of setting up again. Nothing outside `.deepsec/` changes.";
+
+/**
+ * The code host through the kernel (POST /v1/codehost/:op, this module's `codehost:` grant). A snapshot's tarball is read as it
+ * streams (never held whole): `tree` lists its paths, `setupBranch` takes only deepsec's allowlisted files from the setup branch
+ * (absent: no such branch). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
+ */
+export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: KernelClient, fetcher: typeof fetch = fetch): CodeHost {
+  const op = (name: string, body: unknown) => fetcher(`${kernelUrl.replace(/\/+$/, "")}/v1/codehost/${name}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
+  /** The snapshot of repo@ref through `tar args`; undefined when the code host has no such ref (404). */
+  const snapshot = async <T>(repo: string, ref: string, args: string[], read: (out: string) => T): Promise<{ sha: string; value: T } | undefined> => {
+    const r = await op("snapshot", { repo, ref });
+    if (r.status === 404) return undefined;
+    if (!r.ok || !r.body) throw Object.assign(new Error(`the snapshot of ${repo}@${ref.slice(0, 40)}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`), { status: r.status });
+    const sha = r.headers.get("x-aidenhq-commit") ?? "";
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`the snapshot of ${repo} named no commit`);
+    const out = await new Promise<string>((resolve, reject) => {
+      // Bytes, decoded once (a multi-byte character can straddle two chunks); more than the cap is an error, never a silent cut.
+      const chunks: Buffer[] = [];
+      let bytes = 0, err = "";
+      const t = spawn("tar", args, { stdio: ["pipe", "pipe", "pipe"] });
+      t.stdout.on("data", (b: Buffer) => { bytes += b.length; if (bytes <= 64_000_000) chunks.push(b); });
+      t.stderr.on("data", (b: Buffer) => (err = (err + b.toString("utf8")).slice(0, 1000)));
+      t.stdin.on("error", () => {}); // tar ended early: its close says why
+      t.on("error", reject);
+      // GNU tar exits 2 when a pattern matched nothing: no files, not a failure.
+      t.on("close", (code) => {
+        if (bytes > 64_000_000) return reject(new Error(`the snapshot of ${repo} has more than 64 MB of output`));
+        if (code === 0 || /Not found in archive/.test(err)) resolve(Buffer.concat(chunks).toString("utf8"));
+        else reject(new Error(`the snapshot of ${repo} didn't unpack: ${err.trim().slice(0, 200) || `tar ${code}`}`));
+      });
+      // A source that fails (the code host drops, a timeout) ends tar too, or it waits for the rest of the archive for good.
+      Readable.fromWeb(r.body as never).on("error", (e) => { t.kill("SIGKILL"); reject(e); }).pipe(t.stdin);
+    });
+    return { sha, value: read(out) };
+  };
+  return {
+    async tree(repo, ref) {
+      const s = await snapshot(repo, ref, ["-tzf", "-"], (out) => {
+        const paths = out.split("\n").filter((l) => l && !l.endsWith("/")).map((l) => l.replace(/^\.\//, ""));
+        if (paths.length > 200_000) throw new Error(`${repo} has more than 200,000 files: a review reads at most that many`);
+        return paths;
+      });
+      if (!s) throw Object.assign(new Error(`${repo} has no ${ref.slice(0, 40)}`), { status: 404 });
+      return { sha: s.sha, paths: s.value };
+    },
+    async setupBranch(repo, branch) {
+      // A first pass lists the branch; only its regular, allowlisted files are then unpacked, by exact name, from the commit the
+      // listing named. A link member is never unpacked, so nothing a link points at can be written through.
+      const listed = await snapshot(repo, branch, ["-tvzf", "-"], (out) => out.split("\n").flatMap((l) => {
+        const m = /^-\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+(\.deepsec\/\S+)$/.exec(l);
+        return m && SETUP_PATH.test(m[2]!) && Number(m[1]) <= 2_000_000 ? [m[2]!] : [];
+      }));
+      if (!listed) return undefined;
+      const files: Record<string, string> = {};
+      if (!listed.value.length) return { tip: listed.sha, files };
+      const dir = mkdtempSync(join(tmpdir(), "deepsec-setup-"));
+      try {
+        if (!(await snapshot(repo, listed.sha, ["-xzf", "-", "-C", dir, "--no-same-owner", "--", ...listed.value], () => undefined))) return undefined;
+        // A name the archive lists twice (a regular file, then a link of the same name) unpacks as the last: only what is a regular
+        // file on disk is read, never what a link points at.
+        for (const p of listed.value) if (lstatSync(join(dir, p)).isFile()) files[p] = readFileSync(join(dir, p), "utf8");
+        return { tip: listed.sha, files };
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    },
+    async setup(b) {
+      // The setup's approval lands on a quiet task per repo (the kernel's setup op names one; the same source is the same task).
+      const t = await kernel.call("POST", "/v1/tasks", { title: `Code review: deepsec setup for ${b.repo}`, description: `${b.repo}\n\nCode review's deepsec setup PR is approved here.`, role: ROLE, source: `code-review:setup:${b.repo}`, quiet: true });
+      // The code host waits five minutes for the approval, then answers 202 { pending }: asking again finds the same open record.
+      let r: Response, j: Record<string, unknown>;
+      for (let i = 0; ; i++) {
+        r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY, task: String(t.id) });
+        j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        if (r.status !== 202 || j.pending !== true) break;
+        if (i >= 5) throw new Error(`the deepsec setup PR is still waiting for its approval (write ${String(j.write)})`);
+      }
+      if (!r.ok) throw new Error(`the deepsec setup PR: ${r.status} ${JSON.stringify(j).slice(0, 300)}`);
+      return j;
     },
   };
 }

@@ -64,12 +64,8 @@
      "pattern": "^[0-9a-f]{40}$"
     },
     "engine": {
-     "enum": [
-      "codex",
-      "claude-code",
-      "codegenie",
-      "codex-native"
-     ]
+     "type": "string",
+     "pattern": "^(codex|claude-code|codegenie|codex-native|deepsec|skill:[a-z]+\\.[a-z0-9-]{1,60})$"
     },
     "model": {
      "type": "string",
@@ -120,6 +116,63 @@
       },
       "incomplete": {
        "maxLength": 500
+      },
+      "options": {
+       "type": "array",
+       "maxItems": 100,
+       "items": {
+        "type": "string",
+        "maxLength": 80
+       }
+      },
+      "failed": {
+       "type": "array",
+       "maxItems": 100,
+       "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "id",
+         "why"
+        ],
+        "properties": {
+         "id": {
+          "type": "string",
+          "maxLength": 80
+         },
+         "why": {
+          "type": "string",
+          "maxLength": 700
+         }
+        }
+       }
+      },
+      "eligible": {
+       "type": "array",
+       "maxItems": 50000,
+       "items": {
+        "type": "string",
+        "maxLength": 500,
+        "pattern": "^[^\\r\\n]*$"
+       }
+      },
+      "counts": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "eligible",
+        "reviewed"
+       ],
+       "properties": {
+        "eligible": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "reviewed": {
+         "type": "integer",
+         "minimum": 0
+        }
+       }
       }
      }
     },
@@ -183,6 +236,18 @@
        "fix_brief": {
         "type": "string",
         "maxLength": 2000
+       },
+       "option": {
+        "type": "string",
+        "pattern": "^[a-z]+\\.[a-z0-9-]{1,60}$"
+       },
+       "lens": {
+        "enum": [
+         "correctness",
+         "security",
+         "maintainability",
+         "performance"
+        ]
        }
       }
      }
@@ -225,6 +290,12 @@
       "type": "string",
       "maxLength": 300
      }
+    },
+    "target": {
+     "enum": [
+      "pr",
+      "tree"
+     ]
     }
    }
   },

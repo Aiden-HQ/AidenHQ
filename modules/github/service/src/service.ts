@@ -154,7 +154,12 @@ export function createService(o: Options) {
     // git says only "Repository not found" for every refusal: the API's answer names the cause (an org's OAuth App
     // restriction or SSO, a stale sign-in) as a typed need, and tells the owner.
     await git(dir, ["fetch", "--quiet", "--no-tags", remote(s.slug), `+${/^[0-9a-f]{40}$/.test(name) ? name : `refs/heads/${name}`}:${ref}`], await token())
-      .catch(async (e) => { await gh("GET", `/repos/${s.slug}`); throw e; });
+      .catch(async (e) => {
+        await gh("GET", `/repos/${s.slug}`);
+        // The repo answers, so the ref is what is missing (a deleted branch): a 404 the caller can tell from a failed fetch.
+        if (/couldn't find remote ref/i.test(String((e as Error)?.message))) throw fail(404, `${s.slug} has no ${name}`);
+        throw e;
+      });
     return { dir, ref, sha: await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]) };
   }
 
