@@ -998,3 +998,14 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
   paused once).
 - **A stock install with `agents/<key>/agent.yaml`.** There are none today (owner: no users yet). Its updater's staged
   compile fails with the move message and it stays on its pin; the release note gives the move.
+
+## Step-0 probe result (2026-11-23, pinned image 2026.1106.0) — binding for Tasks 8-10, 14
+
+- `POST /api/routines/:id/run` IGNORES the `Idempotency-Key` header. Send the key in the JSON body:
+  `{"idempotencyKey": "<sealed batch id>", "payload": {"batch": "<id>"}}` (body key, max 255 chars; a same-key retry
+  returns the same run and issue). No bearer triggers.
+- Use `payload` (kept verbatim as `triggerPayload`), not `variables` (dropped unless the routine declares them).
+- A 202 is not success: require `status === "issue_created"` and a `linkedIssueId` in the run; otherwise retry/fail.
+- `/run` runs paused routines (only archived gives 409): the kernel checks paused before calling (plan already drops).
+- Event routines compile with concurrency `always_enqueue` (default `coalesce_if_active` merges identical payloads).
+- The created issue carries `originKind: "routine_execution"`, `originId` = routine id, `originRunId` = run id.
