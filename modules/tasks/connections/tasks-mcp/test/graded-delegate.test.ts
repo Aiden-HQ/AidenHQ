@@ -246,7 +246,13 @@ test("an absence criterion is refused at filing and at amendment, naming a diff-
     assert.equal(ok.r.result?.isError, undefined, `${claim}: ${ok.text}`);
   }
   // An exemption covers the absence claim's own subject, never another clause of the same criterion.
-  for (const mixed of ["the diff removes every `Linus` line and docs/a.md contains no `Linus`", "the PR is fine and the handbook has no old token", "the attached report is good and docs/a.md contains no `Linus`"]) {
+  for (const mixed of [
+    "the diff removes every `Linus` line and docs/a.md contains no `Linus`",
+    "the PR is fine and the handbook has no old token",
+    "the attached report is good and docs/a.md contains no `Linus`",
+    "docs/a.md and the attached report contain no `Linus`",
+    "the attached report and docs/a.md contain no `Linus`",
+  ]) {
     const r = await call("task_amend_rubric", { issue: "WOR-9", rubric: [mixed, "merged into main", "checks green on the head"] });
     assert.equal(r.r.result?.isError, true, mixed);
     assert.match(r.text, /claims file contents are absent/, mixed);

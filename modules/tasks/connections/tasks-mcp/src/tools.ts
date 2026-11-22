@@ -527,27 +527,29 @@ const ABSENT = /\b(?:contains?|containing|includes?|including|holds?|holding)\s+
 const REPO_FILE = /\b(?:files?|handbooks?|docs?|documents?|trees?|repos?(?:itories)?|sources?|modules?|readme|codebase)\b|[\w./-]+\.[a-z]{1,5}\b/i;
 const ATTACHED = /\battach(?:ed|ment|ments)\b/i;
 const DIFF_SUBJECT = /\b(?:pr|pull requests?|diff|patch|changes?|commits?|merge[ds]?)\b/i;
-const CLAUSE_BREAK = /[.;:,]\s+|\b(?:and|but|while|whereas)\s+/gi;
-/** The subject an absence claim is about: its own clause, widened backwards only when that clause names nothing the claim could be about. */
+// A clause ends at punctuation or a contrast, never at a coordination: "docs/a.md and the attached report contain no X" is one
+// claim about both, so its subject is split on the coordination and each part judged on its own.
+const CLAUSE_BREAK = /[.;:,]\s+|\b(?:but|while|whereas)\s+/gi;
+const COORDINATION = /\s*(?:[,;]|\band\b|\bor\b|&|\bplus\b)\s*/gi;
+/** The clause an absence claim sits in: its subject, with any other clause ("the diff removes X, and ...") left out. */
 function absenceSubject(c: string, at: number, length: number): string {
   const breaks = [...c.slice(0, at).matchAll(CLAUSE_BREAK)].map((m) => (m.index ?? 0) + m[0].length);
   const after = c.slice(at + length);
   const next = after.search(CLAUSE_BREAK);
   const tail = next < 0 ? after : after.slice(0, next);
-  for (let i = breaks.length - 1; i >= -1; i--) {
-    const span = c.slice(i < 0 ? 0 : breaks[i]!, at) + c.slice(at, at + length) + tail;
-    if (i < 0 || REPO_FILE.test(span) || ATTACHED.test(span) || PAGE_PATH.test(span) || DIFF_SUBJECT.test(span)) return span;
-  }
-  return c;
+  return c.slice(breaks.length ? breaks[breaks.length - 1]! : 0, at) + c.slice(at, at + length) + tail;
 }
+/** Whether a subject names a repository file the claim's own evidence can't show, judging each coordinated part on its own. */
+const absenceRefuses = (subject: string) =>
+  subject.split(COORDINATION).some((part) => REPO_FILE.test(part) && !ATTACHED.test(part) && !PAGE_PATH.test(part) && !DIFF_SUBJECT.test(part));
 /** Whether a criterion claims a repository file's contents lack something (see ABSENT), which a diff cannot show. */
 const absentFromFile = (c: Json, kind?: Json) => {
   const text = String(c);
   if (kind === "file") return false;
-  // "the diff removes X and docs/a.md contains no Y": each claim is judged on its own subject, never on another clause.
+  // "the diff removes X and docs/a.md contains no Y": each claim is judged on its own subject, never on another clause,
+  // and an exemption for one coordinated part ("the attached report") never covers another ("docs/a.md").
   for (const claim of text.matchAll(new RegExp(ABSENT.source, "gi"))) {
-    const subject = absenceSubject(text, claim.index, claim[0].length);
-    if (REPO_FILE.test(subject) && !ATTACHED.test(subject) && !PAGE_PATH.test(subject) && !DIFF_SUBJECT.test(subject)) return true;
+    if (absenceRefuses(absenceSubject(text, claim.index, claim[0].length))) return true;
   }
   return false;
 };
