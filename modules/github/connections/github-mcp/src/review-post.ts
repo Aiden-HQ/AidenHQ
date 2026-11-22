@@ -264,7 +264,7 @@ export class ReviewPoster {
         facts: {
           target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
           sentence: `Reply on a code review finding's thread on ${a.repo}#${a.pr}.`,
-          changes: "One reply on Aiden's own review thread, as the owner, signed by AidenHQ: the agent's answer to the finding (fixed, disputed, by design or won't fix, and why).",
+          changes: "One reply on Aiden's own review thread, as code review's GitHub identity, signed by AidenHQ: the agent's answer to the finding (fixed, disputed, by design or won't fix, and why).",
           details: a.body,
         },
         targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
