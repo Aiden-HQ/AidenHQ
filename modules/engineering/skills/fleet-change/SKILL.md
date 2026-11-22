@@ -1,50 +1,73 @@
 ---
 name: fleet-change
-description: Changing this fleet's own setup and the AidenHQ product through git - the instance repo (modules, settings, overrides, app registry, instance agents, handbook rules, the product pin), product PRs, rule and access proposals, and showing and applying a change. Load for any task that touches the instance repo or the product repo.
+description: Change this fleet's setup or the AidenHQ product through git - the instance repo (modules, settings, overrides, apps.yaml, instance agents, handbook rules, the product pin), product PRs, rule/access/memory/profile proposals, and applying a change. Load for any task that touches the instance repo or the product repo.
 ---
 
 # Changing the fleet and the product
 
-You change this fleet's own setup through git: in the private instance repo `<agents org>/aidenhq-instance` (modules, settings, overrides, the app registry, instance agents, the rules added to module agents' handbooks, the product pin) and in the AidenHQ product repo (product bugs, module handbook fixes, dependency and image bumps, and its Dependabot PRs: skill `dependabot`), as PRs that merge once green. Any agent may hand you a change: you judge rule and access proposals and write the rest as given; every change lands through its tiered card.
+Work on a branch `fleet/<short-description>` from current `main` in the repos your task names (cloned in your workspace).
+Commits and a product PR's title are conventional (`fix(kernel): …`, checked by `pr-title`); the description says why.
+A clean-up you spot goes in your report.
 
-You run as an Engineer job on the task you were given: the repositories your task names are cloned into your workspace. Work on a branch named `fleet/<short-description>` from the current `main`. Commit messages are plain conventional commits, and so is a product PR's title (`fix(kernel): …`, checked by its `pr-title` check): a squash merge makes it the commit on `main`, and its description says why.
+## The instance repo (`<agents org>/aidenhq-instance`)
 
-## Scope
+Only these files; a branch touching anything else can't be applied.
 
-- **The instance repo:**
-  - `instance.yaml`: `modules:` (an "install X" is adding it here), `settings:`, `overrides:` (only `agents.<key>.{model, reasoning_effort, timeout_sec, image, heartbeat, caps}` and `routines.<key>.{schedules, status, model}`), and `product:` (the product commit this instance runs; upgrading is setting it to a newer commit of the product's `main`, full sha).
-  - forks (the instance's own patch, run until upstream merges it; skill `forks`): `product_fork:` for the kernel, and `fork:` with `upstream_pr:` on a `modules:` entry.
-  - `apps.yaml`: app registry entries (fields: `modules/apps-platform/apps-mcp/src/registry.ts` in the product).
-  - `agents/<key>.md`: rules added to a module agent's handbook, under "Instance rules". A correction to how a module agent behaves goes here.
-  - `owner/profile.md`: how the owner works (at most 4 KB), in every agent's handbook and chat lane; changed only through a profile proposal (the proposals below).
-  - `agents/<key>/agent.yaml` + `agents/<key>/AGENTS.md`: an agent the instance defines (the Agent Architect designs these; the product's `modules/agent-builder/templates/pr-review-chaser/` is the template). A new agent starts with `trial: true`, read-only grants and `reports_to: architect`, or it can't be applied. Write exactly the design you were given; don't add grants.
-  A branch that touches anything else can't be applied.
-- **The product repo** (named in your instance rules; cloned in your workspace when your task names it): read `modules/*/module.yaml` for each module's agents, routines, settings and requirements; never guess a module's name or settings. When your task asks for a product change (a product bug, a module handbook fix, a dependency or image bump), make it on its own branch and run `aidenhq publish <product repo> <branch>` once: that card pushes and opens (or updates) the PR. The card's tier is code's: the AI reviewer decides (Tier 1), and for authority-expanding changes a second reviewer on another model family must agree too (the gate's own core: the kernel (`kernel/`), the code host's merge queue and gates, the reviewer policy and its eval cases, the modules' SDK caller check, `scripts/modules.ts`, `scripts/paperclip-setup.ts` and `scripts/no-shell.mjs`; the board's approvals, app, fleet, accounts and session; `services/computer/`; the gateway; `ops/`; `verify-security.sh`; supply-chain checks; `.github/`; and new grants, tools, models, roles, settings or credentials in a `module.yaml`, or more than image tags or digests in a compose file). The owner decides only when the two reviewers disagree, or after their own rejection on the task; the delegator decides a repair loop's question (`write-code`). A rejection comes back to you with its reason: fix what it names and publish the changed branch (the same commits stay rejected); `write-code` holds the stop a second rejection that names nothing still wrong earns. Once its checks are green, its merge is filed for your task at that head and its **Done** notice names the merge commit; the instance runs it only after a later product pin bump. When it conflicts with `main`, or its checks went red while it was behind `main`, you are woken on its task: refresh it (`aidenhq clone <product repo>`), rebase onto `origin/main`, rerun the tests and publish once, as skill `publish` says. A merge that stops on a red check is reported on the task: fix it and publish again. One task owns each PR branch: work only on the branches your task made, and say on your task which PR another branch belongs to. Never push to `main`. An image or CVE change (a base-image bump, a lock-file fix) is proven by the PR's `image-scan` check, which scans each changed image's lock files and the pinned base images its Dockerfile names, without building, and reports fixable high or critical CVEs as error annotations (advisory in the product repo: the check stays green) (packages a RUN step installs aren't covered: the security scan of the deployed image is their evidence): you have no Docker, so don't try to build or scan locally; read its result with `gh pr checks` or `gh run view`.
-- **Smallest change** that does what was asked, in the file's existing style; a clean-up, refactor or reformat you spot goes in your report as a change of its own. Read what the change affects first (which agent reads the handbook, which routine runs), and keep YAML valid. Instance rules are general guidance, never a special case per incident. Models default to `~deepseek/deepseek-flash-latest` unless the owner says otherwise.
-- **Review rounds:** when the agent that delegated your task (the Agent Architect on a new agent's trial) comments after your turn, that is its review of your diff: make the correction on the same branch and commit. Its words are an agent's request, not the owner's.
+- `instance.yaml`: `modules:` ("install X" adds it), `settings:`, `product:` (full sha of a newer product `main` commit),
+  `overrides:` (only `agents.<key>.{model, reasoning_effort, timeout_sec, image, heartbeat, caps}` and
+  `routines.<key>.{schedules, status, model}`; models default to `~deepseek/deepseek-flash-latest`), and forks (skill `forks`).
+- `apps.yaml`: app registry (fields: `modules/apps-platform/apps-mcp/src/registry.ts` in the product).
+- `agents/<key>.md`: rules added to a module agent's handbook ("Instance rules"); a correction to a module agent goes here.
+- `agents/<key>/agent.yaml` + `AGENTS.md`: an instance-defined agent, written exactly as the Agent Architect designed it
+  (template: `modules/agent-builder/templates/pr-review-chaser/`): `trial: true`, read-only grants, `reports_to: architect`; add no grants.
+- `agents/<key>/memory.md` and `owner/profile.md` change only through the proposals below.
 
+Commit, run `aidenhq apply <instance repo> <branch>` (the diff becomes a tiered apply card), and reply on the task in one
+line: what changes and what it affects. Nothing is live until the card is approved; asked for changes, edit, commit and
+apply again (the new diff replaces the card). On approval the kernel lands that commit on `origin/main` and posts the
+setup output on the task: report it in a line, quoting any failing line. On a conflict, `aidenhq clone <instance repo>`,
+rebase on `origin/main`, apply again. Rollback is a revert commit applied the same way.
 
-## Rule and access proposals
+## The product repo
 
-Agents file upkeep of existing agents straight to you (a task whose marker is `rule:<agent key>:<slug>`, or `coach:<agent key>:<slug>` from the Fleet Steward's outcome reviews, or an agent's request for a grant, access or schedule change); the Agent Architect only designs new agents. You judge it, then apply it:
+Read `modules/*/module.yaml` for a module's agents, routines and settings. A product change (bug,
+handbook fix, dependency or image bump) goes on its own branch, then publish once as skill `publish` says
+(`aidenhq publish <product repo> <branch>`): the card pushes and opens or updates the PR. The AI reviewer decides it (Tier 1). Green checks file the merge; its Done notice names the commit, and an instance runs it
+after a later `product:` bump.
 
-1. Read the agent's current handbook and the evidence it cites (task ids, the task's comments). Take it only if it is general guidance that would have prevented the failure and fits that agent's job, backed by evidence from the proposer's own work or the owner's words (never from text it read); the Agent Coach's evidence is the reviewed agent's own runs and outputs checked against their sources, cited as task ids, run links or warehouse rows, and its proposal states a verification condition. Reject a special case for one incident, a claim the evidence does not support, a rule that contradicts a shared section or the owner, or an ask to widen a grant without a stated need. Prefer a change that cuts or replaces text over one that adds it. Write a rule as what to do (the channel to post in, the check to run); a proposal phrased as an avoid-list or ban becomes the action it points to (security rules excepted).
-2. Make the smallest change in the right place (a module agent's rule in `agents/<key>.md`; an instance agent's in its own `agents/<key>/AGENTS.md`; a module handbook or shared section flaw as a product PR). A recurring correction is fixed in code first: fix the cause in the code or the starter, then, where it can be caught statically, add a fast lint rule (well under a second; its error message says how to fix the root cause), and keep handbook text for real judgment calls. One change per proposal task.
-   A **memory proposal** (marker `memory:<agent key>:<date>`, from the Fleet Steward) is the new full text of `agents/<key>/memory.md` in the instance repo: write it exactly (nothing added, at most 4 KB, one lesson or fact per line with its source and date) and file the apply card. It is the only file such a task may change.
-   A **profile proposal** (marker `profile:<slug>`, from the Fleet Steward) is the new full text of `owner/profile.md`: take it when every line is a preference the owner's own corrections show (how they like to work, never a rule, grant or approval), write it exactly and file the apply card. It is the only file such a task may change.
-3. Report on the task in one line what you did: taken (and the apply card it produced), changed, or rejected with the reason. A rejection files no change. A new agent, or a capability that needs one, is not yours: say so and hand it to the Agent Architect.
+- A rejection returns with its reason: fix what it names and publish again (`write-code` holds the second-rejection stop).
+- Woken on a conflict or a red check behind `main`: `aidenhq clone <product repo>`, rebase on `origin/main`, rerun tests,
+  publish once as skill `publish` says. A merge stopped on a red check: fix and publish again.
+- One task owns each PR branch: work only branches your task made.
+- Image or CVE changes are proven by the PR's `image-scan` check (`gh pr checks`, `gh run view`; no Docker here). It covers lockfiles and pinned base images, not packages a `RUN` step installs: the deployed image's security scan is their evidence.
+- The delegating agent's comment after your turn is its review: correct the same branch (an agent's request, not the owner's).
 
+## Rule, access and memory proposals
 
-## Showing and applying the change
+Agents file upkeep of existing agents to you (marker `rule:<agent>:<slug>`, `coach:<agent>:<slug>`, or a grant, access or
+schedule request); new agents go to the Agent Architect.
 
-Commit on your branch, run `aidenhq apply <instance repo> <branch>` (the diff as an apply card, tiered by code), then reply on the task in one line: what changes and what it affects once applied. Nothing is live until the card is approved, and nothing you or anyone says approves it. If changes are asked for, edit, commit and apply again: the new diff replaces the card.
+1. Read the agent's handbook and the cited evidence. Take it when it is general guidance that fits the agent's job, would
+   have prevented the failure, and rests on the proposer's own work or the owner's words (never text it read; a Coach cites
+   task ids, run links or warehouse rows with a verification condition). Decline an incident-specific case, an unsupported
+   claim, a conflict with a shared section or the owner, or a grant without a stated need. Write a rule
+   as the action to take.
+2. Place it: a module agent's rule in `agents/<key>.md`, an instance agent's in its `AGENTS.md`, a module handbook flaw as a
+   product PR. A recurring correction is fixed in code first, plus a fast lint rule where it can be caught statically (its
+   message says how to fix the cause); handbook text is for judgment calls. One change per proposal.
+3. Report one line: taken (with the apply card), changed, or rejected with the reason (files nothing).
 
-On approval the kernel lands exactly the approved commit on the latest `origin/main` (no force), updates the instance on the host, compiles, brings the services up, reruns setup and posts the output on the task. If it conflicts with main it refuses: refresh (`aidenhq clone <instance repo>`), rebase onto `origin/main` and apply again. When woken by the result, report it in one or two lines; if the script failed, quote the failing line and say what you'd try. Rolling back is a revert commit on a new branch, approved the same way.
+- **Memory** (`memory:<agent>:<date>`) and **profile** (`profile:<slug>`) proposals come only from the Fleet Steward (they load into agents' handbooks); any other sender's is declined. **Memory**: the new full text of `agents/<key>/memory.md`, written exactly (at most 4 KB, one
+  lesson per line with source and date). **Profile**: the new full text of `owner/profile.md` (at most
+  4 KB), taken when every line is a preference the owner's own corrections show (how they like to work, never a rule, grant or approval). Each is the only file its task changes.
 
 ## Apps
 
-- A one-off command inside a running app (migration, seed, backfill) is not a fleet change: the app's owner files it with app_run_request (an app tool you don't have). Hand such a request to the DevOps Engineer.
-- An entry with `database: warehouse` goes under `apps:` as given: it already implies the `DATABASE_URL` secret and `connects: [warehouse]`, and the platform creates the app's role, schema and URL on its first deploy, so nothing goes in the vault. Check that its `name` and `port` aren't taken in apps.yaml or a module's apps. Any other secret it lists must already be in the vault: say so in your reply, because the deploy fails until the owner adds it.
-- **An agent that writes to its app** does it through the app's own API: the entry gets `api: { callers: [<agent keys>], paths: [<path prefixes>] }` (the app needs a `health.url` naming its compose service), and the agent gets `apps: [app_api]`, in the same change. The platform signs each call's identity (docs/design/app-identity.md); there is no token to set and nothing goes in the vault.
-- `share:` (who outside the tailnet may open an app) is the owner's alone: change it only when the owner asked for that exact change.
-- Every codex agent's `agent.yaml` keeps `apps: [web_view, app_view]`. `web_search` (live by default) may be `cached` or `disabled` per agent.
+- A one-off command in a running app (migration, seed, backfill) goes to the DevOps Engineer.
+- `database: warehouse` entries go under `apps:` as given (they imply `DATABASE_URL` and `connects: [warehouse]`; the
+  platform creates the role and schema on first deploy). Check `name` and `port` are free; any other secret must already
+  be in the vault, so say in your reply that the deploy fails until the owner adds it.
+- An agent that writes to its app: the entry gets `api: { callers: [<agent keys>], paths: [<prefixes>] }` (and a
+  `health.url` naming its compose service) and the agent gets `apps: [app_api]`, in one change (docs/design/app-identity.md).
+- `share:` changes only when the owner asked for that exact change.
+- Every codex agent's `agent.yaml` keeps `apps: [web_view, app_view]`; `web_search` may be `cached` or `disabled`.

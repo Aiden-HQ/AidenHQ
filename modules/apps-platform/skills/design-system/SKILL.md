@@ -1,80 +1,47 @@
 ---
 name: design-system
-description: Build or change the UI of an AidenHQ app (or the board) with the app starter (Vite + React + shadcn/ui + Tailwind) and the AidenHQ design system (theme, building blocks, guidelines, review checklist). Use for any page, component, style or new app in an AidenHQ app repo or the product.
+description: Build or change the UI of an AidenHQ app (or the board) on the app starter (Vite + React + shadcn/ui + Tailwind) and the design system - theme, building blocks, guidelines, review checklist, matching a mockup. Use for any page, component, style or new app.
 when: { tools: [ apps.app_check ] }
 ---
 
 # AidenHQ apps: the starter and the design system
 
-Two folders, in every agent computer (in the product repo, their sources are `modules/apps-platform/design-system/` and
-`modules/apps-platform/starter/`):
+In every agent computer: `/opt/aidenhq/design-system/` (read `guidelines.md`, the floors, and `review-checklist.md`, what
+blocks a UI PR) and `/opt/aidenhq/app-starter/` (its `README.md` says what's where, `AGENTS.md` is the short build guide).
+In the product repo they are `modules/apps-platform/design-system/` and `modules/apps-platform/starter/`; after changing
+either run `node scripts/sync-shared.ts`.
 
-- `/opt/aidenhq/design-system/`: the design system. Read its `guidelines.md` (the floors every app meets and the
-  stack) and `review-checklist.md` (what blocks a UI PR).
-- `/opt/aidenhq/app-starter/`: the app starter. Its `README.md` says what's where; its `AGENTS.md` is the
-  short version of how to build on it.
+**The look** (owner's taste): Stripe's polish and Linear's crispness, with more colour. Buttons, inputs and cards use
+moderate corner radius; badges, avatars and switches may be round. Dense but calm, little wasted space. Fluid from a phone to 2560.
 
-**A new app starts from the starter.** A repository made with `aidenhq create-repo` already holds it on main: build on
-those files, so your first change holds only the app's own work. Another app repo copies it in
-(`cp -r /opt/aidenhq/app-starter/. <repo>/`). Then replace the sample data and the example page with the app's own, and
-keep the starter's identity check (`aidenhq-identity.mjs` around the handler in `server.mjs`) in place. An existing app
-moves to the starter when its UI is next touched (the design system's `README.md`, migration guide).
+**Start from the starter.** A repo made with `aidenhq create-repo` already holds it; another app repo gets
+`cp -r /opt/aidenhq/app-starter/. <repo>/`. Replace the sample data and example page with the app's own, and keep the
+identity check (`aidenhq-identity.mjs` around the handler in `server.mjs`). An existing app moves to the starter when its UI
+is next touched (migration guide in the design system's `README.md`).
 
-**Building blocks, not a template.** `src/components/blocks/` (page header, stat strip, sortable headers, pagination,
-board, activity list, empty/loading/error states, detail list, form section, charts), `src/components/ui/` (shadcn/ui),
-the example page (`src/pages/projects.tsx`) and `/catalog` are there to use, adapt or ignore; the top-bar shell in
-`src/App.tsx` is a sample (many destinations or nested groups: the `SidebarShell` block). What always holds (the guidelines' floors): readable
-contrast in both themes; a visible focus ring on everything interactive; details in a `Sheet` at `?item=` that the URL
-opens on load; every data view's empty, loading and error states. Colours only from the theme's names (`bg-background`, `text-muted-foreground`, `bg-primary`,
-`text-danger`, `bg-chart-1`…), never literal colours or Tailwind palette colours.
+**Use the blocks.** `src/components/blocks/`, `src/components/ui/`, the example page and `/catalog` are there to use or adapt
+(many destinations: the `SidebarShell` block). Colours come only from the theme's names (`bg-background`,
+`text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`), details open in a `Sheet` at `?item=`, and every data
+view has empty, loading and error states.
 
-**A mockup is the spec.** When the task comes with a mockup (a page's `.tsx` file, often a `theme.css`, and screenshots in
-`.aidenhq/files/`), start from its files: copy its `.tsx` and `theme.css` into the app and wire them to the real data,
-rather than rewriting from the screenshots. Keep its layout, components and states, and its finish: theme colours, type
-scale, spacing, depth (shadows, borders, radii), icons and the interactions its task lists (hover, focus, what slides or
-fades). A new app or screen without a mockup: build it from the starter's patterns, and say in your reply that no mockup
-came with it.
+**A mockup is the spec.** Copy its `.tsx` and `theme.css` (task files in `.aidenhq/files/`) into the app and wire them to real
+data; keep its layout, components, states and finish (colours, type scale, spacing, depth, icons, interactions). Without a
+mockup, build from the starter's patterns and say so in your reply.
 
-**It must render under the CSP.** The starter's server sends `script-src 'self'; style-src 'self' 'nonce-…'`: no inline
-`<script>`, no `style="…"` in HTML the server writes, no CDN, no `'unsafe-inline'`. A component that renders a `<style>`
-tag takes `nonce={cspNonce}` (`@/lib/csp`); a library that injects styles without a nonce isn't used. Keep `npm test`
-passing (it builds, serves and checks the CSP), and an existing app's server must serve `dist/` the way the starter's
-`server.mjs` does.
+**CSP:** the starter's server sends `script-src 'self'; style-src 'self' 'nonce-…'`. A component rendering `<style>` takes
+`nonce={cspNonce}` (`@/lib/csp`). An existing app's server serves `dist/` like the starter's `server.mjs`.
 
 **Before you finish:**
 
-- `npm ci && npm test && npm run build` pass; `tokens.css` and `shadcn.css` are unchanged (note their `design-system
-  version:` lines in the PR).
-- Look at what you changed, in a browser, with the app's Playwright Test setup (the starter's `playwright.config.ts` and
-  `e2e/`; an app without it copies them in, with `preview` and `screens` scripts and a seeded preview mode). One
-  command, from the app's folder:
-
-  ```sh
-  SCREENS=/,/items npm run screens
-  ```
-
-  Playwright starts the seeded preview (`npm run preview`), waits for it, screenshots each page in `feature-map.json`
-  (or those `SCREENS` names) at 1440 and 390 in light and dark, fails on page errors, console errors (CSP violations
-  included) and horizontal overflow, runs the `e2e/` flows, and stops the app. Add a flow for what you changed to `e2e/`
-  (`e2e/flows.spec.ts` is the pattern: `getByRole`, `click`, `fill`, `expect(...).toHaveURL`). Open every screenshot
-  and fix what looks wrong (overlap, clipping, unstyled or empty areas, a misaligned table), then run it again until it
-  passes. The screenshots land in the task's `.aidenhq/out/` (at most 20 are attached after the run: name the pages
-  you changed in `SCREENS`); take them after your last change and name them in your report.
-- Component logic (what a form sends, what a list shows) gets a Vitest test next to the component, rendered with
-  Testing Library (`src/test/dialog-form.test.tsx` is the pattern); the starter's `vite.config.ts` gives every test a
-  ready DOM.
-- With a mockup, screenshot your pages at its width and mode (a Playwright project at the width its screenshots use) and open
-  each one beside the mockup's: fix every difference a person would see at a glance that isn't the real data (greyer,
-  flatter, sparser, smaller or bigger type, missing hover or detail), and say in your report what still differs and why.
-- Every page renders at its own URL on a link click, Back/Forward and a reload: routes and links use the starter's
-  navigation (`src/lib/navigation.tsx`: `useLocation`, `Link`, `navigate`, `useUrlState`) and every route is in the
-  server's `PAGES`. Your click-through clicks each nav link you added or changed and shots the page it opens, then
-  `goto`s that path and shots it again (the reload): both show the same page.
-- Go through the checklist's "Self-review" by reading your code: the mockup matched when there is one, every data
-  view's empty, loading and error states, details that reopen from the URL, plain-word copy, phone layout (`max-md:`/`md:` classes, nothing
-  wider than the screen).
-- A seed or sample-data mode still runs the app locally (you and the reviewer screenshot it), and new states are reachable with
-  `?preview=loading|error|empty` or the seed.
-
-In the product repo the source is `modules/apps-platform/design-system/` and `modules/apps-platform/starter/`; after changing either
-run `node scripts/sync-shared.ts` (the computers carry copies).
+- `npm ci && npm test && npm run build` pass; `tokens.css` and `shadcn.css` are unchanged (note their `design-system version:`
+  lines in the PR).
+- Look in a browser: `SCREENS=/,/items npm run screens` (the starter's Playwright setup; an app without it copies it in)
+  screenshots the pages in `feature-map.json` or `SCREENS` at 1440 and 390, light and dark, fails on page errors, CSP
+  violations and horizontal overflow, runs `e2e/`, and writes to `.aidenhq/out/` (20 attached: name the pages you changed).
+  Add an `e2e/` flow for your change (`e2e/flows.spec.ts` is the pattern), open every screenshot, fix what looks wrong and
+  rerun; name the screenshots in your report.
+- Component logic gets a Vitest test next to it (`src/test/dialog-form.test.tsx`).
+- With a mockup, screenshot at its width and mode, compare, fix visible differences and report what still differs.
+- Every page has its own URL that renders on a link click, Back/Forward and reload: use the starter's `src/lib/navigation.tsx` (`useLocation`, `Link`, `navigate`, `useUrlState` for filters and `?item=`) and list each route in the server's `PAGES`. Click each nav link you added and reload its path: same page.
+- Read your code against the checklist's "Self-review".
+- The seed or sample-data mode still runs locally, and new states are reachable with `?preview=loading|error|empty` or the seed.
