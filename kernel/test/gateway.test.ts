@@ -339,7 +339,7 @@ const failed = (id, code) => ({ type: "response.failed", response: { id, status:
 const streamed = (body) => (res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(`: OPENROUTER PROCESSING\n\n${body}data: [DONE]\n\n`); };
 const completed = sse([...opened("gen-ok"), { type: "response.output_text.delta", delta: "Hi" }, { type: "response.completed", response: { id: "gen-ok", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } }]);
 
-async function streamRig(t) {
+async function streamRig(t, claims = { kind: "reviewer" }) {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   writeFileSync(join(dir, "gateway.json"), "{}");
   const rig = { answers: [], posts: 0, logged: [] };
@@ -347,7 +347,7 @@ async function streamRig(t) {
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0, 0], streamIdleMs: 300, log: (m, f) => rig.logged.push([m, f]) });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.closeAllConnections?.(); upstream.s.close(); front.s.close(); gw.close(); });
-  const token = mintToken("job-secret", { kind: "reviewer" });
+  const token = mintToken("job-secret", claims);
   // A 30 KB prompt: reserved at about 10,000 input tokens x $1/M = $0.01.
   rig.body = { model: "m", stream: true, input: "x".repeat(30_000) };
   rig.reserved = (Math.ceil(Buffer.byteLength(JSON.stringify(rig.body)) / 3) * price.in) / 1e6;
@@ -377,6 +377,20 @@ test("gateway: a stream that fails in-band is booked at an estimate, never free:
   [row] = rig.rows();
   assert.deepEqual([row.status, row.input, row.output], ["stream_error", 100, 3]);
   assert.ok(near(row.cost_usd, (100 * price.in + 3 * price.out) / 1e6), `booked ${row.cost_usd}`);
+
+  // A usage block on an error event is billed from, never taken as completion.
+  rig.fresh();
+  rig.answers = [streamed(sse([{ id: "gen-u", choices: [{ delta: { content: "Hi" } }] }, { id: "gen-u", error: { code: 502, message: "secret provider text" }, usage: { prompt_tokens: 50, completion_tokens: 1 } }]))];
+  await rig.call("chat/completions", { model: "m", stream: true, messages: [{ role: "user", content: "x".repeat(30_000) }] });
+  [row] = rig.rows();
+  assert.deepEqual([row.status, row.input], ["stream_error", 50]);
+
+  // A completion whose JSON spans two data fields of one event is read whole: billed, not failed.
+  rig.fresh();
+  const done = JSON.stringify({ type: "response.completed", response: { id: "gen-s", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } });
+  rig.answers = [streamed(`${sse(opened("gen-s"))}data: ${done.slice(0, done.indexOf(",") + 1)}\ndata: ${done.slice(done.indexOf(",") + 1)}\n\n`)];
+  await rig.call();
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
 
   // A clean end with neither usage nor a finish (no error event) fails the same way.
   rig.fresh();
@@ -415,6 +429,12 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.match((await rig.call()).text, /response\.completed/);
   assert.equal(rig.posts, 2);
 
+  // A chat stream's role-only first chunk is no output: a transient error after it is re-run too.
+  rig.fresh();
+  rig.answers = [streamed(sse([{ id: "gen-r", choices: [{ delta: { role: "assistant", content: "" } }] }, { id: "gen-r", error: { code: 502, message: "secret provider text" }, choices: [{ delta: {}, finish_reason: "error" }] }])), streamed(completed)];
+  assert.match((await rig.call("chat/completions", { model: "m", stream: true, messages: [] })).text, /response\.completed/);
+  assert.equal(rig.posts, 2);
+
   // A permanent error before any output: not re-run.
   rig.fresh();
   rig.answers = [streamed(sse([...opened("gen-p"), failed("gen-p", "invalid_prompt")])), streamed(completed)];
@@ -433,6 +453,13 @@ test("gateway: an answer that failed before any output is re-run once when its e
   await rig.call();
   assert.equal(rig.posts, 1);
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
+
+  // A re-run is cap-checked: once the failed attempt has taken the call past its cap ($0.005 here), it goes to the caller as it came.
+  const capped = await streamRig(t, { kind: "reviewer", capUsd: 0.005 });
+  capped.answers = [streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")])), streamed(completed)];
+  assert.match((await capped.call()).text, /response\.failed/);
+  assert.equal(capped.posts, 1);
+  assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error"]);
 
   // Keep-alives past the first-output wait (a quarter of the idle cut here): passed through as they come, and still billed.
   rig.fresh();

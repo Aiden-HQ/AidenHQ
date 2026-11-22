@@ -225,8 +225,19 @@ export function streamError(data: string): { reason: string; transient: boolean 
 const FINISHED = /"finish_reason"\s*:\s*"(?!error")[^"]+"|"type"\s*:\s*"(?:response\.completed|response\.incomplete|message_stop)"/;
 /** An SSE `data` field's event type (its first `type`, a short word), or undefined (a chat chunk has none). */
 const eventType = (data: string) => /"type"\s*:\s*"([\w.]{1,60})"/.exec(data.slice(0, 200))?.[1];
+/** An SSE event's data: its `data` fields joined by newlines (empty for a comment-only event). */
+const eventData = (ev: string) => ev.split(/\r?\n/).map(sseData).filter((d) => d !== undefined).join("\n");
 /** Events that only open an answer, before any output: Responses' created and in_progress, Anthropic's message_start and ping. */
 const OPENING = new Set(["response.created", "response.in_progress", "message_start", "ping"]);
+/** Whether an event (not a failure) only opens an answer: an OPENING type, or a chat chunk whose deltas name only the role. */
+function opening(data: string): boolean {
+  if (OPENING.has(eventType(data) ?? "")) return true;
+  if (!data.includes('"choices"') || data.includes('"usage":{')) return false;
+  try {
+    const j = JSON.parse(data) as { choices?: { delta?: Record<string, unknown>; finish_reason?: unknown }[] } | null;
+    return Array.isArray(j?.choices) && j.choices.length > 0 && j.choices.every((c) => !c.finish_reason && Object.entries(c.delta ?? {}).every(([k, v]) => k === "role" || v === "" || v == null));
+  } catch { return false; }
+}
 
 /**
  * What OpenRouter billed for one call, read as the answer passes: the last SSE `data:` line with a usage block (a chat
@@ -245,7 +256,9 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
     const err = streamError(data);
     if (err) error ??= `error event: ${err.reason}`;
     else if (FINISHED.test(data)) finished = true;
+    const was = final;
     take(data);
+    if (err) final = was; // a usage block on an error event is kept for billing, never taken as completion
   };
   const take = (text: string) => {
     if (!text.includes('"usage"')) return;
@@ -260,16 +273,17 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
   return {
     feed(text) {
       if (!sse) { if (body.length < MAX_BODY) body += text; return; }
-      const lines = (tail + text).split("\n");
-      tail = lines.pop()!;
-      for (const l of lines) { const d = sseData(l); if (d !== undefined) line(d); }
+      // Whole events, as the peek reads them (an event's data fields joined).
+      const events = (tail + text).split(/\r?\n\r?\n/);
+      tail = events.pop()!;
+      for (const ev of events) { const d = eventData(ev); if (d) line(d); }
     },
     failure() {
       return finished || final ? undefined : (error ?? `no usage or finish; last event: ${last}`);
     },
     deltas: () => deltas,
     done() {
-      if (sse) { const d = sseData(tail); if (d !== undefined) line(d); tail = ""; } else take(body);
+      if (sse) { const d = eventData(tail); if (d) line(d); tail = ""; } else take(body);
       if (!found) return undefined;
       const u = found.usage;
       const anthropic = u.cache_read_input_tokens !== undefined || u.cache_creation_input_tokens !== undefined;
@@ -754,7 +768,6 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     type Peeked = { chunks: Uint8Array[]; text: string; failed?: { reason: string; transient: boolean }; pending?: Promise<ReadableStreamReadResult<Uint8Array>> };
     const peek = async (rd: ReadableStreamDefaultReader<Uint8Array>): Promise<Peeked> => {
       const chunks: Uint8Array[] = [], dec = new TextDecoder();
-      const dataOf = (ev: string) => ev.split(/\r?\n/).map(sseData).filter((d) => d !== undefined).join("\n");
       let text = "", buf = "", timer: NodeJS.Timeout | undefined;
       const firstEventMs = Math.min(FIRST_EVENT_MS, streamIdleMs / 4);
       const late = new Promise<"late">((ok) => { timer = setTimeout(() => ok("late"), firstEventMs); });
@@ -765,8 +778,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           const got = await Promise.race([read, late]).catch(() => "late" as const);
           if (got === "late") return { chunks, text, pending: read };
           if (got.done) {
-            const d = dataOf(buf); // a last event without its blank line
-            return { chunks, text, failed: d && d !== "[DONE]" && !OPENING.has(eventType(d) ?? "") ? streamError(d) : NO_OUTPUT };
+            const d = eventData(buf); // a last event without its blank line
+            return { chunks, text, failed: (d && streamError(d)) || (d && d !== "[DONE]" && !opening(d) ? undefined : NO_OUTPUT) };
           }
           poke();
           chunks.push(got.value);
@@ -775,9 +788,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           const events = (buf + s).split(/\r?\n\r?\n/);
           buf = events.pop()!;
           for (const ev of events) {
-            const d = dataOf(ev);
+            const d = eventData(ev);
             if (d === "[DONE]") return { chunks, text, failed: NO_OUTPUT };
-            if (d && !OPENING.has(eventType(d) ?? "")) return { chunks, text, failed: streamError(d) };
+            const failed = d ? streamError(d) : undefined;
+            if (failed || (d && !opening(d))) return { chunks, text, failed };
           }
           if (text.length > PEEK_BYTES + 4 * raw.length) return { chunks, text };
         }
@@ -802,11 +816,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : failed ? failed.transient && !rerun : RETRY_STATUS.has(up.status);
         if (!transient || n >= retryDelaysMs.length) { if (err) throw err; break; }
         if (failed) {
-          // The discarded attempt is booked on its own row, at its estimate.
-          rerun = true;
+          // The discarded attempt is booked on its own row, at its estimate, through a cap-checked reservation: refused by
+          // the caps, there is no re-run (this attempt goes to the caller and settles on the call's own row).
           const t = usageTap(true);
-          t.feed(`${peeked!.text}\n`);
-          record(who, { ...failedAt(t.done(), t.deltas()), key: undefined, model: body.model, status: "stream_error", t: t0, ms: now() - t0 });
+          t.feed(`${peeked!.text}\n\n`);
+          const est = failedAt(t.done(), t.deltas()), held = `gw:${randomUUID()}`;
+          if ("over" in reserve(who, now(), held, body.model, est.costUsd!, 0, 1)) break;
+          rerun = true;
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), est.input, est.cached, est.output, est.costUsd, now() - t0, "stream_error", held);
         }
         const after = Number(up?.headers.get("retry-after"));
         const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
