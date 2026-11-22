@@ -47,6 +47,18 @@ jobs:
           node-version: 24.x
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
+      # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
+      # removed or reshaped. The scripts suite checks the lock against the code on every run.
+      - name: Contract lock
+        if: github.event_name == 'pull_request' && matrix.shard == 1
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd scripts && npm ci --ignore-scripts)
+          # The checkout keeps no credentials: pass the read-only token for this one fetch.
+          git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
+          node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
@@ -250,14 +262,10 @@ jobs:
       # those its changed files touch; every suite on a push to main or a merge train.
       - id: tests
         run: |
-          # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
-          [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
-          base="${PR_BASE:-$PUSH_BEFORE}"
-          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
-          fi
-          export BASE="$base" HEAD="$HEAD_SHA"
+          # a push to main or a merge train tests every suite; a pull request, those its changes touch
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
+          base=$(git rev-parse HEAD^1) # the PR merge commit's first parent: main now
+          export BASE="$base" HEAD="$HEAD_SHA"
           # the slow suites (areas.json `main: true`) run only on a push to main
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then export MAIN=1; fi
           out=$(node .github/ci/select.ts)

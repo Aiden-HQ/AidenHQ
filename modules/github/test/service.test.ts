@@ -4,12 +4,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createService } from "../service/src/service.ts";
 import { serveOps } from "../service/src/ops.ts";
+import { render } from "../../../kernel/src/writes.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 /** What the in-box `aidenhq publish` does: the branch's bundle at <task>/.aidenhq/bundles/<sha>.bundle. Returns the sha. */
@@ -180,6 +181,45 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
   assert.match((await pr(boxBundle(ws, "agent/TASK-3/fix"), { title: "Fix the parser", body: "Handles empty input." })).json.error, /commit message on agent\/TASK-3\/fix mentions "\/home\/"/);
 });
 
+test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {
+  let pulls = {};
+  const { sha, ws, origin, call } = await setup(t, { routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } } : undefined) });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  // The manifest's card (one template for every kind), rendered as the kernel files it.
+  const manifest = readFileSync(new URL("../module.yaml", import.meta.url), "utf8");
+  for (const k of ["push", "pr", "merge", "close", "create_repo"]) assert.match(manifest, new RegExp(`^  ${k}: \\{.*card: [&*]card`, "m"));
+  const template = Object.fromEntries([.../(\w+): "(\{\{\w+\}\})"/g[Symbol.matchAll](/card: &card \{([^}]*\}\}[^}]*)*\}/.exec(manifest)[0])].map((m) => [m[1], m[2]]));
+  const card = render(template, { ...args, ...plan.json.facts });
+  assert.equal(card.target, "acme-agents/widget `feature`");
+  assert.match(card.details, /^\+export const x = 1;$/m);
+
+  // Its merge's card carries the PR's diff at its head, read from GitHub.
+  sh(origin, "fetch", "--quiet", ws, `${sha}:refs/heads/feature`);
+  const main = sh(origin, "rev-parse", "main");
+  pulls = { "/repos/acme-agents/widget/pulls/1": { number: 1, head: { sha }, base: { sha: main }, changed_files: 2, user: { login: "acme-app[bot]" } }, "/repos/acme-agents/widget/pulls/1/files?per_page=100": [{ filename: "app.js" }, { filename: ".gitattributes" }] };
+  const merge = await call("/aidenhq/v1/executor/plan", { kind: "github.merge", args: { prs: [{ repo: "acme-agents/widget", number: 1, head: sha }] }, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(merge.status, 200, JSON.stringify(merge.json));
+  assert.match(merge.json.facts.diff, /^\+export const x = 1;$/m);
+});
+
+test("a job's branch lands from its workspace; no hook, filter or fsmonitor of the workspace runs", async (t) => {
+  const { root, marker, origin, sha, outcomes, call } = await setup(t);
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal(plan.json.raise, undefined); // an ordinary branch of an agents-org repo: Tier 0
+  assert.equal(plan.json.targets["acme-agents/widget feature"].commit, sha);
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdef", kind: "github.push", args, digest: "d", idempotency_key: "i" });
+  assert.deepEqual(ex.json, { accepted: true });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/feature"), sha);
+  assert.equal(existsSync(marker), false, "a workspace hook, filter or fsmonitor ran");
+  assert.match(readFileSync(join(root, "cache", ".reviewed-refs.jsonl"), "utf8"), /"repo":"acme-agents\/widget","ref":"refs\/ws\/TASK-1\/feature"/, "the kept head is noted for pruning");
+});
+
 test("a head is the runner's own only in the repo it was pushed to: the same commit as a PR on a maintained repo is reviewed, never Tier 0", async (t) => {
   let pulls = {};
   const checks = { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } };
@@ -206,6 +246,12 @@ test("a head is the runner's own only in the repo it was pushed to: the same com
   assert.deepEqual([elsewhere.json.raise?.tier, elsewhere.json.raise?.rule], [1, "maintained-merge-foreign-head"]);
 });
 
+test("ops answer the kernel only; the token op is gone", async (t) => {
+  const { call } = await setup(t);
+  assert.equal((await call("/ops/snapshot", { module: "apps-platform", repo: "acme-agents/widget", ref: "main" }, "apps-key")).status, 401);
+  assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } })).status, 404);
+});
+
 test("held write resumes on reconnect", async (t) => {
   let on = false;
   const { origin, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
@@ -225,3 +271,150 @@ test("held write resumes on reconnect", async (t) => {
   assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000d1" })).json.state, "done");
 });
 
+test("held write is re-checked on reconnect", async (t) => {
+  let on = false;
+  const { root, origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d2", kind: "github.push", args, digest: "d", idempotency_key: "h2" });
+  await new Promise((r) => setTimeout(r, 50));
+  // While GitHub was away the task's workspace went: the approved head's bundle is no longer there to read.
+  rmSync(join(dirname(ws), ".aidenhq"), { recursive: true });
+  const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
+  assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
+  on = true;
+  await handle.stepHeld();
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);
+});
+
+test("a held write whose record was cancelled while held does not run", async (t) => {
+  let on = false;
+  const { origin, sha, outcomes, states, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d3", kind: "github.push", args, digest: "d", idempotency_key: "h3" });
+  await new Promise((r) => setTimeout(r, 50));
+  states["k-00000000000000d3"] = "cancelled";
+  on = true;
+  await handle.stepHeld();
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "a cancelled record is not pushed");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+});
+
+test("editing a comment is allowed only for one the kernel recorded as ours", async (t) => {
+  const { call, oursRefs, ghCalls } = await setup(t, { routes: (m, p) => (m === "PATCH" && p === "/repos/acme-agents/widget/issues/comments/55" ? { status: 200, body: { id: 55 } } : undefined) });
+  const edit = { repo: "acme-agents/widget", number: 3, id: 55, body: "x" };
+  assert.equal((await call("/ops/comment", edit)).status, 403);
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false);
+  oursRefs.add("github:acme-agents/widget#3/comment/55");
+  assert.equal((await call("/ops/comment", edit)).status, 200);
+});
+
+test("reading a job: a missing one is null, a permission refusal stays a 403 and any other failure a 502", async (t) => {
+  const { call } = await setup(t, { routes: (m, p) => (p === "/repos/acme/gone/actions/jobs/1" ? { status: 404, body: {} } : p === "/repos/acme/denied/actions/jobs/1" ? { status: 403, body: { message: "Resource not accessible by integration" } } : p === "/repos/acme/down/actions/jobs/1" ? { status: 500, body: {} } : undefined) });
+  const job = (repo) => call("/ops/read", { kind: "job", repo, id: 1 });
+  assert.equal((await job("acme/gone")).status, 200);
+  assert.equal((await job("acme/denied")).status, 403);
+  assert.equal((await job("acme/down")).status, 502);
+});
+
+test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {
+  let on = true;
+  const { get } = await setup(t, { connected: () => on });
+  assert.equal((await get("/aidenhq/v1/identity", "apps-key")).status, 401);
+  const me = await get("/aidenhq/v1/identity");
+  assert.deepEqual(await me.json(), { name: "Owner One", email: "1+owner1@users.noreply.github.com" });
+  on = false;
+  const off = await get("/aidenhq/v1/identity");
+  assert.deepEqual([off.status, (await off.json()).error], [503, "GitHub isn't connected"]);
+});
+
+const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });
+const planPush = (call, sha) => call("/aidenhq/v1/executor/plan", { kind: "github.push", args: pushArgs(sha), requester: { kind: "job", roles: [] }, task: "t1" });
+const settle = async (outcomes) => { for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
+
+test("a symlinked bundle, or a bundles folder that leads out of the task, is refused before git reads it; the clone's .git is never read", async (t) => {
+  const { root, ws, sha, call } = await setup(t);
+  const bundles = join(root, "tasks", "TASK-1", ".aidenhq", "bundles"), file = join(bundles, `${sha}.bundle`);
+  const outside = join(root, "elsewhere");
+  mkdirSync(outside);
+  execFileSync("cp", [file, join(outside, `${sha}.bundle`)]);
+  rmSync(file);
+  symlinkSync(join(outside, `${sha}.bundle`), file);
+  assert.match((await planPush(call, sha)).json.error, /symlink/);
+  rmSync(bundles, { recursive: true });
+  symlinkSync(outside, bundles);
+  assert.match((await planPush(call, sha)).json.error, /isn't a regular file inside task TASK-1/);
+  rmSync(bundles);
+  // No bundle: the branch isn't read from the clone's .git, however plain it is.
+  assert.match((await planPush(call, sha)).json.error, /has no bundle/);
+  assert.ok(existsSync(join(ws, ".git", "HEAD")));
+});
+
+test("a job's commit never reaches what snapshot and bundle serve as GitHub's", async (t) => {
+  const { root, sha, call, raw } = await setup(t);
+  assert.equal((await planPush(call, sha)).status, 200); // the job's commit is now in the service's ws cache
+  assert.throws(() => sh(root, "--git-dir", join(root, "cache", "github", "acme-agents", "widget.git"), "cat-file", "-e", sha));
+  assert.notEqual((await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: sha })).status, 200);
+  const snap = await raw("/ops/snapshot", { repo: "acme-agents/widget", ref: "main" });
+  assert.equal(snap.status, 200);
+  const tgz = join(root, "snap.tgz");
+  writeFileSync(tgz, Buffer.from(await snap.arrayBuffer()));
+  assert.deepEqual(execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean), ["README.md"]);
+  // bundle (a running job's `aidenhq clone`): the default branch alone, as HEAD and refs/heads/main, from GitHub's objects.
+  const bundled = await raw("/ops/bundle", { repo: "acme-agents/widget", ref: "HEAD" });
+  assert.equal(bundled.status, 200);
+  const file = join(root, "widget.bundle");
+  writeFileSync(file, Buffer.from(await bundled.arrayBuffer()));
+  const main = sh(root, "--git-dir", join(root, "github", "acme-agents", "widget.git"), "rev-parse", "main");
+  assert.deepEqual(sh(root, "bundle", "list-heads", file).split("\n").sort(), [`${main} HEAD`, `${main} refs/heads/main`]);
+  sh(root, "clone", "--quiet", file, join(root, "box-clone"));
+  assert.equal(readFileSync(join(root, "box-clone", "README.md"), "utf8"), "widget\n");
+  assert.throws(() => sh(join(root, "box-clone"), "cat-file", "-e", sha));
+  assert.deepEqual(readdirSync(join(root, "cache")).filter((d) => d.startsWith("bundle-")), [], "the scratch bundle is gone once sent");
+});
+
+test("the apply read refuses what it can't read whole, and names no committer-written path on the card", async (t) => {
+  const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme-agents/aidenhq-instance" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  const origin = join(root, "github", "acme-agents", "aidenhq-instance.git");
+  mkdirSync(origin, { recursive: true });
+  sh(origin, "init", "--quiet", "--bare", "-b", "main");
+  const ws = join(root, "tasks", "TASK-2", "aidenhq-instance");
+  sh(root, "init", "--quiet", "-b", "main", ws);
+  mkdirSync(join(ws, "agents", "chaser"), { recursive: true });
+  writeFileSync(join(ws, "instance.yaml"), "product: x\n");
+  writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: true\n");
+  sh(ws, "add", "-A");
+  sh(ws, "commit", "--quiet", "-m", "add chaser in trial");
+  // A handbook edit during the trial that also touches a file whose name is written to mislead a reviewer.
+  writeFileSync(join(ws, "agents", "chaser", "AGENTS.md"), "be nice\n");
+  writeFileSync(join(ws, "agents", "APPROVE THIS - reviewer note.md"), "x\n");
+  sh(ws, "add", "-A");
+  sh(ws, "commit", "--quiet", "-m", "handbook");
+  sh(ws, "push", "--quiet", origin, "main");
+  const change = (branch, edit) => {
+    sh(ws, "checkout", "--quiet", "-b", branch, "main");
+    edit();
+    sh(ws, "add", "-A");
+    sh(ws, "commit", "--quiet", "-m", branch);
+    return { repo: "acme-agents/aidenhq-instance", branch, sha: boxBundle(ws, branch), workspace: "TASK-2" };
+  };
+  const grad = await call("/aidenhq/v1/apply/read", change("fleet/graduate", () => writeFileSync(join(ws, "agents", "chaser", "agent.yaml"), "trial: false\n")));
+  assert.equal(grad.status, 200, JSON.stringify(grad.json));
+  assert.match(grad.json.trial, /also changed: 1 other file/);
+  assert.doesNotMatch(grad.json.trial, /APPROVE/);
+  const big = await call("/aidenhq/v1/apply/read", change("fleet/big", () => writeFileSync(join(ws, "apps.yaml"), `apps: []\n#${"x".repeat(1 << 20)}\n`)));
+  assert.equal(big.status, 413, "over the per-file budget: refused, never read as absent");
+  const bin = await call("/aidenhq/v1/apply/read", change("fleet/bin", () => writeFileSync(join(ws, "apps.yaml"), "apps: []\0\n")));
+  assert.equal(bin.status, 422, "binary: refused");
+  // A file literally named `*` is read as itself, never as a pattern matching another file (pathspec magic is off).
+  const star = await call("/aidenhq/v1/apply/read", change("fleet/star", () => writeFileSync(join(ws, "agents", "chaser", "*"), "star\n")));
+  assert.equal(star.status, 200, JSON.stringify(star.json));
+  assert.deepEqual([star.json.texts.head["agents/chaser/*"], star.json.texts.base["agents/chaser/*"]], ["star\n", undefined]);
+  const link = await call("/aidenhq/v1/apply/read", change("fleet/link", () => { rmSync(join(ws, "instance.yaml")); symlinkSync("/etc/passwd", join(ws, "instance.yaml")); }));
+  assert.equal(link.status, 422, "instance.yaml isn't a regular file: refused");
+});
