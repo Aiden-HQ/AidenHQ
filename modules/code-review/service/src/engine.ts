@@ -1758,11 +1758,13 @@ export function createEngine(d: EngineDeps) {
    * A repo's snapshot listing, read once and kept for two minutes (under its commit; the default branch's head is read afresh for each new ask). A cold read of a big repo can outlast the board's deadline: the
    * request then says so and the read goes on, so asking again a moment later finds it ready (nothing is queued before it is).
    */
+  // A default-branch read nobody collected (every caller timed out) is kept only briefly for the retry: the branch moves on.
+  const HEAD_READ_KEPT_MS = 15_000;
   const treeReads = new Map<string, { p: Promise<{ sha: string; paths: string[] }>; at: number }>();
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
-    if (!e || now() - e.at > 120_000) {
+    if (!e || now() - e.at > (ref === "HEAD" ? HEAD_READ_KEPT_MS : 120_000)) {
       const p = d.codehost.tree(repo, ref);
       // `at` is when the read settled: one still under way never expires, so a retry after a slow read always finds it.
       const entry = { p, at: Infinity };
