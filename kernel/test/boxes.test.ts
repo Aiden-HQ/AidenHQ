@@ -225,9 +225,13 @@ test("a launch that never ran the engine does not erase the session a real run l
   // The refusal alone, with nothing else newer, must not turn the resume into a fresh start.
   h.declared["agent-1"] = ["slack", "tasks"];
   const afterRefusal = await h.admit("task-1");
-  assert.equal(session(afterRefusal), "s-real");
-  h.release();
-  await until("the job after the refusal ends", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(afterRefusal.id).state === "done");
+  try {
+    assert.equal(session(afterRefusal), "s-real");
+  } finally {
+    // The fake engine waits for the release file: let it finish even when the assertion fails.
+    h.release();
+    await until("the job after the refusal ends", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(afterRefusal.id).state === "done");
+  }
   // A row that recorded no session and read no events never ran, whatever stopped it (no box, a box whose exec never started
   // the engine). Each is placed newest in turn, so each must be skipped for the session before it to come back.
   const neverRan = (id, at) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(id, at);
@@ -235,9 +239,12 @@ test("a launch that never ran the engine does not erase the session a real run l
   for (const id of ["j-no-box", "j-exec-failed"]) {
     neverRan(id, (at += 1000));
     const next = await h.admit("task-1");
-    assert.ok(session(next), `${id} must not mask the session the run before it left`);
-    h.release();
-    await until(`${id}: the next job's end`, () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(next.id).state === "done");
+    try {
+      assert.ok(session(next), `${id} must not mask the session the run before it left`);
+    } finally {
+      h.release();
+      await until(`${id}: the next job's end`, () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(next.id).state === "done");
+    }
   }
 });
 
