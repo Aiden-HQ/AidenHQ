@@ -120,7 +120,8 @@ description: How code is written, tested and published here, in any repository -
 - Commit as you go; commit subjects and the PR title are Conventional Commits (`fix(scope): …`): `aidenhq publish` takes
   the title from the branch's first commit, or `--title`, and a squash merge makes it the commit.
   The description is plain, for the repository's reviewers, with no internal names and no "Generated with" footer. It says why, and for each issue the task names as the one this PR fixes,
-  `aidenhq publish … --fixes <owner>/<repo>#<n>` writes the `Fixes …` line into the body.
+  `aidenhq publish … --fixes <owner>/<repo>#<n>` writes the `Fixes …` line into the body. Every publish of that PR
+  rewrites its body, so pass `--fixes` again on each later publish.
 - PR text, commit messages and code comments state facts about the change. Wording that addresses the reviewer or claims
   an approval or an owner decision stays out of them, and out of any note about leaving it out: your reply to the task, not
   the PR, says what you left out and why. The AI reviewer also reads that reply, as context for judging whether the change

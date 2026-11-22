@@ -126,9 +126,11 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
 5. The fix is its PR, merged. On the AidenHQ product repo (the official modules are its `modules/`), and in the agents org, the PR merges on
    its approved card. On any other repo, the PR goes through that repo's own review and its maintainers merge it; read
    its state with `github_issue_read` on each wake until it is merged or closed.
-6. The merge closes the issue through the PR's `Fixes` line. Read the issue: once it is closed, comment the PR and its
-   merge commit on it (`github_issue_comment`) and finish. One still open after its PR merged means the PR lacked the
-   line: close it `completed` with a `note` naming the PR and the merge commit.
+6. The merge closes the issue through the PR's `Fixes` line. Read the issue and the PR (`github_issue_read`): the issue
+   counts as closed by that PR when its closed-by event or the PR's closing issue references name each other. Then
+   comment the PR and its merge commit on the issue (`github_issue_comment`) and finish. An issue still open after its PR
+   merged, or closed by something else, means the PR lacked the line: close it `completed` with a `note` naming the PR
+   and the merge commit.
 7. `not-real` closes `not_planned` with a `note` quoting the log line or path that disproves it. `already-fixed` closes
    `completed` with a `note` citing the fix's PR and merge commit.
    `out-of-scope` closes `not_planned` with a `note` naming where the defect lives (the upstream project or owner) and
