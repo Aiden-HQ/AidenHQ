@@ -834,8 +834,6 @@ const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;
  * (an expired closed task can still carry attention).
  */
 const statusesFor = (state: unknown, attention: unknown) => (attention || stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
-/** task_search's one-page query: done only when asked, as before the kind filter learned about idle and waiting. */
-const searchStatusesFor = (state: unknown) => (stateKinds(state).includes("done") ? ALL_STATUSES : OPEN_STATUSES);
 /** A `state`/`attention` argument as the kind list and the one attention, validated. */
 function stateFilter(state: unknown, attention: unknown) {
   const kinds = stateKinds(state);
@@ -940,7 +938,7 @@ const TOOLS: Record<string, Tool> = {
       const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
-      q.set("status", searchStatusesFor(state));
+      q.set("status", statusesFor(state, attention));
       const list = await withStates(await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`), state, attention);
       return { tasks: await Promise.all(list.map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
     },
@@ -985,7 +983,14 @@ const TOOLS: Record<string, Tool> = {
             return kept;
           }
           const ready = (await Promise.all(page.map(prepare))).filter(Boolean) as Json[];
-          for (const [i, s] of await matchingStates(ready, kinds, one)) {
+          const matches = await matchingStates(ready, kinds, one);
+          // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
+          if (Date.now() > deadline) {
+            complete = false;
+            kept.push(...matches);
+            return kept.slice(0, max);
+          }
+          for (const [i, s] of matches) {
             kept.push([i, s]);
             if (kept.length >= max) return kept;
           }
