@@ -554,8 +554,16 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           if (!connectionState) throw fail(503, "unavailable", "connection state is off");
           const b = await json(req);
           const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: b?.need } });
+          // The request's own faults are 400; an error recording the need (a database or idle-wake failure) is 5xx, so the module
+          // retries it instead of reading a 400 as a need it must not send again.
           if (typeof b?.connection !== "string" || !need || !OWNER_CAUSES.includes(b.need?.cause)) throw fail(400, "bad_request", "send {connection, need: {cause, detail, …}}");
-          await connectionState.report(w.module!, b.connection, need).catch((e: Error & { code?: string }) => { throw e.code === "unknown_connection" ? fail(400, "bad_request", e.message) : e; });
+          try {
+            await connectionState.report(w.module!, b.connection, need);
+          } catch (e) {
+            const err = e as Error & { code?: string };
+            if (err.code === "unknown_connection") throw fail(400, "bad_request", err.message);
+            throw fail(503, "unavailable", `the connection need could not be recorded: ${String(err.message).slice(0, 300)}`);
+          }
           return send(res, 200, { ok: true });
         }
         case "GET /v1/connections/down": {

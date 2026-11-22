@@ -4,12 +4,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { dueList } from "../service/src/coach.ts";
-import { checks, detectorState, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, gateActivity, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
 const ago = (h) => new Date(NOW - h * 3_600_000).toISOString();
 const kvOf = () => { const m = new Map(); return { get: (k) => m.get(k), set: (k, v) => void m.set(k, v) }; };
+// A detector state already holding `detector`, made before any tick.
+const kvFrom = (detector) => { const kv = kvOf(); kv.set("detector", detector); return kv; };
 const agent = (id, h = 24 * 60) => ({ id, key: id, name: id, createdAt: ago(h) });
 const due = (o) => dueList({ agents: [], reviews: [], corrections: [], flags: [], callerId: "coach", now: NOW, ...o });
 const reviewed = (id, h) => ({ agentId: id, at: ago(h), outcome: "reviewed" });
@@ -284,4 +286,77 @@ test("quiet start: the detector still checks but files and notifies nothing unti
   assert.ok(detectorState(kv).open["app:web"]);
   await run(await stewardOn(routine("active"), "on"), NOW + 2 * 86_400_000);
   assert.equal(filed.length, 1);
+});
+
+// A gate's two-hour escalation (tick's `jam`): the flag is raised two hours before NOW, and `acting` is the activity lookup.
+const gateFlag = (at) => JSON.stringify({ open: { "gate:t1": { reason: "r", at: at.toISOString(), fired: true } }, recovered: [] });
+const jamRun = async (kv, at, acting) => {
+  const keys = [];
+  // Each flag's own group still finds it, so the pre-tick pruning leaves it open for this tick's escalation to judge.
+  const open = detectorState(kv).open;
+  const keep = Object.fromEntries([...new Set(Object.keys(open).map((k) => k.split(":")[0]))].map((g) => [
+    g, async () => Object.keys(open).filter((k) => k.startsWith(`${g}:`)).map((k) => ({ key: k.slice(g.length + 1), reason: open[k].reason })),
+  ]));
+  await tick(kv, keep, async () => true, async () => {}, new Date(at), 0, true, acting, async (ks) => void keys.push(...ks));
+  return keys;
+};
+
+test("gate activity counts only the holder's or a fleet-audit agent's comment, never another agent's", async () => {
+  // The task t1 is held by "eng"; the Steward is the fleet-audit agent "audit"; "reviewer" just left a note.
+  const kernel = {
+    call: async (m, p) => (p.startsWith("/v1/tasks/state") ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0 }] } : { agents: { eng: {}, audit: { roles: ["fleet-audit"] }, reviewer: {} } }),
+    read: async () => [
+      { authorType: "agent", authorAgentId: "reviewer", body: "looks odd", createdAt: minsAgo(1) },
+      { authorType: "agent", authorAgentId: "eng", body: "on it", createdAt: minsAgo(6) },
+    ],
+  };
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(6), "the holder's comment, not the reviewer's newer one");
+  // The Steward's own comment is the work moving too.
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "audit", body: "routing it", createdAt: minsAgo(2) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(2));
+  // Another agent's comment alone is no activity at all.
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "reviewer", body: "looks odd", createdAt: minsAgo(1) }];
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), undefined);
+  // A job running on the task is activity now, whatever the comments say.
+  kernel.call = async () => ({ tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "job_running", holder: "eng", attention: [], idle_wakes: 0 }] });
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), new Date(NOW).toISOString());
+  // A task that can't be read is a failed lookup (undefined activity would hide the failure), so tick can defer on it.
+  kernel.call = async () => { throw new Error("kernel 503"); };
+  await assert.rejects(gateActivity({ kernel, now: () => NOW })("t1"));
+});
+
+test("a failed activity lookup defers the jam by a bounded window, and keeps escalating when it keeps failing past it", async () => {
+  const raised = new Date(NOW - 3 * 3_600_000);
+  const down = async () => { throw new Error("kernel 503"); };
+  // The first failed lookup past the two hours is not inactivity: nothing is filed, only the deferral recorded.
+  const kv = kvFrom(gateFlag(raised));
+  assert.deepEqual(await jamRun(kv, NOW, down), []);
+  assert.ok(detectorState(kv).open["gate:t1"].lookup_failed_at, "the deferral is recorded");
+  // Half an hour later it is still inside the window: still nothing.
+  assert.deepEqual(await jamRun(kv, NOW + 30 * 60_000, down), []);
+  // Past the window with the lookup still failing, the clock decides: the jam is filed, so a persistent failure can't suppress it.
+  assert.deepEqual(await jamRun(kv, NOW + 61 * 60_000, down), ["gate:t1"]);
+});
+
+test("a lookup that recovers clears the deferral, and a later transient failure starts a fresh window", async () => {
+  const raised = new Date(NOW - 3 * 3_600_000);
+  const kv = kvFrom(gateFlag(raised));
+  await jamRun(kv, NOW, async () => { throw new Error("503"); });
+  // It answers this time, and reports no activity: the original two hours are over, so it jams now.
+  assert.deepEqual(await jamRun(kv, NOW + 5 * 60_000, async () => undefined), ["gate:t1"]);
+  assert.equal(detectorState(kv).open["gate:t1"].lookup_failed_at, undefined);
+});
+
+test("a review-stall flag's card carries its task, so its activity is checked like a gate's", async () => {
+  // The flag gains its task from the review record, which names it beside the card.
+  const stalls = reviewStalls([{ id: "card-1", kind: "post", task: "t1", identifier: "WOR-1", state: "review", created_at: minsAgo(30) }], NOW);
+  assert.deepEqual(stalls.map(({ key, task }) => ({ key, task })), [{ key: "card-1", task: "t1" }]);
+  const raised = new Date(NOW - 3 * 3_600_000);
+  const state = JSON.stringify({ open: { "review-stall:card-1": { reason: "r", at: raised.toISOString(), fired: true, task: "t1" } }, recovered: [] });
+  const seen = [];
+  // The card's task (t1) is being worked: the review-stall flag is not jammed.
+  assert.deepEqual(await jamRun(kvFrom(state), NOW, async (task) => (seen.push(task), minsAgo(1))), []);
+  assert.deepEqual(seen, ["t1"], "the lookup used the task carried with the flag, not the card id");
+  // No activity on it at all: it jams like any other gate.
+  assert.deepEqual(await jamRun(kvFrom(state), NOW, async () => undefined), ["review-stall:card-1"]);
 });
