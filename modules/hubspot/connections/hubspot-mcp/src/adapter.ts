@@ -1,6 +1,6 @@
 // Everything that depends on the exact shape of HubSpot's remote MCP tools lives here (src/probe.ts prints them). Confirmed live
 // (2026-11-22): search_crm_objects takes filterGroups, one sort, `limit` up to 200 and a numeric `offset` (offset + limit may not
-// pass 10,000) and answers { results: [{ id (a number), properties }], total, offset (the next one) }; properties HubSpot has no
+// pass 10,000, so the sync pages by modified time instead) and answers { results: [{ id (a number), properties }], total, offset }; properties HubSpot has no
 // value for are left out. Neither it nor get_crm_objects can return associations, so the *_ids columns stay empty.
 // search_owners answers { owners: [{ ownerId, name, isActive }], hasMore, offset } (no email; offset is an owner id).
 
@@ -47,8 +47,6 @@ export const ACTIVITY_TYPES = ["emails", "calls", "meetings", "notes", "tasks"] 
 export const SETTING_OBJECTS = ["contacts", "companies", "deals", "activities"] as const;
 
 export const SEARCH_LIMIT = 200; // documented maximum per page
-/** HubSpot's search never pages past 10,000 results; a window stops here and the next starts from the newest time seen. */
-export const WINDOW = 9_000;
 
 /** The text blocks of a tool result. */
 export const textsOf = (r: Awaited<ReturnType<CallHubSpot>>): string[] => (Array.isArray(r.content) ? r.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text));
@@ -68,8 +66,8 @@ export function parseRecords(o: any): CrmRecord[] {
   return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {} }));
 }
 
-/** One page of records modified at or after `sinceMs`, oldest first. `after` is the previous page's `next` (an offset). */
-export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number, after?: string): Promise<{ records: CrmRecord[]; next?: string }> {
+/** One page of records modified at or after `sinceMs`, oldest first. */
+export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<CrmRecord[]> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
@@ -77,31 +75,28 @@ export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: num
       sorts: [{ propertyName: def.modified, direction: "ASCENDING" }],
       properties: def.properties,
       limit: SEARCH_LIMIT,
-      ...(after ? { offset: Number(after) } : {}),
     }),
     "search_crm_objects",
   );
-  const records = parseRecords(o);
-  // `offset` answers where the next page starts; a short page, or one that reached `total`, is the last.
-  return { records, ...(records.length >= SEARCH_LIMIT && Number(o.offset) > 0 && Number(o.offset) < Number(o.total) ? { next: String(o.offset) } : {}) };
+  return parseRecords(o);
 }
 
 /**
- * One page of the records modified at exactly `ms` with an id above `afterId`, by id; `total` is how many there are in all. A time that holds more records than one page (a bulk edit) can't be paged by time, so it
- * is read by id instead.
+ * One page of the records modified at exactly `ms` with an id above `afterId`, by id. A time shared by more than one page of
+ * records (a bulk edit) can't be passed by time, so it is read by id instead.
  */
-export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string, limit = SEARCH_LIMIT): Promise<{ records: CrmRecord[]; total: number }> {
+export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string): Promise<CrmRecord[]> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
       filterGroups: [{ filters: [{ propertyName: def.modified, operator: "EQ", value: String(ms) }, { propertyName: "hs_object_id", operator: "GT", value: afterId }] }],
       sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
       properties: def.properties,
-      limit,
+      limit: SEARCH_LIMIT,
     }),
     "search_crm_objects",
   );
-  return { records: parseRecords(o), total: Number(o.total) || 0 };
+  return parseRecords(o);
 }
 
 /** A time property as an ISO string (HubSpot returns ISO strings or epoch milliseconds, as text). */
@@ -111,14 +106,14 @@ export function isoOf(v: unknown): string | null {
   return Number.isFinite(n) && n > 0 ? new Date(n).toISOString() : null;
 }
 
-/** Every owner, active or not (records keep pointing at people who left), a page of 100 at a time. HubSpot gives no email. */
-export async function listOwners(call: CallHubSpot): Promise<{ id: string; name: string | null }[]> {
+/** Every owner, active or not (records keep pointing at people who left), a page of 100 at a time, until `deadline`. HubSpot gives no email. */
+export async function listOwners(call: CallHubSpot, deadline = Infinity): Promise<{ id: string; name: string | null }[]> {
   const out: { id: string; name: string | null }[] = [];
   for (let offset: number | undefined; ; ) {
     const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
     if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
     for (const x of o.owners) if (x?.ownerId != null) out.push({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null });
-    if (!o.hasMore || o.offset == null || o.offset === offset) return out;
+    if (!o.hasMore || o.offset == null || o.offset === offset || Date.now() >= deadline) return out;
     offset = Number(o.offset);
   }
 }

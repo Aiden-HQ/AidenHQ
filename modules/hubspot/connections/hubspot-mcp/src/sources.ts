@@ -7,7 +7,7 @@
 // record never fails the others (a record that can't be shaped is skipped and counted; a database error is rethrown).
 // HubSpot sends no delete signal, so a record deleted there stays here. No LLM.
 import type { Logger } from "pino";
-import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, WINDOW, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
+import { ACTIVITY_TYPES, dealStages, isoOf, listOwners, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 
 const CONTACT: Table = {
@@ -91,8 +91,12 @@ COMMENT ON TABLE src_hubspot.users IS 'HubSpot owners (the people records are as
 GRANT SELECT ON src_hubspot.contacts, src_hubspot.companies, src_hubspot.deals, src_hubspot.activities, src_hubspot.changes, src_hubspot.users TO agents_open;`;
 
 export const DAY = 86_400_000;
+/** How far before a caught-up cursor the next pass starts. */
+const OVERLAP_MS = 10 * 60_000;
 /** A pass stops starting new work after this long (shared across the types); the next pass resumes from each type's cursor. */
 export const PASS_BUDGET_MS = 5 * 60_000;
+/** The reference data's own share, so a slow owner scan can't take the object types' time. */
+const REFERENCE_BUDGET_MS = 60_000;
 const text = (v: unknown, cap?: number) => capText(v == null || v === "" ? null : String(v), cap);
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
 const link = (portal: string | undefined, kind: string, id: string) => (portal ? `https://app.hubspot.com/contacts/${portal}/${kind}/${id}` : null);
@@ -151,39 +155,35 @@ export function selected(setting: string[]): string[] {
 }
 
 /**
- * Records modified since `sinceIso`, oldest first, paging and restarting windows past HubSpot's 10,000-result search cap. A time
- * shared by more than one page of records (a bulk edit) can't be paged by time, so it is read by id instead (`afterId` resumes
- * inside it): `state.tieId` is the id read last (undefined outside such a time) and `state.doneMs` the latest such time read whole.
+ * Records modified since `sinceIso`, oldest first, a page of the oldest at a time: the next page starts at the last time seen
+ * (rows at that time are read again: unchanged rows are no-ops), so a record edited meanwhile can't shift another out of a page.
+ * A time shared by more than one page of records (a bulk edit) can't be passed that way, so it is read by id instead (`afterId`
+ * resumes inside it): `state.tieId` is the id read last (undefined outside such a time) and `state.doneMs` the latest such time
+ * read whole.
  */
 async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string; doneMs?: number }, deadline: number): AsyncGenerator<CrmRecord> {
   let since = Date.parse(from.sinceIso);
   let afterId = from.afterId;
   for (;;) {
-    // A window can't get past a time that holds more than a page of records, so that time is read by id (checked first).
-    if (afterId === undefined && (await searchTie(call, def, since, "0", 1)).total > SEARCH_LIMIT) afterId = "0";
     if (afterId === undefined) {
-      let after: string | undefined;
-      let seen = 0;
+      const page = await searchPage(call, def, since);
       let last = since;
-      do {
-        const page = await searchPage(call, def, since, after);
-        for (const r of page.records) {
-          yield r;
-          const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
-          if (t > last) last = t;
-        }
-        seen += page.records.length;
-        after = page.next;
-        if (after && Date.now() >= deadline) return void (state.ended = false);
-      } while (after && seen < WINDOW);
-      if (!after) return void (state.ended = true);
-      if (last <= since) throw new Error(`${def.objectType}: a window of ${WINDOW} records made no progress past one modified time`);
-      since = last; // overlap at the edge: unchanged rows are no-ops
-      continue;
+      for (const r of page) {
+        yield r;
+        const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
+        if (t > last) last = t;
+      }
+      if (page.length < SEARCH_LIMIT) return void (state.ended = true);
+      if (last > since) {
+        since = last;
+        if (Date.now() >= deadline) return void (state.ended = false);
+        continue;
+      }
+      afterId = "0";
     }
-    let id = afterId ?? "0";
+    let id = afterId;
     for (;;) {
-      const { records: page } = await searchTie(call, def, since, id);
+      const page = await searchTie(call, def, since, id);
       for (const r of page) {
         id = r.id;
         state.tieId = id;
@@ -213,6 +213,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   // The cursor is a time, plus "#<id>" while a bulk-edit time is being read by id.
   const [cursorTime, cursorId] = (st.cursor ?? "").split("#");
   let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
+  const from = newest;
   let tieId = cursorId || undefined;
   const state: { ended: boolean; tieId?: string; doneMs?: number } = { ended: false };
   try {
@@ -236,17 +237,21 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
     if (state.doneMs !== undefined && state.doneMs >= Date.parse(newest)) newest = new Date(state.doneMs + 1).toISOString();
   } finally {
     // The cursor moves with what was written, and the type is baselined only when its search ended.
-    await store.saveScope(scope, tieId ? `${newest}#${tieId}` : newest, state.ended);
+    // A search that ended has caught up: the next pass starts a little before, so records HubSpot indexed late (bulk edits)
+    // aren't left behind a cursor that already passed their time.
+    const now = o.now ?? Date.now();
+    const back = state.ended && !tieId && Date.parse(newest) > now - OVERLAP_MS ? new Date(Math.max(Date.parse(newest) - OVERLAP_MS, Date.parse(from))).toISOString() : newest;
+    await store.saveScope(scope, tieId ? `${newest}#${tieId}` : back, state.ended);
   }
   if (skipped) o.log?.warn({ kind, skipped }, "src_hubspot: records skipped");
   return written;
 }
 
 /** Owners (the people records are assigned to) and deal stage labels: small, so each pass reads them whole. */
-export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[]): Promise<number> {
+export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[], deadline = Infinity): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
-  for (const o of await listOwners(call)) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
+  for (const o of await listOwners(call, deadline)) if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
   if (kinds.includes("deals"))
     for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
@@ -257,7 +262,7 @@ export function startSync(store: SourceStore, call: CallHubSpot, kinds: string[]
   const tick = async () => {
     const passEnd = Date.now() + PASS_BUDGET_MS;
     const slice = Math.max(30_000, PASS_BUDGET_MS / Math.max(1, kinds.length)); // each type's share, so a long baseline never starves the others
-    await store.run("hubspot", "reference", () => syncReference(store, call, kinds)).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_hubspot reference failed"));
+    await store.run("hubspot", "reference", () => syncReference(store, call, kinds, Date.now() + REFERENCE_BUDGET_MS)).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_hubspot reference failed"));
     for (const kind of kinds) {
       if (Date.now() >= passEnd) break;
       try {

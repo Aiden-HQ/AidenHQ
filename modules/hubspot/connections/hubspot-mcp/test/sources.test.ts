@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { listOwners, WINDOW } from "../src/adapter.js";
+import { listOwners } from "../src/adapter.js";
 import { selected, syncObject, syncReference } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
@@ -58,56 +58,43 @@ it("odd data never fails a pass (a junk amount, no timestamp); a search error le
   expect(f2.scopes.get("deals")).toEqual({ baselined: false, cursor: expect.any(String) });
 });
 
-it("pages by offset; past HubSpot's 10,000-result cap a window restarts from the newest time seen; a spent budget saves the cursor and resumes", async () => {
-  const { store, writes, scopes } = fakeStore();
-  const since: number[] = [];
+// A fake HubSpot search over records { id, time }: GTE by time (oldest first, ties by id), or EQ time with id GT, by id.
+const searchOver = (data: { id: number; time: string }[], rec: (id: number, time: string) => unknown, log: Record<string, any>[] = []) => async (_: string, args: Record<string, any>) => {
+  log.push(args);
+  const [mod, idf] = args.filterGroups[0].filters;
+  const t = Number(mod.value);
+  const hit = mod.operator === "EQ" ? data.filter((d) => Date.parse(d.time) === t && d.id > Number(idf.value)).sort((a, b) => a.id - b.id) : data.filter((d) => Date.parse(d.time) >= t).sort((a, b) => Date.parse(a.time) - Date.parse(b.time) || a.id - b.id);
+  return answer(hit.slice(0, args.limit).map((d) => rec(d.id, d.time)), 0, hit.length);
+};
+
+it("pages by modified time (the next page starts at the last time seen); a spent budget saves the cursor and resumes", async () => {
   const t = (i: number) => new Date(NOW - 20 * 86_400_000 + i * 60_000).toISOString();
-  const call = async (_: string, args: Record<string, any>) => {
-    const s = Number(args.filterGroups[0].filters[0].value);
-    if (args.filterGroups[0].filters[0].operator === "EQ") return answer([]); // the check for a bulk-edit time
-    if (!args.offset) since.push(s);
-    if (since.length === 1) {
-      const start = Number(args.offset ?? 0);
-      const chunk = Array.from({ length: 200 }, (_, i) => deal(String(start + i), t(start + i)));
-      return answer(chunk, start + 200, 50_000);
-    }
-    return answer([deal("last", t(WINDOW + 5))]);
-  };
-  await syncObject(store, call, "deals", opts());
-  expect(since.length).toBe(2);
-  expect(since[1]).toBe(Date.parse(t(WINDOW - 1))); // the newest of the first window (its last record)
-  expect(scopes.get("deals")?.baselined).toBe(true);
+  const data = Array.from({ length: 450 }, (_, i) => ({ id: i + 1, time: t(i) }));
+  const { store, writes, scopes } = fakeStore();
+  await syncObject(store, searchOver(data, (id, time) => deal(String(id), time)), "deals", opts());
+  expect(new Set(writes.map((w) => w.row.deal_id)).size).toBe(450);
+  expect(scopes.get("deals")).toEqual({ baselined: true, cursor: t(449) });
 
   const slow = fakeStore();
-  const full = [deal("1", t(1))].concat(Array.from({ length: 199 }, (_, i) => deal(`f${i}`, t(1))));
-  await syncObject(slow.store, async (_: string, args: Record<string, any>) => (args.filterGroups[0].filters[0].operator === "EQ" ? answer([]) : answer(full, 200, 5000)), "deals", opts({ deadline: Date.now() - 1 }));
-  expect(slow.scopes.get("deals")).toEqual({ baselined: false, cursor: t(1) });
-  expect(writes.length).toBeGreaterThan(WINDOW);
+  await syncObject(slow.store, searchOver(data, (id, time) => deal(String(id), time)), "deals", opts({ deadline: Date.now() - 1 }));
+  expect(slow.scopes.get("deals")).toEqual({ baselined: false, cursor: t(199) }); // one page read, then the budget was spent
 });
 
-it("more than WINDOW records at one modified time (a bulk edit) are read by id, and a spent budget resumes inside them", async () => {
+it("a caught-up pass starts the next one a little before, for records HubSpot indexed late", async () => {
+  const recent = new Date(NOW - 60_000).toISOString();
+  const data = [{ id: 1, time: recent }];
+  const { store, scopes } = fakeStore();
+  await syncObject(store, searchOver(data, (id, time) => deal(String(id), time)), "deals", opts());
+  expect(scopes.get("deals")?.cursor).toBe(new Date(NOW - 60_000 - 10 * 60_000).toISOString());
+});
+
+it("more than a page of records at one modified time (a bulk edit) are read by id, and a spent budget resumes inside them", async () => {
   const TIE = "2026-09-01T04:00:00.000Z";
-  const TOTAL = WINDOW + 450;
+  const TOTAL = 450;
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const data = Array.from({ length: TOTAL }, (_, i) => ({ id: i + 1, time: TIE }));
   const calls: Record<string, any>[] = [];
-  let later = true;
-  // The contacts of one bulk edit (ids 1..TOTAL, all modified at TIE), then one later contact.
-  const call = async (_: string, args: Record<string, any>) => {
-    calls.push(args);
-    const [mod, id] = args.filterGroups[0].filters;
-    const contact = (i: number, at = TIE) => ({ id: i, properties: { email: `c${i}@example.com`, lastmodifieddate: at } });
-    if (mod.operator === "EQ") {
-      if (Number(mod.value) !== Date.parse(TIE)) return answer([]);
-      expect(args.sorts).toEqual([{ propertyName: "hs_object_id", direction: "ASCENDING" }]);
-      const from = Number(id.value);
-      const left = Math.max(0, TOTAL - from);
-      return answer(Array.from({ length: Math.min(args.limit, left) }, (_, i) => contact(from + 1 + i)), 0, left);
-    }
-    if (Number(mod.value) > Date.parse(TIE)) return answer(later ? [contact(TOTAL + 1, "2026-09-02T00:00:00.000Z")] : []); // after the tie
-    const start = Number(args.offset ?? 0);
-    const all = Array.from({ length: TOTAL }, (_, i) => contact(i + 1)).concat(later ? [contact(TOTAL + 1, "2026-09-02T00:00:00.000Z")] : []);
-    const chunk = all.slice(start, start + 200);
-    return answer(chunk, start + chunk.length, all.length);
-  };
+  const call = searchOver(data.concat([{ id: TOTAL + 1, time: "2026-09-02T00:00:00.000Z" }]), contact, calls);
   const { store, writes, scopes } = fakeStore();
   scopes.set("contacts", { baselined: true, cursor: TIE });
   await syncObject(store, call, "contacts", opts());
@@ -115,17 +102,14 @@ it("more than WINDOW records at one modified time (a bulk edit) are read by id, 
   expect(scopes.get("contacts")?.cursor).toBe("2026-09-02T00:00:00.000Z");
 
   // When the bulk edit is the newest time, finishing it moves the cursor past it (no rereading it every pass).
-  later = false;
   const newest = fakeStore();
   newest.scopes.set("contacts", { baselined: true, cursor: TIE });
-  await syncObject(newest.store, call, "contacts", opts());
+  await syncObject(newest.store, searchOver(data, contact), "contacts", opts());
   expect(newest.scopes.get("contacts")?.cursor).toBe(new Date(Date.parse(TIE) + 1).toISOString());
-  later = true;
 
   // A budget that runs out inside the tie saves "<time>#<id>"; the next pass starts after that id.
   const part = fakeStore();
   part.scopes.set("contacts", { baselined: true, cursor: TIE });
-  calls.length = 0;
   await syncObject(part.store, call, "contacts", opts({ deadline: Date.now() - 1 }));
   const first = part.scopes.get("contacts")!.cursor!;
   expect(first).toMatch(/^2026-09-01T04:00:00.000Z#\d+$/);
@@ -156,6 +140,10 @@ it("owners: every page of search_owners, active or not, by owner id (HubSpot sen
   const call = async (tool: string, args: Record<string, any>) => (expect(tool).toBe("search_owners"), seen.push(args.offset), json(pages[String(args.offset ?? "")]));
   expect(await listOwners(call)).toEqual([{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }, { id: "20", name: "Grace Hopper" }]);
   expect(seen).toEqual([undefined, 20]);
+
+  seen.length = 0;
+  expect((await listOwners(call, Date.now() - 1)).length).toBe(2); // a spent budget stops after the page in hand
+  expect(seen).toEqual([undefined]);
 
   const { store, writes } = fakeStore();
   await syncReference(store, call, ["contacts"]);
