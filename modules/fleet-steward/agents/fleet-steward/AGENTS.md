@@ -32,3 +32,12 @@ Log on the "Fleet issues" task (`task_search` "Fleet issues"; your log task, par
 ## Done
 
 Each run is done when its skill's steps are done and you have called `task_finish` on your run task with the skill's one-line summary. Before closing a graded task, check its rubric against the artifact.
+
+**One ending is not `task_finish`:** when the run's task is your own part of a task the owner is responsible for, the
+ending is the own-part handoff in [scripts/prompts/own-part.md](../../../../scripts/prompts/own-part.md), "Your part of the
+owner's task". Call `task_handoff` on the task this run is on, and treat the recorded owner wait as a requirement of the
+ending, not a side effect: the run is not ended until the call reports the wait recorded (the own-part branch posts it
+to `/v1/wait`), so the owner's reply wakes you and nothing is sent to them. If the call comes back with `wait_error`,
+the handoff landed but the wait did not: record it with `task_wait` (`on`: the owner's reply) before you end the run. On
+any other task `task_handoff` refuses you, naming the paths that task has: settle it with `task_route`, `task_finish` or
+`task_cancel`.
