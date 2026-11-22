@@ -1096,12 +1096,6 @@ export function createEngine(d: EngineDeps) {
     // filed again (a refusal that wasn't a decision), so the summary tells what happened to it, not the state in between.
     const spent = (r: RunRow) => SPEND_LIMIT.test(String(r.why ?? ""));
     if (runs.some((r) => !spent(r) && (r.status === "queued" || r.status === "running" || (r.status === "done" && (r.posted === "pending" || r.posted === "retry"))))) return;
-    const body = Object.fromEntries(runs.map((r) => [r.id, `${r.status}|${r.posted ?? ""}|${r.why ?? ""}|${r.need ?? ""}`]));
-    const bodyStamp = JSON.stringify(body);
-    // The same outcomes, already summarised and not sent yet (a tick's deliver is about to), needs nothing: a finished run is
-    // summarised twice (its post's pending write, then its outcome), and the second look is this read.
-    const had = one<{ pending: string | null }>("SELECT pending FROM askers WHERE batch = ? AND task = ? AND setkey = ?", batch, task, setkey);
-    if (had?.pending === bodyStamp) return;
     const first = runs[0]!;
     // Each run lands in one of these: posted, refused (a write the reviewer or owner turned down, or a post the executor
     // refused for a need only the owner can fix), skipped for budget, or failed (no result, or one not bound to the run).
@@ -1120,29 +1114,28 @@ export function createEngine(d: EngineDeps) {
     const what = parts.length ? parts.join(", ") : "no run ended";
     // The one action that fixes it, most useful first: the Grant link (or Reconnect) of a refusal's need, the spend limit's reset,
     // the budget's reset, then a re-run for a refusal or failure with no owner-fixable cause.
-    const fix = refused.map((r) => fixOf(r.need)).find(Boolean)
+    const grant = refused.map((r) => fixOf(r.need)).find(Boolean);
+    const fix = grant
       ?? (spend.length ? "the install's spend limit resets (Settings, spend_day_usd or spend_month_usd)" : undefined)
       ?? (skipped.length ? "budget resets at 00:00 UTC" : undefined)
       ?? (refused.length || failed.length ? "re-run it with code_review_run" : undefined);
     const text = `**One-off review settled:** ${first.repo}#${first.number} at ${first.head.slice(0, 7)}: ${runs.length} ${runs.length === 1 ? "run" : "runs"}, ${what}.${fix ? ` To fix it: ${fix}.` : ""}`;
+    // The outcomes of these runs, and whether the owner can act on them (a Grant or Reconnect link, or the spend limit): the stamp
+    // is the summary's identity, so a closed asker's summary is routed by the same snapshot it was rendered from.
+    const bodyStamp = JSON.stringify({ runs: Object.fromEntries(runs.map((r) => [r.id, `${r.status}|${r.posted ?? ""}|${r.why ?? ""}|${r.need ?? ""}`])), owner: !!grant || spend.length > 0 });
+    // The same outcomes, already summarised and not sent yet (a tick's deliver is about to), needs nothing: a finished run is
+    // summarised twice (its post's pending write, then its outcome), and the second look is this read.
+    const had = one<{ pending: string | null }>("SELECT pending FROM askers WHERE batch = ? AND task = ? AND setkey = ?", batch, task, setkey);
+    if (had?.pending === bodyStamp) return;
     // Stored before anything goes, so a kernel that can't take it now is tried again on a later tick (deliver): a settlement
     // message is never lost to a restart. A request whose runs ended differently after a first summary is summarised once more,
     // and the same one is never re-sent.
     run("UPDATE askers SET text = ?, pending = ? WHERE batch = ? AND task = ? AND setkey = ?", text, bodyStamp, batch, task, setkey);
   }
 
-  /** Whether a summary's runs carry an action only the owner can take: a refusal's Grant or Reconnect link, or the install's spend limit. */
-  function ownerFixable(stamp: string): boolean {
-    let ids: string[] = [];
-    try { ids = Object.keys(JSON.parse(stamp) as object); } catch {}
-    if (!ids.length) return false;
-    return all<RunRow>(`SELECT * FROM runs WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids)
-      .some((r) => !!fixOf(r.need) || (r.status !== "done" && SPEND_LIMIT.test(String(r.why ?? ""))));
-  }
-
   /**
    * Sends each stored, unsent summary to its asker. One whose task has closed goes to the owner only when it carries an action
-   * the owner can take (ownerFixable), once per batch; otherwise nobody needs it and it is marked sent.
+   * the owner can take (the stamp's owner flag), once per batch; otherwise nobody needs it and it is marked sent.
    */
   async function sendSummaries() {
     const todo = all<{ batch: string; task: string; setkey: string; requester: string; text: string | null; pending: string; sent: string | null; claim: string | null }>(
@@ -1179,7 +1172,7 @@ export function createEngine(d: EngineDeps) {
     // A closed task hears nothing: a plain outcome ends here, and one with an owner-fixable action goes to the owner, naming
     // every asker whose task is closed, under its own key.
     for (const { batch, stamp, text, asks, who } of closed.values()) {
-      if (!ownerFixable(stamp)) {
+      if (!(JSON.parse(stamp) as { owner: boolean }).owner) {
         log("one-off summary: an asker's task is closed and nothing needs the owner; dropped", { batch, askers: who });
         for (const x of asks) run("UPDATE askers SET sent = pending, claim = NULL WHERE batch = ? AND task = ? AND setkey = ?", batch, x.task, x.setkey);
         continue;
