@@ -307,6 +307,31 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   assert.deepEqual(scanFile("Dockerfile", perTarget).pins.filter((p) => p.kind === "apt")[0].sources, ["https://b.example/apt bookworm main"]);
   const appended = `FROM debian:bookworm${d}\nRUN echo 'deb https://a.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN echo 'deb https://b.example/apt bookworm main' | tee -a /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
   assert.deepEqual(scanFile("Dockerfile", appended).pins.filter((p) => p.kind === "apt")[0].sources, ["https://a.example/apt bookworm main", "https://b.example/apt bookworm main"]);
+  // A command's output goes to the last `>` it names: an earlier one truncates its file but gets no `deb` line.
+  const twoRedirects = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' >/etc/apt/sources.list.d/vendor.list >/tmp/repo.log\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", twoRedirects).problems, []);
+  // An append that adds no bytes leaves the file's entry and its pin requirement as they were.
+  const emptyAppend = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN tee -a /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo\n`;
+  const emptyAppendResult = scanFile("Dockerfile", emptyAppend);
+  assert.equal(emptyAppendResult.problems.length, 1);
+  assert.deepEqual(scanFile("Dockerfile", emptyAppend.replace("install -y foo", "install -y foo=1.0")).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+});
+
+test("pins: a removal runs only where the shell runs it, and redirects are not apt packages", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const write = `echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list`;
+  // `test -f x || rm x` skips the removal when the file is there: the repository survives, so the install must be pinned.
+  const conditional = `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /etc/apt/sources.list.d/vendor.list || rm -f /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", conditional).problems.length, 1);
+  // A message that mentions `rm` removes nothing.
+  const message = `FROM debian:bookworm${d}\nRUN ${write}\nRUN echo 'To disable this repository, rm /etc/apt/sources.list.d/vendor.list'\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", message).problems.length, 1);
+  // A real removal, unconditional or an `&&` the next command depends on, still clears it.
+  for (const line of [`rm -f /etc/apt/sources.list.d/vendor.list`, `rm -f /etc/apt/sources.list.d/vendor.list && true`])
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems, []);
+  // A redirect on the install line is not a package to pin.
+  const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
+  assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);
 });
 
 test("pins: a disabled source file leaves no entry behind in apt dating", () => {

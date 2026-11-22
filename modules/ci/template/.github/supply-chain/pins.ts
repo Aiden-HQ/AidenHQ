@@ -96,11 +96,16 @@ const imagePin = (ref: string, at: string): Pin => {
 const strip = (s: string) => s.replace(/^["']|["']$/g, "");
 const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 // A file a command writes, whether it appends, and what reaches it: `deb` when the command's own `deb` line does,
-// `unknown` when it copies content we can't read (a Deb822 source, a `2>` target), and `empty` when nothing does
-// (`< /dev/null`, or a producer whose `>` sent its stdout past the pipe). An empty file adds no repository.
-interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" }
+// `unknown` when it copies content we can't read (a Deb822 source, a `2>` target), `empty` when it truncates to
+// nothing (`< /dev/null`, a producer whose `>` sent its stdout past the pipe, an earlier of two stdout redirects), and
+// `none` when it adds no bytes without truncating (`tee -a … < /dev/null`), which leaves the file as it was. A file
+// that ends up empty adds no repository.
+interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none" }
 const REDIRECT = /(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g;
 const stdoutRedirected = (text: string) => [...text.replace(/\d*>&\d+/g, " ").matchAll(REDIRECT)].some((m) => m[1] !== "2");
+// A command's own words, with quoted text blanked: `echo '… rm /etc/apt/sources.list.d/x'` prints a message, it does
+// not remove anything.
+const unquoted = (s: string) => s.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
 // The destinations a command writes: a `>`/`>>` target and each `tee` operand. A path it only reads, as
 // `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
 // sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads.
@@ -113,7 +118,15 @@ function writtenFiles(segment: string): Written[] {
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
   const clean = segment.replace(/\d*>&\d+/g, " ");
-  for (const m of clean.matchAll(REDIRECT)) add(strip(m[3]!), m[2] === ">>", m[1] === "2" ? "unknown" : "deb");
+  // A command's stdout goes to the last `>` it names, and every `>` before that one truncates its own file: `echo … >
+  // vendor.list > /tmp/log` empties vendor.list and writes the line only to the log.
+  const redirects = [...clean.matchAll(REDIRECT)];
+  const lastOut = redirects.findLastIndex((m) => m[1] !== "2");
+  redirects.forEach((m, i) => {
+    const append = m[2] === ">>";
+    const content: Written["content"] = m[1] === "2" ? "unknown" : i === lastOut ? "deb" : append ? "none" : "empty";
+    add(strip(m[3]!), append, content);
+  });
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
   for (const m of clean.matchAll(/\btee\b([^|;&]*)/g)) {
@@ -125,7 +138,9 @@ function writtenFiles(segment: string): Written[] {
     const input = /(?:^|\s)\d*<<?\s*("[^"]+"|'[^']+'|\S+)/.exec(arg)?.[1];
     const pipe = clean.lastIndexOf("|", m.index! - 1);
     const producer = pipe >= 0 ? clean.slice(0, pipe) : "";
-    const content: Written["content"] = input ? (strip(input) === "/dev/null" ? "empty" : "unknown") : producer.trim() && !stdoutRedirected(producer) ? "deb" : "empty";
+    const content: Written["content"] = input
+      ? strip(input) === "/dev/null" ? (append ? "none" : "empty") : "unknown"
+      : producer.trim() && !stdoutRedirected(producer) ? "deb" : append ? "none" : "empty";
     for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(a, append, content);
   }
   return out;
@@ -172,9 +187,16 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // the repositories present at that point: adding a repository is what makes a later unpinned install a problem, and
   // removing it before an install stops it being one. A `deb` line is filed under the source file its own command
   // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
-  for (const segment of cmd.split(/&&|\|\||;/)) {
+  // A command after `||` runs only when the one before it fails, so `test -f x || rm x` may leave x in place: its removal
+  // must not clear a repository the surviving path still has. After `&&` the next command runs only if it succeeded, so
+  // `rm x && apt install` does apply — x is gone by install time.
+  let conditional = false;
+  for (const part of cmd.split(/(&&|\|\||;)/)) {
+    if (/^&&$|^\|\|$|^;$/.test(part)) { conditional = part === "||"; continue; }
+    const segment = part;
     const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
-    const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
+    // A removal is a command that runs `rm`/`unlink` on a sources.list.d name, not a quoted message mentioning one.
+    const removes = !conditional && /(?:^|\s)(?:sudo\s+)?(?:rm|unlink)\b/.test(unquoted(segment)) && /sources\.list\.d/.test(unquoted(segment));
     // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
     // source file it only copies for diagnostics adds no repository.
     const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
@@ -195,6 +217,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       // Deb822 `.sources` holds a repository its Types/URIs fields spell out even with no parseable `deb` line — but a
       // file written empty (`< /dev/null`, a producer whose `>` bypassed the pipe) adds none and dates none.
       for (const { file, append, content } of loaded) {
+        if (content === "none") continue;
         const written = content === "deb" ? debs : [];
         state.files.set(file!, append ? [...(state.files.get(file!) ?? []), ...written] : written);
         state.entries.set(file!, append ? [...(state.entries.get(file!) ?? []), ...written] : written);
@@ -203,13 +226,17 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       }
       state.added = state.holds.size > 0 || state.entries.has(undefined);
     } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
-    for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
-      for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
+    // The argument list runs to the next `&`/`|`/`;`, but `2>&1` is a redirect, not the end of the command.
+    for (const m of segment.replace(/\d*>&\d+/g, " ").matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
+      // A redirect (`>/dev/null`, `2>&1`) is not a package argument.
+      const args = words(m[1]!.replace(/\d*(?:>>?|<<?)\s*("[^"]*"|'[^']*'|\S+)/g, " "));
+      for (const a of args.filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
         const [pkg, ver] = a.split("=") as [string, string | undefined];
         if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
         else if (state.added) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
       }
     }
+    conditional = false;
   }
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
     pins.push({ kind: "github-release", name: m[1]!, package: m[1]!, version: m[2], at });
