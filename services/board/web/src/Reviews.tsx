@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
-import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
+import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type Catalog, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
 import { Markdown } from "./markdown";
@@ -820,23 +820,21 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
     if (!repo || !commitOk) return;
     let stale = false;
     const timer = setTimeout(() => {
-      void api.reviewCatalog(repo, commit.trim() || undefined).then(
-        (c) => {
-          if (stale) return;
-          const ids = new Set(c.options.map((o) => o.id));
-          setOptions(c.options);
-          setSha(c.sha);
-          // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
-          setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
-        },
-        (e) => {
-          if (stale) return;
-          // A slow first read names its commit: asking for that commit finds the same read.
-          const named = !commit.trim() && /ask again for commit ([0-9a-f]{40})/.exec((e as Error).message)?.[1];
-          if (named) setCommit(named);
-          else setErr((e as Error).message);
-        },
-      );
+      const got = (c: Catalog) => {
+        if (stale) return;
+        const ids = new Set(c.options.map((o) => o.id));
+        setOptions(c.options);
+        setSha(c.sha);
+        // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
+        setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
+      };
+      const failed = (e: unknown) => !stale && setErr((e as Error).message);
+      void api.reviewCatalog(repo, commit.trim() || undefined).then(got, (e) => {
+        // A slow first read names its commit: asking for that commit finds the same read.
+        const named = !commit.trim() && /ask again for commit ([0-9a-f]{40})/.exec((e as Error).message)?.[1];
+        if (named && !stale) void api.reviewCatalog(repo, named).then(got, failed);
+        else failed(e);
+      });
     }, 300);
     return () => {
       stale = true;

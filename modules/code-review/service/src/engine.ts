@@ -1768,7 +1768,7 @@ export function createEngine(d: EngineDeps) {
     if (!e || now() - e.at > 120_000) {
       // `at` is when the read settled: one still under way never expires.
       const entry: TreeRead = { p: undefined as never, at: Infinity };
-      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD") treeReads.set(`${repo}@${entry.sha}`, entry); });
+      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD" && !treeReads.has(`${repo}@${entry.sha}`)) treeReads.set(`${repo}@${entry.sha}`, entry); });
       e = entry;
       treeReads.set(key, entry);
       entry.p.then((t) => {
