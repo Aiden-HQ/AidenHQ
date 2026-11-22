@@ -91,8 +91,6 @@ describe("the Reviews page's routes", () => {
     expect(await call("POST", "/api/reviews/config", { value })).toMatchObject({ status: 200, body: { identifier: "WOR-9" } });
     expect(records.settings).toEqual([{ task: "i1", changes: [{ kind: "setting", key: "code_review", value }] }]);
     expect(created[0]!.title).toBe("Settings: code_review updated");
-    expect(await call("POST", "/api/reviews/config", { value: { ...value, lenses: true } })).toMatchObject({ status: 200 });
-    expect((await call("POST", "/api/reviews/config", { value: { ...value, lenses: "yes" } })).status).toBe(400);
   });
 
   it("counts the period's reviews, spend and auto-resolved findings", () => {

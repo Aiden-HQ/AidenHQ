@@ -171,8 +171,8 @@ export interface Poster {
 
 /** The code host through the kernel (/v1/codehost/:op, this module's grant). */
 export interface CodeHost {
-  /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
-  tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
+  /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths; `onCommit` hears the commit as soon as it is known, before the listing is read. */
+  tree(repo: string, ref: string, onCommit?: (sha: string) => void): Promise<{ sha: string; paths: string[] }>;
   /** The files of a deepsec setup PR's branch (the one `setup` answered); undefined when that branch is gone. */
   setupBranch(repo: string, branch: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
   /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, on a new branch off the default branch's head, and closes an earlier setup PR. */

@@ -19,12 +19,12 @@ const CATALOG = [
 ];
 
 /** The engine over fakes, for repo reviews: a code host whose default branch can move, a runner finished by hand, a Primer that records. */
-function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true } = {}) {
+function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
   let t = Date.parse("2026-11-22T10:00:00Z");
   const heads = { HEAD: sha("1") };
   const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined, asked: [] };
   const engine = createEngine({
-    db, config: () => readConfig(JSON.stringify({ repos: [], lenses })), now: () => t,
+    db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" } },
     poster: {},
@@ -40,13 +40,21 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
-test("repo reviews are off until lenses is on; options must fit the tree", async () => {
-  await assert.rejects(world({ lenses: false }).engine.repoReview({ target: { repo: REPO } }), /repo reviews are off/);
+test("options must fit the tree", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO } });
   // Recommended and fitting the tree: knip (package.json), gitleaks and the Cloudflare skill; never vulture (no Python).
   assert.deepEqual(b.options, ["maint.knip", "sec.cloudflare", "sec.gitleaks"]);
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["maint.vulture"] }), /not offered for acme\/app: maint.vulture/);
+});
+
+test("a finished default-branch read is never reused for a new ask of the head; an asked-for commit is", async () => {
+  const w = world();
+  assert.equal((await w.engine.catalogFor({ repo: REPO })).sha, sha("1"));
+  w.heads.HEAD = sha("2");
+  assert.equal((await w.engine.catalogFor({ repo: REPO })).sha, sha("2"));
+  w.heads.HEAD = sha("3");
+  assert.equal((await w.engine.catalogFor({ repo: REPO, commit: sha("2") })).sha, sha("2"));
 });
 
 test("the commit is resolved once at start: the default branch moving mid-run changes nothing; tools then each model option run in sequence", async () => {

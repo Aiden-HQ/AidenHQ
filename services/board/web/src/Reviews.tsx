@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
-import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
+import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type Catalog, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { agoLabel, elapsed } from "./util";
 import { Markdown } from "./markdown";
@@ -169,13 +169,15 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     const t = setInterval(() => void loadFiled(), 5_000);
     return () => clearInterval(t);
   }, [applying, loadFiled, loadSetup]);
-  const ready = Boolean(setup?.module && setup.github.connected);
+  const moduleOn = Boolean(setup?.module);
+  const ready = Boolean(moduleOn && setup?.github.connected);
+  // The module alone shows the history and the engine catalog (a repo review reads its code host); GitHub's connection is for PR actions.
   useEffect(() => {
-    if (!ready) return;
+    if (!moduleOn) return;
     void loadRuns();
     void loadRepos();
     void loadEngines();
-  }, [ready, loadRuns, loadRepos, loadEngines]);
+  }, [moduleOn, loadRuns, loadRepos, loadEngines]);
   // A run under way: the list follows it.
   const anyLive = (runs?.some(live) ?? false) || batches.some(live);
   useEffect(() => {
@@ -199,7 +201,24 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
   const spent = repos?.day_spent_usd ?? 0;
   const tab = "tab" in route ? route.tab : "reviews";
 
-  if ("create" in route) return repos && !repos.lenses ? <RepoReviewsOff /> : repos && engines ? <RepoReviewPage config={config} engines={engines} /> : <Page className="rv-page" label="New repo review"><PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" /><div className="rv-loading" aria-busy="true" /></Page>;
+  if ("create" in route) {
+    if (engines) return <RepoReviewPage config={config} engines={engines} />;
+    const retry = () => { setError(""); void loadSetup(); if (moduleOn) { void loadRuns(); void loadRepos(); void loadEngines(); } };
+    return (
+      <Page className="rv-page" label="New repo review">
+        <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
+        {error ? (
+          <Banner tone="danger">Couldn't load what a repo review needs: {error} <Button onClick={retry}>Retry</Button></Banner>
+        ) : setup && !setup.module ? (
+          <EmptyState action={<LinkButton variant="primary" href="#/modules/code-review">Open the Code review module</LinkButton>}>
+            Code review is off on this instance. Turn on the Code review module to review a repo.
+          </EmptyState>
+        ) : (
+          <div className="rv-loading" aria-busy="true" />
+        )}
+      </Page>
+    );
+  }
   if ("batch" in route) return <BatchPage id={route.batch} batch={batches.find((b) => b.id === route.batch)} onSignIn={onSignIn} reload={loadRuns} />;
   if ("run" in route) return <RunPage id={route.run} config={config} engines={engines} onSignIn={onSignIn} />;
 
@@ -208,18 +227,22 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
       title="Code review"
       sub="Reviews on your pull requests, posted to GitHub as comments. Advice only: nothing blocks a merge."
       actions={
-        ready && config ? (
+        moduleOn && config ? (
           <>
-            <span className="rv-spend" title="Today's review spend across repos (UTC)">
-              {usd(spent)} <span className="rv-spend-of">today</span>
-            </span>
+            {ready && (
+              <span className="rv-spend" title="Today's review spend across repos (UTC)">
+                {usd(spent)} <span className="rv-spend-of">today</span>
+              </span>
+            )}
             <Button onClick={() => (location.hash = "#/reviews/new")}>Review a repo</Button>
-            <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>
+            {ready && <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>}
           </>
         ) : undefined
       }
     />
   );
+
+  const connectBanner = <Banner tone="info">GitHub isn't connected, so pull request reviews can't run. <LinkButton variant="primary" href="#/settings/connections?connect=github">Connect GitHub</LinkButton></Banner>;
 
   return (
     <Page className="rv-page" label="Code review">
@@ -239,16 +262,17 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         <EmptyState action={<LinkButton variant="primary" href="#/modules/code-review">Open the Code review module</LinkButton>}>
           Code review is off on this instance. Turn on the Code review module to get a review on every pull request. Nothing runs or spends until you pick a repo.
         </EmptyState>
-      ) : ready && runs === null ? (
-        !error && <div className="rv-loading" aria-busy="true" />
-      ) : !ready || (!config?.repos.length && !runs?.length && !batches.length) ? (
+      ) : runs === null ? (
+        error ? !ready && connectBanner : <div className="rv-loading" aria-busy="true" />
+      ) : !runs?.length && !batches.length && (!ready || !config?.repos.length) ? (
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
+          {!ready && connectBanner}
           <div>
             <Tabs label="Reviews views" tabs={TABS} value={tab} href={(t) => `#/reviews/${t}`} />
           </div>
-          {tab === "reviews" && <RunsTab runs={runs} batches={batches} engines={engines} onOneOff={() => setDialog({ kind: "oneoff" })} />}
+          {tab === "reviews" && <RunsTab runs={runs} batches={batches} engines={engines} onOneOff={ready ? () => setDialog({ kind: "oneoff" }) : undefined} />}
           {tab === "repos" && config && <ReposTab config={config} repos={repos} engines={engines} onEdit={(repo) => setDialog({ kind: "repo", repo })} onWatch={() => setDialog({ kind: "repo" })} />}
           {tab === "insights" && <InsightsTab onSignIn={onSignIn} />}
         </>
@@ -326,7 +350,7 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
 
 /* ----------------------------------------------------------------------------- Reviews tab */
 type Filter = "all" | "important" | "skipped";
-function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; batches: TreeBatch[]; engines: EngineCatalog | null; onOneOff: () => void }) {
+function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; batches: TreeBatch[]; engines: EngineCatalog | null; onOneOff?: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [repo, setRepo] = useState("");
   const repoNames = useMemo(() => [...new Set([...(runs ?? []).map((r) => r.repo), ...batches.map((b) => b.repo)])].sort(), [runs, batches]);
@@ -356,7 +380,7 @@ function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; bat
       }
     >
       {!shown.length ? (
-        <EmptyState action={<Button onClick={onOneOff}>Review a PR</Button>}>{runs.length || batches.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
+        <EmptyState action={onOneOff && <Button onClick={onOneOff}>Review a PR</Button>}>{runs.length || batches.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
       ) : (
         <div className="rv-runs" role="list">
           {shown.map((r) => (
@@ -777,15 +801,6 @@ const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
   performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
 };
 const SHA = /^[0-9a-f]{40}$/i;
-/** The service refuses repo reviews until settings.code_review.lenses is on; the page says so instead of failing. */
-function RepoReviewsOff() {
-  return (
-    <Page className="rv-page" label="New repo review">
-      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
-      <EmptyState action={<LinkButton href="#/modules/code-review">Open Code review settings</LinkButton>}>Repo reviews are off until enabled in Code review settings.</EmptyState>
-    </Page>
-  );
-}
 function RepoReviewPage({ config, engines }: { config: CodeReview | null; engines: EngineCatalog }) {
   const [repo, setRepo] = useState("");
   const [commit, setCommit] = useState("");
@@ -805,17 +820,21 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
     if (!repo || !commitOk) return;
     let stale = false;
     const timer = setTimeout(() => {
-      void api.reviewCatalog(repo, commit.trim() || undefined).then(
-        (c) => {
-          if (stale) return;
-          const ids = new Set(c.options.map((o) => o.id));
-          setOptions(c.options);
-          setSha(c.sha);
-          // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
-          setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
-        },
-        (e) => !stale && setErr((e as Error).message),
-      );
+      const got = (c: Catalog) => {
+        if (stale) return;
+        const ids = new Set(c.options.map((o) => o.id));
+        setOptions(c.options);
+        setSha(c.sha);
+        // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
+        setTicked((t) => (edited.current ? new Set([...t].filter((id) => ids.has(id))) : new Set(c.options.filter((o) => o.recommended).map((o) => o.id))));
+      };
+      const failed = (e: unknown) => !stale && setErr((e as Error).message);
+      void api.reviewCatalog(repo, commit.trim() || undefined).then(got, (e) => {
+        // A slow first read names its commit: asking for that commit finds the same read.
+        const named = !commit.trim() && /ask again for commit ([0-9a-f]{40})/.exec((e as Error).message)?.[1];
+        if (named && !stale) void api.reviewCatalog(repo, named).then(got, failed);
+        else failed(e);
+      });
     }, 300);
     return () => {
       stale = true;

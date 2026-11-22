@@ -23,7 +23,7 @@
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
-// its own. Everything here is off until settings.code_review.lenses is on.
+// its own.
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
@@ -1755,26 +1755,36 @@ export function createEngine(d: EngineDeps) {
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------
 
-  const lensesOn = () => { if (!d.config().lenses) throw new RequestError("repo reviews are off: they turn on with settings.code_review.lenses (the owner's)"); };
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   /**
-   * A repo's snapshot listing, read once and kept for two minutes. A cold read of a big repo can outlast the board's deadline: the
-   * request then says so and the read goes on, so asking again a moment later finds it ready (nothing is queued before it is).
+   * A repo's snapshot listing, read once and kept for two minutes under its commit. A default-branch read is shared only while it is
+   * in flight and its commit is not yet resolved: once it finishes it is kept under the commit it resolved, and a new ask for the head reads afresh. A cold read of a
+   * big repo can outlast the board's deadline: the request then names the commit (known as soon as the code host answers) so the
+   * board asks again for that commit, which finds the same read; before the commit is known, asking again joins the read.
    */
-  const treeReads = new Map<string, { p: Promise<{ sha: string; paths: string[] }>; at: number }>();
+  type TreeRead = { p: Promise<{ sha: string; paths: string[] }>; at: number; sha?: string };
+  const treeReads = new Map<string, TreeRead>();
+  const usable = (e: TreeRead | undefined): e is TreeRead => e !== undefined && now() - e.at <= 120_000;
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
-    if (!e || now() - e.at > 120_000) {
-      const p = d.codehost.tree(repo, ref);
-      e = { p, at: now() };
-      treeReads.set(key, e);
-      p.catch(() => { if (treeReads.get(key)?.p === p) treeReads.delete(key); });
+    // A head read whose commit is already resolved was started for an earlier ask, and the branch may have moved since: only one
+    // not yet resolved is joined.
+    if (!usable(e) || (ref === "HEAD" && e.sha)) {
+      // `at` is when the read settled: one still under way never expires.
+      const entry: TreeRead = { p: undefined as never, at: Infinity };
+      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD" && !usable(treeReads.get(`${repo}@${entry.sha}`))) treeReads.set(`${repo}@${entry.sha}`, entry); });
+      e = entry;
+      treeReads.set(key, entry);
+      entry.p.then((t) => {
+        entry.at = now();
+        if (ref === "HEAD") { if (treeReads.get(key) === entry) treeReads.delete(key); treeReads.set(`${repo}@${t.sha.toLowerCase()}`, entry); }
+      }, () => { for (const [k, v] of treeReads) if (v === entry) treeReads.delete(k); });
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
     const t = await Promise.race([e.p, slow]).finally(() => clearTimeout(timer));
-    if (t === "slow") throw new Error("it is still being read: ask again in a minute");
+    if (t === "slow") throw new Error(`it is still being read: ask again${e.sha ? ` for commit ${e.sha}` : " in a few seconds"}`);
     return t;
   }
   async function readTree(repoIn: unknown, commit: unknown) {
@@ -1854,7 +1864,7 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_spent_usd: round(spent()), errors: c.errors, lenses: c.lenses,
+      return { day_spent_usd: round(spent()), errors: c.errors,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
@@ -1869,7 +1879,6 @@ export function createEngine(d: EngineDeps) {
     engines() { return ENGINES; },
     /** The options a repo's tree fits at a commit (default: its default branch's head, resolved now), and the commit. */
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
-      lensesOn();
       const { repo, tree } = await readTree(q.repo, q.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
@@ -1879,7 +1888,6 @@ export function createEngine(d: EngineDeps) {
      * (default: the recommended ones the tree fits), and the combo for the model options.
      */
     async repoReview(b: { target?: unknown; options?: unknown; combo?: unknown; author?: unknown }) {
-      lensesOn();
       const t = (b.target ?? {}) as { repo?: unknown; commit?: unknown };
       const c = (b.combo ?? {}) as { model?: unknown; effort?: unknown };
       const combo = { model: c.model ?? DEFAULT_MODEL, effort: c.effort ?? "medium" };

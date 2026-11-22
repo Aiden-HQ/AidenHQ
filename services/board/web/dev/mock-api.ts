@@ -217,9 +217,9 @@ function route(method: string, url: URL): [number, unknown] {
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   const m = (re: RegExp) => re.exec(p);
   switch (p) {
-    case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200, lenses: true }, problems: [] }];
+    case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200 }, problems: [] }];
     case "/api/reviews": return [200, { runs: reviewRuns(), batches: reviewBatches() }];
-    case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2, lenses: true }];
+    case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2 }];
     case "/api/reviews/engines": return [200, { engines: { codex: { label: "Codex", efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high"], models: ["~anthropic/claude-haiku-latest"], run_usd: 5 }, codegenie: { label: "Codegenie", efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", efforts: ["low", "medium"], models: ["~openai/gpt-sol-latest"], run_usd: 5 } } }];
     case "/api/reviews/available": return [200, { repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }] }];
     case "/api/reviews/catalog": return [200, catalog()];

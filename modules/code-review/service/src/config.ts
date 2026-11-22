@@ -31,8 +31,7 @@ export type Repo = {
   forks: "manual" | "auto";
   ignore: string[]; max_nits: number;
 };
-/** `lenses`: repo reviews and the option catalog are on (off by default until their security review is done). */
-export type Config = { repos: Repo[]; lenses: boolean; errors: string[] };
+export type Config = { repos: Repo[]; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
@@ -120,6 +119,5 @@ export function readConfig(text: string | undefined): Config {
     else if (twice.has(v.repo)) errors.push(`repos[${i}]: ${v.repo} is listed more than once`);
     else repos.push(v);
   }
-  if (raw.lenses !== undefined && typeof raw.lenses !== "boolean") errors.push("lenses is true or false");
-  return { repos, lenses: raw.lenses === true, errors };
+  return { repos, errors };
 }
