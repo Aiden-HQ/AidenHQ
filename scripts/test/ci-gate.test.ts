@@ -21,6 +21,13 @@ const testEnv = (extra) => {
   return env;
 };
 
+test("a malformed finding in a failed review is skipped; the valid ones still decide", () => {
+  const v = verdict(1, JSON.stringify({ findings: [null, finding("high", "Null deref")], health: { status: "failed" } }), "abcdef123");
+  assert.equal(v.block, true);
+  assert.match(v.body, /Null deref/);
+  assert.equal(verdict(1, JSON.stringify({ findings: [null], health: { status: "failed" } }), "abcdef123").block, false);
+});
+
 test("high or critical findings block; the rest are listed as not blocking", () => {
   const v = verdict(0, review([finding("high", "Null deref"), finding("medium", "Slow loop")], { summaryOnlyFindings: [finding("critical", "SQL injection")] }), "abcdef123");
   assert.equal(v.block, true);

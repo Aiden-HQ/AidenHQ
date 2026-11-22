@@ -85,7 +85,7 @@ function judge(exitCode: number, stdout: string, sha: string, { failure, cause, 
   // An older workflow (a PR on an older base) still reports the codex-config refusal as permanent: recognised by its cause.
   if (failure === "policy" || (failure === "permanent" && /changes codex config/i.test(String(cause ?? "")))) return { block: true, short: true, body: `${MARKER}\n**Code review: refused${at}**: ${clip(cause, 400)}` };
   // Findings a run published still decide, even when it then failed or exited non-zero; only a run with none is no verdict.
-  const listed = (l: Finding[] | null | undefined) => (Array.isArray(l) ? l : []);
+  const listed = (l: Finding[] | null | undefined) => (Array.isArray(l) ? l.filter((f) => f && typeof f.severity === "string") : []);
   const published = listed(review?.findings).length + listed(review?.summaryOnlyFindings).length > 0;
   const unfinished = exitCode !== 0 || !readable;
   if (unfinished && !published) {
