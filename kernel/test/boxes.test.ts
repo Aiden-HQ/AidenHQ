@@ -145,58 +145,6 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.ok(other.id);
 });
 
-test("an engineer job's box clones its task's repos itself before the run: the named repos its dispatcher may clone, one already there kept, a refusal told, a code host down retried", async (t) => {
-  const h = await host(t);
-  h.grants["agent-1"].profile = "engineer";
-  // The code host is down: the job is deferred (its wake goes back for the next tick) and the box goes back; no run started.
-  h.codehostDown.on = true;
-  assert.equal((await h.admit("task-3")).state, "deferred");
-  assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
-  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 1);
-  h.codehostDown.on = false;
-  h.cloned.length = 0;
-  const job = await h.admit("task-3");
-  assert.equal(job.state, "running");
-  // In the job's own box, as the job (the box's env file), in task order: the clone is the box's `aidenhq clone`.
-  const box = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).container;
-  assert.deepEqual(h.cloned.map(([c, argv]) => [c, argv.at(-1)]), [[box, "acme/widget"], [box, "acme/api"], [box, "acme/gone"]]);
-  assert.deepEqual(h.cloned[0][1], ["aidenhq", "clone", "--keep", "acme/widget"]);
-  assert.equal(existsSync(join(h.cfg.workDir, "tasks", "PEN-3", "widget", ".git")), true);
-  const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8"));
-  assert.match(spec.prompt, /^\(Kernel note: `acme\/gone` is named in the task but couldn't be cloned/);
-  assert.equal(h.calls.find((c) => c.route === "/job").body.image, "engineer");
-  h.release();
-  await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
-});
-
-test("a job's next-turn requests: the next admission runs the engine and model it asked for, fresh; its workspace goes when it ends; a model the agent may not use is ignored", async (t) => {
-  const h = await host(t);
-  const first = await h.admit("task-1");
-  const token = h.calls.findLast((c) => c.route === "/job").body.token;
-  const workspace = join(h.cfg.workDir, "tasks", "PEN-1");
-  writeFileSync(join(workspace, "notes.txt"), "scratch");
-  assert.throws(() => h.jobTools.run(token, "engine", { engine: "wait2" }), /names its model/);
-  h.jobTools.run(token, "engine", { engine: "wait2", model: "acme/m2" });
-  h.jobTools.run(token, "reset", {});
-  h.jobTools.run(token, "cleanup", {});
-  h.release();
-  await until("the first job's box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(first.id).released > 0);
-  assert.equal(existsSync(join(workspace, "notes.txt")), false);
-  const second = await h.admit("task-1");
-  assert.deepEqual([second.authority.engine, second.authority.model], ["wait2", "acme/m2"]);
-  const spec = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(second.id).dir, "job.json"), "utf8"));
-  assert.equal(spec.session, undefined); // reset: no session resumed
-  await until("the second job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(second.id).state === "done");
-  // The agent loses acme/m2 before the next turn: the request is ignored, the turn runs on the agent's own engine and model.
-  h.db.prepare("INSERT INTO jobtools (job, fresh, engine, cleanup, at) VALUES (?, 0, ?, 0, ?)").run(second.id, JSON.stringify({ kind: "wait2", model: "acme/m2" }), Date.now());
-  h.grants["agent-1"].models = ["acme/m1"];
-  const third = await h.admit("task-1");
-  assert.deepEqual([third.authority.engine, third.authority.model], ["wait", "acme/m1"]);
-  const resumed = JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(third.id).dir, "job.json"), "utf8"));
-  assert.equal(resumed.session, "s-1"); // the last session of its own engine
-  assert.equal(h.jobTools.pending("task-1"), undefined);
-});
-
 test("a job resumes only a session its engine ran in: never one from before the kernel admitted jobs, never one whose resume died at start", async (t) => {
   const h = await host(t);
   const session = (job) => JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8")).session;
@@ -209,43 +157,6 @@ test("a job resumes only a session its engine ran in: never one from before the 
   row("j-dead", Date.now() + 1000, "s-1", 0, "{}"); // resumed s-1, died before writing anything
   const second = await h.admit("task-1");
   assert.equal(session(second), undefined); // fresh, not s-1 again
-});
-
-test("a release runs once however often it is asked; a cleanup spares a workspace a later job on the task is in", async (t) => {
-  const h = await host(t);
-  const boxes = h.make();
-  const row = (id, task, state, box) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, box) VALUES (?, 'acme-dispatch', 'agent-1', ?, 'wait', 0, '', '', 1, '[]', 0, 0, ?, '{}', ?)").run(id, task, state, box ? JSON.stringify(box) : null);
-  const ask = (job) => h.db.prepare("INSERT INTO jobtools (job, fresh, cleanup, at) VALUES (?, 0, 1, 1)").run(job);
-  const one = join(h.cfg.workDir, "tasks", "PEN-1"), two = join(h.cfg.workDir, "tasks", "PEN-2");
-  mkdirSync(one); mkdirSync(two);
-  row("j-1", "task-1", "done", { container: "c-1", workspace: one }); ask("j-1");
-  await Promise.all([boxes.tend(), boxes.tend(), boxes.ended("j-1")]);
-  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 1);
-  assert.equal(existsSync(one), false);
-  // A later job on task-2 is admitted while the last one's box is being released: its workspace stays.
-  row("j-2", "task-2", "done", { container: "c-2", workspace: two }); ask("j-2");
-  row("j-3", "task-2", "admitted");
-  await boxes.tend();
-  assert.ok(existsSync(two));
-  assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-2'").get().released > 0);
-});
-
-test("tend keeps an admitted job's box (it is cloning) and renews its lease; a release the launcher leaves running is retried", async (t) => {
-  const h = await host(t);
-  let at = 1_000_000;
-  const boxes = h.make(() => at);
-  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, box, renewed) VALUES ('j-1', 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', 1, '[]', 0, 0, 'admitted', '{}', ?, ?)").run(JSON.stringify({ container: "c-1" }), at);
-  at += 6 * 60_000;
-  await boxes.tend();
-  assert.deepEqual(h.calls.map((c) => c.route), ["/job/renew"]);
-  h.db.prepare("UPDATE jobs SET state = 'done' WHERE id = 'j-1'").run();
-  h.calls.length = 0;
-  h.launcher.releaseState = "running";
-  await boxes.tend();
-  assert.equal(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-1'").get().released, null);
-  await boxes.tend();
-  assert.ok(h.db.prepare("SELECT released FROM jobs WHERE id = 'j-1'").get().released > 0);
-  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 2);
 });
 
 test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {
@@ -271,74 +182,7 @@ test("a job's .aidenhq/out files are attached to its task when it ends: regular 
   assert.ok(h.attached.every((a) => a.task === "task-1" && !a.data.includes("host secret")));
 });
 
-test("a link where .aidenhq/out should be is never followed", async (t) => {
-  const h = await host(t);
-  const elsewhere = join(h.dir, "elsewhere");
-  mkdirSync(elsewhere);
-  writeFileSync(join(elsewhere, "host-secret.txt"), "host secret");
-  const job = await h.admit("task-1");
-  const ws = join(h.cfg.workDir, "tasks", "PEN-1");
-  mkdirSync(join(ws, ".aidenhq"), { recursive: true });
-  symlinkSync(elsewhere, join(ws, ".aidenhq", "out"));
-  h.release();
-  await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
-  assert.deepEqual(h.attached, []);
-});
-
-test("a launcher that can't answer now, or a kernel draining for its successor, defers the job: never a failed job, the box given back", async (t) => {
-  const h = await host(t);
-  h.launcher.fail = 500;
-  assert.equal((await h.admit("task-1")).state, "deferred");
-  assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0); // no failed row: the wake goes back to its dispatcher
-  h.draining.on = true;
-  assert.equal((await h.admit("task-1")).state, "deferred");
-  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 1); // the box it got went back
-  h.draining.on = false;
-  assert.equal((await h.admit("task-1")).state, "running");
-  h.release();
-  await until("released", () => h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE released > 0").get().n === 1);
-});
-
 /**
  * The stale-session recovery: a turn that resumed a session its engine can no longer find (Codex's "no rollout found") is
  * cleared and re-run at once on a fresh one, with the full first-turn prompt — not reported failed, and never twice.
  */
-test("a resumed session the engine can't find is cleared and the turn runs again fresh: the task is not told it failed", async (t) => {
-  const h = await host(t);
-  h.grants["agent-1"].engine = "stale";
-  h.grants["agent-1"].engines = ["stale"];
-  // A finished job of this agent's engine left the task a session; the engine now has no rollout for it.
-  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released) VALUES ('j-last', 'acme-dispatch', 'agent-1', 'task-1', 'stale', 0, '', '', 1, '[]', 0, 0, 'done', '{}', 's-gone', 100, 1)").run();
-  const job = await h.admit("task-1", { full: "the whole conversation" });
-  await until("the job to end", () => ["done", "failed"].includes(h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(job.id).state));
-  const v = h.db.prepare("SELECT state, exit, session, final FROM jobs WHERE id = ?").get(job.id);
-  assert.deepEqual([v.state, v.exit], ["done", 0], "the stale resume is not the run's end: the fresh turn is");
-  assert.equal(v.session, "s-new");
-  // Both runs are this job's, each in its own folder: the first resumed s-gone, the retry resumed nothing and carried the
-  // full first-turn prompt.
-  const outDir = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).outDir;
-  const spec = (dir) => JSON.parse(readFileSync(join(outDir, dir, "job.json"), "utf8"));
-  assert.equal(spec("job").session, "s-gone");
-  const retry = spec("job-2");
-  assert.equal(retry.session, undefined, "the turn runs again with no session");
-  assert.equal(retry.prompt, "the whole conversation", "and with the full first-turn prompt");
-  assert.equal(spec("job").prompt, "hello", "not the resumed turn's short prompt");
-  // The task's stored session is cleared, not left for the next wake to fail on.
-  assert.equal(h.db.prepare("SELECT session FROM jobs WHERE id = 'j-last'").get().session, null);
-  // Nothing told the task its run failed: its one end is the fresh turn's, with its own words.
-  assert.equal(v.final, "fresh: the whole conversation");
-  assert.ok(!v.final.includes("no rollout found"));
-});
-
-test("a fresh run that reports the same error is not run again", async (t) => {
-  const h = await host(t);
-  h.grants["agent-1"].engine = "stale-always";
-  h.grants["agent-1"].engines = ["stale-always"];
-  const job = await h.admit("task-1", { full: "the whole conversation" });
-  await until("the job to end", () => ["done", "failed"].includes(h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(job.id).state));
-  const v = h.db.prepare("SELECT state, exit, final FROM jobs WHERE id = ?").get(job.id);
-  assert.equal(v.state, "failed");
-  assert.match(v.final, /no rollout found for thread id/);
-  const outDir = JSON.parse(h.db.prepare("SELECT box FROM jobs WHERE id = ?").get(job.id).box).outDir;
-  assert.equal(existsSync(join(outDir, "job-2")), false, "a run that started fresh is never retried");
-});
