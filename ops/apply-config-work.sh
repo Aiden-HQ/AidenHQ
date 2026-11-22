@@ -833,18 +833,46 @@ switchOver() {
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"
 }
 
+# What blocked the kernel when /healthz went unanswered at the deadline, from what the apply can read on the host: the
+# health request's curl exit (7 = nothing listening, 28 = connected but no answer in --max-time 5), the unit's state and
+# the tail of its journal (bounded; the journal is what says why the unit is not answering). Best effort: a missing or
+# failing systemctl/journalctl loses only that part, never the timeout itself.
+kernelTimeoutWhy() {
+  local rc="$1" unit="aidenhq-kernel.service" out src=0 why journal
+  case "$rc" in
+    0) why="curl exit 0: /healthz answered, but not with ok" ;;
+    7) why="curl exit 7: could not connect, nothing listening on the health URL" ;;
+    22) why="curl exit 22: /healthz answered with an HTTP error" ;;
+    28) why="curl exit 28: connected, no answer within 5s" ;;
+    *) why="curl exit $rc" ;;
+  esac
+  # A missing tool fails like any other (127, no output): the part is reported unavailable and the timeout stands.
+  out="$(systemctl --user show "$unit" --property=ActiveState,Result,NRestarts 2>/dev/null)" || src=$?
+  out="${out//$'\n'/ }"; out="${out% }"
+  if [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
+  elif [ -n "$out" ]; then why+="; unit $out"
+  else why+="; unit state unavailable, systemctl printed nothing"; fi
+  journal="$(journalctl --user -u "$unit" -n 20 --no-pager 2>/dev/null)" || true
+  journal="${journal//$'\n'/ | }"
+  while [ "${journal%" | "}" != "$journal" ]; do journal="${journal%" | "}"; done
+  [ "${#journal}" -le 400 ] || journal="${journal:0:400}..."
+  if [ -n "$journal" ]; then why+="; last journal: $journal"; else why+="; last journal empty or unavailable"; fi
+  [ "${#why}" -le 1200 ] || why="${why:0:1200}..."
+  printf '%s' "$why"
+}
+
 # Step 4 of spec §5.7.2, polled to deadlines (the kernel restarts; services take a while to come up). Fails, with HEALTH_WHY,
 # when the kernel does not answer /healthz in time, when a check that passed in the baseline still FAILs at the deadline
 # (skips and checks already failing in the baseline don't count), or when the live agent check fails (it fails only on
 # connections granted since the previous config; its own ERROR lines, naming the connection and its detail, become the
 # reason).
 health() {
-  local base="$1" prev="$2" deadline name regress out rc=0 err why=""
+  local base="$1" prev="$2" deadline name regress out rc=0 err why="" answer krc=0
   local kurl="${AIDENHQ_KERNEL_HEALTH_URL:-http://10.231.0.1:3130/healthz}" every="${AIDENHQ_HEALTH_INTERVAL_S:-10}"
   HEALTH_WHY=""
   deadline=$(( $(date +%s) + ${AIDENHQ_KERNEL_DEADLINE_S:-120} ))
-  until curl -fsS --max-time 5 "$kurl" 2>/dev/null | grep -qx ok; do
-    [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="the kernel did not answer /healthz within ${AIDENHQ_KERNEL_DEADLINE_S:-120}s"; return 1; }
+  until { answer="$(curl -fsS --max-time 5 "$kurl" 2>/dev/null)"; krc=$?; [ "$krc" -eq 0 ] && grep -qx ok <<< "$answer"; }; do
+    [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="the kernel did not answer /healthz within ${AIDENHQ_KERNEL_DEADLINE_S:-120}s ($(kernelTimeoutWhy "$krc"))"; return 1; }
     sleep "$every"
   done
   if [ -n "$base" ] && [ -s "$base" ]; then

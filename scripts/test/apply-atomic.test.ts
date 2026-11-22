@@ -111,10 +111,11 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
 `,
   df: `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 999999999 1%% /\\n'\n`,
   // list-unit-files is empty unless ctrl/runners names a count: then the CI runner template is enabled (the apply keeps it in
-  // step with the checkout).
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;; *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
+  // step with the checkout). `show` is what health() reads on a /healthz timeout; journalctl tails the journal.
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
+  journalctl: `#!/usr/bin/env bash\nprintf 'journalctl %s\\n' "$*" >> "$CALLS"\nprintf 'Nov 22 06:19:31 acme-host aidenhq-kernel[812]: kernel: binding 10.231.0.1:3130\\nNov 22 06:19:41 acme-host aidenhq-kernel[812]: kernel: healthz not ready: EACCES mkdir /srv/aidenhq/data/kernel-scratch\\n'\n`,
   "systemd-run": `#!/usr/bin/env bash\nprintf 'systemd-run %s\\n' "$*" >> "$CALLS"\n`,
-  curl: `#!/usr/bin/env bash\n[ -f "$CTRL/kernel-down" ] && exit 7\necho ok\n`,
+  curl: `#!/usr/bin/env bash\n[ -f "$CTRL/kernel-down" ] && exit 7\n[ -f "$CTRL/kernel-hang" ] && exit 28\necho ok\n`,
   // npm ci --prefix <dir> installs the one package the fake kernel/src/apply.ts imports.
   npm: `#!/usr/bin/env bash
 printf 'npm %s\\n' "$*" >> "$CALLS"
@@ -322,6 +323,50 @@ test("A14: a post-apply health failure reverts to the LKG's product, keeps what 
   assert.deepEqual(w.gens().at(-1), { ...w.gens().at(-1), product: p2, instance: i2, health: "good" });
   assert.equal(w.head("prod"), p2);
   assert.equal(git(w.d("inst"), "symbolic-ref", "--short", "HEAD"), "main");
+});
+
+// A /healthz timeout names what blocked the kernel: the curl exit (7 = nothing listening, 28 = connected, no answer) and
+// the unit's ActiveState/Result/NRestarts with its journal tail, so an environmental stall reads on the generation itself.
+// A first install (no applied-product) fails the generation without reverting, so each case is one apply.
+const timedOut = async (w) => {
+  rmSync(w.d("prod/data/applied-product"), { force: true });
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens().at(-1);
+  assert.equal(g.health, "failed");
+  assert.match(readFileSync(g.log, "utf8"), new RegExp(`generation ${g.n} failed: the kernel did not answer`));
+  return g;
+};
+
+test("a /healthz timeout names the curl exit, the unit's state and its journal tail", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/kernel-down"), "");
+  const g = await timedOut(w);
+  assert.match(g.reason, /^the kernel did not answer \/healthz within 2s \(curl exit 7: could not connect/);
+  assert.match(g.reason, /unit ActiveState=activating Result=exit-code NRestarts=2/);
+  assert.match(g.reason, /last journal: .*healthz not ready: EACCES mkdir \/srv\/aidenhq\/data\/kernel-scratch/);
+  assert.ok(!g.reason.includes("\n"), "one line");
+  assert.match(w.calls(), /systemctl --user show aidenhq-kernel\.service --property=ActiveState,Result,NRestarts/);
+  assert.match(w.calls(), /journalctl --user -u aidenhq-kernel\.service -n 20 --no-pager/);
+
+  // 28 says it differently: connected, no answer inside --max-time 5.
+  const hangs = world();
+  writeFileSync(hangs.d("ctrl/kernel-hang"), "");
+  assert.match((await timedOut(hangs)).reason, /\(curl exit 28: connected, no answer within 5s;/);
+});
+
+// The diagnostic never becomes the failure: a systemctl that cannot reach the bus and no journal of its own still leave the
+// timeout line, with the two parts marked unavailable.
+test("a /healthz timeout still records a reason when the unit state and journal are unavailable", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/kernel-down"), "");
+  writeFileSync(w.d("ctrl/no-unit-state"), "");
+  rmSync(w.d("bin/journalctl"));
+  const g = await timedOut(w);
+  assert.match(g.reason, /^the kernel did not answer \/healthz within 2s \(curl exit 7/);
+  assert.match(g.reason, /unit state unavailable, systemctl exit 1/);
+  assert.match(g.reason, /last journal( empty or unavailable|: -- No entries --)/);
+  assert.ok(!g.reason.includes("\n"), "one line");
 });
 
 const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
