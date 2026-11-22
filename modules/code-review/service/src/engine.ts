@@ -28,8 +28,11 @@ const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The reche
 
 export const DEBOUNCE = 60_000;
 /** A post refused by something other than a decision (stale after a restart, a failed GitHub call, a rate limit) is filed again
- * after this, doubling each time up to 16x, until it lands (while its PR is open). */
+ * after this, doubling each time (2 to 32 minutes), up to POST_TRIES times while its PR is open. */
 export const POST_RETRY = 2 * 60_000;
+const POST_TRIES = 6;
+/** A run its model token's spend cap refused (the gateway's "spend cap reached") waits this long, its attempt not counted. */
+const CAP_WAIT = 30 * 60_000;
 /** A failed run's retry waits this long (a deploy or restart that made it fail is usually over by then). */
 const RUN_RETRY = 60_000;
 /** A run that couldn't run is tried this many times in all, on the same reservation. */
@@ -413,9 +416,12 @@ export function createEngine(d: EngineDeps) {
       // Once more on what is left of the run's run_usd, when the kernel says what the failed attempt cost (else it may have
       // spent it all) and the result wasn't a wrong one.
       const left = r.run_usd - r.billed_prior - (res.billed_usd ?? Infinity);
-      if (r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS) && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
+      // A spend cap the gateway reached waits for it (the owner raises it, or the day turns), its attempt not counted.
+      const capped = /spend cap reached/.test(res.why);
+      if (capped) run("UPDATE runs SET attempts = attempts - 1 WHERE id = ?", r.id);
+      if ((capped || r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS)) && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying again on what is left of its run_usd", { run: r.id, attempt: r.attempts, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = billed_prior + ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", res.billed_usd!, now() + RUN_RETRY, r.id);
+        run("UPDATE runs SET billed_prior = billed_prior + ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", res.billed_usd!, now() + (capped ? CAP_WAIT : RUN_RETRY), r.id);
         return;
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
@@ -494,7 +500,7 @@ export function createEngine(d: EngineDeps) {
     done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
     afterPost(runRow(r.id)!, posted);
   }
-  const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && (!r.post_tries || !!prRow(r.repo, r.number)?.open);
+  const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && (!r.post_tries || (r.post_tries < POST_TRIES && !!prRow(r.repo, r.number)?.open));
 
   /** Files the run's post (a Tier 1 write): its review, on the head it reviewed. */
   async function publish(r: RunRow, review: Review): Promise<Posted> {
@@ -929,9 +935,9 @@ export function createEngine(d: EngineDeps) {
     // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the next poll starts it.
     const latest = reviewers(repo, n, head);
     const busy = latest.filter((r) => r.status === "queued" || r.status === "running");
-    // A review whose post hasn't landed yet (the AI reviewer deciding, or filed again after a refusal): its findings gate once
-    // they have threads, so the merge waits for the post.
-    const posting = latest.filter((r) => r.status === "done" && (r.posted === "pending" || r.posted === "retry"));
+    // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
+    // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
+    const posting = latest.filter((r) => r.status === "done" && r.posted === "pending" && !r.post_tries);
     if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });

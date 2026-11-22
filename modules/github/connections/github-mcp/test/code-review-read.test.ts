@@ -64,6 +64,8 @@ it("a PR's change fingerprint: the same files and patches over another merge bas
     ["2".repeat(40)]: [file("@@ -1,2 +1,2 @@\n-a\n+b\n c")], // rebased: a new base, the same change
     ["3".repeat(40)]: [file("@@ -7,2 +7,2 @@\n-a\n+b\n c")], // the same lines edited elsewhere
     ["4".repeat(40)]: [file()], // GitHub left the patch out (too large)
+    ["5".repeat(40)]: [{ filename: "a.png", status: "modified", changes: 0, sha: "1".repeat(40) }], // a binary: no patch, its blob
+    ["6".repeat(40)]: [{ filename: "a.png", status: "modified", changes: 0, sha: "2".repeat(40) }],
   };
   const f = (async (input: URL | string) => Response.json({ status: "ahead", files: files[String(input).split("...")[0]!.slice(-40)] })) as typeof fetch;
   const r = new CodeReviewReader(new GitHub(accessFor(f, "t"), f));
@@ -72,4 +74,5 @@ it("a PR's change fingerprint: the same files and patches over another merge bas
   expect(await id("2")).toBe(await id("1"));
   expect(await id("3")).not.toBe(await id("1"));
   expect(await id("4")).toBeNull();
+  expect(await id("5")).not.toBe(await id("6"));
 });

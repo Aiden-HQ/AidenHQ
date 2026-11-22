@@ -49,7 +49,7 @@ function shape(repo: string, p: GhPr): PullRequest {
   return {
     repo: repo.toLowerCase(), number: p.number, head: String(p.head?.sha), base: String(p.base?.sha), base_ref: String(p.base?.ref),
     draft: Boolean(p.draft), fork: !headRepo || headRepo !== baseRepo, author: p.user?.login ?? "", open: p.state === "open", merged: !!p.merged_at, url: p.html_url,
-    // A stranger's words: shown as plain text on the board, never in a task title or a prompt.
+    // A stranger's words: plain text on the board, never in a task title; a review gets title and body only fenced as data.
     title: String(p.title ?? "").slice(0, 200), body: String(p.body ?? "").slice(0, 2000),
   };
 }

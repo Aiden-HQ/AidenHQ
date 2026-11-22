@@ -404,13 +404,19 @@ test("two mandatory combos: each must finish; a failing one retries a minute lat
     w.later(wait + 1); await w.tick({ github: false });
     assert.equal(w.started.length, i + 1, `retried after ${wait / 60_000} min`);
   }
-  w.results.set("c-5", { state: "failed", why: "github is unreachable", billed_usd: 0 });
+  // A spend cap the gateway reached waits for it, its attempt not counted.
+  w.results.set("c-5", { state: "failed", why: "no finder finished: spend cap reached: the install's daily $50.00 of $50.00", billed_usd: 0 });
+  await w.tick({ github: false }); w.later(60_000 + 1); await w.tick({ github: false });
+  assert.equal(w.started.length, 5, "the cap holds it longer than a minute");
+  w.later(30 * 60_000); await w.tick({ github: false });
+  assert.equal(w.started.length, 6, "tried again once the wait is over, still within its attempts");
+  w.results.set("c-6", { state: "failed", why: "github is unreachable", billed_usd: 0 });
   await w.tick({ github: false });
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "failed past its retries: infrastructure never stalls the merge");
   assert.equal(w.statuses.at(-1).reason, "failed", "GitHub's status says the review failed, not that it passed review");
   // The opening review finished (codex), so the next head is a push, reviewed whole (nothing was covered).
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  assert.deepEqual(w.started.slice(5).map((s) => [s.head, label(s), s.incremental_from]), [[sha("3"), "codex/low", null]]);
+  assert.deepEqual(w.started.slice(6).map((s) => [s.head, label(s), s.incremental_from]), [[sha("3"), "codex/low", null]]);
 });
 test("a partial mandatory review still lets the head pass, but never makes it a baseline; every later head is a push, never the opening batch again", async () => {
   const w = gatedWorld();
@@ -550,7 +556,7 @@ test("the commit status mirrors the verdict per head, written only when it chang
   assert.equal(plain.statuses.length, 0);
 });
 
-test("a finding gates only once posted: the merge waits on the post, a refused post (a rate limit, a restart) is filed again with backoff until it lands, a rejected one never gates", async () => {
+test("a finding gates only once posted: the merge waits on the first post, a refused one (a rate limit, a restart) is filed again with backoff and holds nothing meanwhile, a rejected one never gates", async () => {
   const w = gatedWorld();
   w.posts.pending = true;
   await opened(w, 2, sha("2"));
@@ -559,6 +565,7 @@ test("a finding gates only once posted: the merge waits on the post, a refused p
   w.outcomes.set("k-1", { state: "refused", why: "write k-1 failed: GitHub 403 rate limit", retry: true });
   await w.tick({ github: false });
   assert.equal(w.engine.runs({ repo: REPO })[0].posted, "retry");
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "refused once: its findings are pending, never blocking");
   w.later(2 * 60_000 + 1); await w.tick({ github: false });
   assert.equal(w.posted.length, 2, "filed again");
   w.outcomes.set("k-2", { state: "refused", why: "write k-2 failed", retry: true });
@@ -567,7 +574,6 @@ test("a finding gates only once posted: the merge waits on the post, a refused p
   assert.equal(w.posted.length, 2, "backing off: 4 minutes the second time");
   w.later(2 * 60_000); await w.tick({ github: false });
   assert.equal(w.posted.length, 3, "and again, until it lands");
-  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["running"], "no thread yet: the finding doesn't gate, the merge waits on the post");
   w.outcomes.set("k-3", { state: "posted", comments: [41] }); await w.tick({ github: false });
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"], "posted: it gates");
   const r = gatedWorld();
