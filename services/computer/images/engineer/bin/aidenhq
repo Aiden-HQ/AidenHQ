@@ -155,7 +155,8 @@ const bundle = (repo, branch, sha) => {
   mkdirSync(out, { recursive: true });
   // Written beside the final file and checked first: a bundle of a branch that moved since sha was read never replaces the good one.
   // The file is named by the sha alone and carries one ref named by the sha alone (publishRef in kernel/sdk/src/box-bundle.ts, which
-  // the code hosts fetch), so every branch at that commit makes the same file and none can overwrite another's.
+  // the code hosts fetch), so every branch at that commit makes the same file and none can overwrite another's. The ref stays after: it
+  // holds the same sha every time, and deleting it would race a parallel bundle of that sha.
   const pub = `refs/aidenhq/publish/${sha}`;
   const tmp = join(out, `${sha}.${process.pid}.tmp`);
   try {
@@ -167,7 +168,6 @@ const bundle = (repo, branch, sha) => {
     renameSync(tmp, join(out, `${sha}.bundle`));
   } finally {
     rmSync(tmp, { force: true });
-    try { execFileSync("git", ["-C", dir, "update-ref", "-d", pub], { stdio: "ignore" }); } catch {}
   }
 };
 const commitOf = (repo, branch) => { const sha = shaOf(repo, branch); bundle(repo, branch, sha); return sha; };
