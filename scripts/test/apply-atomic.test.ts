@@ -318,14 +318,23 @@ test("the CI runner unit template follows the applied checkout, only while runne
   assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
   // Nothing changed: no rewrite, no reload.
   const before = w.calls();
-  assert.equal((await w.run()).status, 0);
+  const unchanged = await w.run("--force");
+  assert.equal(unchanged.status, 0, unchanged.out);
   assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
 
+  // A rerun is forced: a plain rerun of an applied pair returns "already applied" before the switch, so nothing below
+  // would exercise the gate at all.
+  const again = async () => {
+    const r = await w.run("--force");
+    assert.equal(r.status, 0, r.out);
+    assert.ok(!r.out.includes("already applied"), "the forced rerun reaches the switch");
+    return r;
+  };
+  await again();
   // A masked instance keeps its link but systemd will not start it: it declares no runner.
   writeFileSync(w.d("ctrl/masked"), "aidenhq-ci-runner@3.service\n");
   old();
-  const masked = await w.run();
-  assert.equal(masked.status, 0, masked.out);
+  await again();
   assert.equal(template(), "[Unit]\nDescription=old\n", "a masked instance's link installs nothing");
   rmSync(w.d("ctrl/masked"));
 
@@ -333,8 +342,7 @@ test("the CI runner unit template follows the applied checkout, only while runne
   rmSync(join(wants, "aidenhq-ci-runner@3.service"));
   writeFileSync(join(wants, "aidenhq-ci-runner@3.service"), "");
   old();
-  const plain = await w.run();
-  assert.equal(plain.status, 0, plain.out);
+  await again();
   assert.equal(template(), "[Unit]\nDescription=old\n", "a plain file under .wants is not an enablement link");
   rmSync(join(wants, "aidenhq-ci-runner@3.service"));
 
@@ -342,16 +350,14 @@ test("the CI runner unit template follows the applied checkout, only while runne
   symlinkSync(join(units, "gone@.service"), join(wants, "aidenhq-ci-runner@4.service"));
   writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@4.service\n");
   old();
-  const dangling = await w.run();
-  assert.equal(dangling.status, 0, dangling.out);
+  await again();
   assert.equal(template(), "[Unit]\nDescription=old\n", "a dangling install link installs nothing");
 
   // A disabled instance (its link removed) leaves the template as the operator has it.
   rmSync(join(wants, "aidenhq-ci-runner@4.service"));
   retired();
   old();
-  const disabled = await w.run();
-  assert.equal(disabled.status, 0, disabled.out);
+  await again();
   assert.equal(template(), "[Unit]\nDescription=old\n", "no enabled runner instance: the apply leaves the template alone");
 });
 
