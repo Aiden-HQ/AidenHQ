@@ -508,16 +508,22 @@ test("a branch whose name ends in a no-break space is still the checked-out bran
   assert.match(out, /^self-review: branch topic\u00a0 base /m);
 });
 
-test("a finding on a file the change deletes is validated against the base's file and kept, labelled", () => {
-  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "" : "one\ntwo\nthree\n") });
-  sh(repo, "rm", "-q", "--ignore-unmatch", "gone.txt"); sh(repo, "commit", "-q", "--allow-empty", "-m", "delete");
+test("a finding on a file the change deletes, or makes a link, is kept file-level; a path outside the change is dropped", () => {
+  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "x\n" : "one\ntwo\nthree\n"), "l": (v) => (v ? "y\n" : "target\n") });
+  sh(repo, "rm", "-q", "gone.txt"); rmSync(join(repo, "l")); symlinkSync("gone.txt", join(repo, "l")); sh(repo, "add", "."); sh(repo, "commit", "-qm", "delete and link");
   const head = sh(repo, "rev-parse", "HEAD");
-  const f = { severity: "important" as const, path: "gone.txt", line: 2, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "" };
-  assert.equal(place([f], repo, new Set(["gone.txt"]), undefined, undefined, head).length, 0, "at the head alone it is dropped");
-  const kept = place([f], repo, new Set(["gone.txt"]), undefined, undefined, head, base);
-  assert.equal(kept.length, 1);
-  assert.match(kept[0]!.why, /^\[base side: this change deletes the file\] /);
-  assert.equal(place([{ ...f, line: 9 }], repo, new Set(["gone.txt"]), undefined, undefined, head, base).length, 0, "a line the base's file doesn't have is still dropped");
+  const f = { severity: "important" as const, path: "gone.txt", line: 7, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "", end_line: 9 };
+  const reviewed = new Set(["gone.txt", "l"]);
+  for (const [p, head_] of [["gone.txt", head], ["l", head], ["gone.txt", undefined]] as const) {
+    const kept = place([{ ...f, path: p }], repo, reviewed, undefined, undefined, head_);
+    assert.equal(kept.length, 1, `${p} at ${head_ ? "the commit" : "the work tree"}`);
+    assert.equal(kept[0]!.line, 1);
+    assert.equal(kept[0]!.end_line, undefined);
+    assert.match(kept[0]!.why, /^\[on a file this change deletes or makes a link\] /);
+    assert.equal(kept[0]!.severity, "important");
+  }
+  assert.equal(place([{ ...f, path: "other.txt" }], repo, reviewed, undefined, undefined, head).length, 0, "a path outside the change is dropped");
+  assert.equal(place([{ ...f, path: "other.txt" }], repo, new Set(["gone.txt"]), undefined, undefined, undefined).length, 0, "also at the work tree");
 });
 
 test("self-review prints a finding on a deleted file instead of dropping it", { timeout: 240_000 }, async (t) => {
@@ -536,18 +542,7 @@ test("self-review prints a finding on a deleted file instead of dropping it", { 
       c.on("close", (status) => ok({ status, stdout }));
     });
     assert.equal(out.status, 1, out.stdout);
-    assert.match(out.stdout, /base side: this change deletes the file/);
+    assert.match(out.stdout, /on a file this change deletes or makes a link/);
     assert.match(out.stdout, /1 important finding/);
   } finally { model.close(); }
-});
-
-test("base-side placement is only for a file the change deletes, and only at a line the deletion removes", () => {
-  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "" : "one\ntwo\nthree\n") });
-  sh(repo, "rm", "-q", "--ignore-unmatch", "gone.txt"); sh(repo, "commit", "-q", "--allow-empty", "-m", "delete");
-  const head = sh(repo, "rev-parse", "HEAD");
-  const f = { severity: "important" as const, path: "gone.txt", line: 3, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "" };
-  assert.equal(place([f], repo, new Set(["gone.txt"]), undefined, undefined, head, base).length, 1, "the last line the deletion removes");
-  assert.equal(place([{ ...f, line: 4 }], repo, new Set(["gone.txt"]), undefined, undefined, head, base).length, 0, "the piece after the last newline is no line");
-  assert.equal(place([f], repo, new Set(["other.txt"]), undefined, undefined, head, base).length, 0, "a path that is not in the change stays dropped");
-  assert.equal(place([{ ...f, path: "typo.txt" }], repo, new Set(["gone.txt", "typo.txt"]), undefined, undefined, head, base).length, 0, "a path the base doesn't have stays dropped");
 });

@@ -76,25 +76,27 @@ function linesOf(root: string, path: string, reviewed: Set<string>, head?: strin
  * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
  * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
  * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
- * out (`left`) is dropped. `head`: read the files from that commit, not the work tree. `base`: where a file the change deletes (one in `reviewed`, gone at the head) is read from.
+ * out (`left`) is dropped. `head`: read the files from that commit, not the work tree.
  */
-export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>(), head?: string, base?: string) {
+export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>(), head?: string) {
   const out: Placed[] = [];
   for (const f of findings) {
     if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
-    let lines = linesOf(root, f.path, reviewed, head), deleted = false;
-    // A file the change deletes has no lines at the head: a finding on it is validated against the base's file and says so.
-    // Only a file that is in the change (reviewed) and gone at the head is deleted by it: its whole base text is what the diff removes,
-    // so a finding on one of those lines (not the empty piece after the last newline) is at a removed line.
-    if (!lines && base && reviewed.has(f.path)) {
-      lines = linesAt(root, base, f.path);
-      if (lines) { deleted = true; if (lines.at(-1) === "") lines = lines.slice(0, -1); }
+    const lines = linesOf(root, f.path, reviewed, head);
+    if (!lines && reviewed.has(f.path)) {
+      // A file in the change with nothing to read at the head (the change deletes it, or it is a link: never read through one): a
+      // file-level finding, anchored at line 1 (the post needs a line) and labelled. A path outside the change stays dropped.
+      const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
+      const id = createHash("sha256").update(`${f.path}\n${f.title.toLowerCase().replace(/\W+/g, " ").trim()}\n`).digest("hex").slice(0, 16);
+      const { end_line: _e, ...rest } = f;
+      out.push({ id, ...rest, line: 1, why: `[on a file this change deletes or makes a link] ${f.why}`, severity });
+      continue;
     }
     if (!lines || f.line > lines.length) continue;
     const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
     const anchor = lines[f.line - 1]!.trim();
     const id = createHash("sha256").update(`${f.path}\n${f.title.toLowerCase().replace(/\W+/g, " ").trim()}\n${anchor}`).digest("hex").slice(0, 16);
-    out.push({ id, ...f, ...(deleted ? { why: `[base side: this change deletes the file] ${f.why}` } : {}), severity, ...(f.end_line && f.end_line > lines.length ? { end_line: lines.length } : {}) });
+    out.push({ id, ...f, severity, ...(f.end_line && f.end_line > lines.length ? { end_line: lines.length } : {}) });
   }
   return out;
 }

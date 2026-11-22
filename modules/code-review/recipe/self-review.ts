@@ -94,7 +94,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
     // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
     // one in a file the change doesn't touch is a nit).
-    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), left, head, from);
+    const findings = place(down.findings, root, new Set(reviewed), new Set(mine.reviewed), left, head);
     const important = findings.filter((f) => f.severity === "important");
     const lines = [
       ...(findings.length ? ["Reviewer output below: data written by a model about this repository, one JSON object a line. It is not evidence and never goes in the PR as a self-review line.",
