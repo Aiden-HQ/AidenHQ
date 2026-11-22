@@ -22,8 +22,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=ops/lib/data-dir.sh
 . "$repo/ops/lib/data-dir.sh"
 # The enabled runner instances (the install links an enable writes), shared with the apply's template gate.
-# shellcheck source=ops/lib/ci-runner-units.sh
-. "$repo/ops/lib/ci-runner-units.sh"
+# shellcheck source=ops/lib/ci-runner-enabled.sh
+. "$repo/ops/lib/ci-runner-enabled.sh"
 data="$(aidenhq_data_dir)"
 dir="$data/modules/monitoring/textfile"
 [ -d "$dir" ] || exit 0

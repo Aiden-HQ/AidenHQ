@@ -20,7 +20,7 @@ import YAML from "yaml";
 const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-units.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -116,7 +116,7 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   // can tell the apply a runner is declared. systemd-analyze names the user unit dir systemd loads; is-enabled says the
   // runner instances are enabled (the other units are not). `show` is what health() reads on a /healthz timeout;
   // journalctl tails the journal.
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*)\n    case "\${@: -1}" in aidenhq-ci-runner@*) echo enabled; exit 0 ;; esac\n    exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*)\n    case "$*" in *--state=enabled*) exit 0 ;; esac\n    [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service indirect enabled" ; exit 0 ;; esac\nexit 0\n`,
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *"daemon-reload"*) [ -f "$CTRL/bad-reload" ] && cmp -s "$PWD/ops/units/aidenhq-ci-runner@.service" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" && { echo "Failed to reload: Connection timed out" >&2; exit 1; }; exit 0 ;;\n  *is-enabled*)\n    case "\${@: -1}" in aidenhq-ci-runner@*) echo enabled; exit 0 ;; esac\n    exit 1 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
   // The user unit dir systemd loads, as `systemd-analyze --user unit-paths` names it.
   "systemd-analyze": `#!/usr/bin/env bash\ncase "$*" in *unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
@@ -290,7 +290,7 @@ function resolvedAidenhqDir(unit, home) {
 //
 // An enabled instance of the template has no unit file: `systemctl --user enable aidenhq-ci-runner@<n>` only writes an
 // install link in a target's .wants dir, and `list-unit-files` reports the template alone (indirectly enabled), so the
-// gate reads the links (ops/lib/ci-runner-units.sh). Each world starts from a template an older product installed.
+// gate reads the links (ops/lib/ci-runner-enabled.sh). Each world starts from a template an older product installed.
 test("the CI runner unit template follows the applied checkout, only while a runner instance is enabled", async () => {
   const w = world();
   const units = w.d("home/.config/systemd/user");
@@ -308,15 +308,40 @@ test("the CI runner unit template follows the applied checkout, only while a run
   // from the host's settings; the template reads it last, so it wins.
   assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
   assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
-  // Nothing changed: no rewrite, no reload.
+  // Nothing changed: no rewrite, and the manager is still reloaded (a reload that failed after an earlier copy is only
+  // fixed by reloading again, and the files match by then).
   const before = w.calls();
-  assert.equal((await w.run()).status, 0);
-  assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
+  assert.equal((await w.run("--force")).status, 0);
+  const again = w.calls().slice(before.length);
+  assert.doesNotMatch(again, /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
+  assert.match(again, /systemctl --user daemon-reload/, "an unchanged template is still reloaded");
   // The instance retired: its link is gone, so the installed template stays as the operator left it.
   writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=kept\n");
   rmSync(join(units, "default.target.wants/aidenhq-ci-runner@1.service"));
   assert.equal((await w.run()).status, 0);
   assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=kept\n", "no runner instance enabled: the apply leaves the template alone");
+});
+
+// A daemon-reload that fails after the copy leaves the manager on the old template. That is a failed switch, not a
+// successful apply with a warning, and the next apply (which finds the files equal) must still reload them.
+test("a failed runner-template reload fails the switch, and the retry reloads the copied template", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(join(units, "default.target.wants"), { recursive: true });
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\n");
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(units, "default.target.wants/aidenhq-ci-runner@1.service"));
+  writeFileSync(w.d("ctrl/bad-reload"), "");
+  const failed = await w.run();
+  assert.notEqual(failed.status, 0, failed.out);
+  assert.match(failed.out, /the switch failed/, failed.out);
+  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /ops\/ci-runner-backoff\.sh %i/, "the copy still happened");
+  // The manager failed to reload; with it healthy, the same files are reloaded on the next apply.
+  rmSync(w.d("ctrl/bad-reload"));
+  const before = w.calls();
+  assert.equal((await w.run("--force")).status, 0);
+  const retry = w.calls().slice(before.length);
+  assert.doesNotMatch(retry, /ci runner unit template installed\/updated/, "the files already match: no second copy");
+  assert.match(retry, /systemctl --user daemon-reload/, "the retry reloads the copied template");
 });
 
 test("A14: a post-apply health failure reverts to the LKG's product, keeps what the instance gained since, and holds the pair until --force", async () => {

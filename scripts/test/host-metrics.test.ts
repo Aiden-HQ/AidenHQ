@@ -107,7 +107,7 @@ test("the exporter's data dir comes from the unit environment, not a checkout .e
   fake("docker", "exit 0");
   mkdirSync(join(root, "ops/lib"), { recursive: true });
   writeFileSync(join(root, "ops/host-metrics.sh"), readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"));
-  for (const lib of ["data-dir.sh", "ci-runner-units.sh"]) writeFileSync(join(root, "ops/lib", lib), readFileSync(join(repo, "ops/lib", lib), "utf8"));
+  for (const lib of ["data-dir.sh", "ci-runner-enabled.sh"]) writeFileSync(join(root, "ops/lib", lib), readFileSync(join(repo, "ops/lib", lib), "utf8"));
   // A .env that would point elsewhere: it must not be read.
   writeFileSync(join(root, ".env"), 'AIDENHQ_DATA_DIR=/srv/elsewhere\n');
   const home = join(root, "home");

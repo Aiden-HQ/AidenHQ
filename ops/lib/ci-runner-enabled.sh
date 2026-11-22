@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The CI runner instances systemd has enabled, shared by the apply (which keeps the runner template in step with the
-# checkout) and the host metrics exporter (which declares them). Sourced, never run.
+# checkout) and the host metrics exporter (which declares them). Sourced, never run. The name is the question it answers;
+# ops/ci-runner-units.sh is the apply step that starts failed units.
 #
 # Enabling an instance of the runner template does not create a unit file: `systemctl --user enable aidenhq-ci-runner@3`
 # records it as an install link (`aidenhq-ci-runner@3.service` in a target's `.wants/` or `.requires/` dir in a user unit
