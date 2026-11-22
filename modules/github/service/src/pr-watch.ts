@@ -274,12 +274,13 @@ export function startPrWatch(o: PrWatchOptions) {
     /** Close a cancelled or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
     async function abandon(pr: Json, task: string, comment: string) {
       const c = await gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, { state: "closed" });
-      if (c.status >= 300) return log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status });
+      if (c.status >= 300) { log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status }); return false; }
       state.abandoned[pr.url.toLowerCase()] = new Date().toISOString();
       save();
       await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: withFooter(comment, "PR watch") });
       const d = await gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`);
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
+      return true;
     }
 
     const superseded = new Set<string>(); // PRs closed as superseded in this pass: not counted as their task's open PRs
@@ -374,7 +375,7 @@ export function startPrWatch(o: PrWatchOptions) {
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
         // A task's older PR in this repo, once the task has published a newer one on another branch: closed as superseded (a merge in flight is left to land).
         const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
-        if (newer && status && !merging) { superseded.add(url); await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`); continue; }
+        if (newer && status && !merging) { if (await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`)) superseded.add(url); continue; }
         if (status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) {
           await abandon(pr, opener.task, `Closing: its task ${opener.task} is done; its change landed elsewhere or isn't needed.`);
           continue;
