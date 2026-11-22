@@ -439,8 +439,9 @@ export async function presentNow(deliverable: any, deps: any) {
       if (!records) return { present: false, unknown: true, facts: ["the runner's own merge records for this task could not be read just now"] };
       prs = byRef(records.rows, deliverable.ref);
     }
-    const byName = !prs.length && findPrs(deliverable.ref).length > 0;
-    if (byName) prs = findPrs(deliverable.ref);
+    const named = findPrs(deliverable.ref).filter((p) => !p.url.startsWith("codehost:"));
+    const byName = !prs.length && named.length > 0;
+    if (byName) prs = named;
     let merged: { repo: string; sha: string } | undefined;
     for (const p of prs.slice(0, 5)) {
       // A read that throws is no answer (unknown, wait); GitHub answering that the repository or the PR is gone is an answer,
@@ -568,8 +569,10 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   const byRecord = lookup && prs.length > 0;
   // Neither a branch row nor a merge record of this task holds the PR the ref names (another task opened or merged it): the
   // ref is that PR's identity, so it is read directly, graded by the same criteria as the task's own, and waits while unmerged.
-  const byName = !prs.length && findPrs(ref).length > 0;
-  if (byName) prs = findPrs(ref);
+  // A named change on this server's own code host has no read here (the kernel serves none), so it stays unnamed as before.
+  const named = findPrs(ref).filter((p) => !p.url.startsWith("codehost:"));
+  const byName = !prs.length && named.length > 0;
+  if (byName) prs = named;
   if (!prs.length) return { awaiting: "no pull request yet", missing: true };
   const facts: string[] = (prs as any).elsewhere ? [(prs as any).elsewhere] : [];
   const versions: string[] = [];
@@ -583,16 +586,25 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   // `pr` task's deliverable, and when the task's own records name a merged PR in the same repo beside the superseded branch it
   // replaced, the merged PR is what landed the work and the closed one is not read at all.
   const states = new Map<string, any>();
+  const absent = new Set<string>();
   for (const p of candidates) {
     const answer = await deps.pr(p.repo, p.number);
     const pr = answer?.repository?.pullRequest;
-    // GitHub answering that the named repository or PR does not exist is an answer, not an unread one.
-    if (byName && (answer?.repository === null || pr === null)) return { awaiting: `no pull request at ${p.url}`, missing: true };
+    // GitHub answering that a named PR does not exist is an answer, not an unread one: that PR is left out, and the deliverable is
+    // missing only when none of those named exists.
+    if (byName && (answer?.repository === null || pr === null)) {
+      absent.add(key(p));
+      continue;
+    }
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
     states.set(key(p), pr);
   }
-  const landed = new Set(candidates.filter((p) => states.get(key(p)).state === "MERGED").map((p) => String(p.repo).toLowerCase()));
-  const graded = candidates.filter((p) => states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase()));
+  const landed = new Set(candidates.filter((p) => states.get(key(p))?.state === "MERGED").map((p) => String(p.repo).toLowerCase()));
+  if (byName && absent.size === candidates.length) return { awaiting: `no pull request at ${candidates.map((p) => p.url).join(", ")}`, missing: true };
+  // A ref naming several PRs ("replaces #3, delivered in #7") is delivered by the one that merged: an absent one is left out,
+  // and an open one waits only while none of them has merged.
+  const anyMerged = candidates.some((p) => states.get(key(p))?.state === "MERGED");
+  const graded = candidates.filter((p) => states.has(key(p)) && (states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase())) && !(byName && anyMerged && states.get(key(p)).state !== "MERGED"));
   for (const p of graded) {
     // Closed without merging is not a merge, not "still running", and not a branch a revision request can still reach: its head
     // is fixed, so its checks and diff are not read as the task's deliverable. The row holds for evidence instead.

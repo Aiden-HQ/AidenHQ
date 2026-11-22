@@ -593,3 +593,15 @@ test("a named PR the task's own merge record holds keeps its identity check; a n
   const gone = await prEvidence([], url(1399), { ...depsFor([]), pr: async () => ({ repository: { pullRequest: null } }), taskMerged: async () => [] });
   assert.equal(gone.missing, true);
 });
+
+test("a ref naming several PRs is delivered by the merged one: an absent or open sibling neither marks it missing nor waits", async () => {
+  const open = Object.assign(merged(1401, "a", "b"), { state: "OPEN", mergedAt: null, mergeCommit: null });
+  const deps = { ...depsFor([open, merged(1402, "c", "d")], { taskMerged: [] }), pr: async (_r, n) => (n === 1400 ? { repository: { pullRequest: null } } : { repository: { pullRequest: [open, merged(1402, "c", "d")].find((p) => p.number === n) } }) };
+  const ev = await prEvidence([], `replaces ${REPO}#1400 and ${REPO}#1401, delivered in ${REPO}#1402`, deps);
+  assert.deepEqual(ev.prs.map((p) => p.number), [1402]);
+});
+
+test("a PR ref written owner/repo/pull/N names the same PR the filing accepts", async () => {
+  const ev = await prEvidence([], `${REPO}/pull/1301`, depsFor([merged(1301, "d", "e")], { taskMerged: [] }));
+  assert.deepEqual(ev.prs.map((p) => p.number), [1301]);
+});

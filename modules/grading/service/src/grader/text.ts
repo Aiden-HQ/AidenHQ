@@ -42,9 +42,9 @@ export const stripRubric = (s: unknown) => {
 
 export function findPrs(text: unknown) {
   const out: { repo: string; number: number; url: string }[] = [];
-  const re = /(?:https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+))|(?:codehost:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/change\/(\d+))|(?<![\w./:-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#(\d+)\b/g;
+  const re = /(?:https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+))|(?:codehost:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/change\/(\d+))|(?<![\w./:-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)\b|(?<![\w./:-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#(\d+)\b/g;
   for (const m of String(text ?? "").replace(/\\(.)/g, "$1").matchAll(re)) {
-    const [org, name, number] = m[1] ? [m[1], m[2], m[3]] : m[4] ? [m[4], m[5], m[6]] : [m[7], m[8], m[9]];
+    const [org, name, number] = m[1] ? [m[1], m[2], m[3]] : m[4] ? [m[4], m[5], m[6]] : m[7] ? [m[7], m[8], m[9]] : [m[10], m[11], m[12]];
     const repo = `${org}/${name}`;
     const url = org.toLowerCase() === "local" ? `codehost:${repo}/change/${number}` : `https://github.com/${repo}/pull/${number}`;
     if (!out.some((p) => p.repo.toLowerCase() === repo.toLowerCase() && p.number === Number(number))) out.push({ repo, number: Number(number), url });
