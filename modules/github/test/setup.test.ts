@@ -58,6 +58,19 @@ test("files the repo already has are never overwritten; with nothing missing the
   assert.deepEqual(none.writes, []);
 });
 
+test("an existing branch with no diff and no open PR is a no-op; the reviewer reads the PR text; the schema takes a null tip", async () => {
+  const idle = github({ tip: HEAD, has: Object.keys(args().files) });
+  assert.deepEqual(JSON.parse((await runOf(idle.api, args({ expected_tip: HEAD }))).text), { pr_url: null, tip: HEAD, nothing_to_add: true });
+  assert.deepEqual(idle.writes, []);
+  const p = await setup.plan(github().api, args({ title: "Set up deepsec", body: "Adds the scan config." }));
+  assert.match(p.facts.diff, /the pull request as it will be published ---\nSet up deepsec\n\nAdds the scan config\./);
+  const { validate } = await import("../../../kernel/src/writes.ts");
+  const schema = JSON.parse((await import("node:fs")).readFileSync(new URL("../schemas/setup.json", import.meta.url), "utf8"));
+  assert.doesNotThrow(() => validate(schema, { ...args(), expected_tip: null }));
+  assert.doesNotThrow(() => validate(schema, { ...args(), expected_tip: TIP }));
+  assert.throws(() => validate(schema, { ...args(), expected_tip: "nope" }));
+});
+
 test("paths outside the allowlist are refused, in the plan and in the run", async () => {
   const g = github();
   for (const files of [{ "src/index.ts": "x" }, { ".deepsec/deepsec.config.ts": "ok", ".github/workflows/ci.yml": "x" }, { ".deepsec/data/../../x/INFO.md": "x" }, {}]) {

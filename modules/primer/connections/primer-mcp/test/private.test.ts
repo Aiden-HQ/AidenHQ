@@ -54,7 +54,9 @@ describe("a module's private report (primer.publish with private)", () => {
   it("is a version of the repo's own document only: a document the caller names, or one an agent files, never gets it", async () => {
     const p = primer();
     await p.file(args(), "k-0000000000000003");
-    await p.file(args({ documentId: "someone-elses-doc" }), "k-0000000000000004");
+    await p.file(args({ documentId: "someone-elses-doc", baseVersionNumber: 5 }), "k-0000000000000004");
+    // The version number belongs to the document the caller named, never to the report's own.
+    expect(p.calls.filter((c) => c[0] === "primer_add_version").every((c) => c[1].baseVersionNumber === undefined)).toBe(true);
     expect(p.calls.filter((c) => c[0] === "primer_add_version").map((c) => c[1].documentId)).toEqual(["doc-1-aaaa", "doc-1-aaaa"]);
     // An agent's version of a document it didn't publish is still the owner's call.
     const agent = { agent: "a1", key: "x", name: "A", roles: [], kind: "run" };

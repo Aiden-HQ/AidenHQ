@@ -7,7 +7,7 @@
     "repo": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
     "branch": { "type": "string", "pattern": "^aidenhq/[\\w.-]{1,80}$" },
     "base_head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "expected_tip": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "expected_tip": { "pattern": "^[0-9a-f]{40}$", "description": "The branch's tip, or null for a new branch (no type: the kernel's validator takes one type; the executor checks sha-or-null)." },
     "files": {
       "type": "object",
       "minProperties": 1,

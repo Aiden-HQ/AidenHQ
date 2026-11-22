@@ -78,6 +78,7 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
   const diff = [
     ...s.carried.map((f) => `--- already on ${a.branch}: ${f.filename} (${f.status ?? "changed"}${f.previous_filename ? `, from ${f.previous_filename}` : ""}) ---\n${f.patch ?? "(no text diff)"}`),
     ...add.map((p) => `--- new file ${p} ---\n${a.files[p]}`),
+    `--- the pull request as it will be published ---\n${a.title}\n\n${a.body}`,
   ].join("\n\n");
   return {
     args: bound,
@@ -88,7 +89,7 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
       target: `${a.repo} ${a.branch}`,
       sentence: add.length
         ? `Add ${add.length} setup file${add.length === 1 ? "" : "s"} (${add.join(", ")}) to ${a.repo} on \`${a.branch}\` (${s.tip ? `from its tip ${s.tip.slice(0, 12)}` : `new, off ${s.def} at ${s.head.slice(0, 12)}`}) and open a pull request "${a.title}" into ${s.def}. Nothing is merged; files the repo already has are never overwritten.`
-        : s.tip
+        : s.tip && (s.into || s.carried.length)
         ? `Open a pull request "${a.title}" from \`${a.branch}\` into ${s.def} on ${a.repo}: every setup file is already there, so no commit is made.`
         : `Nothing to do on ${a.repo}: ${s.def} already has every setup file, so no branch and no pull request are made.`,
       diff,
@@ -116,7 +117,7 @@ export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promi
     // Never forced: a branch that moved since the read refuses here, not over the other change.
     if (s.tip) await api("PATCH", `/repos/${a.repo}/git/refs/heads/${a.branch}`, { sha: tip });
     else await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${a.branch}`, sha: tip });
-  } else if (!tip) return { ok: true, text: JSON.stringify({ pr_url: null, tip: null, nothing_to_add: true }) };
+  } else if (!tip || (!into && !s.carried.length)) return { ok: true, text: JSON.stringify({ pr_url: null, tip, nothing_to_add: true }) };
   if (into) return { ok: true, text: JSON.stringify({ pr_url: into.html_url, tip }) };
   const pr = await api("POST", `/repos/${a.repo}/pulls`, { title: a.title, body: withFooter(a.body, signedAs), head: a.branch, base: s.def });
   return { ok: true, text: JSON.stringify({ pr_url: pr.html_url, tip }), objects: [`github:${a.repo.toLowerCase()}#${Number(pr.number)}`] };

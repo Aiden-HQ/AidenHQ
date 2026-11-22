@@ -137,6 +137,8 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       const a = normalise(rec.args, true);
       const by: Owner | undefined = rec.args?.by?.agent && rec.args.by.task ? { agent: String(rec.args.by.agent), task: String(rec.args.by.task) } : undefined;
       if (!a.private) return write(a, by);
+      // A caller's version number belongs to the document it named, which a private report never writes to.
+      delete a.baseVersionNumber;
       // A private report: the repo's one document (never a document the caller names), a new version of it while it is still
       // private to the owner alone, else a new private document in its place; first publications on a repo_key are serialised.
       return serial(a.repo_key!.toLowerCase(), async () => {
