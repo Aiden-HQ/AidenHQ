@@ -583,7 +583,9 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
     // A reject whose only evidence was the card's generated `reason:` is the false rejection this change exists to stop: the
     // kernel keeps a malice verdict and refuses the same request again, so it would block the write for good. Show the model the
     // same card with that line withheld, once; whatever it answers then is the verdict.
-    const cardOnly = v.decision === "reject" && !v.findings.length && v.dropped.length && v.dropped.every((d) => squash(card.reason ?? "").includes(d.quote));
+    // The model is shown the reason as the rendered `reason: <text>` line, so a quote of that whole line counts too.
+    const reason = squash(card.reason ?? ""), reasonLine = squash(`reason: ${card.reason ?? ""}`);
+    const cardOnly = v.decision === "reject" && !v.findings.length && v.dropped.length && v.dropped.every((d) => reason.includes(d.quote) || reasonLine.includes(d.quote));
     if (cardOnly) {
       const again = toolCall
         ? reviewPrompt({ ...promptArgs, toolCall, toolBody: block?.text, reasonWithheld: true })

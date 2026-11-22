@@ -148,6 +148,10 @@ test("a reject that rested only on the card's reason is re-asked with that line 
   assert.equal(prompts.length, 2);
   assert.match(prompts[0]!, /reason: acme\/aidenhq#39: Code merges it only at that head \(skipped counts as passed\)/);
   assert.match(prompts[1]!, /reason: \(withheld: code's own description of the plan and gate, never the change\)/);
+  // A quote of the whole displayed `reason: …` line is still the card's own line: it triggers the same retry, never a block.
+  let shownPrompts = 0;
+  const rendered = await review({ card: carded, diff, chain, policy: "p", ask: async (_m, p) => (shownPrompts++, shownPrompts === 1 ? cardOnly([{ issue: "skipped", quote: `reason: ${carded.reason}` }]) : ok) });
+  assert.deepEqual([rendered.decision, shownPrompts], ["approve", 2]);
   // A real finding's quote from the change is a real reject: never re-asked.
   const real = { issue: "skips every pin", quote: "if (problems.length >= 0) continue;" };
   const realDiff = "diff --git a/scripts/supply-chain/pins.ts b/scripts/supply-chain/pins.ts\n+    if (problems.length >= 0) continue;";
