@@ -122,11 +122,23 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
     const tried: string[] = [];
     const dated = await dateApt(p, async (_k, _n, { source }) => {
       tried.push(source);
-      if (source.includes("archive.ubuntu.com")) throw Object.assign(new Error("404"), { status: 404 });
+      // The archive has no oracular index at all; old-releases does.
+      if (source.includes("archive.ubuntu.com")) throw Object.assign(new Error("404"), { status: 404, noIndex: true });
       return { published: day(30), via: "test" };
     });
     assert.equal(dated.published, day(30));
     assert.deepEqual(tried.slice(0, 2), ["http://archive.ubuntu.com/ubuntu oracular-updates main", "http://old-releases.ubuntu.com/ubuntu oracular-updates main"]);
+    // Only a missing index is skipped: a package the index lists but whose .deb cannot be fetched still fails, so the
+    // age check reports a real lookup failure instead of warning that nothing lists the version.
+    const [latent] = scanFile("Dockerfile", `FROM ubuntu:24.04${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
+    let n = 0;
+    await assert.rejects(() => dateApt(latent, async (_k, _n, { source }) => {
+      n++;
+      if (source.includes("noble-updates main") && !source.includes("universe")) throw Object.assign(new Error("404 from the .deb"), { status: 404 });
+      throw Object.assign(new Error("no such pocket"), { status: 404, noIndex: true });
+    }), /404 from the \.deb/);
+    assert.ok(n > 0);
+
     // A file's own repository that 404s still fails: only a distro pocket may be skipped.
     const own = scanFile("Dockerfile", `FROM ubuntu:24.10${d}\nRUN echo "deb [trusted=yes] https://gone.example/apt oracular main" >/etc/apt/sources.list.d/r.list\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt")[0];
     await assert.rejects(() => dateApt(own, async () => { throw Object.assign(new Error("404"), { status: 404 }); }));

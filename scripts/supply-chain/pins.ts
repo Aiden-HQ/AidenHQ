@@ -1157,10 +1157,11 @@ export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt) 
       if (!p.raced) return found;
       if (!newest || found.published > newest.published) newest = found;
     } catch (e) {
-      // A distro pocket this release is not served from (a retired suite on one host, a pocket the release has no
-      // index for) is not an error: the next candidate may hold it. A file's own repository still fails outright.
-      const missing = !inFile && typeof (e as FetchError).status === "number" && (e as FetchError).status! >= 400 && (e as FetchError).status! < 500;
-      if (!(e as FetchError).notListed && !missing) throw e;
+      // An index this release has no pocket for (a retired suite on one host, a pocket it never published) is not an
+      // error: the next candidate may hold it. A package that could not be looked up still fails, and so does a
+      // 403/429 from the host. A file's own repository always fails, since its absence is a real error.
+      const missingIndex = !inFile && (e as FetchError).noIndex === true;
+      if (!(e as FetchError).notListed && !missingIndex) throw e;
     }
   }
   if (newest) return newest;

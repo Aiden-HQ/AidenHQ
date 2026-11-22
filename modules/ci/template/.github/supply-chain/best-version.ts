@@ -39,7 +39,7 @@ export const GVISOR_URL = "https://storage.googleapis.com/gvisor/releases";
 const gvisorSource = (version: string) => `${GVISOR_URL} ${String(version).split(".")[0]} main`;
 
 export interface FetchInit extends RequestInit { timeout?: number }
-export interface FetchError extends Error { status?: number; response?: Response; undated?: boolean; notListed?: boolean; mismatch?: boolean }
+export interface FetchError extends Error { status?: number; response?: Response; undated?: boolean; notListed?: boolean; mismatch?: boolean; noIndex?: boolean }
 // Registry JSON is untyped, so the result is any.
 export async function getJson(url: string, headers: Record<string, string> = {}): Promise<any> {
   return (await fetchRetry(url, { headers: { accept: "application/json", ...headers } })).json();
@@ -231,7 +231,14 @@ export async function readAptIndex(source: string): Promise<AptPackage[]> {
     const raw = Buffer.from(await (await fetchRetry(`${dir}.xz`, { timeout: 120000 })).arrayBuffer());
     return aptPackages(decodeXz(raw), url);
   } catch (e) { xz = e as Error; }
-  try { return aptPackages(await (await fetchRetry(dir, { timeout: 120000 })).text(), url); } catch { throw xz; }
+  try { return aptPackages(await (await fetchRetry(dir, { timeout: 120000 })).text(), url); } catch {
+    // No form of the index was served: the release has no such pocket (one it never published, a suite this host does
+    // not carry). Only a 4xx says that — a missing `xz`, a corrupt archive or a 5xx is a real failure and keeps its own
+    // error, so the caller can skip a missing index without also hiding a lookup that genuinely broke.
+    const status = (xz as FetchError | undefined)?.status;
+    if (status && status >= 400 && status < 500 && status !== 429) throw Object.assign(xz!, { noIndex: true });
+    throw xz;
+  }
 }
 // The system `xz -dc` (PATH lookup, input on stdin): throws when none is installed or it cannot decode the bytes.
 const decodeXz = (raw: Buffer): string => {
