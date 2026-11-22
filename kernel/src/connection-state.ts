@@ -198,9 +198,9 @@ export function createConnectionState(o: {
     ok(connection: string, clear: boolean | Clear = false): number {
       const { account, fullOnly } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear } : clear;
       const t = now();
-      const where = `module = ?${account ? " AND account = ?" : ""}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
+      const where = `module = ?${account ? " AND (account = ? OR account = '')" : ""}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
       return inTx(db, "connection_ok", () => {
-        const waits = `module = ?${account ? " AND account = ?" : ""}${fullOnly ? " AND full = 1" : ""}`;
+        const waits = `module = ?${account ? " AND (account = ? OR account = '')" : ""}${fullOnly ? " AND full = 1" : ""}`;
         const args = account ? [connection, account] : [connection];
         const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waits}`).all(...args) as { task: string; agent: string }[];
         q(`DELETE FROM connection_state WHERE ${where}`).run(...args);
@@ -223,7 +223,7 @@ export function createConnectionState(o: {
 
     /** Whether the connection (or, with `account`, that account) has a full-cause row: the proxy's check before a clear. */
     down(connection: string, account?: string): boolean {
-      return Boolean(q(`SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired')${account ? " AND account = ?" : ""} LIMIT 1`).get(...(account ? [connection, account] : [connection])));
+      return Boolean(q(`SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired')${account ? " AND (account = ? OR account = '')" : ""} LIMIT 1`).get(...(account ? [connection, account] : [connection])));
     },
 
     /** The agent's granted connections that has a confirmed full-cause row (an unconfirmed blip stays retryable): names, causes and dates only. */

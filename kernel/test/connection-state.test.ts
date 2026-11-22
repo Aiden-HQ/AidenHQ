@@ -233,6 +233,15 @@ test("an account's success keeps another account's expired need and its waiter",
   assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get()!.n, 0);
 });
 
+test("a success that names an account also clears the connection's accountless full need", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "google", { cause: "not_connected", detail: "" });
+  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "other@x.com", detail: "" });
+  assert.equal(w.s.down("google", "a@x.com"), true, "the accountless row counts for any account");
+  w.s.ok("google", { account: "a@x.com", fullOnly: true });
+  assert.deepEqual((w.db.prepare("SELECT key FROM connection_state").all() as { key: string }[]).map((r) => r.key), ["google:expired:account:other@x.com"]);
+});
+
 test("a call with no account still clears the module's full needs, account rows included", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "google", { cause: "expired", detail: "", account: "a@example.com" });
