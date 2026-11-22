@@ -1285,8 +1285,9 @@ test("two closed askers of one run set whose tasks were already closed are two o
   const owner = w.notes.filter((n) => !n.task);
   assert.equal(owner.length, 1, "one run set, one owner alert naming both closed askers");
   assert.match(owner[0].text, /asked by Engineer, Reviewer Manager/);
-  // A third asker joining the same runs later is not dropped for being the same set: its own key, its own alert.
-  const pending = JSON.stringify({ runs: { [r1.id]: "failed|refused||" }, owner: true });
+  // A third asker joining the same runs later is not dropped for being the same set: its own key, its own alert. Its stamp is the
+  // one from before the owner flag existed (no `owner` field), which still reaches the owner.
+  const pending = JSON.stringify({ [r1.id]: "failed|refused||" });
   w.db.prepare("INSERT OR REPLACE INTO askers (batch, task, setkey, requester, runs, text, pending) VALUES (?, 'WOR-44', 'later', 'Checker', ?, ?, ?)")
     .run(r1.batch, JSON.stringify([r1.id]), "**One-off review settled:** acme/payments#7 at 7777777: 1 run, 1 posted.", pending);
   await w.tick({ github: false });

@@ -1172,7 +1172,8 @@ export function createEngine(d: EngineDeps) {
     // A closed task hears nothing: a plain outcome ends here, and one with an owner-fixable action goes to the owner, naming
     // every asker whose task is closed, under its own key.
     for (const { batch, stamp, text, asks, who } of closed.values()) {
-      if (!(JSON.parse(stamp) as { owner: boolean }).owner) {
+      // A stamp from before the flag existed has none: it is told to the owner, as it was then.
+      if ((JSON.parse(stamp) as { owner?: boolean }).owner === false) {
         log("one-off summary: an asker's task is closed and nothing needs the owner; dropped", { batch, askers: who });
         for (const x of asks) run("UPDATE askers SET sent = pending, claim = NULL WHERE batch = ? AND task = ? AND setkey = ?", batch, x.task, x.setkey);
         continue;
