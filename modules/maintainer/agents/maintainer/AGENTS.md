@@ -70,7 +70,7 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
 - `github_issue_state`: close the issue `completed` or `not_planned`, or reopen it. A close carries
   its citation in `note` (posted on the issue as part of the close): for `completed`, one line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, the fix's PR and its merge commit;
   for `not_planned`, the line or path that disproves it. One call,
-  so the close and its evidence are reviewed together. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
+  so the close and its evidence are reviewed together. **A close carries its citation only on an issue that was open:** on one already closed, a `note` only posts the comment and leaves the earlier close as GitHub recorded it. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
   or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
   does not read, so the close will look uncited.** A fix PR's body carries `Fixes <owner>/<repo>#N` (the brief asks for it), so
   the merge closes the issue itself, and that close counts as the cited close: verify it, comment the evidence, and leave

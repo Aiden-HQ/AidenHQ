@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
+import { openPrs, recordedOpenPrs, type OpenPr, type WarehouseRow } from "./open-prs.js";
 import { startPeople } from "./people.js";
 import { buildServer, refreshRegistry, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
@@ -159,22 +160,13 @@ const http = createServer(async (req, res) => {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, { apps: p.qualityOf() });
     }
-    // Open pull requests in the fleet org's repos or any the kernel's records say the fleet opened (GET /v1/objects, in any repo), from
-    // the warehouse (src_github syncs every 15 minutes), and the open change requests of this server's repos (codehost-local), each with its preview's URL when one runs: the board's Fleet Ops
-    // detector raises the ones nobody has merged. Empty when there is neither.
+    // Open pull requests the fleet opened (open-prs.ts): the kernel's records of them (GET /v1/objects, the code host's publishes and PR
+    // records), in any repo and with or without a fleet org, with their open and draft state from the warehouse where it syncs the repo
+    // (src_github, every 15 minutes), and the open change requests of this server's repos (codehost-local), each with its preview's URL
+    // when one runs. The Fleet Steward's detector raises the ones nobody has merged.
     if (url.pathname === "/internal/open-prs" && req.method === "GET") {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
-      const local = codehost ? await localOpenPrs() : [];
-      let d;
-      try {
-        d = p.warehouse();
-      } catch {
-        return send(res, 200, codehost ? { prs: local } : {});
-      }
-      if (!agentsOrg) return send(res, 200, codehost ? { prs: local } : {});
-      const ours = await fleetPrs(kernelUrl, serviceKey).catch((e) => (log.warn({ err: String(e) }, "open-prs: the kernel's records of the fleet's PRs are unavailable, listing the fleet org only"), []));
-      const r = await d.pool.query("SELECT i.repo, i.number, i.created_at_src AS opened_at, i.draft FROM src_github.issues i WHERE i.kind = 'pr' AND i.state = 'open' AND (lower(i.repo) LIKE $1 OR EXISTS (SELECT 1 FROM unnest($2::text[], $3::int[]) AS o(repo, number) WHERE lower(i.repo) = o.repo AND i.number = o.number))", [`${agentsOrg.toLowerCase()}/%`, ours.map((o) => o.repo), ours.map((o) => o.number)]);
-      return send(res, 200, { prs: [...r.rows.map((x: { repo: string; number: number }) => ({ ...x, ...previewOf(x.repo, x.number) })), ...local] });
+      return send(res, 200, await openPrs(async () => (codehost ? await localOpenPrs() : []), githubOpenPrs, (e) => log.warn({ err: String(e) }, "open-prs: the fleet's GitHub PRs could not be read")));
     }
     // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake
     // the agent waiting on one when it merges or closes. Empty when there is no warehouse yet.
@@ -295,6 +287,23 @@ async function fleetPrs(kernel: string, key: string): Promise<{ repo: string; nu
     const m = /^github:([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref);
     return m ? [{ repo: m[1]!.toLowerCase(), number: Number(m[2]) }] : [];
   });
+}
+
+/** The open GitHub PRs the kernel's records name (open-prs.ts recordedOpenPrs): state from the warehouse's row, `ready_at` from its last draft-to-ready change, and the code host's list for a repo the warehouse doesn't hold. */
+async function githubOpenPrs(): Promise<OpenPr[]> {
+  const ours = await fleetPrs(kernelUrl, serviceKey);
+  if (!ours.length) return [];
+  let rows: WarehouseRow[] = [];
+  try {
+    const r = await p.warehouse().pool.query(
+      "SELECT i.repo, i.number, i.kind, i.state, i.created_at_src AS opened_at, i.draft, (SELECT max(c.observed_at) FROM src_github.changes c WHERE c.entity = 'issue' AND c.field = 'draft' AND c.new_value = 'false' AND c.entity_id = i.repo || '/' || i.number) AS ready_at FROM src_github.issues i JOIN unnest($1::text[], $2::int[]) AS o(repo, number) ON lower(i.repo) = o.repo AND i.number = o.number",
+      [ours.map((o) => o.repo), ours.map((o) => o.number)],
+    );
+    rows = r.rows;
+  } catch (e) {
+    log.warn({ err: String(e) }, "open-prs: no warehouse rows for the fleet's PRs, asking the code host");
+  }
+  return (await recordedOpenPrs(ours, rows, (repo) => ops.read(repo, { kind: "prs" }), ops.pr)).map((x) => ({ ...x, ...previewOf(x.repo, x.number) }));
 }
 
 /** The URL of a running preview of `repo`'s change or PR `n`, as the board's open-PR rows show it. */

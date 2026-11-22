@@ -96,10 +96,75 @@ it("status lines say what works and the one fix", () => {
   expect(lines.map((l) => [l.label, l.value, l.action?.label])).toEqual([
     ["Reads, issues, comments", "needs permission", "Reconnect"],
     ["Pull requests and merges", "needs permission", "Reconnect"],
+    ["Workflow files", "needs permission", "Reconnect"],
     ["Fleet repos", "in aidenhq-alpha", "Change"],
     ["CI runners", "needs permission", "Reconnect"],
     ["Projects boards", "needs permission", "Reconnect"],
   ]);
+});
+
+// A grant made before the sign-in asked for `workflow` (or with its box unticked) keeps its old scopes, so a push that touches
+// `.github/workflows/` is refused outright: the board names the gap on its own row, with the one fix, before any push.
+it("the workflow row reads working only when the sign-in's scopes cover workflow", () => {
+  const scoped = (scope: string): Auth => ({ ...auth(), status: () => ({ state: "ok", since: "", scope }) });
+  const row = (scope: string) => {
+    const line = createAccess({ auth: scoped(scope) }).status().lines.find((l) => l.label === "Workflow files");
+    return [line?.value, line?.state, line?.action?.label];
+  };
+  expect(row("repo, read:org, project")).toEqual(["needs permission", "warn", "Reconnect"]);
+  expect(row("repo, read:org, workflow, project")).toEqual(["working", "ok", undefined]);
+});
+
+// GitHub fixes an OAuth grant at sign-in, so the `x-oauth-scopes` header of an older call names the old grant after a reconnect.
+// The board must show the current sign-in, or the row keeps saying "needs permission" once the owner has fixed it.
+it("the workflow row follows a reconnect rather than the scopes an older call saw", async () => {
+  let scope = "repo, read:org, project";
+  const auth2: Auth = {
+    ...auth(),
+    status: () => ({ state: "ok", since: "", scope }),
+    headers: async () => ({ authorization: "Bearer gho_owner" }),
+  };
+  const access = createAccess({
+    auth: auth2,
+    fetchImpl: async () => answer(200, { login: "owner" }, { "x-oauth-scopes": "repo, read:org, project" }),
+  });
+  const row = () => {
+    const line = access.status().lines.find((l) => l.label === "Workflow files");
+    return [line?.value, line?.state];
+  };
+  await access.rest("GET", "/user");
+  expect(row()).toEqual(["needs permission", "warn"]);
+  // The owner reconnects with `workflow` ticked: no new API answer, only the sign-in's scopes change.
+  scope = "repo, read:org, workflow, project";
+  expect(row()).toEqual(["working", "ok"]);
+  // A call answered under the new grant caches the new header as usual.
+  expect(access.scopes()).toEqual(["repo", "read:org", "workflow", "project"]);
+});
+
+// A request that started under the old grant and answered after the reconnect carries the old grant's header. It must not be
+// read as the new grant's scopes, or the board would go back to "needs permission" and the queue could replay a fixed notice.
+it("a late answer from the old grant is not read as the new sign-in's scopes", async () => {
+  let scope = "repo, read:org, project";
+  const auth2: Auth = { ...auth(), status: () => ({ state: "ok", since: "", scope }) };
+  let settle: (r: Response) => void = () => {};
+  let sent: () => void = () => {};
+  const out = new Promise<void>((r) => (sent = r));
+  const access = createAccess({
+    auth: auth2,
+    fetchImpl: () => new Promise<Response>((resolve) => {
+      settle = resolve;
+      sent();
+    }),
+  });
+  const row = () => access.status().lines.find((l) => l.label === "Workflow files")?.value;
+  const call = access.rest("GET", "/user");
+  await out; // the request is out, under the old grant
+  // The owner reconnects while the request is in flight, then the old answer arrives.
+  scope = "repo, read:org, workflow, project";
+  settle(answer(200, { login: "owner" }, { "x-oauth-scopes": "repo, read:org, project" }));
+  await call;
+  expect(row(), "the old grant's header did not overwrite the new one").toBe("working");
+  expect(access.scopes()).toEqual(["repo", "read:org", "workflow", "project"]);
 });
 
 it("content-creating writes go one at a time, a second apart; reads are not paced", async () => {

@@ -119,9 +119,11 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
       const problem = urlSettingProblem(ch.value, def.host);
       if (problem) throw new ChangeRefused(`${ch.key}: ${problem}`);
     }
-    // `pattern` (anchored, module.yaml): the shape of a text value; empty clears it.
+    // `pattern` (anchored, module.yaml): the shape of a text value; empty clears a single value, and `[]` empties a list. A list's
+    // entries are each checked, an empty one included (compile refuses it, so it could never be saved).
     const shape = def?.pattern ? new RegExp(def.pattern) : undefined;
-    if (shape && each.some((v) => v !== "" && !shape.test(String(v)))) throw new ChangeRefused(`${ch.key} must match ${def!.pattern}`);
+    const list = Array.isArray(ch.value);
+    if (shape && each.some((v) => !(v === "" && !list) && !shape.test(String(v)))) throw new ChangeRefused(`${ch.key} must match ${def!.pattern}`);
     if (each.some((v) => typeof v === "string" && !plain(v))) throw new ChangeRefused(`${ch.key}: no control characters or $`);
     return ch;
   }

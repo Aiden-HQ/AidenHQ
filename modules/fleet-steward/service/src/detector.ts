@@ -22,16 +22,16 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
     .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
-const PR_OPEN_MS = 60 * MIN; // a pull request of the agents org or the fleet's own open this long without merging (the warehouse lags GitHub by up to 15 minutes)
+const PR_OPEN_MS = 60 * MIN; // a pull request the fleet published open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
-type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; preview_url?: string };
-/** The open agents-org and fleet-authored PRs nobody has merged within the allowance; merged or closed ones are no longer in the rows. A draft
- * cannot merge until someone marks it ready, so it is not overdue; only its age once ready counts. */
+type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; ready_at?: string | null; preview_url?: string };
+/** The open PRs the fleet published (the kernel's records of them, in any repo) nobody has merged within the allowance; merged or closed ones are no longer in the rows. A draft
+ * cannot merge until someone marks it ready, so it is not overdue; the allowance runs from when it was marked ready (`ready_at`, where known), else from `opened_at`. */
 export function stalePrs(rows: PrRow[], t: number): { key: string; reason: string }[] {
   return rows
-    .filter((x) => !x.draft && age(x.opened_at, t) > PR_OPEN_MS)
+    .filter((x) => !x.draft && age(x.ready_at ?? x.opened_at, t) > PR_OPEN_MS)
     // A running preview's link (apps-mcp: the PR's, or this server's change request's) rides on the row.
-    .map((x) => ({ key: `${x.repo}#${x.number}`, reason: `${x.repo}#${x.number} open ${mins(age(x.opened_at, t))} without merging${x.preview_url && /^https?:\/\//.test(x.preview_url) ? ` (preview: ${x.preview_url})` : ""}` }));
+    .map((x) => ({ key: `${x.repo}#${x.number}`, reason: `${x.repo}#${x.number} open ${mins(age(x.opened_at, t))}${x.ready_at ? ` (ready ${mins(age(x.ready_at, t))} ago)` : ""} without merging${x.preview_url && /^https?:\/\//.test(x.preview_url) ? ` (preview: ${x.preview_url})` : ""}` }));
 }
 // Never a sample: apps-mcp keeps app data behind app_status (per-caller read access); fleet_status shows what the detector holds.
 type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { name: string; ok: boolean; count: number | null }[] };
@@ -129,7 +129,6 @@ export async function stewardOn(kernel: KernelClient, quiet: string | undefined)
 
 /** A check group: its incidents, or undefined when it couldn't be checked (its open incidents stay open). */
 type Check = () => Promise<Incident[] | undefined>;
-
 /** The last filing, and the gap before a filing with nothing critical in it (60 check runs a day, most one line). */
 export const QUIET_MS = 30 * MIN;
 
@@ -900,9 +899,14 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     // Monitoring alerts (alerts.ts): one incident per firing alert, recovered when it resolves.
     alert: d.alerts,
     async pr() {
-      const r = await d.apps<{ prs?: PrRow[] }>("/internal/open-prs");
-      if (!r.prs) return undefined; // no warehouse or no agents org
-      return stalePrs(r.prs, now());
+      const r = await d.apps<{ prs?: PrRow[]; github_error?: boolean }>("/internal/open-prs");
+      if (!r.prs) return undefined;
+      // A key is matched to an open incident ignoring case (a repo's spelling differs by source and by release), keeping the open one's spelling.
+      const open = new Map(d.openKeys().filter((k) => k.startsWith("pr:")).map((k) => [k.slice(3).toLowerCase(), k.slice(3)]));
+      const found = stalePrs(r.prs, now()).map((x) => ({ ...x, key: open.get(x.key.toLowerCase()) ?? x.key }));
+      // GitHub couldn't be read: its open incidents stay open (not recovered), while this server's own change requests (`local/…`) were read.
+      if (r.github_error) for (const k of d.openKeys()) if (k.startsWith("pr:") && !k.startsWith("pr:local/")) found.push({ key: k.slice(3), reason: "" });
+      return found;
     },
   };
 }

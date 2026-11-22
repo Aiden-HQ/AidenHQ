@@ -1,9 +1,14 @@
 // best-version.ts (which version to pin) and pins.ts (everything pinned, nothing new under 7 days), offline.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { checkAges, dateApt, scanFile } from "../supply-chain/pins.ts";
 
+// Debian publishes its -updates/-security indexes as Packages.xz only, decoded by the system `xz` (no dependency). The
+// decoder check skips where it isn't installed, so the suite still runs on a bare Node.
+const hasXz = (() => { try { execFileSync("xz", ["--version"], { stdio: "ignore" }); return true; } catch { return false; } })();
 const now = Date.parse("2026-11-13T00:00:00Z");
 const day = (n) => new Date(now - n * 86400000).toISOString();
 
@@ -607,9 +612,10 @@ test("pins: tee reads the last fd-0 redirect, which ends at an unquoted operator
   // A pipeline whose tee is fed by a redirected deeper command writes its file empty (nothing to date a pin from).
   const deeperUnpinned = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > /tmp/vendor.list | cat | tee /etc/apt/sources.list.d/empty.list\nRUN apt-get install -y foo\n`;
   assert.deepEqual(scanFile("Dockerfile", deeperUnpinned).problems, []);
-  // A pass-through that keeps the pipe (`cat | tee`, or `tee a | tee b`) forwards its input.
+  // A pass-through that keeps the pipe (`cat | tee`, or `tee a | tee b`) forwards its input. Both files hold the same
+  // repository, which is dated once: the sources tried name each repository a single time.
   const passthrough = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' | tee /etc/apt/sources.list.d/a.list | tee /etc/apt/sources.list.d/b.list\nRUN apt-get install -y foo=1.0\n`;
-  assert.deepEqual(scanFile("Dockerfile", passthrough).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main", "https://vendor.example/apt bookworm main"]);
+  assert.deepEqual(scanFile("Dockerfile", passthrough).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main"]);
 });
 
 
@@ -843,4 +849,402 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat > /etc/apt/sources.list.d/vendor.list </dev/null\nRUN apt-get install -y foo\n`).problems, []);
   // `>|` is noclobber, not the end of `tee`'s operand list: the file after it is still written.
   assert.deepEqual(apt(`${D} | tee >| /tmp/log /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
+});
+
+test("pins: an empty append keeps a file, a mv carries the entries it read, and a valueless COPY flag keeps its source", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list`;
+  const head = `FROM debian:bookworm${d}\n${write}\n`;
+  // An append of nothing (`cat </dev/null >> f`, `tee -a f </dev/null`) leaves the file as it was: the repository is
+  // still loaded, so the unpinned install is still reported.
+  for (const append of ["cat </dev/null >> /etc/apt/sources.list.d/vendor.list", "tee -a /etc/apt/sources.list.d/vendor.list </dev/null"])
+    assert.equal(scanFile("Dockerfile", `${head}RUN ${append}\nRUN apt-get install -y foo\n`).problems.length, 1, append);
+  // A truncation with no output (`: > f`) does empty it.
+  assert.deepEqual(scanFile("Dockerfile", `${head}RUN : > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // `mv` to another loaded name reads the source's entries first, so the destination dates a pin from them.
+  const renamed = `RUN mv /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/renamed.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", `${head}${renamed}`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main"]);
+  // A valueless COPY flag (`--link`) does not swallow the source that follows it; nor does a valued one (`--chown`).
+  const builder = `FROM debian:bookworm${d} AS builder\n${write}\n`;
+  for (const flags of ["--link --from=builder", "--chown=0:0 --from=builder", "--from=builder --exclude=.git"]) {
+    const copy = `FROM debian:bookworm${d}\nCOPY ${flags} /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/\nRUN apt-get install -y foo\n`;
+    assert.equal(scanFile("Dockerfile", `${builder}${copy}`).problems.length, 1, flags);
+  }
+});
+
+test("pins: every cat operand, cp/mv -t targets and the joined COPY --parents destination", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const base = `FROM debian:bookworm${d}`;
+  const src = "/etc/apt/sources.list.d/vendor.list";
+  const unpinned = "RUN apt-get install -y foo";
+  // `cat` concatenates its operands: a trailing `/dev/null` erases nothing, so the append still holds what the other
+  // input gave it. Only inputs that are all `/dev/null` (or a lone `<`-redirect to it) are known empty.
+  assert.equal(scanFile("Dockerfile", `${base}\nRUN cat /tmp/vendor.list /dev/null >> ${src}\n${unpinned}\n`).problems.length, 1);
+  assert.equal(scanFile("Dockerfile", `${base}\nRUN cat </dev/null /tmp/vendor.list >> ${src}\n${unpinned}\n`).problems.length, 1);
+  for (const empty of ["cat </dev/null", "cat /dev/null", "cat 0</dev/null", "cat - </dev/null", "cat </dev/null /dev/null"]) {
+    assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${empty} >> ${src}\n${unpinned}\n`).problems, [], empty);
+  }
+  // A later `<` replaces an earlier one: `cat </tmp/input </dev/null` reads only /dev/null, so its output is empty;
+  // the reverse order reads the file and is unknown.
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN cat </tmp/input </dev/null > ${src}\n${unpinned}\n`).problems, []);
+  assert.equal(scanFile("Dockerfile", `${base}\nRUN cat </dev/null </tmp/input > ${src}\n${unpinned}\n`).problems.length, 1);
+  // A `-` operand reads stdin, and a file operand beside it leaves the pipe read as well.
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN cat - </dev/null > ${src}\n${unpinned}\n`).problems, []);
+  assert.equal(scanFile("Dockerfile", `${base}\nRUN cat </tmp/input /tmp/other.list > ${src}\n${unpinned}\n`).problems.length, 1);
+  // `-n` and `--` are options, not files; `cat -- -x` names the file `-x`.
+  assert.equal(scanFile("Dockerfile", `${base}\nRUN cat -n /tmp/vendor.list >> ${src}\n${unpinned}\n`).problems.length, 1);
+  assert.equal(scanFile("Dockerfile", `${base}\nRUN cat -- /tmp/vendor.list >> ${src}\n${unpinned}\n`).problems.length, 1);
+  // `cp`/`mv -t dir` (or `--target-directory`) makes every operand a source, even one. `--suffix` is not a destination.
+  for (const flags of ["-t /etc/apt/sources.list.d/", "-t/etc/apt/sources.list.d/", "-rt /etc/apt/sources.list.d/", "-t '/etc/apt/sources.list.d/'", "-f -t /etc/apt/sources.list.d/", "-t /etc/apt/sources.list.d", "--target-directory=/etc/apt/sources.list.d/", "--target-directory /etc/apt/sources.list.d/"]) {
+    const shape = `${base}\nRUN cp ${flags} /tmp/vendor.list\n${unpinned}\n`;
+    assert.equal(scanFile("Dockerfile", shape).problems.length, 1, flags);
+  }
+  const moved = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > /tmp/v.list && mv -t /etc/apt/sources.list.d/ /tmp/v.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", moved).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main"]);
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN cp --suffix=.bak /tmp/vendor.list /tmp/other.list\n${unpinned}\n`).problems, []);
+  // A build-context file takes the destination's name: `COPY vendor.conf …/vendor.list` is the repository APT loads.
+  assert.equal(scanFile("Dockerfile", `${base}\nCOPY vendor.conf ${src}\n${unpinned}\n`).problems.length, 1);
+  // A directory destination keeps the context name (`vendor.conf`), which APT does not load.
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nCOPY vendor.conf /etc/apt/sources.list.d/\n${unpinned}\n`).problems, []);
+  // What APT loads is the path the destination and the kept parents form together.
+  assert.equal(scanFile("Dockerfile", `${base}\nCOPY --parents etc/apt/sources.list.d/vendor.list /\n${unpinned}\n`).problems.length, 1);
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nCOPY --parents vendor.list /tmp/\n${unpinned}\n`).problems, []);
+});
+
+test("pins: cat reads only /dev/null as empty, mv -n keeps both files, COPY --parents keeps its paths, cp flags", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list`;
+  const unpinned = "RUN apt-get install -y foo";
+  // Only `/dev/null` is known empty: appending a file the scanner can't read (`cat /tmp/x >> f`) puts content in f, so
+  // the repository may be there and the install needs a pin.
+  for (const src of ["/tmp/vendor.list", "/etc/apt/sources.list.d/debian.sources", "vendor.list"]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat ${src} >> /etc/apt/sources.list.d/vendor.list\n${unpinned}\n`).problems.length, 1, src);
+  }
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat /dev/null > /etc/apt/sources.list.d/vendor.list\n${unpinned}\n`).problems, []);
+  // `mv -n` onto an existing target decides nothing we can see: the source may stay and the target may take its content,
+  // so both repositories are kept whichever happens (the pin dates from both).
+  const noClobber = `FROM debian:bookworm${d}\n${write}\nRUN echo 'deb https://other.example/apt bookworm main' > /etc/apt/sources.list.d/other.list\nRUN mv -n /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/other.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", noClobber).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main", "https://other.example/apt bookworm main"]);
+  // `mv -f`/`-v` take no operand: the move still renames the file away, so the disabled repository is not loaded.
+  // `-i` asks, so it may be declined: the repository may stay, and is kept (over-reporting).
+  for (const flag of ["-f", "-v", "--no-target-directory"]) {
+    const shape = `FROM debian:bookworm${d}\n${write}\nRUN mv ${flag} /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/vendor.list.disabled\n${unpinned}\n`;
+    assert.deepEqual(scanFile("Dockerfile", shape).problems, [], flag);
+  }
+  for (const flag of ["-i", "--interactive"]) {
+    const shape = `FROM debian:bookworm${d}\n${write}\nRUN mv ${flag} /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/vendor.list.disabled\n${unpinned}\n`;
+    assert.equal(scanFile("Dockerfile", shape).problems.length, 1, flag);
+  }
+  // A short group with `n` in it is no-clobber: the move may be skipped, so the repository is kept (over-reporting).
+  for (const flag of ["-fn", "-n", "--no-clobber"]) {
+    const shape = `FROM debian:bookworm${d}\n${write}\nRUN mv ${flag} /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/vendor.list.disabled\n${unpinned}\n`;
+    assert.equal(scanFile("Dockerfile", shape).problems.length, 1, flag);
+  }
+  // `-t dir` is the one that takes an operand: the sources follow it.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN cp -t /etc/apt/sources.list.d/ /etc/apt/sources.list.d/vendor.list\n${unpinned}\n`).problems.length, 1);
+  // `COPY --parents vendor.list /etc/apt/sources.list.d/` keeps only the bare name, so APT loads it; a source under
+  // sources.list.d keeps its whole path, which APT does not load. The `/./` pivot decides which parents are kept.
+  const ctx = `FROM debian:bookworm${d}\nCOPY --parents vendor.list /etc/apt/sources.list.d/\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", ctx).problems.length, 1);
+  for (const src of ["/etc/apt/sources.list.d/vendor.list", "/ctx/./etc/apt/sources.list.d/vendor.list", "./etc/apt/vendor.list"]) {
+    const nested = `FROM debian:bookworm${d}\nCOPY --parents ${src} /etc/apt/sources.list.d/\n${unpinned}\n`;
+    assert.deepEqual(scanFile("Dockerfile", nested).problems, [], src);
+  }
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY --parents ./ctx/./vendor.list /etc/apt/sources.list.d/\n${unpinned}\n`).problems.length, 1);
+});
+
+test("pins: a cat reading /dev/null, a guarded truncation, mv -n, COPY --parents and flagged JSON COPY", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list`;
+  // `cat </dev/null >> f` appends nothing even on a fresh file: it stays empty, so the next install needs no pin.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat </dev/null >> /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // A guarded truncation may be skipped (`test -f m && : > f || true`): the repository may still be there.
+  const guarded = `FROM debian:bookworm${d}\n${write}\nRUN test -f /tmp/marker && : > /etc/apt/sources.list.d/vendor.list || true\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", guarded).problems.length, 1);
+  // `mv -n` never replaces an existing target: both repositories stay, so the pin is dated from both.
+  const noClobber = `FROM debian:bookworm${d}\n${write}\nRUN echo 'deb https://other.example/apt bookworm main' > /etc/apt/sources.list.d/other.list\nRUN mv -n /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/other.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", noClobber).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main", "https://other.example/apt bookworm main"]);
+  // `COPY --parents` keeps the source's directories under the destination, so APT never loads it; a flagged JSON COPY
+  // (`--link --chown=… --from=`) still reads its array.
+  const builder = `FROM debian:bookworm${d} AS builder\n${write}\n`;
+  const parents = `FROM debian:bookworm${d}\nCOPY --parents --from=builder /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", `${builder}${parents}`).problems, []);
+  for (const flags of ["--link --chown=0:0 --from=builder", "--chown=0:0 --link --from=builder"]) {
+    const json = `FROM debian:bookworm${d}\nCOPY ${flags} ["/etc/apt/sources.list.d/vendor.list", "/etc/apt/sources.list.d/"]\nRUN apt-get install -y foo\n`;
+    assert.equal(scanFile("Dockerfile", `${builder}${json}`).problems.length, 1, flags);
+  }
+  // The shell form takes several leading flags too: two valueless ones and a valued one before `--from=` are all
+  // consumed, so neither `--follow-link` nor `--chown=0:0` is read as the source path.
+  for (const flags of ["--link --follow-link --from=builder", "--link --chown=0:0 --from=builder", "--follow-link --link --from=builder", "--chmod=644 --link --chown 0:0 --from=builder"]) {
+    const shell = `FROM debian:bookworm${d}\nCOPY ${flags} /etc/apt/sources.list.d/vendor.list /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+    assert.equal(scanFile("Dockerfile", `${builder}${shell}`).problems.length, 1, flags);
+  }
+});
+
+test("pins: a pipe passes through cat's stdin operand, and a glued cp suffix still leaves -t the destination", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const src = "/etc/apt/sources.list.d/vendor.list";
+  const line = "echo 'deb https://vendor.example/apt bookworm main'";
+  const unpinned = "RUN apt-get install -y foo";
+  // `cat -` and a quoted `cat "-"` read stdin exactly as a bare `cat` does: the pipeline's `deb` line reaches the file,
+  // so the install after it needs a pin. A `<-`redirect on cat's stdin still overrides the pipe.
+  for (const read of ["cat -", "cat -- -", "cat - -", "cat -n -", 'cat "-"', "cat - | cat -"]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line} | ${read} > ${src}\n${unpinned}\n`).problems.length, 1, read);
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line} | ${read} | tee ${src}\n${unpinned}\n`).problems.length, 1, read);
+  }
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line} | cat - </dev/null > ${src}\n${unpinned}\n`).problems, []);
+  // `-S` takes its suffix glued (`-S.bak`, `--backup -S.bak`) or separate; either way it consumes only its own argument,
+  // so `-t` still names the destination and the source is the file, not the directory.
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > /tmp/vendor.list`;
+  for (const flags of ["-S.bak", "--backup -S.bak", "-S .bak", "-fS.bak", "--suffix=.bak", "--suffix .bak"]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cp ${flags} -t /etc/apt/sources.list.d/ /tmp/vendor.list\n${unpinned}\n`).problems.length, 1, flags);
+    const moved = `FROM debian:bookworm${d}\n${write}\nRUN cp ${flags} -t /etc/apt/sources.list.d/ /tmp/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+    assert.deepEqual(scanFile("Dockerfile", moved).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main"], flags);
+  }
+});
+
+test("pins: cat's output descriptor is not a file, and a piped line survives beside a /dev/null operand", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const src = "/etc/apt/sources.list.d/vendor.list";
+  const write = "echo 'deb https://vendor.example/apt bookworm main'";
+  const unpinned = "RUN apt-get install -y foo";
+  // `2>` is an output redirect with a descriptor, not an input file: `cat /dev/null 2>/tmp/log > f` truncates f to
+  // nothing, so the install after it needs no pin.
+  for (const shape of [`cat /dev/null 2>/tmp/log > ${src}`, `cat /dev/null 2>/tmp/log | tee ${src}`, `cat 0</dev/null > ${src}`]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} | ${shape}\n${unpinned}\n`).problems, [], shape);
+  }
+  // `/dev/null` adds no bytes: a `cat` that also reads `-` still passes the piped `deb` line on, so the repository is
+  // kept (and dates a later pin), while a `cat` that reads only `/dev/null` writes nothing.
+  for (const read of ["cat /dev/null -", "cat - /dev/null", "cat /dev/null - 2>/tmp/log", 'cat /dev/null "-"']) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} | ${read} > ${src}\n${unpinned}\n`).problems.length, 1, read);
+    const pinned = `FROM debian:bookworm${d}\nRUN ${write} | ${read} > ${src}\nRUN apt-get install -y foo=1.0\n`;
+    assert.deepEqual(scanFile("Dockerfile", pinned).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main"], read);
+  }
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} | cat /dev/null > ${src}\n${unpinned}\n`).problems, []);
+  // A `<`-redirect on stdin overrides the pipe even beside a `-` operand: `cat - </dev/null` reads nothing.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} | cat - </dev/null > ${src}\n${unpinned}\n`).problems, []);
+});
+
+test("pins: a cat whose redirect touches its name, and a write that certainly runs before a semicolon", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const src = "/etc/apt/sources.list.d/vendor.list";
+  const line = "printf '%s\\n' 'deb https://vendor.example/apt bookworm main'";
+  const unpinned = "RUN apt-get install -y foo";
+  // A redirect may touch the command name: `cat</dev/null` reads /dev/null, not the pipe, so the file is empty.
+  for (const read of ["cat</dev/null", "cat 0</dev/null", "cat</dev/null -"]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line} | ${read} > ${src}\n${unpinned}\n`).problems, [], read);
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line} | ${read} | tee ${src}\n${unpinned}\n`).problems, [], read);
+  }
+  // Without the redirect it is still the pass-through the pipe feeds, however it is spelled.
+  // Its `deb` line is what dates the pin: the sources carry the URL the pipe fed it.
+  for (const shape of [`cat - > ${src}`, `cat>${src}`, `cat > ${src}`, `cat - | tee ${src}`]) {
+    const pinned = `FROM debian:bookworm${d}\nRUN ${line} | ${shape}\nRUN apt-get install -y foo=1.0\n`;
+    assert.deepEqual(scanFile("Dockerfile", pinned).pins.filter((p) => p.kind === "apt")[0].sources, ["https://vendor.example/apt bookworm main"], shape);
+  }
+  // A write that certainly runs completes before the `;`: `true && cat /dev/null > f; apt-get install curl` installs with
+  // f empty, so the line's own install is no problem.
+  const truncated = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${src}\nRUN true && cat /dev/null > ${src}; apt-get install -y curl\n`;
+  assert.deepEqual(scanFile("Dockerfile", truncated).problems, []);
+  // A write behind a `test` may have been skipped, so the repository is still put back at the end of its chain: the next
+  // line (and the line's own install, after a `||` path) may still see it.
+  const guarded = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${src}\nRUN test -f /tmp/m && cat /dev/null > ${src}\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", guarded).problems.length, 1);
+  // After a `;` the truncation itself may still have been skipped, so the install there is checked against the file it
+  // may have left alone (over-reporting is the safe direction); only a condition that can't fail makes it final.
+  const guardedSemi = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${src}\nRUN test -f /tmp/m && cat /dev/null > ${src}; apt-get install -y curl\n`;
+  assert.equal(scanFile("Dockerfile", guardedSemi).problems.length, 1);
+  const colonSemi = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${src}\nRUN : && cat /dev/null > ${src}; apt-get install -y curl\n`;
+  assert.deepEqual(scanFile("Dockerfile", colonSemi).problems, []);
+  // A condition the scanner can't evaluate as always-true (`false`, a `test`) keeps the file: the next line may still
+  // see the repository, so over-reporting is the safe answer.
+  const miss = `FROM debian:bookworm${d}\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${src}\nRUN false && cat /dev/null > ${src}\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", miss).problems.length, 1);
+});
+
+test("pins: COPY --parents records only the names APT loads", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const unpinned = "RUN apt-get install -y foo";
+  // `vendor.list.disabled` sits in sources.list.d, but APT skips it: only `.list` and `.sources` date a pin or require one.
+  for (const src of ["vendor.list.disabled", "vendor.sources.disabled"]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY --parents ${src} /etc/apt/sources.list.d/\n${unpinned}\n`).problems, [], src);
+  }
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY --parents vendor.sources /etc/apt/sources.list.d/\n${unpinned}\n`).problems.length, 1);
+});
+
+test("pins: a normalised COPY path, a guarded mv and the last overwrite flag", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const src = "/etc/apt/sources.list.d/vendor.list";
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > ${src}`;
+  const unpinned = "RUN apt-get install -y foo";
+  // `.` components and repeated slashes are the same directory to the shell: APT loads what lands there.
+  for (const dest of ["/etc/apt/./sources.list.d/", "/etc//apt/sources.list.d/", "/etc/apt/sources.list.d/."]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY --parents vendor.list ${dest}\n${unpinned}\n`).problems.length, 1, dest);
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nCOPY vendor.list ${dest}vendor.list\n${unpinned}\n`).problems.length, 1, dest);
+  }
+  // A guarded move may be skipped: the repository may still be loaded, so the next line is checked against it.
+  const guarded = `FROM debian:bookworm${d}\n${write}\nRUN test -f /tmp/marker && mv ${src} ${src}.disabled\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", guarded).problems.length, 1);
+  // ...and when it certainly runs (`true &&`, or on its own line) the move disables it.
+  for (const mv of [`mv ${src} ${src}.disabled`, `true && mv ${src} ${src}.disabled`]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN ${mv}\n${unpinned}\n`).problems, [], mv);
+  }
+  // The last overwrite flag wins, as in the shell: `-f` after `-n` forces the rename, `-n` after `-f` keeps the file.
+  for (const flags of ["-n -f", "--no-clobber --force", "-nf"]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN mv ${flags} ${src} ${src}.disabled\n${unpinned}\n`).problems, [], flags);
+  }
+  // `-fn` is `f` then `n`: the no-clobber stays in force.
+  for (const flags of ["-f -n", "--force --no-clobber", "-fn"]) {
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN mv ${flags} ${src} ${src}.disabled\n${unpinned}\n`).problems.length, 1, flags);
+  }
+  // GNU `cp`'s `-f` does not cancel `-n` (it only retries an unopenable destination), so `cp -n -f` still leaves the
+  // target alone, while for `mv` the last flag wins. Both files are known, so the kept repository lines show the mode.
+  const dst = "/etc/apt/sources.list.d/other.list";
+  const both = (verb: string, flags: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\nRUN echo 'deb https://other.example/apt bookworm main' > ${dst}\nRUN ${verb} ${flags} ${src} ${dst}\n${unpinned.replace("foo", "foo=1.0")}\n`).pins.filter((p) => p.kind === "apt")[0]!.sources;
+  const vendor = "https://vendor.example/apt bookworm main", other = "https://other.example/apt bookworm main";
+  for (const flags of ["-f", "--force"]) assert.deepEqual(both("cp", flags), [vendor], flags);
+  for (const flags of ["-n -f", "--no-clobber --force", "-nf", "-f -n", "-fn", "-n", "--no-clobber"]) {
+    assert.deepEqual([...both("cp", flags)!].sort(), [vendor, other].sort(), flags);
+  }
+  for (const flags of ["-f", "--no-clobber --force", "-nf", "-n -f"]) assert.deepEqual(both("mv", flags), [vendor], flags);
+  for (const flags of ["-f -n", "-fn", "-n", "--no-clobber"]) assert.deepEqual([...both("mv", flags)!].sort(), [vendor, other].sort(), flags);
+});
+
+test("pins: a known empty target, clustered -t/-S flags and flags after the paths", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const dir = "/etc/apt/sources.list.d";
+  const vendor = `${dir}/vendor.list`, other = `${dir}/other.list`;
+  const write = `RUN echo 'deb https://vendor.example/apt bookworm main' > ${vendor}`;
+  const writeOther = `RUN echo 'deb https://other.example/apt bookworm main' > ${other}`;
+  const unpinned = "RUN apt-get install -y foo";
+  const problems = (line: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\n${writeOther}\nRUN ${line}\n${unpinned}\n`).problems;
+  const sources = (line: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\n${write}\n${writeOther}\nRUN ${line}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0]!.sources!.map((s) => s.split(" ")[0]);
+  // A target this stage wrote empty certainly exists, so `-n` skips the copy and adds no repository: GNU `cp -n` leaves
+  // an existing file alone (`cp -n -f` too, since `cp`'s `-f` never cancels `-n`), and the install needs no pin.
+  for (const flags of ["-n", "-n -f", "-nf", "--no-clobber", "--no-clobber --force"]) {
+    const empty = `FROM debian:bookworm${d}\nRUN cat /dev/null > ${vendor}\nRUN cp ${flags} /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+    assert.deepEqual(scanFile("Dockerfile", empty).problems, [], flags);
+  }
+  // ...while a replacing copy of the same known-empty target does record the file (unknown content: a path from the image).
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat /dev/null > ${vendor}\nRUN cp /tmp/from-image.list ${vendor}\n${unpinned}\n`).problems.length, 1);
+  // `cp -n` onto a target holding a repository leaves that repository exactly as it was: no merge with the source's.
+  assert.deepEqual([...sources(`cp -n ${vendor} ${other}`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
+  assert.deepEqual(sources(`cp -f ${vendor} ${other}`), ["https://vendor.example/apt"]);
+  assert.deepEqual([...sources(`cp -n -f ${vendor} ${other}`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
+  // `mv -n` onto a known target certainly does nothing: both files stay, so both repositories are kept and nothing is
+  // lost. A plain `mv` renames the source away.
+  assert.deepEqual([...sources(`mv -n ${vendor} ${other}`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
+  assert.deepEqual(sources(`mv ${vendor} ${other}`), ["https://vendor.example/apt"]);
+  // `-i` asks, so it may go either way: both repositories are kept.
+  for (const flags of ["-i", "--interactive", "-n -i -f"]) {
+    assert.deepEqual([...sources(`cp ${flags} ${vendor} ${other}`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"], flags);
+  }
+  // A cluster that carries `-t`/`-S`'s value still reads the flags before it: `-nt dir` is no-clobber into dir.
+  // `vendor.list` is written empty, so it exists: `-nt` into its directory skips it, while `-f -nt` replaces it with
+  // content the scanner can't read and the install needs a pin.
+  const into = (line: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat /dev/null > ${vendor}\nRUN cp ${line}\n${unpinned}\n`).problems;
+  // `-t dir` names the target by the source's own name: `/tmp/vendor.list` lands on the existing `vendor.list`.
+  // Every flag before `-t` in its cluster is read (`-nt` is `n` then `t`, whose value is the next word), and `-t` as
+  // the cluster's first letter takes the whole rest as its value (`-tn` is `-t n`, as GNU reads it).
+  for (const flags of ["-nt", "-n -t", "--no-clobber -t", "-nf -nt", "-f -nt", "-fnt", "-nf -f -t"]) {
+    assert.equal(into(`${flags} ${dir} /tmp/vendor.list`).length, 0, flags);
+  }
+  assert.equal(into(`-nt${dir} /tmp/vendor.list`).length, 0);
+  // GNU getopt permutes: a flag after the paths still applies, and is not read as a destination.
+  assert.deepEqual([...sources(`mv ${vendor} ${other} -n`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
+  assert.deepEqual([...sources(`cp ${vendor} ${other} --no-clobber`)!].sort(), ["https://other.example/apt", "https://vendor.example/apt"]);
+  assert.deepEqual(sources(`cp ${vendor} ${other} -f`), ["https://vendor.example/apt"]);
+  // No-clobber is decided for each destination on its own: `vendor.list` was written empty (so `-n` skips it), while
+  // `other.list` is fresh (so the source lands there). Only the fresh one adds a repository.
+  const mixed = `FROM debian:bookworm${d}\nRUN cat /dev/null > ${vendor}\nRUN cp -n /tmp/from-image.list /tmp/other.list ${dir}/\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", mixed).problems.length, 1);
+  // A conditional empty write may have been skipped, so the file is not known to exist: a later `cp -n` onto it may land
+  // its content, and the install still needs a pin.
+  const conditional = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && : > ${vendor} || true\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", conditional).problems.length, 1);
+  // ...whereas an empty write that certainly ran (`true &&`, or on its own line) is a known file, and `-n` skips it.
+  for (const line of [`true && : > ${vendor}`, `: > ${vendor}`]) {
+    const known2 = `FROM debian:bookworm${d}\nRUN ${line}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+    assert.deepEqual(scanFile("Dockerfile", known2).problems, [], line);
+  }
+  // A target from the image is not one the stage knows: only the source's repository is certainly there (over-reporting).
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`).problems.length, 1);
+  // A guarded write may not have run, so the file it names is not certainly there: a `cp -n` that follows on the same
+  // chain may replace what the write left, so the repository it wrote is kept beside the copy's (both date a pin).
+  const chain = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && printf 'deb https://vendor.example/apt stable main\n' > ${vendor} && cp -n /tmp/empty.list ${vendor}\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", chain).pins.filter((p) => p.kind === "apt")[0]!.sources, ["https://vendor.example/apt stable main"]);
+  // ...and a `cp -n` on a later line onto that may-be file also records the copy's content (the file may not be there).
+  const laterLine = `FROM debian:bookworm${d}\nRUN test -f /tmp/m && printf 'deb https://vendor.example/apt stable main\n' > ${vendor}\nRUN cp -n /tmp/from-image.list ${vendor}\n${unpinned}\n`;
+  assert.equal(scanFile("Dockerfile", laterLine).problems.length, 1);
+  // A guarded write that may have run still counts as adding a repository: the install after it needs a pin, on its own
+  // line and later in the same chain.
+  const enabled = `FROM debian:bookworm${d}\nRUN test -f /tmp/enable && echo 'deb https://vendor.example/apt stable main' > ${vendor}`;
+  assert.equal(scanFile("Dockerfile", `${enabled} && apt-get update && apt-get install -y foo\n`).problems.length, 1);
+  assert.equal(scanFile("Dockerfile", `${enabled}\n${unpinned}\n`).problems.length, 1);
+});
+
+test("pins: the four parser cases the WOR-10451 follow-up names, end to end", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const dir = "/etc/apt/sources.list.d";
+  // (a) `COPY --from=<stage>` of a sources.list.d file carries the builder's repository into the destination stage: an
+  // install there is unpinned, and the exact pin is dated from that repository.
+  const carried = `FROM debian:bookworm${d} AS builder\nRUN echo 'deb https://vendor.example/apt bookworm main' > ${dir}/vendor.list\nFROM debian:bookworm${d}\nCOPY --from=builder ${dir}/vendor.list ${dir}/\nRUN apt-get install -y foo`;
+  const carriedResult = scanFile("Dockerfile", carried);
+  assert.equal(carriedResult.problems.length, 1);
+  assert.match(carriedResult.problems[0], /apt install foo after an apt repository is added: pin it/);
+  const carriedPin = scanFile("Dockerfile", carried.replace("install -y foo", "install -y foo=1.0")).pins.filter((p) => p.kind === "apt")[0]!;
+  assert.deepEqual(carriedPin.sources, ["https://vendor.example/apt bookworm main"]);
+  const carriedTried: string[] = [];
+  await dateApt(carriedPin, async (_k, _n, { source }) => { carriedTried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(carriedTried, ["https://vendor.example/apt bookworm main"]);
+
+  // (b) A Deb822 `.sources` written by a heredoc dates a pin from its Types/URIs/Suites/Components: the URI, suite and
+  // component are exactly the source tried (Components defaults to `main`).
+  const deb822 = `FROM debian:bookworm${d}\nRUN tee ${dir}/vendor.sources <<'EOF'\nTypes: deb\nURIs: https://vendor.example/apt\nSuites: bookworm\nComponents: main\nEOF\nRUN apt-get install -y foo=1.0\n`;
+  const deb822Pin = scanFile("Dockerfile", deb822).pins.filter((p) => p.kind === "apt")[0]!;
+  const deb822Tried: string[] = [];
+  await dateApt(deb822Pin, async (_k, _n, { source }) => { deb822Tried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(deb822Tried, ["https://vendor.example/apt bookworm main"]);
+  // Several components and suites spell out every combination (a deb-src-only or `Enabled: no` stanza is not one; each
+  // is covered in the Deb822 tests above).
+  const multi = `FROM debian:bookworm${d}\nRUN tee ${dir}/m.sources <<'EOF'\nTypes: deb\nURIs: https://a.example/apt\nSuites: bookworm bookworm-backports\nComponents: main contrib\nEOF\nRUN apt-get install -y foo=1.0\n`;
+  const multiPin = scanFile("Dockerfile", multi).pins.filter((p) => p.kind === "apt")[0]!;
+  assert.deepEqual(multiPin.sources, [
+    "https://a.example/apt bookworm main", "https://a.example/apt bookworm contrib",
+    "https://a.example/apt bookworm-backports main", "https://a.example/apt bookworm-backports contrib",
+  ]);
+
+  // (c) A Debian base dates from its release, then -updates, then -security; the security index arrives as Packages.xz
+  // only and is decoded by the system `xz` (no package.json dependency), with a pinned exact version landing on it.
+  const [debPin] = scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN apt-get install -y curl=7.88.1-10+deb12u12\n`).pins.filter((p) => p.kind === "apt");
+  const pockets: string[] = [];
+  await dateApt(debPin, async (_k, _n, { source }) => {
+    pockets.push(source);
+    if (!source.includes("bookworm-security")) throw Object.assign(new Error(`not in ${source}`), { notListed: true });
+    return { published: day(30), via: "test" };
+  });
+  assert.deepEqual(pockets, ["http://deb.debian.org/debian bookworm main", "http://deb.debian.org/debian bookworm-updates main", "http://deb.debian.org/debian bookworm-security main"]);
+  // The xz decoding itself is its own test below, so these cases run on a machine with no `xz`.
+  const deps = Object.keys(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).dependencies ?? {});
+  assert.deepEqual(deps, ["yaml"]);
+
+  // (d) `tee`'s stdin filename ends at an unquoted shell operator: `tee f < /tmp/x</dev/null` is two redirects, and the
+  // shell applies the last one, so the file is written empty and its repository is gone.
+  const written = `RUN echo 'deb https://vendor.example/apt bookworm main' > ${dir}/vendor.list`;
+  for (const line of [`tee ${dir}/vendor.list < /tmp/x</dev/null`, `tee ${dir}/vendor.list </tmp/x</dev/null`, `tee ${dir}/vendor.list < /tmp/x < /dev/null`, `cat </tmp/x</dev/null > ${dir}/vendor.list`]) {
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\n${written}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems, [], line);
+  }
+});
+
+test("pins: Packages.xz decodes with the system xz, without a package.json dependency", { skip: hasXz ? false : "no system xz on PATH" }, async () => {
+  const { readAptIndex } = await import("../supply-chain/best-version.ts");
+  // A real xz archive built with the system binary: the security index decodes to the package it holds.
+  const archive = execFileSync("xz", ["-c"], { input: "Package: curl\nVersion: 7.88.1-10+deb12u12\nFilename: pool/c.deb\n\n" });
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (url: string) => String(url).endsWith("Packages.xz") ? new Response(archive, { status: 200 }) : new Response("not found", { status: 404 })) as typeof fetch;
+    const pkgs = await readAptIndex("https://deb.debian.org/debian bookworm-security main");
+    assert.deepEqual(pkgs.filter((p) => p.Package).map((p) => `${p.Package} ${p.Version}`), ["curl 7.88.1-10+deb12u12"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

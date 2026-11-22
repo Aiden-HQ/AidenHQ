@@ -48,6 +48,22 @@ test("an official module's setting without a comment above it fails compile; the
   const out = compile(add("  # Where it listens.\n  host: { default: x, pattern: '^[a-z]+$' }\n"), finst(["doc"]));
   assert.deepEqual(out.catalog.find((m) => m.name === "doc").settings.host, { default: "x", pattern: "^[a-z]+$", doc: "Where it listens." });
 });
+test("a list setting's entries are checked against its pattern: a map entry is refused unless the setting names its `entry` field", () => {
+  const add = (settings) => {
+    const dir = market((m) => ({ ...m, plugins: [...m.plugins, { name: "doc", source: "./doc" }] }));
+    mkdirSync(join(dir, "modules", "doc"));
+    writeFileSync(join(dir, "modules", "doc", "module.yaml"), `name: doc\ndescription: d\nsettings:\n${settings}`);
+    return dir;
+  };
+  const list = "  # The repos to skip.\n  skip: { default: [], pattern: '^[\\w.-]+/[\\w.-]+$' }\n";
+  // A map entry would reach the service as JSON its reader takes for comma-joined text: it falls back to the empty default.
+  assert.deepEqual(compile(add(list), finst(["doc"], { ...base, skip: ["acme/app", { repo: "acme/probe" }] })).warnings, ["settings.skip: {\"repo\":\"acme/probe\"} doesn't match ^[\\w.-]+/[\\w.-]+$; using the default until it is fixed"]);
+  assert.deepEqual(compile(add(list), finst(["doc"], { ...base, skip: ["acme/app", "acme/probe"] })).warnings, []);
+  // A setting whose entries are maps says which field holds the owner/name (maintainer_repos's `repo`).
+  const dir = add("  # The repos to skip.\n  skip:\n    default: []\n    entry: repo\n    pattern: '^[\\w.-]+/[\\w.-]+$'\n");
+  assert.deepEqual(compile(dir, finst(["doc"], { ...base, skip: [{ repo: "acme/probe" }] })).warnings, []);
+  assert.deepEqual(compile(dir, finst(["doc"], { ...base, skip: [{ repo: { name: "acme/probe" } }] })).warnings, ["settings.skip: {\"repo\":{\"name\":\"acme/probe\"}} doesn't match ^[\\w.-]+/[\\w.-]+$; using the default until it is fixed"]);
+});
 test("a validate hook is compiled for the module's own service only: another module's service, an IP or localhost is refused", () => {
   const def = (post) => ({ secrets: { provided: ["acme_key"] }, services: { run: { hook: {} } }, validate: { post, auth: "acme_key" } });
   assert.deepEqual(checkEntries("acme", def("http://hook:8080/validate"))["acme.validate"], { module: "acme", at: "validate", url: "http://hook:8080/validate", auth_secret: "acme_key" });
