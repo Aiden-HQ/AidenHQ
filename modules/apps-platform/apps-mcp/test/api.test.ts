@@ -159,8 +159,22 @@ describe("callApi", () => {
     const { d } = await setup(() => ({ status: 201, body: "{}" }));
     const log: object[] = [];
     await callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap", body: '{"a":1}' }, { ...d, audit: (o) => log.push(o) });
-    expect(log).toEqual([{ caller: "roadmap-keeper", app: "roadmap-keeper", method: "POST", path: "/api/agent/roadmap", status: 201 }]);
+    expect(log).toEqual([{ caller: "roadmap-keeper", app: "roadmap-keeper", method: "POST", path: "/api/agent/roadmap", role: "admin", status: 201 }]);
     await expect(callApi(app(), "roadmap-keeper", { method: "GET", path: "/api/agent/roadmap" }, { ...d, sign: agentSigner("/nonexistent/apps.pem") })).rejects.toThrow(/no identity key/);
+  });
+  it("member: a listed caller reaches a public route as the signed-in member app_view uses; an ungranted caller and an anonymous request are refused", async () => {
+    const { id, sent, d } = await setup((r) => ({ status: 200, body: JSON.stringify({ ok: true, echo: r.headers["x-aidenhq-identity"] }) }));
+    const res = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/intake/feedback", body: { text: "canary" }, role: "member" }, d);
+    expect(sent[0]).toMatchObject({ url: "http://127.0.0.1:8080/intake/feedback", method: "POST", body: '{"text":"canary"}', headers: { "content-type": "application/json" } });
+    const token = sent[0]!.headers["x-aidenhq-identity"]!;
+    const req = (method: string, url: string, headers: Record<string, string> = { "x-aidenhq-identity": token }) => ({ method, url, headers });
+    expect(id.identify("roadmap-keeper", req("POST", "/intake/feedback"))).toEqual({ sub: "agent:roadmap-keeper", email: "", name: "roadmap-keeper", role: "member", kind: "agent" });
+    expect(() => id.identify("roadmap-keeper", req("GET", "/intake/feedback"))).toThrow(/not for this request/);
+    expect(() => id.identify("roadmap-keeper", req("POST", "/intake/feedback", {}))).toThrow(/no identity/);
+    expect(res).toEqual({ status: 200, body: { ok: true, echo: "***" } });
+    expect(JSON.stringify(res)).not.toContain(token);
+    await expect(callApi(app(), "intruder", { method: "POST", path: "/intake/feedback", body: {}, role: "member" }, d)).rejects.toThrow(/may not call/);
+    expect(sent).toHaveLength(1);
   });
   it("hides the token in errors, refuses before sending, caps text bodies", async () => {
     let seen = "";

@@ -68,7 +68,10 @@ describe("apps-platform write kinds", () => {
     expect(r.card!.details).toContain("Script (from the app's package.json): node seed.js\nReason (written by the requesting agent): fill it");
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x" })).rejects.toThrow(/may not call web's API/);
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/admin" }, who("keeper"))).rejects.toThrow(/isn't under web's agent API paths/);
-    expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", body: { a: 1 } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/api/agent/x", body: { a: 1 } });
+    expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", body: { a: 1 } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/api/agent/x", role: "admin", body: { a: 1 } });
+    // A member request is the signed-in test-user identity on a public route; the caller gate still applies.
+    expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/intake/feedback", role: "member", body: { text: "x" } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/intake/feedback", role: "member", body: { text: "x" } });
+    await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/intake/feedback", role: "member" }, who("intruder"))).rejects.toThrow(/may not call web's API/);
     // A caller held to exact routes: the method is part of the check, so a write plan can't spend its read route.
     expect((await plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).args).toMatchObject({ caller: "keeper", method: "POST" });
     await expect(plan(ex, "api_write", { name: "narrow", method: "DELETE", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);

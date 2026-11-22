@@ -67,9 +67,10 @@ export function appsExecutor(p: Platform): Executor {
           const a = p.find(String(args?.name ?? ""));
           const method = String(args?.method ?? "") as Method;
           if (!METHODS.includes(method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
-          authorize(a, c.key, String(args?.path ?? ""), method);
-          const out = { name: a.name, caller: c.key, method, path: String(args.path), ...(args.body !== undefined ? { body: args.body } : {}) };
-          return { args: out, card: { details: `${method} ${out.path}${args.body !== undefined ? `\nbody (written by the requesting agent): ${JSON.stringify(args.body).slice(0, 2000)}` : ""}` } };
+          const role = args.role === "member" ? "member" : "admin";
+          authorize(a, c.key, String(args?.path ?? ""), method, role);
+          const out = { name: a.name, caller: c.key, method, path: String(args.path), role, ...(args.body !== undefined ? { body: args.body } : {}) };
+          return { args: out, card: { details: `${method} ${out.path} as ${role}${args.body !== undefined ? `\nbody (written by the requesting agent): ${JSON.stringify(args.body).slice(0, 2000)}` : ""}` } };
         }
       }
       throw new Error(`no write kind ${kind} here`);
@@ -91,7 +92,7 @@ export function appsExecutor(p: Platform): Executor {
         case "apps-platform.restart": { const r = await p.engine.restart(a); return { ok: r.healthy, text: JSON.stringify(r) }; }
         case "apps-platform.rollback": { const r = await p.engine.rollback(a, { by }); return { ok: r.status === "healthy", text: JSON.stringify(r) }; }
         case "apps-platform.api_write": {
-          const r = await callApi(a, args.caller, { method: args.method, path: args.path, body: args.body }, { sign: p.sign, send: p.sendApi, resolve: p.resolveApi, audit: p.auditApi });
+          const r = await callApi(a, args.caller, { method: args.method, path: args.path, body: args.body, role: args.role }, { sign: p.sign, send: p.sendApi, resolve: p.resolveApi, audit: p.auditApi });
           return { ok: r.status >= 200 && r.status < 300, text: JSON.stringify(r) };
         }
       }

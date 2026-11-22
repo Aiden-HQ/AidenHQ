@@ -14,7 +14,7 @@ A JWT (compact JWS), EdDSA (Ed25519) via `node:crypto`, sent to the app in `X-Ai
 | `sub` | a stable opaque id: people `u_` + 22 chars of base64url(sha256(`aidenhq-user:` + lowercased verified email), `subOf` in the gate); agents `agent:<key>` |
 | `kind` | `person` or `agent` |
 | `email`, `name` | display and contact (agents: no email; `name` is the agent key) |
-| `role` | the gate's resolved role on this app (people); `admin` (`app_api`) or `member` (`app_view`) for agents |
+| `role` | the gate's resolved role on this app (people); `admin` (`app_api`, default) or `member` (`app_view`, or `app_api` with `role: "member"`) for agents |
 | `idp` | `access`, `password`, `header-jwt` (people), `apps-mcp` (agents) |
 | `iat`, `exp` | `exp = iat + 300` |
 | `methods`, `path` | agents only: what the token may do (below) |
@@ -85,9 +85,11 @@ apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/ide
 (`iss` `aidenhq-apps`, `sub` `agent:<key>`, `kind` agent, `idp` `apps-mcp`), in the same header; it is never shown to the
 agent and is redacted from any response that echoes it.
 
-- `app_api`: `role: admin`, `methods` the call's one method, `path` the exact path. Only agent keys in the app's
+- `app_api`: `role: admin` (the default), `methods` the call's one method, `path` the exact path. Only agent keys in the app's
   `api.callers` and only under `api.paths`, enforced in apps-mcp. `api` is `{ callers, paths }`; there is no static
-  `api.token` (the registry refuses one).
+  `api.token` (the registry refuses one). With `role: "member"` it reuses `app_view`'s signed-in member identity for that one
+  method and path: the same `api.callers` gate, but on any route the app serves, so an agent can POST to a public route as a
+  test user and read the app's real status and body.
 - `app_view`: `role: member`, `methods: [GET, HEAD]`.
 
 The key is separate from the gate's because apps-mcp holds the Docker socket and sits on bridge networks the gate's

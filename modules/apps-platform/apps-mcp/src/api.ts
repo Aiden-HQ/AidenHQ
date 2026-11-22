@@ -1,8 +1,10 @@
-// app_api: an agent's narrow, audited write path into an app's own API. The app declares `api: { callers, paths }`; only
-// those agents, only under those path prefixes. A caller's entry may instead name one exact route (`POST /api/x/{id}/y`: the
-// method, then `{name}` for one segment), holding it to the routes it uses rather than a namespace. apps-mcp signs the call's
-// identity token (identity.ts: agent:<key>, bound to this method and path) and adds it to the request; the agent never sees it.
-import { IDENTITY_HEADER, type Sign } from "./identity.js";
+// app_api: an agent's narrow, audited path into an app's own API. The app declares `api: { callers, paths }`; only those
+// agents, and as admin only under those path prefixes. A caller's entry may instead name one exact route (`POST /api/x/{id}/y`:
+// the method, then `{name}` for one segment), holding it to the routes it uses rather than a namespace. role: "member" is the
+// signed-in test-user identity app_view uses: the same caller gate, but on any route the app serves, so a public POST can be
+// exercised end to end. apps-mcp signs the call's identity token (identity.ts: agent:<key>, bound to this method and path) and
+// adds it to the request; the agent never sees it.
+import { IDENTITY_HEADER, memberScope, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -52,11 +54,17 @@ export function checkPath(app: App, path: string, paths = app.api!.paths, method
   if (!paths.some(ok)) throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller (${paths.join(", ")})`);
 }
 
-export function authorize(app: App, callerKey: string, path: string, method?: string): void {
+export function authorize(app: App, callerKey: string, path: string, method?: string, role: "admin" | "member" = "admin"): void {
   if (!app.api) throw new Error(`${app.name} has no agent API (no api: block in the registry)`);
   const keyOf = (c: string | { agent: string }) => (typeof c === "string" ? c : c.agent);
   const c = callerKey ? app.api.callers.find((x) => keyOf(x) === callerKey) : undefined;
   if (!c) throw new Error(`${callerKey || "this agent"} may not call ${app.name}'s API (callers: ${app.api.callers.map(keyOf).join(", ")})`);
+  // A member request is a signed-in test-user request to the app's own public route. Keep the caller gate (the app's
+  // api.callers), but not api.paths: those are the app's private agent API, not the public routes this exercises.
+  if (role === "member") {
+    plainPath(path);
+    return;
+  }
   checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths, method);
 }
 
@@ -92,21 +100,23 @@ export async function targetContainer(app: App, service: string, resolve: Resolv
   return c.Id;
 }
 
-export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; body: unknown }> {
+export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown; role?: "admin" | "member" }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; body: unknown }> {
   if (!METHODS.includes(req.method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
-  authorize(app, callerKey, req.path, req.method);
+  const role = req.role ?? "admin";
+  authorize(app, callerKey, req.path, req.method, role);
   const t = apiTarget(app);
   const container = await targetContainer(app, t.service, d.resolve);
   const base = `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}`;
   const url = new URL(base + req.path);
   if (url.origin !== base || url.pathname !== req.path.split("?")[0]) throw new Error(`bad path ${req.path}`);
-  // authorize() already confined the path to api.paths; the token holds only this method and path, as admin there.
-  const token = d.sign(app.name, callerKey, { role: "admin", methods: [req.method], path: url.pathname });
+  // authorize() confined admin calls to api.paths; the token holds only this method and path. The default is admin
+  // there; role: "member" reuses app_view's signed-in member identity for a public-route check.
+  const token = d.sign(app.name, callerKey, { ...memberScope([req.method]), ...(role === "admin" ? { role: "admin" } : {}), path: url.pathname });
   const hide = (s: string) => s.replaceAll(token, "***"); // the token never reaches the agent
   const headers: Record<string, string> = { [IDENTITY_HEADER]: token, accept: "application/json" };
   const body = req.body === undefined ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body);
   if (body !== undefined) headers["content-type"] = "application/json"; // a string body is taken as JSON already serialized
-  const audit = (status: number | string) => d.audit?.({ caller: callerKey, app: app.name, method: req.method, path: req.path, status });
+  const audit = (status: number | string) => d.audit?.({ caller: callerKey, app: app.name, method: req.method, path: req.path, role, status });
   let res: { status: number; body: string };
   try {
     res = await d.send(app, { url: url.href, method: req.method, headers, ...(body !== undefined ? { body } : {}) }, container);
