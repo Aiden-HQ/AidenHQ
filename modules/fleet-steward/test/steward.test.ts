@@ -303,19 +303,20 @@ const jamRun = async (kv, at, acting) => {
 
 test("gate activity counts only the holder's or a fleet-audit agent's comment, never another agent's", async () => {
   // The task t1 is held by "eng"; the Steward is the fleet-audit agent "audit"; "reviewer" just left a note.
+  // The kernel's row holds the holder by its key ("eng"); Paperclip names comment authors by agent ID ("a-eng").
   const kernel = {
-    call: async (m, p) => (p.startsWith("/v1/tasks/state") ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0 }] } : { agents: { eng: {}, audit: { roles: ["fleet-audit"] }, reviewer: {} } }),
+    call: async (m, p) => (p.startsWith("/v1/tasks/state") ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0 }] } : { agents: { "a-eng": { key: "eng" }, "a-audit": { roles: ["fleet-audit"] }, "a-reviewer": {} } }),
     read: async () => [
-      { authorType: "agent", authorAgentId: "reviewer", body: "looks odd", createdAt: minsAgo(1) },
-      { authorType: "agent", authorAgentId: "eng", body: "on it", createdAt: minsAgo(6) },
+      { authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) },
+      { authorType: "agent", authorAgentId: "a-eng", body: "on it", createdAt: minsAgo(6) },
     ],
   };
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(6), "the holder's comment, not the reviewer's newer one");
   // The Steward's own comment is the work moving too.
-  kernel.read = async () => [{ authorType: "agent", authorAgentId: "audit", body: "routing it", createdAt: minsAgo(2) }];
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-audit", body: "routing it", createdAt: minsAgo(2) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(2));
   // Another agent's comment alone is no activity at all.
-  kernel.read = async () => [{ authorType: "agent", authorAgentId: "reviewer", body: "looks odd", createdAt: minsAgo(1) }];
+  kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), undefined);
   // A job running on the task is activity now, whatever the comments say.
   kernel.call = async () => ({ tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "job_running", holder: "eng", attention: [], idle_wakes: 0 }] });
@@ -345,6 +346,20 @@ test("a lookup that recovers clears the deferral, and a later transient failure 
   // It answers this time, and reports no activity: the original two hours are over, so it jams now.
   assert.deepEqual(await jamRun(kv, NOW + 5 * 60_000, async () => undefined), ["gate:t1"]);
   assert.equal(detectorState(kv).open["gate:t1"].lookup_failed_at, undefined);
+});
+
+test("a job that ran and ended between ticks still holds the flag: the last activity seen is kept on it", async () => {
+  const raised = new Date(NOW - 3 * 3_600_000);
+  const kv = kvFrom(gateFlag(raised));
+  // This tick sees the job, five minutes before it ends: the flag records it.
+  assert.deepEqual(await jamRun(kv, NOW, async () => minsAgo(5)), []);
+  // Next tick the job has ended and there is no comment: nothing new, but the work seen a minute ago still holds it.
+  assert.deepEqual(await jamRun(kv, NOW + 60_000, async () => undefined), []);
+  assert.equal(detectorState(kv).open["gate:t1"].last_activity, minsAgo(5), "the observed activity is kept across ticks");
+  // Five hours later, with no new activity since the one seen at NOW - 5m, the clock decides.
+  assert.deepEqual(await jamRun(kv, NOW + 5 * 3_600_000, async () => undefined), ["gate:t1"]);
+  // A failed lookup after activity is known does not rewind to the flag's age either.
+  assert.deepEqual(await jamRun(kvFrom(JSON.stringify({ open: { "gate:t1": { reason: "r", at: raised.toISOString(), fired: true, last_activity: minsAgo(5) } }, recovered: [] })), NOW, async () => { throw new Error("503"); }), []);
 });
 
 test("a review-stall flag's card carries its task, so its activity is checked like a gate's", async () => {
