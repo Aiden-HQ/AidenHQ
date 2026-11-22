@@ -12,7 +12,7 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { kernelJwks, verifyCaller, type JWKS } from "./aidenhq-sdk/caller.ts";
-import { GRADE_CHECK_MS, Conflict, Grades, Invalid, completionGate, parseAmendment, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
+import { GRADE_CHECK_MS, Conflict, Grades, Invalid, completionGate, parseAmendment, parseFiling, parseVerdict, prRefAllowed, graderNote, rubricHash, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
 import { template } from "./grader/grade.ts";
 
 type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null };
@@ -111,7 +111,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     await refAllowed(b.deliverable);
     // The row records its filer as the agent that delegated the task: a differing re-file is that agent's, and only its. A
     // task already closed is left alone (its row may not have been swept to not_graded yet).
-    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { closed: isClosed(issue) });
+    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { closed: isClosed(issue), held: issue.status === "in_review" });
     if (r.created) log("rubric filed", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
     return { created: r.created, state: r.grade.state };
   }
@@ -124,8 +124,9 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   async function amend(req: http.IncomingMessage, body: unknown) {
     let b!: ReturnType<typeof parseAmendment>;
     const { caller, issue } = await amendCaller(req, () => (b = parseAmendment(body)).issue);
-    // Work already finished and held for a grade (in review) is requeued by the amendment: the next pass grades it against the
-    // new list, and the assignee is not asked to finish again for a change they did not make.
+    // Work already finished and held for a grade (in review) is requeued by the amendment: the row still restarts `open`, and
+    // its resume flag has the next pass grade it against the new list, so the assignee is not asked to finish again for a
+    // change they did not make.
     const g = grades.amend(issue.id, b.rubric, { by: `agent:${caller.agent}`, delegator: issue.createdByAgentId ? `agent:${issue.createdByAgentId}` : undefined, closed: isClosed(issue), held: issue.status === "in_review" });
     log("rubric amended", { task: issue.identifier, by: `agent:${caller.agent}`, criteria: g.rubric.length, state: g.state });
     return { amended: true, state: g.state, rubric: g.rubric };
@@ -160,7 +161,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     // body carries only the task's id and identifier, so its status is read here: a closed task is left alone, as on the
     // agent route (its row may not have been swept to not_graded yet).
     const issue = await kernel.issue(b.task.id);
-    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`, { closed: isClosed(issue) });
+    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`, { closed: isClosed(issue), held: issue.status === "in_review" });
     if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
     return { verdict: "ok", created: r.created };
   }
@@ -170,7 +171,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     // One task's grade state (null: ungraded): a sub-task whose grade will speak keeps its progress to itself. The id is
     // decoded as the verdict route does: the grade loop encodes whatever id it was given, and task ids are not all UUIDs.
     const one = /^\/internal\/grades\/([^/]+)$/.exec(path);
-    if (method === "GET" && one) return { state: grades.get(decodeURIComponent(one[1]!))?.state || null };
+    if (method === "GET" && one) {
+      // The state, and the filing the row holds now: a queued move saved before filings were named reads it to tell whether it
+      // still describes the row (a rubric amended since is a different filing, and its close must not land).
+      const g = grades.get(decodeURIComponent(one[1]!));
+      return g ? { state: g.state, filing: rubricHash(g.rubric, g.deliverable, g.revision), rubric: g.rubric, deliverable: g.deliverable } : { state: null };
+    }
     const m = /^\/internal\/grades\/([^/]+)\/verdict$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");
     const issue = await kernel.issue(decodeURIComponent(m[1]!));

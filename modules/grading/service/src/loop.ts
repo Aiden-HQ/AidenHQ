@@ -24,8 +24,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   graderAsk: Json;
   stripHidden: Json;
   graderSpeaks: Json;
-  /** The hash a pass's verdict names (grades.ts rubricHash): the store drops a verdict from a rubric since amended. */
-  rubricHash: (rubric: string[]) => string;
+  /** The hash a pass's verdict names (grades.ts rubricHash): the store drops a verdict from a filing since replaced. */
+  rubricHash: (rubric: string[], deliverable?: Json, revision?: number) => string;
   /** The marker `gradeNote` puts on every grader note (`grader/evidence.ts`'s GRADER_MARKER), for the closes this loop words itself. */
   graderMarker: string;
   emit?: (e: Json) => void;
@@ -49,6 +49,28 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   async function owe(task: string, steps: Json[]) {
     state.set(`owed:${task}`, JSON.stringify(steps));
     await settle(task, steps);
+  }
+  /**
+   * Whether the row still holds the filing a queued step was computed on. A step saved before steps carried a filing names
+   * none, and is checked against the row as it stands now rather than skipped: a close queued before an amendment must not
+   * land on the amended row. "unknown" is a read that failed: the step stays queued and the next pass asks again, so a blip
+   * neither drops a move that is still owed nor applies one that may be stale.
+   */
+  async function stillFiled(task: string, filing?: string, step?: Json): Promise<"ok" | "stale" | "unknown"> {
+    let row: Json;
+    try {
+      row = await api.get(`/internal/grades/${encodeURIComponent(task)}`);
+    } catch (err: Json) {
+      log("a queued move waits: the grade state could not be read", { issue: task, err: String(err?.message ?? err).slice(0, 200) });
+      return "unknown";
+    }
+    if (!row) return "unknown";
+    if (filing) return !row.filing || row.filing === filing ? "ok" : "stale";
+    // A step saved before steps carried a filing names none. The row it settled is the only proof it is still current: a
+    // satisfied row holding the same rubric and deliverable is that row, and anything else (restarted, amended, still open)
+    // means the filing it closed is gone, so it is not replayed.
+    if (row.state !== "satisfied") return "stale";
+    return JSON.stringify(row.rubric) === JSON.stringify(step?.rubric) && JSON.stringify(row.deliverable) === JSON.stringify(step?.deliverable) ? "ok" : "stale";
   }
   /**
    * A parent notice from the fields it was queued with, never by parsing its rendered text: a task's title is free text and can
@@ -79,6 +101,21 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         else if (s.do === "done") {
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.
+          // A close queued before filings were named carries none: it is checked against the row as it stands now instead of
+          // replaying blindly onto a rubric amended since.
+          const filed = await stillFiled(task, s.filing, s);
+          // A failed read is not a stale close: the step stays queued and the next pass asks again.
+          if (filed === "unknown") return;
+          if (filed === "stale") {
+            // The row was restarted or amended since this close was queued: neither it nor the notice worded for it is owed any
+            // more (the notice says "graded against its rubric" of a filing that is gone). Both are dropped together, so the
+            // task is not closed and its parent is not told of a result the amendment replaced; the restarted row is graded on
+            // its own pass.
+            log("a satisfied verdict is stale: the filing was replaced", { issue: task });
+            steps.length = 0;
+            state.set(`owed:${task}`, "");
+            return;
+          }
           const now = await pc.issue(task);
           // An empty recorded version (no deliverable then) is stale once one appears. `gather()` can't tell a deliverable whose
           // evidence isn't capturable (a deployed app whose live page is down) from no deliverable, so the presence check decides.
@@ -113,7 +150,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           }
           if (now.status !== "done" && (now.status !== s.status || active || present || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
-            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
+            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(s.filing ? { rubric: s.filing } : {}) });
             steps.length = 1;
           } else if (now.status !== "done") {
             // The note keeps the grader's marker that gradeNote puts on every note: evidence collection filters grader comments by
@@ -144,7 +181,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         if (s.do === "done" && (await pc.issue(task).then((i: Json) => i.status, () => "")) !== "done") {
           // An ungraded close the kernel refuses (its change request is still open): the row goes back to waiting, so the next pass tries again.
           if (s.ungraded && status === 409) {
-            try { await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" }); }
+            try { await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(s.filing ? { rubric: s.filing } : {}) }); }
             catch (e: Json) { return log("a refused close's grade reset failed: retried next pass", { issue: task, err: String(e.message ?? e).slice(0, 300) }); }
           }
           steps.length = 1;
@@ -162,7 +199,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     for (const g of grades) {
       if (grading.has(g.issueId)) continue;
       // A bridge close posts its finishing comment just after the gate: let it land. Waiting evidence: once a minute.
-      if (g.state === "pending" && Date.now() - Date.parse(g.updatedAt) < 5_000) continue;
+      // A row an amendment or a correction resumed waits it out too: its work was finished just before it was restarted, and
+      // that finishing comment is evidence for the new list.
+      if ((g.state === "pending" || g.resume) && Date.now() - Date.parse(g.resumedAt ?? g.updatedAt) < 5_000) continue;
       if (g.state === "awaiting_evidence" && Date.now() - (gradeLooked.get(g.issueId) ?? 0) < 60_000) continue;
       grading.add(g.issueId);
       try {
@@ -213,13 +252,20 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
 
   async function gradeOne(g: Json) {
     const issue = await pc.issue(g.issueId);
-    // Closed meanwhile (the owner accepted or cancelled it): nothing to grade.
-    if (["done", "cancelled"].includes(issue.status)) return;
+    // Closed meanwhile (the owner accepted or cancelled it): nothing to grade, and a resumed row is settled so it is not
+    // picked up again on every pass (the sweep does the same, but only every five minutes).
+    if (["done", "cancelled"].includes(issue.status)) {
+      if (g.resume) await api.post(`/board/grades/${encodeURIComponent(g.issueId)}/settle`, { reason: `the task was ${issue.status} before the grader settled it` }).catch(() => {});
+      return;
+    }
     gradeLooked.set(g.issueId, Date.now());
     const rubric = g.rubric.length ? g.rubric : template(g.deliverable.kind);
     const deps = gradeDeps(issue);
     const ev = await gather(g.deliverable, deps, rubric);
     const verdictPath = `/internal/grades/${encodeURIComponent(g.issueId)}/verdict`;
+    // The filing this pass looked at: a wait it reports is bound to it, so a row amended or re-bound mid-pass is left for the
+    // next pass instead of being parked awaiting evidence for work that is no longer the one asked for.
+    const filing = rubricHash(g.rubric ?? [], g.deliverable, g.revision);
     const agent = issue.assigneeAgentId ? await pc.agent(issue.assigneeAgentId) : undefined;
     const attempt = (g.attempts ?? 0) + 1; // the pass this grade is on (a revision is the next attempt)
     let asked = false, v;
@@ -233,12 +279,16 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // most MAX_WAKES times; a reason already woken, or one past the cap, ends the wait now.
       const nudge = ev.busy || waitOver ? "" : await stalled(issue, g, ev.awaiting);
       if (nudge === "wake") {
+        // The wake moves the task back to todo: only for the filing this pass read. A row amended meanwhile is a different
+        // filing, and waking its assignee for a reason the amendment may have removed is the same staleness a verdict is.
+        const filed = await stillFiled(g.issueId, filing);
+        if (filed !== "ok") return;
         await wake(issue, ev.awaiting);
-        if (g.state !== "awaiting_evidence") await api.post(verdictPath, { version: "", outcome: "awaiting_evidence" });
+        if (g.state !== "awaiting_evidence") await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing });
         return;
       }
       if (!waitOver && nudge !== "give_up") {
-        if (g.state !== "awaiting_evidence") await api.post(verdictPath, { version: "", outcome: "awaiting_evidence" });
+        if (g.state !== "awaiting_evidence") await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing });
         log("grading waits for evidence", { issue: issue.identifier, why: ev.awaiting });
         return;
       }
@@ -263,9 +313,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       asked = true;
       v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, images: ev.images, authorModel, ask });
     }
-    // The row's rubric this pass graded, by hash: the store drops the verdict if it was amended while the pass ran. The row's
-    // own list (g.rubric), not the template the pass falls back to, is what the store compares against.
-    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: rubricHash(g.rubric ?? []), reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    // The row's filing this pass graded, by hash: the store drops the verdict if its rubric was amended or its deliverable
+    // re-bound while the pass ran. The row's own list (g.rubric) and deliverable, not the template the pass falls back to, are
+    // what the store compares against.
+    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: filing, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
@@ -278,7 +329,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // The notice keeps its parts, not only the rendered sentence: a later close that changes the reason rewrites the reason and
       // renders the notice again from these, so it never has to guess where the free-text title ends.
       const notice = { who: `${issue.identifier} (${agent?.name ?? "its agent"})`, title: String(issue.title ?? ""), identifier: String(issue.identifier ?? issue.id), ...(ungraded ? { ungraded } : {}) };
-      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });
