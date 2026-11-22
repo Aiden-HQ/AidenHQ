@@ -99,7 +99,10 @@ async function pass(store: SourceStore): Promise<void> {
     });
   }
   // Its own ingest_run row (scope zerowire); a feed outage never fails the CVE pass.
-  await zerowirePass(store).catch((err) => log("zero wire pass failed", { err: String(err) }));
+  written += await zerowirePass(store).catch((err) => {
+    log("zero wire pass failed", { err: String(err) });
+    return 0;
+  });
   await store.saveScope("pass", started.toISOString(), true);
   log("pass done", { written });
   if (written > 0) await poke();
