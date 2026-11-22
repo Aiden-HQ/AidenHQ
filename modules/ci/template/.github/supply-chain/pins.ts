@@ -137,13 +137,18 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // the repositories present at that point: adding a repository is what makes a later unpinned install a problem, and
   // removing it before an install stops it being one. A `deb` line is filed under the source file its own command
   // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
-  for (const segment of cmd.split(/&&|\|\||;|\|/)) {
+  for (const segment of cmd.split(/&&|\|\||;/)) {
     const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
     const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
-    const files = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
+    // APT loads only `.list` and `.sources` files: a name it ignores (vendor.list.disabled) is no repository, and the
+    // `deb` line a pipeline feeds to `tee` belongs to the file that pipeline writes.
+    const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
+    const files = named.filter((f) => /\.(list|sources)$/.test(f));
     if (removes) {
+      // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
+      // removes nothing it loads.
       if (files.length) files.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
-      else { state.files.clear(); state.entries.clear(); }
+      else if (!named.length) { state.files.clear(); state.entries.clear(); }
       state.added = state.files.size > 0 || state.entries.has(undefined);
     } else if (/(?:>>?|\btee\b)/.test(segment) && files.length) {
       // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held. Any source file counts as added,
@@ -154,7 +159,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         state.entries.set(f, append ? [...(state.entries.get(f) ?? []), ...debs] : debs);
       }
       state.added = true;
-    } else if (debs.length) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
+    } else if (debs.length && !named.length) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
     for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
       for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
         const [pkg, ver] = a.split("=") as [string, string | undefined];

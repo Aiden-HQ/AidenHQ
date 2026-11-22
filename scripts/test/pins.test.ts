@@ -234,3 +234,29 @@ EOF`, "RUN apt-get install -y foo"].join("\n");
   const [untrackedPin] = scanFile("Dockerfile", untracked).pins.filter((p) => p.kind === "apt");
   assert.deepEqual(untrackedPin.sources, ["https://one.example/apt bookworm main", "https://two.example/apt bookworm main"]);
 });
+
+test("pins: a piped write files its deb line under the file, and only files APT loads count", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const piped = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  const [pin] = scanFile("Dockerfile", piped).pins.filter((p) => p.kind === "apt");
+  assert.deepEqual(pin.sources, ["https://repo.example/apt bookworm main"]);
+  const tried = [];
+  await dateApt(pin, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(tried, ["https://repo.example/apt bookworm main"]);
+
+  // The piped URL belongs to the file: overwriting it replaces the entry, and removing it drops the entry and the
+  // requirement for exact pins.
+  const rewritten = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN echo 'deb https://other.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", rewritten).pins.filter((p) => p.kind === "apt")[0].sources, ["https://other.example/apt bookworm main"]);
+  const removed = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN rm /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0 unpinned\n`;
+  const removedResult = scanFile("Dockerfile", removed);
+  assert.deepEqual(removedResult.problems, []);
+  assert.deepEqual(removedResult.pins.filter((p) => p.kind === "apt")[0].sources, []);
+
+  // A file APT doesn't load (`vendor.list.disabled`) is no repository: writing it doesn't require pins, and removing
+  // it doesn't drop the ones a real file holds.
+  const disabled = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' > /etc/apt/sources.list.d/vendor.list.disabled\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", disabled).problems, []);
+  const disabledRemoved = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list\nRUN rm /etc/apt/sources.list.d/vendor.list.disabled\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", disabledRemoved).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+});
