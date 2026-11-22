@@ -114,7 +114,9 @@ export async function ownersPage(call: CallHubSpot, offset?: number): Promise<{ 
   const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
   if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
   const owners = o.owners.filter((x: any) => x?.ownerId != null).map((x: any) => ({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null }));
-  return { owners, ...(o.hasMore && o.offset != null && Number(o.offset) !== offset ? { next: Number(o.offset) } : {}) };
+  if (!o.hasMore || o.offset == null || Number(o.offset) === offset) return { owners };
+  if (!Number.isInteger(Number(o.offset))) throw new Error(`unexpected search_owners offset: ${JSON.stringify(o.offset)}`);
+  return { owners, next: Number(o.offset) };
 }
 
 /** Deal stage ids to labels, from the dealstage property's options. */
