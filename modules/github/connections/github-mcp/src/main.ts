@@ -101,9 +101,16 @@ const tokenGeneration = () => {
     return "";
   }
 };
-const needs = needQueue({ kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json"), generation: tokenGeneration });
+const needs = needQueue({
+  kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json"), generation: tokenGeneration,
+  // A kept scope need the fresh grant now covers is the owner's fix already made (empty scopes say nothing: never "fixed").
+  covers: (scope) => access.scopes().includes(scope),
+});
 // tellOwner is fire-and-forget (the poster's best-effort reads must not wait); each route awaits `needs.tell(err)` itself where
 // the reply must carry the report. Needs kept from an earlier failure are flushed at the top of those routes, never before auth.
+// A retry of its own, so an install without code-review still retries a kept report after the kernel comes back (no route needed).
+const needRetry = setInterval(() => void needs.flush(), 30_000);
+needRetry.unref?.();
 const tellOwner = (err: unknown) => void needs.tell(err);
 
 const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);
@@ -699,13 +706,16 @@ const http = createServer(async (req, res) => {
   }
 });
 
+/** A need met outside a tool call, reported through the queue that keeps and retries what the kernel couldn't take. */
+export type ReportNeed = (need: { cause: "scope"; scope: string }, detail: string) => Promise<void>;
+
 /**
- * Starts both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP and the sign-in) and hands back the owner's access: the
- * GitHub process's code host (modules/github/service/src/main.ts) runs on the same sign-in.
+ * Starts both connections (8086 AidenHQ's tools, 8087 GitHub's own MCP and the sign-in) and hands back the owner's access and the
+ * need queue: the GitHub process's code host (modules/github/service/src/main.ts) runs on the same sign-in.
  */
-export async function startGithubMcp(): Promise<GitHubAccess> {
+export async function startGithubMcp(): Promise<{ access: GitHubAccess; reportNeed: ReportNeed }> {
   http.listen(port, "0.0.0.0", () => log.info({ port }, "github-mcp listening"));
   official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(); });
-  return access;
+  return { access, reportNeed: (need, detail) => needs.tell(new GitHubNeed(need, detail)) };
 }
