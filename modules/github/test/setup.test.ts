@@ -18,7 +18,7 @@ const args = (over = {}) => ({ repo: "acme/widgets", branch: "aidenhq/deepsec-se
 const runOf = (api: any, a: any) => setup.run(api, { base_head: HEAD, ...a });
 
 /** A fake GitHub: the default branch, the setup branch's tip, the files each commit has, what the branch's diff carries, the open PRs. */
-function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string; base?: { ref: string } }[]; prHead?: string } = {}) {
+function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string; base?: { ref: string } }[]; prHead?: string; refused?: boolean } = {}) {
   const writes: { method: string; path: string; body: any }[] = [];
   const api = async (method: string, path: string, body?: any) => {
     if (method !== "GET") writes.push({ method, path, body });
@@ -29,11 +29,10 @@ function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?
     if (path.startsWith("/repos/acme/widgets/contents/")) return (o.has ?? []).includes(decodeURIComponent(path.slice("/repos/acme/widgets/contents/".length).split("?")[0]!)) ? { sha: "x" } : miss();
     if (path.startsWith("/repos/acme/widgets/compare/")) return { files: (o.diff ?? []).map((filename) => ({ filename, status: "modified", patch: `@@ -1 +1 @@\n-old ${filename}\n+new ${filename}` })) };
     if (path.startsWith("/repos/acme/widgets/commits/")) return { commit: { tree: { sha: "t".repeat(40) } } };
-    if (path.endsWith("/git/trees")) return { sha: "e".repeat(40) };
-    if (path.endsWith("/git/commits")) return { sha: "d".repeat(40) };
+    if (path === "/graphql") return o.refused ? { errors: [{ message: "Expected branch to point to the head oid" }] } : { data: { createCommitOnBranch: { commit: { oid: "d".repeat(40) } } } };
     if (path.includes("/git/refs")) return {};
     if (method === "GET" && path.startsWith("/repos/acme/widgets/pulls")) return o.open ?? [];
-    if (path === "/repos/acme/widgets/pulls") return { html_url: "https://github.com/acme/widgets/pull/9", number: 9, head: { sha: o.prHead ?? (writes.some((w) => w.path.endsWith("/git/commits")) ? "d".repeat(40) : o.tip) } };
+    if (path === "/repos/acme/widgets/pulls") return { html_url: "https://github.com/acme/widgets/pull/9", number: 9, head: { sha: o.prHead ?? (writes.some((w) => w.path === "/graphql") ? "d".repeat(40) : o.tip) } };
     if (method === "PATCH" && path === "/repos/acme/widgets/pulls/9") return {};
     throw new Error(`unexpected ${method} ${path}`);
   };
@@ -44,16 +43,19 @@ test("a new branch is one commit of the missing files off the default branch's h
   const g = github();
   const out = await runOf(g.api, args());
   assert.deepEqual(JSON.parse(out.text), { pr_url: "https://github.com/acme/widgets/pull/9", tip: "d".repeat(40) });
-  assert.deepEqual(g.writes.map((w) => `${w.method} ${w.path.replace("/repos/acme/widgets", "")}`), ["POST /git/trees", "POST /git/commits", "POST /git/refs", "POST /pulls"]);
-  assert.deepEqual(g.writes[1]!.body.parents, [HEAD]);
-  assert.match(g.writes[1]!.body.message, /Co-authored-by: AidenHQ/);
-  assert.equal(g.writes[3]!.body.base, "main");
+  assert.deepEqual(g.writes.map((w) => `${w.method} ${w.path.replace("/repos/acme/widgets", "")}`), ["POST /git/refs", "POST /graphql", "POST /pulls"]);
+  assert.equal(g.writes[0]!.body.sha, HEAD);
+  const input = g.writes[1]!.body.variables.input;
+  assert.equal(input.expectedHeadOid, HEAD, "the commit is a compare-and-swap on the reviewed head");
+  assert.match(input.message.body, /Co-authored-by: AidenHQ/);
+  assert.equal(Buffer.from(input.fileChanges.additions[0].contents, "base64").toString(), "# widgets\n");
+  assert.equal(g.writes[2]!.body.base, "main");
 });
 
 test("files the repo already has are never overwritten; with nothing missing there is no commit", async () => {
   const g = github({ has: [".deepsec/deepsec.config.ts"] });
   await runOf(g.api, args());
-  assert.deepEqual(g.writes[0]!.body.tree.map((e: any) => e.path), [".deepsec/data/w/INFO.md"]);
+  assert.deepEqual(g.writes.find((w) => w.path === "/graphql")!.body.variables.input.fileChanges.additions.map((e: any) => e.path), [".deepsec/data/w/INFO.md"]);
   const none = github({ has: Object.keys(args().files) });
   assert.deepEqual(JSON.parse((await runOf(none.api, args())).text), { pr_url: null, tip: null, nothing_to_add: true });
   assert.deepEqual(none.writes, []);
@@ -100,8 +102,8 @@ test("an existing branch moves forward from its tip; an open PR is reused, never
   const g = github({ tip: TIP, diff: [".deepsec/package.json"], open: [{ html_url: "https://github.com/acme/widgets/pull/4", base: { ref: "main" } }] });
   const out = await runOf(g.api, args({ expected_tip: TIP }));
   assert.deepEqual(JSON.parse(out.text), { pr_url: "https://github.com/acme/widgets/pull/4", tip: "d".repeat(40) });
-  assert.deepEqual(g.writes[1]!.body.parents, [TIP]);
-  assert.equal(g.writes.find((w) => w.method === "PATCH")!.body.force, undefined);
+  assert.equal(g.writes.find((w) => w.path === "/graphql")!.body.variables.input.expectedHeadOid, TIP);
+  assert.equal(g.writes.some((w) => w.method === "PATCH" && w.path.includes("/git/refs")), false, "never a plain ref update");
   assert.equal(g.writes.some((w) => w.path.endsWith("/pulls")), false);
   // The reviewer reads what the branch already carries; a PR into another base refuses before anything is pushed.
   const p = await setup.plan(github({ tip: TIP, diff: [".deepsec/package.json"] }).api, args({ expected_tip: TIP }));
@@ -201,4 +203,10 @@ test("a branch that moves while the PR opens: the PR is closed and nothing is re
   const g = github({ tip: TIP, diff: [".deepsec/package.json"], has: Object.keys(args().files), prHead: "f".repeat(40) });
   await assert.rejects(runOf(g.api, args({ expected_tip: TIP })), /moved from .* while the pull request opened/);
   assert.deepEqual(g.writes.map((w) => `${w.method} ${w.path}`).slice(-2), ["POST /repos/acme/widgets/pulls", "PATCH /repos/acme/widgets/pulls/9"]);
+});
+
+test("a branch that is not at the reviewed tip when the commit lands is refused by GitHub's compare-and-swap, and no PR opens", async () => {
+  const g = github({ tip: TIP, diff: [".deepsec/package.json"], refused: true });
+  await assert.rejects(runOf(g.api, args({ expected_tip: TIP })), /ask again/);
+  assert.equal(g.writes.some((w) => w.path.endsWith("/pulls")), false);
 });

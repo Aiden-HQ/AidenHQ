@@ -11,6 +11,7 @@ export type SetupArgs = { repo: string; branch: string; expected_tip: string | n
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 const enc = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const SHA = /^[0-9a-f]{40}$/;
+const COMMIT = "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }";
 /** The most the files may weigh, serialised: the kernel checks the same (codehost.ts), and an executor request holds 1 MB in all. */
 export const SETUP_BYTES = 800_000;
 
@@ -110,18 +111,17 @@ export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promi
   const into = s.into;
   let tip = s.tip;
   if (s.missing.length) {
-    const base = await api("GET", `/repos/${a.repo}/commits/${s.parent}`);
-    const tree = await api("POST", `/repos/${a.repo}/git/trees`, { base_tree: base.commit.tree.sha, tree: s.missing.map((path) => ({ path, mode: "100644", type: "blob", content: a.files[path] })) });
-    const commit = await api("POST", `/repos/${a.repo}/git/commits`, { message: withTrailer(`Add the setup files (${s.missing.join(", ")})`, signedAs), tree: tree.sha, parents: [s.parent] });
-    tip = String(commit.sha);
-    // GitHub's ref update has no compare-and-swap, and a non-forced update still accepts a reset to an ancestor of the new commit:
-    // read the tip again right before it and refuse any other, so only the window of these two calls stays open.
-    if (s.tip) {
-      const now = String((await api("GET", `/repos/${a.repo}/branches/${enc(a.branch)}`)).commit?.sha ?? "");
-      if (now !== s.tip) throw fail(409, `${a.branch} moved from ${s.tip.slice(0, 12)} to ${now.slice(0, 12)} while the setup ran: ask again`);
-    }
-    if (s.tip) await api("PATCH", `/repos/${a.repo}/git/refs/heads/${a.branch}`, { sha: tip });
-    else await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${a.branch}`, sha: tip });
+    // The commit is made by GitHub's createCommitOnBranch with expectedHeadOid, a real compare-and-swap: it refuses when the branch is
+    // anywhere but the reviewed parent (the tip, or for a new branch the reviewed default-branch head the ref is created at).
+    if (!s.tip) await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${a.branch}`, sha: s.parent });
+    const [headline, ...rest] = withTrailer(`Add the setup files (${s.missing.join(", ")})`, signedAs).split("\n");
+    const r = await api("POST", "/graphql", { query: COMMIT, variables: { input: {
+      branch: { repositoryNameWithOwner: a.repo, branchName: a.branch }, expectedHeadOid: s.parent,
+      message: { headline: headline!, body: rest.join("\n").trim() },
+      fileChanges: { additions: s.missing.map((path) => ({ path, contents: Buffer.from(a.files[path]!).toString("base64") })) } } } });
+    if (r?.errors?.length) throw fail(409, `${a.branch} wasn't committed to (it moved from ${s.parent.slice(0, 12)}, or GitHub refused): ${String(r.errors[0]?.message ?? "").slice(0, 200)}: ask again`);
+    tip = String(r?.data?.createCommitOnBranch?.commit?.oid ?? "");
+    if (!SHA.test(tip)) throw fail(502, "GitHub named no commit for the setup files");
   } else if (!tip || (!into && !s.carried.length)) return { ok: true, text: JSON.stringify({ pr_url: null, tip, nothing_to_add: true }) };
   if (into) return { ok: true, text: JSON.stringify({ pr_url: into.html_url, tip }) };
   // The PR opens from whatever the branch holds then: it is bound to the reviewed tip by checking the opened PR's head (the branch can move
