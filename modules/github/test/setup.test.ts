@@ -17,7 +17,7 @@ const args = (over = {}) => ({ repo: "acme/widgets", files: { ".deepsec/data/w/I
 /** The record's args as the plan binds them (it adds the reviewed default branch and its head). */
 const runOf = (api: any, a: any) => setup.run(api, { base: "main", base_head: HEAD, ...a });
 const BRANCH = `aidenhq/setup-${COMMIT.slice(0, 12)}`;
-const earlierPr = { number: 4, html_url: "https://github.com/acme/widgets/pull/4", title: "Earlier setup", head: { ref: "aidenhq/setup-111111111111", repo: { full_name: "acme/widgets" } }, base: { ref: "main" } };
+const earlierPr = { number: 4, html_url: "https://github.com/acme/widgets/pull/4", title: "Earlier setup", head: { ref: "aidenhq/setup-111111111111", sha: "1".repeat(40), repo: { full_name: "acme/widgets" } }, base: { ref: "main" } };
 
 /** A fake GitHub: the default branch and its head, the files its head has, the open PRs. */
 function github(o: { has?: string[]; open?: any[]; def?: string; head?: string } = {}) {
@@ -65,10 +65,27 @@ test("files the default branch already has are never overwritten; with nothing m
 
 test("one PR per repo: an earlier setup PR and its branch are closed once the new one is open", async () => {
   const g = github({ open: [earlierPr, { ...earlierPr, number: 5, head: { ref: "feature/x", repo: { full_name: "acme/widgets" } } }, { ...earlierPr, number: 6, base: { ref: "release" } }] });
-  await runOf(g.api, args());
+  const p = await setup.plan(g.api, args());
+  assert.deepEqual(p.args.supersede, [{ number: 4, head: "1".repeat(40) }], "the plan names the PRs and heads the reviewer sees");
+  await setup.run(g.api, p.args);
   assert.deepEqual(calls(g).slice(3), ["POST /pulls", "PATCH /pulls/4", "DELETE /git/refs/heads/aidenhq/setup-111111111111"]);
   assert.deepEqual(g.writes.find((w) => w.method === "PATCH")!.body, { state: "closed" });
   assert.match((await setup.plan(g.api, args())).facts.sentence, /earlier setup PR \("Earlier setup" https:\/\/github.com\/acme\/widgets\/pull\/4\) will be closed/);
+});
+
+test("only the setup PRs the reviewer saw, at the heads they saw, are closed: one changed or opened since stays", async () => {
+  const g = github({ open: [earlierPr] });
+  const p = await setup.plan(g.api, args());
+  const later = github({ open: [{ ...earlierPr, head: { ...earlierPr.head, sha: "2".repeat(40) } }, { ...earlierPr, number: 7, head: { ref: "aidenhq/setup-777777777777", sha: "7".repeat(40), repo: { full_name: "acme/widgets" } } }] });
+  await setup.run(later.api, p.args);
+  assert.deepEqual(calls(later), ["POST /git/trees", "POST /git/commits", "POST /git/refs", "POST /pulls"]);
+});
+
+test("a path whose parent directory is a file on the default branch is refused", async () => {
+  const g = github({ has: [".deepsec/data"] });
+  await assert.rejects(setup.plan(g.api, args()), /\.deepsec\/data is a file on main/);
+  await assert.rejects(runOf(g.api, args()), /is a file on main/);
+  assert.deepEqual(g.writes, []);
 });
 
 test("a failed PR leaves no stray branch", async () => {
