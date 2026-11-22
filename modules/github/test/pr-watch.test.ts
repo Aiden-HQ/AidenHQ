@@ -280,6 +280,13 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await timeout.watch.tick(); await timeout.watch.tick();
   assert.equal(timeout.gh.filter((g) => g === "PUT /repos/acme/app/pulls/19/update-branch rebase").length, 1, "a timeout backs off, it is not re-asked on the next tick");
   assert.equal(timeout.woke.length, 0, "and nobody is woken while it retries");
+  // A refusal that never clears (a 403 with no right to update on the rebase, a "not now" on the merge fallback) must not be
+  // retried unseen forever: after a few polls at this head it wakes the task to rebase the branch, once.
+  const stuck = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 403, body: { message: "Resource not accessible by integration" } }, merge: { status: 422, body: { message: "Update branch is temporarily unavailable" } } } });
+  stuck.set([stuck.agentPr(20, redPr(20))]);
+  for (let i = 0; i < 4; i++) await stuck.watch.tick();
+  assert.equal(stuck.woke.length, 1, "a transient refusal that never clears wakes the task rather than waiting unseen");
+  assert.match(stuck.woke[0].text ?? "", /Rebase the PR's branch/, "and the wake is the rebase ask");
   // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
   const conflict = await rig(t, { behind: 2, update: 422 });
   conflict.set([conflict.agentPr(13, redPr(13))]);

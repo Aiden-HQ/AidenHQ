@@ -23,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** 2 once a design-review marker was written by a version that only records a delivered request: a marker without it predates that confirmation and is reconciled by asking again. */ reviewMarked?: number; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** The second design-review ask's refusals for this head (nobody holds the role): the deadline is never moved by one, and after a few the review is advisory for the head rather than a wait nobody can end. */ reviewRefused?: { head: string; n: number }; /** 2 once a design-review marker was written by a version that only records a delivered request: a marker without it predates that confirmation and is reconciled by asking again. */ reviewMarked?: number; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -296,11 +296,21 @@ export function createMerges(d: {
             // The wait starts over only for a request that was really delivered: a refused one leaves the old deadline standing,
             // so the next poll asks again rather than the advisory waiver counting down from a request nobody received.
             const delivered = await askReview(true);
-            // Delivered now, or already on file from an earlier ask whose answer was lost: either way a reviewer has it, so the
-            // advisory clock starts over. A refused request leaves the old deadline, and the next poll asks again.
-            if (delivered || p.reviewAskedAgain === p.head) p.wait = { key: v.why, since: now().toISOString() };
-            return;
-          }
+            if (delivered || p.reviewAskedAgain === p.head) {
+              // Delivered now, or already on file from an earlier ask whose answer was lost: a reviewer has it, so the advisory
+              // clock starts over.
+              delete p.reviewRefused;
+              p.wait = { key: v.why, since: now().toISOString() };
+              return;
+            }
+            // Nobody received it (no live agent holds the role, or the read failed): the deadline stands, but a wait that can never
+            // end is no wait. After a few tries at this head the review is advisory for it, as it would be had the ask been
+            // delivered and gone unanswered, and the log says which happened. They are per head, so a new head starts over.
+            const n = p.reviewRefused?.head === p.head ? p.reviewRefused.n + 1 : 1;
+            p.reviewRefused = { head: p.head, n };
+            if (n < DESIGN_REVIEW.asks) return;
+            log("design review could not be asked again: advisory for this head", { pr: p.url, head: p.head, tries: n });
+          } else delete p.reviewRefused;
           p.reviewExpired = p.head;
           log("design review advisory: no verdict in time", { pr: p.url });
           v = decide(data, p.head, { uiReview, designAdvisory: true });

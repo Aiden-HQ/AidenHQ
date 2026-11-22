@@ -459,6 +459,29 @@ test("a refused second review request leaves the deadline where it was, so the a
   assert.equal(n, 3, "and it is asked again");
 });
 
+test("a second review request that is refused every time does not hold the merge forever", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  // The first ask is filed; every second ask is refused (no live agent holds the role any more), so no request is ever delivered
+  // twice and the advisory clock can never start from one. The wait still has to end.
+  let n = 0;
+  const checks = (method, url) => {
+    if (method !== "POST" || url !== "/v1/tasks") return undefined;
+    n++;
+    return n === 1 ? { id: "t1", identifier: "T-1" } : { __status: 409, why: "no agent holds the design-review role" };
+  };
+  const { handle, github, merge, settle, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000e5", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.equal(n, 1, "the first ask filed its task");
+  // Past the wait, each poll asks again and is refused: after the bounded tries the review is advisory for this head, as it
+  // would be had a delivered second ask gone unanswered, so the head merges instead of waiting on a role nobody holds.
+  clock.t += 121 * 60_000;
+  for (let i = 0; i < 4; i++) await handle.stepMerges();
+  assert.ok(n >= 3, "the refused ask was retried a few times, not swallowed after one");
+  assert.equal(github.merges().length, 1, "a review nobody can be asked for never holds the merge forever");
+  await settle();
+});
+
 test("a review marker written before delivery was confirmed is reconciled by asking once more", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
   const cacheDir = mkdtempSync(join(tmpdir(), "codehost-legacy-review-"));
