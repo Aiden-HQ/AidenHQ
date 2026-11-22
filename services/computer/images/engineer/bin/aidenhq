@@ -8,7 +8,8 @@
 //   aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]...
 //                                                    push each branch at its commit in this workspace's clone and open (or
 //                                                    update) its PR (a change request on this server): one codehost.pr write each;
-//                                                    --fixes adds a `Fixes <owner/repo#n>` line to the body for each issue the PR closes
+//                                                    --fixes adds a `Fixes <owner/repo#n>` line to the body for each issue the PR closes,
+//                                                    and needs --body-file: no body file means the existing description is kept
 //   aidenhq review <org/repo> <branch>... [--title <title>] [--body-file <file>]
 //                                                    what the AI reviewer would say of publishing these branches, before
 //                                                    publishing: nothing is filed; up to 3 a job (each is a reviewer call)
@@ -235,7 +236,11 @@ function withFixes(body, issues) {
 const lines = [];
 if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
-  const body = withFixes(flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "", fixes);
+  // A publish without --body-file names no description: an existing PR keeps its own (never a body generated here), so
+  // --fixes (whose whole output is generated text) needs the body file that carries the whole description it belongs in.
+  const supplied = flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "";
+  if (fixes.length && !supplied.trim()) fail(`--fixes needs --body-file: a publish without one keeps the existing description, so pass the whole body with its Fixes line (nothing was ${command === "publish" ? "published" : "filed"})`, 2);
+  const body = withFixes(supplied, fixes);
   if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
