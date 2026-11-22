@@ -993,3 +993,64 @@ test("a sign-out still says signed out, and is cleared when GitHub reconnects", 
   await handle.stepMerges();
   assert.deepEqual(waits.map((w) => w.reason), ["GitHub is signed out: waiting for the owner to reconnect it"]);
 });
+
+test("a review reason is cleared when another gate takes the PR over, not only when the review passes", async () => {
+  // The card's reason belongs to the gate that actually holds the merge: a required check rerun on the same head takes the PR
+  // over from code review, so "code review: …" must not sit on a card that is now waiting on CI.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  let review = { wait: "code review: 1 important finding open: t (a.ts:3)" };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(Date.now()),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: async () => review,
+  });
+  void merges.enqueue("k-00000000000000c1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3)"]);
+  // A required check is rerun on the same head: CI holds the merge now, so the review reason is no longer the record's wait.
+  prs["acme-agents/widget"].checks = "PENDING";
+  await merges.step();
+  assert.equal(waits.at(-1).reason, null, "the review reason is cleared when checks take over");
+  assert.equal(merges.status("k-00000000000000c1").state, "running");
+  // The checks come back green and the review passes: nothing is republished, nothing stale is left.
+  prs["acme-agents/widget"].checks = "SUCCESS";
+  review = undefined;
+  await merges.step();
+  assert.equal(waits.at(-1).reason, null, "no reason is left once nothing waits");
+  assert.equal(github.merges().length, 1);
+});
+
+test("the record's wait is the whole queue's: one PR leaving its wait never clears another PR's reason", async () => {
+  // Both PRs of one merge record wait on code review. The second passes and merges; the first is still blocked, and its reason
+  // must stay on the card (it never changes, so it is not republished: the record must not have been cleared for it).
+  const prs = {
+    "acme-agents/widget": { head: HEAD, checks: "SUCCESS" },
+    "acme-agents/gadget": { head: "d".repeat(40), checks: "SUCCESS" },
+  };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  const passing = new Set();
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(Date.now()),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: async (repo) => (passing.has(repo) ? undefined : { wait: `code review: 1 important finding open: ${repo}` }),
+  });
+  void merges.enqueue("k-00000000000000c2", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/gadget", number: 2, head: "d".repeat(40) }] });
+  await merges.step();
+  // One record, two waiting PRs: one reason naming both, not whichever PR was polled last.
+  const first = waits.at(-1).reason;
+  assert.match(first, /acme-agents\/widget/);
+  assert.match(first, /acme-agents\/gadget/);
+  // The gadget's review passes: it merges, and the widget is still waiting on its own review.
+  passing.add("acme-agents/gadget");
+  await merges.step();
+  await merges.step();
+  assert.equal(github.merges().length, 1, "the gadget merged");
+  assert.equal(merges.status("k-00000000000000c2").state, "running", "the widget still waits");
+  const last = waits.at(-1).reason;
+  assert.equal(typeof last, "string", "the widget's reason is still on the record, never cleared by the other PR");
+  assert.match(last, /acme-agents\/widget/);
+  assert.doesNotMatch(last, /gadget/);
+});
