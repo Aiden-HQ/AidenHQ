@@ -463,3 +463,18 @@ test("self-review is incomplete, not clean, when redaction changes an important 
     assert.doesNotMatch(out.stdout, /: clean/);
   } finally { model.close(); }
 });
+
+test("an untracked file is an uncommitted change even when the clone's config hides untracked files", async () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  sh(repo, "config", "status.showUntrackedFiles", "no");
+  writeFileSync(join(repo, "untracked.txt"), "x\n");
+  assert.equal(sh(repo, "status", "--porcelain"), "", "git's own default would say nothing here");
+  const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+  const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+    const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env: { ...process.env, AIDENHQ_GATEWAY_URL: "http://127.0.0.1:9", AIDENHQ_RUN_TOKEN: "t" }, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d)); c.on("close", (status) => ok({ status, stdout }));
+  });
+  assert.equal(out.status, 2, out.stdout);
+  assert.match(out.stdout, /incomplete: uncommitted changes/);
+});

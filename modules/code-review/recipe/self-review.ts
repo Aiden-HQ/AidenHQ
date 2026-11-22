@@ -53,7 +53,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const rerun = last.base === base && !!last.head && last.head !== head && (() => { try { git("merge-base", "--is-ancestor", last.head!, head); return true; } catch { return false; } })();
   const incremental = rerun && last.open === 0, from = incremental ? last.head! : base, effort = rerun ? AGAIN : FIRST;
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
-  if (git("status", "--porcelain")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
+  if (git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
   if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
