@@ -10,24 +10,27 @@
 //   commands      (Dockerfile RUN, *.sh, workflow lines) `npm i -g` and `npx -y` at an exact version, `pip install`
 //                 at `==`, no `curl | sh`, and after a script adds an apt repository (sources.list.d) every apt install
 //                 is `pkg=version`. Distro packages installed before that ride on the base image's digest; a
-//                 distro package pinned anyway (`pkg=version`) is dated from the host's Ubuntu pockets. A host script
-//                 pins per Ubuntu release in the arms of `case "$codename" in <release>) …;; esac`: a pin in an arm is
-//                 dated for that release only, any other for every release the file names (noble when it names none).
+//                 distro package pinned anyway (`pkg=version`) is dated from its own base's distro (the last FROM's
+//                 debian:<codename> or ubuntu:<codename>; the file's source entries first, then that distro's pockets).
+//                 Where the base's codename can't be read (a host script, a local stage, scratch, FROM ${ARG}, another
+//                 image) the host's Ubuntu pockets are used. A host script pins per Ubuntu release in the arms of
+//                 `case "$codename" in <release>) …;; esac`: a pin in an arm is dated for that release only, any other
+//                 for every release the file names (noble when it names none).
 //   host pins     ops/vm/pins.json (read by ops/vm/setup.sh): `apt` for every release, `releases.<codename>.apt` for one;
 //                 each dated from the file's `repos` as that release reads them, then its distro's pockets.
 // Dated (only pins a change adds or alters, against the base): images, actions, npm, PyPI, apt pins, GitHub release
 // downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security exception in
 // .github/supply-chain-exceptions.yaml read from the head, so a fix and its exception land in one PR and the code review
 // covers both (`ecosystem` docker, github-action, npm, pypi, apt or github-release; `package`, `version`, `advisory`,
-// `reason`). A pin that can't be dated (a registry with no push record, a lookup error, a Debian package: apt pins are
-// dated from Ubuntu's pockets) is a printed warning, not a failure (the gates fail open); a pin the registry contradicts (an action's tag is another commit) fails.
+// `reason`). A pin that can't be dated (a registry with no push record, a lookup error, an apt pin in no repository
+// its file or base image lists) is a printed warning, not a failure (the gates fail open); a pin the registry contradicts (an action's tag is another commit) fails.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
 import type { Exception, FetchError } from "./best-version.ts";
 
 export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
-interface State { repoAdded: boolean; sources: string[]; releases: Set<string>; releaseCase?: boolean; arm?: string[] }
+interface State { repoAdded: boolean; sources: string[]; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
@@ -47,6 +50,22 @@ const onRelease = (s: string, release: string, distro = "ubuntu") => s.replace(/
 const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
   ? [`http://deb.debian.org/debian ${r} main`]
   : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
+
+// The distro and codename a Dockerfile FROM installs: Docker Hub's debian:<codename> (sid, bookworm, trixie, …) and
+// ubuntu:<codename> (noble, or a `noble-…` / `…-noble` tag). Anything else, a local stage or an unread codename: none.
+const DISTRO_TAGS: Record<string, [string, string[]]> = {
+  debian: ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"]],
+  ubuntu: ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"]],
+};
+function baseDistro(ref: string): { distro: string; release: string } | undefined {
+  const { host, repo, tag } = parseImage(ref);
+  if (!tag || !repo.startsWith("library/")) return undefined;
+  const entry = host === "docker.io" ? DISTRO_TAGS[repo.slice("library/".length)] : undefined;
+  if (!entry) return undefined;
+  const [distro, codenames] = entry;
+  const release = tag.split("-").find((part) => codenames.includes(part));
+  return release ? { distro, release } : undefined;
+}
 
 export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
 
@@ -111,7 +130,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   for (const m of cmd.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
     for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
       const [pkg, ver] = a.split("=") as [string, string | undefined];
-      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, releases: state.arm, at });
+      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, releases: state.arm, ...state.base, at });
       else if (state.repoAdded) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
     }
   }
@@ -161,6 +180,7 @@ export function scanFile(path: string, text: string): { pins: Pin[]; problems: s
       if (ref && !ref.includes("$") && !stages.has(ref.toLowerCase()) && (from || /[:/]/.test(ref))) {
         DIGEST.test(ref) ? pins.push(imagePin(ref, at(n))) : problems.push(`${at(n)}: image ${ref} has no digest (name:tag@sha256:…)`);
       }
+      if (from) state.base = from[1]!.includes("$") || stages.has(from[1]!.toLowerCase()) ? undefined : baseDistro(from[1]!);
       if (from?.[2]) stages.add(from[2].toLowerCase());
       if (/^\s*RUN\s/i.test(l)) commands(l, at(n), state, pins, problems);
     }
@@ -197,9 +217,9 @@ export function scanFile(path: string, text: string): { pins: Pin[]; problems: s
       for (const m of l.matchAll(/([a-z0-9][\w.\/-]*:[\w.-]+@sha256:[0-9a-f]{64})/g)) pins.push(imagePin(m[1]!, at(i + 1)));
     });
   }
-  // An apt pin once per release it is installed on.
+  // An apt pin once per release it is installed on: an arm's releases, else its own base image's, else DEFAULT_RELEASE.
   const all = state.releases.size ? [...state.releases] : [DEFAULT_RELEASE];
-  return { pins: pins.flatMap(({ releases, ...p }) => (p.kind === "apt" ? (releases ?? all).map((release) => ({ ...p, release })) : [p])), problems };
+  return { pins: pins.flatMap(({ releases, ...p }) => (p.kind === "apt" ? (releases ?? (p.release ? [p.release] : all)).map((release) => ({ ...p, release })) : [p])), problems };
 }
 
 // An apt pin's distro and sources are part of it: the same version from another repository or distro is dated again.

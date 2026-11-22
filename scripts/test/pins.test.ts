@@ -59,3 +59,49 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
     assert.equal((await checkAges({ pins: [img], exceptions: owner(over), date: fresh, now })).length, 1, JSON.stringify(over));
   }
 });
+
+test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codename", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const sid = `FROM debian:sid-slim${d}\nRUN apt-get update && apt-get install -y --no-install-recommends libkrb5-3=1.22.3-1\n`;
+  const [apt] = scanFile("apps-mcp/Dockerfile", sid).pins.filter((p) => p.kind === "apt");
+  assert.equal(apt.release, "sid");
+  assert.equal(apt.distro, "debian");
+  const tried = [];
+  await dateApt(apt, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(tried, ["http://deb.debian.org/debian sid main"]);
+
+  // An Ubuntu base is dated from its own codename, whether the tag leads (noble-…) or trails (…-noble) with a suffix.
+  for (const [base, codename] of [["ubuntu:resolute", "resolute"], ["ubuntu:noble-20260101", "noble"], ["ubuntu:oracular-20250101", "oracular"]]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
+    assert.equal(p.release, codename, base);
+    assert.equal(p.distro, "ubuntu", base);
+  }
+
+  // Untracked bases keep DEFAULT_RELEASE, with no distro recorded: FROM ${ARG}, a local stage, scratch, another image.
+  const fallbacks: [string, string][] = [
+    ["FROM ${BASE}\nRUN apt-get install -y jq=1.7.1-3\n", "FROM ${BASE}"],
+    ["FROM debian:sid-slim" + d + " AS build\nFROM build\nRUN apt-get install -y jq=1.7.1-3\n", "FROM build"],
+    ["FROM scratch\nRUN apt-get install -y jq=1.7.1-3\n", "FROM scratch"],
+    [`FROM node:24.22.3-bookworm-slim${d}\nRUN apt-get install -y jq=1.7.1-3\n`, "FROM node"],
+  ];
+  for (const [text, why] of fallbacks) {
+    const [p] = scanFile("Dockerfile", text).pins.filter((x) => x.kind === "apt");
+    assert.equal(p.release, "noble", why);
+    assert.equal(p.distro, undefined, why);
+    const sources = [];
+    await dateApt(p, async (_k, _n, { source }) => { sources.push(source); return { published: day(30), via: "test" }; });
+    assert.deepEqual(sources, ["http://archive.ubuntu.com/ubuntu noble-updates main"], why);
+  }
+
+  // The last FROM is the stage the pin runs in: an earlier Debian base doesn't date a later Ubuntu one, and vice versa.
+  const [last] = scanFile("Dockerfile", `FROM debian:bookworm${d} AS tools\nFROM ubuntu:jammy${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
+  assert.deepEqual([last.distro, last.release], ["ubuntu", "jammy"]);
+
+  // A source the file adds is tried first, then the base's own pockets.
+  const own = `FROM debian:trixie-slim${d}\nRUN echo "deb [trusted=yes] https://repo.example/apt trixie main" >/etc/apt/sources.list.d/r.list\nRUN apt-get install -y tool=2.0\n`;
+  const [ownPin] = scanFile("Dockerfile", own).pins.filter((x) => x.kind === "apt");
+  assert.deepEqual([ownPin.distro, ownPin.release], ["debian", "trixie"]);
+  const triedOwn = [];
+  await dateApt(ownPin, async (_k, _n, { source }) => { triedOwn.push(source); if (triedOwn.length === 1) throw Object.assign(new Error("not listed"), { notListed: true }); return { published: day(30), via: "test" }; });
+  assert.deepEqual(triedOwn, ["https://repo.example/apt trixie main", "http://deb.debian.org/debian trixie main"]);
+});
