@@ -65,24 +65,31 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
   }
 });
 
-test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codename", async () => {
+test("pins: a debian:sid-slim base dates its apt pin from Debian sid", async () => {
   const d = "@sha256:" + "f".repeat(64);
   const sid = `FROM debian:sid-slim${d}\nRUN apt-get update && apt-get install -y --no-install-recommends libkrb5-3=1.22.3-1\n`;
   const [apt] = scanFile("apps-mcp/Dockerfile", sid).pins.filter((p) => p.kind === "apt");
+  // The base the file declares, not the Ubuntu default it used to fall back to (#1386).
   assert.equal(apt.release, "sid");
   assert.equal(apt.distro, "debian");
-  const tried = [];
+  const tried: string[] = [];
   await dateApt(apt, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
   assert.deepEqual(tried, ["http://deb.debian.org/debian sid main"]);
+});
 
-  // An Ubuntu base is dated from its own codename, whether the tag leads (noble-…) or trails (…-noble) with a suffix.
+test("pins: an ubuntu base dates its apt pin from that release's codename", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  // The tag may lead (noble-…) or trail (…-noble) with a suffix; either way the codename is what dates the pin.
   for (const [base, codename] of [["ubuntu:resolute", "resolute"], ["ubuntu:noble-20260101", "noble"], ["ubuntu:oracular-20250101", "oracular"]]) {
     const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
     assert.equal(p.release, codename, base);
     assert.equal(p.distro, "ubuntu", base);
   }
+});
 
-  // Untracked bases keep DEFAULT_RELEASE, with no distro recorded: FROM ${ARG}, a stage extending one, scratch, another image.
+test("pins: a FROM ${ARG} base still falls back to noble", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  // An untracked base records no distro: FROM ${ARG}, a stage extending one, scratch, another image.
   const fallbacks: [string, string][] = [
     ["FROM ${BASE}\nRUN apt-get install -y jq=1.7.1-3\n", "FROM ${BASE}"],
     ["FROM alpine:3.24 AS build\nFROM build\nRUN apt-get install -y jq=1.7.1-3\n", "FROM build"],
@@ -93,9 +100,18 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
     const [p] = scanFile("Dockerfile", text).pins.filter((x) => x.kind === "apt");
     assert.equal(p.release, "noble", why);
     assert.equal(p.distro, undefined, why);
-    const sources = [];
+    const sources: string[] = [];
     await dateApt(p, async (_k, _n, { source }) => { sources.push(source); return { published: day(30), via: "test" }; });
     assert.deepEqual(sources, ["http://archive.ubuntu.com/ubuntu noble-updates main"], why);
+  }
+});
+
+test("pins: a suite alias is followed only where its codename never moves", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  // `debian:unstable` is permanently sid, so it is dated from Debian's own suite rather than the Ubuntu default.
+  for (const [base, release, distro] of [["debian:unstable", "sid", "debian"], ["debian:unstable-slim", "sid", "debian"], ["debian:stable", "noble", undefined]]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.8-1\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], [distro, release], base);
   }
 
   // A numeric suite tag is that suite: `debian:12` is bookworm and `ubuntu:24.04` is noble, so neither falls to the

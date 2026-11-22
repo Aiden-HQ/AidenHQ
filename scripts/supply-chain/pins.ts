@@ -93,6 +93,13 @@ const DISTRO_TAGS = new Map<string, [string, string[], Map<string, string>]>([
   ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"], new Map([["12", "bookworm"], ["13", "trixie"], ["11", "bullseye"], ["10", "buster"], ["14", "forky"]])]],
   ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "bionic", "xenial", "oracular", "plucky", "questing", "resolute"], new Map([["24.04", "noble"], ["22.04", "jammy"], ["20.04", "focal"], ["18.04", "bionic"], ["16.04", "xenial"], ["24.10", "oracular"], ["25.04", "plucky"], ["25.10", "questing"], ["26.04", "resolute"]])]],
 ]);
+// A moving suite alias is only mapped where its codename never changes. Debian's `unstable` is permanently `sid`, so a
+// `debian:unstable` stage is dated from sid instead of falling back to the host's Ubuntu pockets. `stable`, `testing`
+// and `oldstable` move with each release, so naming one statically would mis-date the stage once they move; they stay
+// unread and keep the documented fallback.
+const DISTRO_ALIASES = new Map<string, Map<string, string>>([
+  ["debian", new Map([["unstable", "sid"]])],
+]);
 // A numeric tag names its suite by its leading number: Debian's whole major covers its point releases (`12.7` is
 // bookworm), and Ubuntu's year.minor covers its point releases (`24.04.1` is noble). A tag of any other shape is not one.
 function numericRelease(part: string, distro: string, numbers: Map<string, string>): string | undefined {
@@ -108,6 +115,8 @@ function baseDistro(ref: string): { distro: string; release: string } | undefine
   if (!entry) return undefined;
   const [distro, codenames, numbers] = entry;
   for (const part of tag.split("-")) {
+    const alias = DISTRO_ALIASES.get(distro)?.get(part);
+    if (alias) return { distro, release: alias };
     if (codenames.includes(part)) return { distro, release: part };
     const release = numericRelease(part, distro, numbers);
     if (release) return { distro, release };
