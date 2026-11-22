@@ -203,6 +203,25 @@ function splitRepo(repo: string): { owner: string; name: string } {
 
 type Fetch = typeof fetch;
 
+/** GitHub's refusal, with the `errors[]` entries that name the rejected field (a 422 otherwise reads only "Validation Failed"). */
+function errorDetail(body: unknown): string {
+  if (typeof body !== "object" || body === null) return JSON.stringify(body ?? "").slice(0, 200);
+  const b = body as { message?: unknown; errors?: unknown };
+  const message = typeof b.message === "string" ? b.message : "";
+  const errors = Array.isArray(b.errors) ? b.errors : [];
+  const parts = errors.slice(0, 10).flatMap((e) => {
+    if (typeof e === "string") return [e];
+    if (typeof e !== "object" || e === null) return [];
+    const o = e as { resource?: unknown; field?: unknown; code?: unknown; message?: unknown };
+    const where = [o.resource, o.field].filter((x): x is string => typeof x === "string" && Boolean(x)).join(".");
+    const code = typeof o.code === "string" ? o.code : "";
+    const text = typeof o.message === "string" ? o.message : "";
+    return [[where, code, text].filter(Boolean).join(": ")];
+  }).filter(Boolean);
+  const detail = [message, ...parts].filter(Boolean).join("; ");
+  return (detail || JSON.stringify(body)).slice(0, 600);
+}
+
 export class GitHub {
   constructor(
     private readonly access: GitHubAccess,
@@ -230,7 +249,7 @@ export class GitHub {
       // Through the owner's client: its rate limiter, and a typed need (client.ts) for what the owner must fix.
       const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body, this.identity ? { as: this.identity } : {});
       // GitHub answers 404 for private repositories the account can't see.
-      if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${JSON.stringify(r.body?.message ?? r.body ?? "").slice(0, 200)}`);
+      if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${errorDetail(r.body)}`);
       // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
       return (r.body ?? {}) as T;
     }
@@ -432,10 +451,33 @@ export class GitHub {
     return { url: r.html_url, id: r.id, state: r.state };
   }
 
-  /** A reply on a pull request's review thread (its first comment's id), signed by the agent. */
+  /**
+   * The first comment of the pull request's review thread that `comment` belongs to, or a refusal naming why it has none.
+   * GitHub takes a reply only on a thread root, so an id from a reply resolves to its thread's first comment.
+   */
+  private async threadRoot(ref: Ref, comment: number): Promise<number> {
+    type Threads = { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { comments: { nodes: { databaseId: number }[] } }[] } } | null } | null };
+    type ThreadsPage = NonNullable<NonNullable<Threads["repository"]>["pullRequest"]>["reviewThreads"];
+    let after: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const d: Threads = await this.graphql<Threads>("reviewThreads", { owner: ref.owner, name: ref.repo, number: ref.number, after });
+      const threads: ThreadsPage | null = d.repository?.pullRequest?.reviewThreads ?? null;
+      if (!threads) throw new GitHubRefused(`couldn't read ${ref.owner}/${ref.repo}#${ref.number}'s review threads to resolve comment ${comment}`);
+      for (const t of threads.nodes) {
+        const [first, ...rest] = t.comments.nodes;
+        if (first && (first.databaseId === comment || rest.some((c: { databaseId: number }) => c.databaseId === comment))) return first.databaseId;
+      }
+      if (!threads.pageInfo.hasNextPage) break;
+      after = threads.pageInfo.endCursor;
+    }
+    throw new GitHubRefused(`comment ${comment} isn't on a review thread of ${ref.owner}/${ref.repo}#${ref.number} at its current head (a standalone file comment, a comment on a force-pushed or closed review, or another pull request's): there is no thread to reply on`);
+  }
+
+  /** A reply on a pull request's review thread (its first comment's id, or any comment in it), signed by the agent. */
   async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
     if (!body.trim()) throw new GitHubRefused("a reply needs text");
-    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${comment}/replies`, { body: { body: withFooter(body, agent) } });
+    const root = await this.threadRoot(ref, comment);
+    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
     return { url: r.html_url, id: r.id };
   }
 

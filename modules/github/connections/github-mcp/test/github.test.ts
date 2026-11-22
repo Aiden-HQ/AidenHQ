@@ -156,6 +156,51 @@ describe("GitHub", () => {
 
   });
 
+  describe("review thread replies", () => {
+    const page = (nodes: unknown[]) => ({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } } });
+    const node = (first: number, replies: number[] = []) => ({ id: "T1", isResolved: false, isOutdated: false, viewerCanResolve: true, path: "src/a.ts", line: 3, comments: { nodes: [first, ...replies].map((id) => ({ databaseId: id, url: "u", body: "b", author: { __typename: "User", login: "owner1" } })) } });
+    /** A fake GitHub whose review threads are `threads` and whose reply write answers with `answer`. */
+    function fakeThreads(threads: unknown[], answer: () => Response = () => new Response(JSON.stringify({ id: 77, html_url: "https://github.com/a/b/pull/7#discussion_r77" }), { status: 201 })) {
+      const calls: { method: string; path: string; body?: any }[] = [];
+      const impl = (async (input: URL | string, init?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = init?.method ?? "GET";
+        calls.push({ method, path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (url.pathname === "/graphql") return new Response(JSON.stringify(page(threads)), { status: 200 });
+        if (method === "POST" && /\/pulls\/7\/comments\/\d+\/replies$/.test(url.pathname)) return answer();
+        return new Response("Not Found", { status: 404 });
+      }) as typeof fetch;
+      return { impl, calls };
+    }
+
+    it("a reply id resolves to its thread's first comment, which the POST names", async () => {
+      const { impl, calls } = fakeThreads([node(100, [101, 102])]);
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 101, "fixed: abc1234.", "Aiden")).resolves.toEqual({ id: 77, url: "https://github.com/a/b/pull/7#discussion_r77" });
+      const post = calls.find((c) => c.method === "POST" && c.path !== "/graphql")!;
+      expect(post.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
+      expect(post.body.body).toContain(`fixed: abc1234.\n\n${FOOTER("Aiden")}`);
+    });
+
+    it("a thread root's id is used as it is", async () => {
+      const { impl, calls } = fakeThreads([node(100, [101])]);
+      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "disputed: see src/a.ts:3.", "Aiden");
+      expect(calls.find((c) => c.method === "POST" && c.path !== "/graphql")!.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
+    });
+
+    it("an id on no thread of the pull request fails with its reason, and nothing is posted", async () => {
+      const { impl, calls } = fakeThreads([node(100, [101])]);
+      const gh = owner(impl);
+      await expect(gh.reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(GitHubRefused);
+      await expect(gh.reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/comment 999 isn't on a review thread of a\/b#7/);
+      expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
+    });
+
+    it("a 422 surfaces GitHub's errors[] field and code", async () => {
+      const { impl } = fakeThreads([node(100)], () => new Response(JSON.stringify({ message: "Validation Failed", errors: [{ resource: "PullRequestReviewComment", field: "body", code: "custom", message: "body is too long" }] }), { status: 422 }));
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "x", "Aiden")).rejects.toThrow(/Validation Failed; PullRequestReviewComment\.body: custom: body is too long/);
+    });
+  });
+
   describe("issue, review and re-run writes", () => {
     it("pr review posts COMMENT only, at the head it read, signed by the agent", async () => {
       const { impl, calls } = fake({ "GET /repos/a/b/pulls/7": { state: "open", head: { sha: "abc" } }, "POST /repos/a/b/pulls/7/reviews": { id: 5, html_url: "h", state: "COMMENTED" } });
