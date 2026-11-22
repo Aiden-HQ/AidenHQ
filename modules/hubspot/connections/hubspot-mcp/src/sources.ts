@@ -102,8 +102,8 @@ const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)
 
 /** A headcount as an integer; null when it isn't one a Postgres integer holds (one bad import value must not stall the type). */
 const headcount = (v: unknown) => {
-  const n = num(v);
-  return n == null || Math.abs(n) > 2_147_483_647 ? null : Math.round(n);
+  const n = num(v) == null ? null : Math.round(num(v)!);
+  return n == null || Math.abs(n) > 2_147_483_647 ? null : n;
 };
 
 /** Row builders: one record's columns. url is the page HubSpot's answer names (its urlTemplate carries the portal id). */
@@ -258,6 +258,8 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
 export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[], deadline = Infinity): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
+  if (kinds.includes("deals"))
+    for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   // The owner scan writes and checkpoints a page at a time, and resumes where the last pass's budget ran out (its cursor is the
   // next offset; empty once it reached the end).
   const from = (await store.scope("owners")).cursor || undefined;
@@ -272,8 +274,6 @@ export async function syncReference(store: SourceStore, call: CallHubSpot, kinds
     }
     await store.saveScope("owners", next === undefined ? "" : String(next));
   } while (next !== undefined && Date.now() < deadline);
-  if (kinds.includes("deals") && Date.now() < deadline)
-    for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
 }
 

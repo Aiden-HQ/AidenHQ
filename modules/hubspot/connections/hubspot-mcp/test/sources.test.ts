@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ownersPage } from "../src/adapter.js";
 import { selected, syncObject, syncReference } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
@@ -147,8 +147,11 @@ it("owners: every page of search_owners, active or not, by owner id, checkpointe
   await syncReference(store, call, ["contacts"], Date.now() - 1); // a spent budget stops the writes too: nothing moves
   expect(writes).toEqual([]);
   expect((await store.scope("owners")).cursor).toBeNull();
-  const slowStore = { ...store, upsert: async (...a: Parameters<typeof store.upsert>) => (await new Promise((r) => setTimeout(r, 20)), store.upsert(...a)) } as unknown as SourceStore;
-  await syncReference(slowStore, call, ["contacts"], Date.now() + 30); // the budget runs out after page one: its offset is kept
+  let clock = 1000; // a controlled clock: each write takes 20 ms
+  const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+  const slowStore = { ...store, upsert: async (...a: Parameters<typeof store.upsert>) => ((clock += 20), store.upsert(...a)) } as unknown as SourceStore;
+  await syncReference(slowStore, call, ["contacts"], 1030); // the budget runs out after page one: its offset is kept
+  now.mockRestore();
   expect(writes.map((w) => w.row.user_id)).toEqual(["11", "12"]);
   expect((await store.scope("owners")).cursor).toBe("20");
   writes.length = 0;

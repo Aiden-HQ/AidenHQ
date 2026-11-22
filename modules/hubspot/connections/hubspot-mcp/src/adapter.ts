@@ -48,6 +48,8 @@ export const ACTIVITY_TYPES = ["emails", "calls", "meetings", "notes", "tasks"] 
 export const SETTING_OBJECTS = ["contacts", "companies", "deals", "activities"] as const;
 
 export const SEARCH_LIMIT = 200; // documented maximum per page
+/** Owners per page: small, so the owner scan checkpoints often and a spent budget replays little. */
+const OWNERS_PAGE = 25;
 
 /** The text blocks of a tool result. */
 export const textsOf = (r: Awaited<ReturnType<CallHubSpot>>): string[] => (Array.isArray(r.content) ? r.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text));
@@ -109,11 +111,11 @@ export function isoOf(v: unknown): string | null {
 }
 
 /**
- * One page (100) of owners from `offset`, active or not (records keep pointing at people who left); `next` is where the next
+ * One page of owners from `offset`, active or not (records keep pointing at people who left); `next` is where the next
  * page starts, absent on the last. HubSpot gives no email.
  */
 export async function ownersPage(call: CallHubSpot, offset?: number): Promise<{ owners: { id: string; name: string | null }[]; next?: number }> {
-  const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
+  const o = toolJson(await call("search_owners", { limit: OWNERS_PAGE, ...(offset != null ? { offset } : {}) }), "search_owners");
   if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
   const owners = o.owners.filter((x: any) => x?.ownerId != null).map((x: any) => ({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null }));
   if (!o.hasMore || o.offset == null || Number(o.offset) === offset) return { owners };
