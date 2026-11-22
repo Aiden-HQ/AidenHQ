@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -152,7 +152,7 @@ test("self-review exits 2 when some part of the patch could not be reviewed, wha
     assert.equal(r.status, 2, r.stdout);
     assert.match(r.stdout, /it breaks/, "the finding is still printed");
     assert.match(r.stdout, new RegExp(`^self-review: branch ${branch} base \\w+ \\(merge base\\) head \\w+: incomplete$`, "m"));
-    const rec = JSON.parse(readFileSync(join(repo, ".git", "self-review.json"), "utf8"))[branch];
+    const rec = JSON.parse(readFileSync(join(repo, ".git", `self-review-${Buffer.from(branch).toString("hex")}.json`), "utf8"));
     assert.equal(rec.head, sh(repo, "rev-parse", "HEAD"), "an incomplete run records the head (what publish asks for)");
     assert.equal(rec.open, -1, "and the next run isn't incremental");
     assert.equal((await run("main", "some-other-branch")).status, 2, "a branch that isn't checked out is not reviewed");
@@ -237,7 +237,7 @@ test("self-review records nothing for a commit that was not the one it reviewed:
     assert.equal(out.status, 2, out.stdout);
     assert.match(out.stdout, /^self-review: .*: incomplete$/m);
     assert.match(out.stdout, /the checkout changed during the review/);
-    assert.equal(existsSync(join(repo, ".git", "self-review.json")), false, "no record for the commit that wasn't reviewed");
+    assert.deepEqual(readdirSync(join(repo, ".git")).filter((f) => f.startsWith("self-review")), [], "no record for the commit that wasn't reviewed");
   } finally { model.close(); }
 });
 

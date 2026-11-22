@@ -55,7 +55,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // Publish needs a self-review record for the head (any outcome); with none, or one for an older head, nothing is filed.
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login"), (e) => e.code === 2 && /no self-review.*self-review\.ts <base-branch> fix-login/.test(e.stderr));
   assert.equal(seen.length, 0);
-  writeFileSync(join(ws, "app", ".git", "self-review.json"), JSON.stringify({ "fix-login": { base: sha, head: sha, open: -1 } }));
+  writeFileSync(join(ws, "app", ".git", `self-review-${Buffer.from("fix-login").toString("hex")}.json`), JSON.stringify({ base: sha, head: sha, open: -1 }));
 
   // The args are the kind's schema's, with no workspace: the kernel names the job's own.
   // The title is the branch's first commit's subject; one that isn't a Conventional Commit is refused.

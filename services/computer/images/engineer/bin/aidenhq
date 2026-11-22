@@ -165,7 +165,7 @@ const needSelfReview = (repo, branch) => {
   const sha = shaOf(repo, branch);
   let seen;
   try {
-    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), "self-review.json"), "utf8"))[branch]?.head;
+    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), `self-review-${Buffer.from(branch).toString("hex")}.json`), "utf8")).head;
   } catch {}
   checked.set(`${repo} ${branch}`, sha);
   if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
@@ -225,7 +225,11 @@ if (command === "publish" || command === "review") {
       lines.push(`${repo} ${branch}: not published; it moved after its self-review check, run self-review again`);
       continue;
     }
-    bundle(repo, branch, sha);
+    try { bundle(repo, branch, sha); } catch (e) {
+      bad.push(`${repo} ${branch}`);
+      lines.push(`${repo} ${branch}: not published; its bundle failed (${String(e.message).slice(0, 300)})`);
+      continue;
+    }
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);

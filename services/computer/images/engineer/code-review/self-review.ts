@@ -47,14 +47,14 @@ async function main(): Promise<{ out: string[]; code: number }> {
   let ref = "";
   try { ref = ln("symbolic-ref", "-q", "HEAD"); } catch {}
   if (ref !== `refs/heads/${asked}`) return { out: ["self-review: incomplete: the branch argument is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone", detail(`branch argument: ${asked}`)], code: 2 };
-  const branch = asked, memo = join(ln("rev-parse", "--path-format=absolute", "--git-common-dir"), "self-review.json") /* shared by linked worktrees: aidenhq publish reads the same file */;
-  // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
-  const records = (): Record<string, { base?: string; head?: string; open?: number }> => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } };
-  const last = records()[branch] ?? {};
+  const branch = asked, memo = join(ln("rev-parse", "--path-format=absolute", "--git-common-dir"), `self-review-${Buffer.from(asked).toString("hex")}.json`); // shared by linked worktrees; aidenhq publish reads the same file
+  // One file per branch (a branch is checked out in one worktree at a time, so no two runs write one file), so reviewing another branch in
+  // the same clone doesn't reset this one's incremental review.
+  const last: { base?: string; head?: string; open?: number } = (() => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } })();
   // open: the important findings left, or INCOMPLETE. A record for the head is what `aidenhq publish` asks for, whatever the outcome; only a
   // finished clean review lets the next run be incremental.
   const INCOMPLETE = -1;
-  const remember = (open: number) => writeFileSync(memo, JSON.stringify({ ...records(), [branch]: { base, head, open } })); // reread: another branch's record may have landed meanwhile
+  const remember = (open: number) => writeFileSync(memo, JSON.stringify({ base, head, open }));
   // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
   const moved = () => { let r = ""; try { r = ln("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || ln("rev-parse", "HEAD") !== head; };
   onError = () => { if (!moved()) remember(INCOMPLETE); }; // any failure from here on is an incomplete review of this head
