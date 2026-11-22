@@ -184,6 +184,18 @@ if ! platform="$(docker_call 15 version -f '{{.Server.Os}}/{{.Server.Arch}}')" |
   rm -rf "$next" "$work" "$archives"
   exit 0
 fi
+# `docker image save --platform` needs API 1.48. A daemon older than that has no multi-platform store either, so a plain
+# save exports the one image it holds; asking for a platform would fail every image and turn a usable batch into error
+# rows. Read once, and say so: the pass runs on the server platform throughout such a daemon (it reports no descriptor).
+save_platform=1
+if api="$(docker_call 15 version -f '{{.Server.APIVersion}}' 2>/dev/null)" && [ -n "$api" ]; then
+  api_major="${api%%.*}"; api_rest="${api#*.}"; api_minor="${api_rest%%.*}"
+  if [[ "$api_major" =~ ^[0-9]+$ && "$api_minor" =~ ^[0-9]+$ ]] \
+     && { [ "$api_major" -lt 1 ] || { [ "$api_major" -eq 1 ] && [ "$api_minor" -lt 48 ]; }; }; then
+    save_platform=0
+    echo "security-sbom: Docker API $api predates image save --platform; exporting plain images on the server platform $platform" >&2
+  fi
+fi
 # Every reference the daemon holds that might export a platform manifest: the manifest itself, the container's index,
 # then every local tag. A platform manifest inside a multi-platform index is not an image record of its own, so a bare
 # digest names nothing to Docker; the index that holds it does, and `docker save --platform` exports exactly the running
@@ -235,8 +247,14 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
       export_err="the reference moved during this pass; not scanning a different image"; return 1
     fi
   fi
-  if ! export_err="$(docker_call 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; then
-    rm -f "$dest"; return 1
+  if [ "$save_platform" = 1 ]; then
+    if ! export_err="$(docker_call 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; then
+      rm -f "$dest"; return 1
+    fi
+  else
+    if ! export_err="$(docker_call 900 image save -o "$dest" "$ref" 2>&1)"; then
+      rm -f "$dest"; return 1
+    fi
   fi
   case "$ref" in
     sha256:*|*@sha256:*) export_err=""; return 0 ;;
@@ -335,7 +353,12 @@ snapshot() {
     [ "${config#sha256:}" = "$config" ] || continue
     [ -n "${u_tag[$unit]:-}" ] && [[ "${u_tag[$unit]}" < "$config" ]] && continue
     now="$(docker_call 5 image inspect --platform "$plat" -f '{{.Id}}' "$config" 2>/dev/null)"
-    if { [ -n "$man" ] && [ "$now" = "$man" ]; } || { [ -n "${u_label[$unit]:-}" ] && [ "$now" = "${u_label[$unit]}" ]; }; then
+    # The container's own descriptor is the authority when it has one: the tag counts only while it names that manifest.
+    # The compose label is a second-best answer for a daemon that reports no descriptor, and the container's own id the
+    # last one. A tag that matches neither must not take the running variant's findings under the tag's target.
+    if [ -n "$man" ]; then
+      [ "$now" = "$man" ] || continue
+    elif [ -n "${u_label[$unit]:-}" ] && [ "$now" = "${u_label[$unit]}" ]; then
       :
     elif [ "$(docker_call 5 image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ]; then
       :

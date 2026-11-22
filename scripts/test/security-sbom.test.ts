@@ -91,7 +91,9 @@ if [ "$1" = run ]; then
   fi
 fi
 case "$1" in
-  version) printf 'linux/amd64\\n' ;;
+  version)
+    if [[ "$*" == *APIVersion* ]]; then printf '%s\\n' "\${FAKE_API:-1.48}"; exit 0; fi
+    printf 'linux/amd64\\n' ;;
   ps)
     nps=0; [ -f "$DIR/ps-count" ] && read -r nps < "$DIR/ps-count"; nps=$((nps + 1)); printf '%s\\n' "$nps" > "$DIR/ps-count"
     if [ "$PS_FAILS" = 1 ] || { [ -n "\${PS_FAILS_NTH:-}" ] && [ "$nps" -ge "$PS_FAILS_NTH" ]; }; then
@@ -781,4 +783,42 @@ test("security-sbom: an archive is admitted only when its own scan has workspace
   assert.equal(line[1], "-", "the image whose scan could not fit was not saved");
   assert.match(line[2], /does not fit/);
   assert.ok(!calls.some((c) => c.startsWith("save ")), `an archive was saved for a scan that cannot fit:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a compose label that disagrees with the container's digest does not take the tag's target", { skip: NOT_LINUX }, async () => {
+  // The tag was rebuilt with a new arm64 variant only; the stale arm64 container still runs the old one, while the tag's
+  // amd64 variant still matches the compose label. The descriptor is the authority, so the tag must not be used as this
+  // container's target with a different manifest under it.
+  const arm = { digest: "sha256:aaaa", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  const { status, out, targets } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", label: "sha256:amd64", descriptor: arm }],
+    tags: { "aidenhq/board:local": "sha256:amd64" },
+    manifests: { "aidenhq/board:local": "sha256:amd64" },
+    platformManifests: { "aidenhq/board:local": { "linux/amd64": "sha256:amd64" } },
+    held: ["sha256:index"],
+    sizes: { "sha256:index": 1024 },
+  });
+  assert.equal(status, 0, out);
+  // The tag names a different manifest than the one this container runs, so the target stays the container's own id and
+  // the tag never appears as a target key for it.
+  assert.equal(targets.find((t) => t[0] === "image:aidenhq/board:local"), undefined, `the tag took another manifest's target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  const own = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(own, `the running variant keeps its own target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+});
+
+test("security-sbom: a daemon older than API 1.48 exports without --platform instead of failing every image", { skip: NOT_LINUX }, async () => {
+  // `docker image save --platform` needs API 1.48; on a 27.x daemon (API 1.47) asking for it fails every export and the
+  // pass would turn a usable batch into error rows. The pass must fall back to a plain save and say so.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    heldIds: ["sha256:1111"],
+  });
+  assert.equal(status, 0, out);
+  assert.match(out, /Docker API 1\.47 predates image save --platform/);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+  const save = calls.find((c) => c.startsWith("save "));
+  assert.ok(save, calls.join("\n"));
+  assert.doesNotMatch(save, /--platform/, `a plain save was not used:\n${save}`);
 });
