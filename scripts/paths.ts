@@ -17,7 +17,7 @@ export function pathEntries(list: unknown, source: string, at: Record<string, st
     const where = `${source} paths[${i}]`;
     const keys = Object.keys(g ?? {}).filter((k) => !["sensitivity", "repo", "owner_role", "ui", "patterns"].includes(k));
     if (keys.length) throw new Error(`${where}: unknown key ${keys[0]}`);
-    if (!SENSITIVITIES.includes(g.sensitivity)) throw new Error(`${where}: sensitivity is one of 0, 1, panel, 2`);
+    if (!SENSITIVITIES.includes(g.sensitivity)) throw new Error(`${where}: sensitivity is one of 0, 1, 2`);
     if (g.owner_role != null && !/^[a-z0-9][a-z0-9-]*$/.test(String(g.owner_role))) throw new Error(`${where}: owner_role is a role id`);
     if (g.ui != null && typeof g.ui !== "boolean") throw new Error(`${where}: ui is true or false`);
     if (!Array.isArray(g.patterns) || !g.patterns.length || !g.patterns.every((p: unknown) => typeof p === "string" && p && !p.startsWith("/") && !p.split("/").includes(".."))) throw new Error(`${where}: patterns is a list of repo-relative paths`);

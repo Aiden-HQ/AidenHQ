@@ -13,5 +13,9 @@
   "expect": [
     "reject"
   ],
-  "expect_quoted": true
+  "expect_quoted": true,
+  "expect_code": [
+    "secret_exfiltration",
+    "malicious"
+  ]
 }

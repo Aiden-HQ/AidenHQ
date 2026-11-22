@@ -50,8 +50,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 
 - Pick by what the work needs, using `task_team`: it lists each agent's description and roles. Product-repo code goes to the holder of the
   `platform-engineer` role: only its writes there go to the AI reviewer. It publishes its PR, and once
-  the checks are green its merge is filed for its task at that head, each a card (a second reviewer joins for gate code, a role holder's handbook or a module's grants,
-  tools or models). Several product tasks may go to it at once.
+  the checks are green its merge is filed for its task at that head, each a card the AI reviewer decides. Several product tasks may go to it at once.
 - Every Engineer has the repository, its tests and toolchains, package installs into the workspace, the
   public Internet and a headless browser: for UI work it runs the app's Playwright setup (`npm run screens`: the
   changed pages at 1440 and 390, light and dark, and the changed flow) and attaches the screenshots (rubric: "screenshots

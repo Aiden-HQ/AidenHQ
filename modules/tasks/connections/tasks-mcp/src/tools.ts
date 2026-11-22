@@ -880,7 +880,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_create: {
     description:
-      "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read or do. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it. Work for a graded agent names its `deliverable` (kind none for a log or a question).",
+      "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read. A step to take (a command, a click, a sign-in) goes to the agent that can take it, or to the chief of staff, never to the owner. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it. Work for a graded agent names its `deliverable` (kind none for a log or a question).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1338,7 +1338,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_handoff: {
     description:
-      "Hand a task back to the user with a comment summarizing what you did or what you need. Use this to finish work on a task assigned to you. Your part of one of the user's tasks stays yours, waiting for their reply; any other task is assigned back to them.",
+      "Hand a task back with a comment summarizing what you did or what you need. A task the user gave (theirs, or your part of one) goes back to them; any other task stays yours and its question goes to the chief of staff, who settles it or does the step (never a manual step for the user).",
     inputSchema: { type: "object", properties: { issue: { type: "string" }, comment: { type: "string" } }, required: ["issue", "comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
@@ -1361,6 +1361,16 @@ const TOOLS: Record<string, Tool> = {
           }
         }
         return brief(i);
+      }
+      // Only a task the user gave goes back to them (owner, 2026-11-22: every owner disruption is a defect). Any other task's
+      // handback is a question for the chief of staff: it stays this agent's, waiting on the delegator (kernel escalate.ts).
+      // The owner's own task: he created it, no agent did, and no kernel or module filed it under his key (a source marker).
+      const owners = !current.createdByAgentId && current.createdByUserId === owner && !/<!--\s*source:/.test(String(current.description ?? ""));
+      if (!owners) {
+        if (current.id !== CURRENT()) throw new Error("hand back the task this run is on; for another task, ask its delegator with task_wait (for: delegator)");
+        const i = await patchIssue(issue, { status: "todo", comment: body });
+        await retried(() => kernelWait({ for: "delegator", reason: "handed back: waiting on the delegator's call", question: comment }));
+        return { ...(await brief(i)), to: "delegator" };
       }
       const i = await patchIssue(issue, { assigneeUserId: owner, assigneeAgentId: null, status: "todo", comment: body });
       return brief(i);

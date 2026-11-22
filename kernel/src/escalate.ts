@@ -1,6 +1,6 @@
 // A judgement call a task can't make for itself reaches whoever can make it, once per episode (durable: escalations in
-// kernel.db). Two callers: the review loop when the AI reviewer parks a target (MAX_REJECTS), and an agent's own wait on
-// its delegator or the owner (task_wait `for`, notify's decision; idle.ts).
+// kernel.db). Its callers: an agent's own wait on its delegator or the owner (task_wait `for`, notify's decision, a
+// handback of an agent's task: idle.ts), and an idle in-review task (idle.ts).
 // - The delegator: the task's parent, else the task of the job that created it (provenance), heard as a kernel notice on
 //   that task (notices.ts; a parent blocked on the asking task stays blocked and still wakes: wakes.ts scans blocked tasks). It carries the wake-notice marker, so the delegator's dispatcher reads it
 //   as a notice that wakes it, never as the owner's words, although the board key posts it.
@@ -14,7 +14,7 @@
 // An agent's ask is one open ask per task: another isn't sent while the task's state has an open owner or delegator wait, nor
 // when the state can't be read (fail closed). The ask's durable marker (`ask:<task>`) is written with the wait fact, in its
 // transaction (record(), idle.ts), and cleared once the state shows no wait. No chief of staff installed: filing its task
-// fails, so the ask fails loudly and is tried again (the agent's call errors; the review loop's park isn't marked).
+// fails, so the ask fails loudly and is tried again (the agent's call errors).
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral } from "./channels.ts";

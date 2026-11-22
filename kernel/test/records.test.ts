@@ -13,7 +13,7 @@ test("a task's records: the capped page hides an old one, and limit null reads t
   let clock = Date.parse("2026-11-19T09:00:00Z");
   const records = openRecords(join(dir, "kernel.db"), () => new Date((clock += 1000)));
   const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
-  const file = (module, n) => records.file({ kind: "kernel.apply", module, args: { n }, targets: {}, executor: { module }, policy: "p", tier: 0, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state: "done" });
+  const file = (module, n) => records.file({ kind: "kernel.apply", module, args: { n }, targets: {}, executor: { module }, policy: "p", tier: 0, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "kernel" }, task: "t-1", state: "done" });
   const states = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
   // The oldest record is another module's: a page of 50 never reaches it.
   file("jira", 0);
@@ -32,7 +32,7 @@ test("an approved record expires 7 days after its approval, not its filing; clai
   let clock = Date.parse("2026-11-19T09:00:00Z");
   const records = openRecords(join(dir, "kernel.db"), () => new Date(clock));
   const card = { sentence: "s", changes: "c", reads: "r", cost: "0", details: "d" };
-  const file = (n, state) => records.file({ kind: "kernel.apply", module: "m", args: { n }, targets: {}, executor: { module: "m" }, policy: "p", tier: 0, panel: false, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "run" }, task: "t-1", state });
+  const file = (n, state) => records.file({ kind: "kernel.apply", module: "m", args: { n }, targets: {}, executor: { module: "m" }, policy: "p", tier: 0, card, requester: { agent: "", key: "k", name: "n", roles: [], kind: "run" }, task: "t-1", state });
   const waiting = file(1, "review"), old = file(2, "approved"), late = file(3, "review");
   clock += 6 * 86_400_000;
   const l = records.get(late.id)!;

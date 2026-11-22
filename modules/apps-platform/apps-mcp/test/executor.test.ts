@@ -1,5 +1,5 @@
 // The apps platform's write kinds (executor.ts): plan checks the caller and pins what runs, raising a stateful deploy to the
-// reviewer (the panel on a migration); execute runs the record's args through the engine.
+// reviewer (a migration labelled as one); execute runs the record's args through the engine.
 import { describe, expect, it } from "vitest";
 import { appsExecutor, touchesMigrations } from "../src/executor.js";
 import { parseApp, type App } from "../src/registry.js";
@@ -39,15 +39,15 @@ describe("apps-platform write kinds", () => {
     expect(await plan(ex, "restart", { name: "web" })).toEqual({ args: { name: "web" } });
   });
 
-  it("a deploy pins the full commit; a stateful one goes to the reviewer, with the panel on a migration, and is nothing to do when it already runs", async () => {
+  it("a deploy pins the full commit; a stateful one goes to the reviewer, a migration labelled as one, and is nothing to do when it already runs", async () => {
     const plain = await plan(platform().ex, "deploy", { name: "web", sha: "abc1234" });
     expect(plain).toMatchObject({ args: { name: "web", sha: "abc1234".padEnd(40, "a"), stateful: false }, targets: { commit: "abc1234".padEnd(40, "a") } });
     expect(plain.raise).toBeUndefined();
     const stateful = await plan(platform().ex, "deploy", { name: "db", sha: SHA });
-    expect(stateful.raise).toMatchObject({ tier: 1, panel: false, rule: "deploy-stateful" });
+    expect(stateful.raise).toMatchObject({ tier: 1, rule: "deploy-stateful" });
     // The author's commit message comes last, after its marker, printable (the reviewer reads it apart from the diff).
     expect(stateful.card!.details).toMatch(/\n\nCommit message \(written by the app's author\): fix: thing$/);
-    expect((await plan(platform({ diff: diff("migrations/002.sql") }).ex, "deploy", { name: "db", sha: SHA })).raise).toMatchObject({ tier: 1, panel: true, rule: "deploy-migration" });
+    expect((await plan(platform({ diff: diff("migrations/002.sql") }).ex, "deploy", { name: "db", sha: SHA })).raise).toMatchObject({ tier: 1, rule: "deploy-migration" });
     expect((await plan(platform({ running: { sha: SHA, healthy: true } }).ex, "deploy", { name: "db", sha: SHA })).satisfied?.evidence).toMatch(/db already runs aaaaaaaaaaaa and is healthy/);
     await expect(plan(platform({ diff: "" }).ex, "deploy", { name: "db", sha: SHA })).rejects.toThrow(/too large \(or couldn't be read\) to review/);
     await expect(plan(platform().ex, "rollback", { name: "db" })).rejects.toThrow(/stateful: rollback needs the owner's approval/);

@@ -1,6 +1,6 @@
 // The apps platform's write kinds (modules/apps-platform/module.yaml), executor@1: the kernel files app_deploy, app_run_request,
 // app_restart, app_rollback and app_api calls as records and calls here. plan checks the caller and pins what runs (the exact
-// commit, the running commit a script runs at), and raises a stateful deploy to the reviewer (with the panel when it touches a
+// commit, the running commit a script runs at), and raises a stateful deploy to the reviewer (labelled when it touches a
 // migration); execute runs only an approved, revalidated record.
 import { remoteHead } from "./git.js";
 import { callApi, authorize, METHODS, type Method } from "./api.js";
@@ -36,14 +36,14 @@ export function appsExecutor(p: Platform): Executor {
           const com = await p.commit(a, want);
           const base = { args: { name: a.name, sha: com.sha, stateful: Boolean(a.stateful) }, targets: { repo: a.repo, ref: a.branch, commit: com.sha }, card: { short: com.sha.slice(0, 12), kept: a.stateful ? " (a stateful app; its data stays)" : "" } };
           if (!a.stateful) return { ...base, card: { ...base.card, details: `app: ${a.name}\ncommit: ${com.sha}` } };
-          // Stateful: the reviewer's (with the panel on a migration). Already running, healthy: nothing to file.
+          // Stateful: the reviewer's (a migration labelled as one). Already running, healthy: nothing to file.
           const running = p.cached(a) as { sha?: string; healthy?: boolean };
           if (running.sha === com.sha && running.healthy) return { ...base, satisfied: { evidence: `${a.name} already runs ${com.sha.slice(0, 12)} and is healthy` } };
           if (com.truncated || !com.diff) throw new Error(`the change to ${a.name} since its running commit is too large (or couldn't be read) to review; deploy it in smaller steps, or try again`);
           const migration = touchesMigrations(com.diff);
           return {
             ...base,
-            raise: { tier: 1, panel: migration, rule: migration ? "deploy-migration" : "deploy-stateful", reason: migration ? "a stateful deploy that touches a migration or schema file" : "a stateful deploy with no migration or schema change" },
+            raise: { tier: 1, rule: migration ? "deploy-migration" : "deploy-stateful", reason: migration ? "a stateful deploy that touches a migration or schema file" : "a stateful deploy with no migration or schema change" },
             card: { ...base.card, details: `app: ${a.name}\ncommit: ${com.sha}\n\nChanges since the running commit:\n${com.diff}${DEPLOY_CLAIM}${oneLine(com.subject, 120)}` },
           };
         }

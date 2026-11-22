@@ -14,10 +14,10 @@ requires:
 # with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
 # holds no kernel role and can't report a write's outcome.
 privileged: [ git-credential ]
-# The merge queue, its gate rules and the reviewer's code list (evalgate.ts) are the gate's own core: read by the reviewer and a second one on
-# another model family (the path inventory, paths.yaml; the rest of the code host part is the reviewer's).
+# The merge queue, its gate rules and the reviewer's code list (evalgate.ts) are the gate's own core: the reviewer reads them
+# (the path inventory, paths.yaml; the rest of the code host part is the reviewer's too).
 paths:
-  - sensitivity: panel
+  - sensitivity: 1
     owner_role: platform-engineer
     patterns: [ service/src/merges.ts, service/src/merge-gate.ts, service/src/evalgate.ts ]
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own, once GitHub is connected.

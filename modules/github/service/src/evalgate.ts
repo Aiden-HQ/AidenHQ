@@ -14,7 +14,7 @@ export const REVIEWER_CODE = [
   /^kernel\/src\/checkbox\.ts$/,
   /^kernel\/src\/(tier|provenance|writes|records|reviews|review-loop|kinds|checkjobs|apply|apply-tier)\.ts$/,
   /^scripts\/compiler\/authority\.ts$/,
-  // The panel-path registry: a change could take a path out of the panel.
+  // The path inventory: a change could take a path out of review.
   /^(paths\.yaml|scripts\/paths\.ts|kernel\/src\/paths\.ts)$/,
 ];
 export const touchesReviewer = (files: string[]) => files.some((f) => REVIEWER_CODE.some((r) => r.test(f)));

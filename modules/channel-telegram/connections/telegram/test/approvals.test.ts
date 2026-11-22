@@ -5,7 +5,7 @@ import { approvalPress, decideByReply, decideCard, decideList, parseReply, sendB
 import type { Card } from "../src/kernel.js";
 import { openStore } from "../src/store.js";
 
-const card = (id: string, identifier: string, extra: Partial<Card> = {}): Card => ({ id, identifier, kind: "push", tier: 2, panel: false, digest: `d-${id}`, sentence: `Push ${identifier}.`, changes: "c", reads: "r", cost: "none", requestedBy: "Eng", replaced: false, ...extra });
+const card = (id: string, identifier: string, extra: Partial<Card> = {}): Card => ({ id, identifier, kind: "push", tier: 2, digest: `d-${id}`, sentence: `Push ${identifier}.`, changes: "c", reads: "r", cost: "none", requestedBy: "Eng", replaced: false, ...extra });
 
 function fakeKernel(pending: Card[]) {
   const decided: { token: string; sender: string; reply?: true }[] = [];
@@ -44,14 +44,14 @@ describe("cards", () => {
     expect(await decideCard(k, store, "A00000001", "reject", "owner")).toMatchObject({ ok: false }); // its tokens are gone
   });
 
-  it("telegram_decide standard: a panel card or an apply comes without buttons and can't be decided here", async () => {
+  it("telegram_decide standard: an apply comes without buttons and can't be decided here", async () => {
     const store = openStore(":memory:");
-    const k = fakeKernel([card("A00000002", "WOR-2", { panel: true }), card("A00000003", "WOR-3", { kind: "apply" }), card("A00000004", "WOR-4")]);
+    const k = fakeKernel([card("A00000003", "WOR-3", { kind: "apply" }), card("A00000004", "WOR-4")]);
     const { sent, send } = sender();
     await syncCards(k, store, send, "standard", true);
-    expect(sent.map((s) => Boolean(s.markup))).toEqual([false, false, true]);
+    expect(sent.map((s) => Boolean(s.markup))).toEqual([false, true]);
     expect(sent[0]!.text).toContain("Decide this one on the board");
-    expect(await decideCard(k, store, "A00000002", "approve", "owner")).toMatchObject({ ok: false });
+    expect(await decideCard(k, store, "A00000003", "approve", "owner")).toMatchObject({ ok: false });
   });
 
   it("an exact typed reply decides the one card held for that task, stamped as a reply; a replaced request needs its tap", async () => {

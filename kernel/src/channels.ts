@@ -34,12 +34,12 @@ export const channelId = (module: string) => module.replace(/^channel-/, "");
 /**
  * What a channel's own decide setting (`<channel>_decide`: all | standard | none; all when unset) lets it decide. The channel
  * chooses what it shows; the kernel holds it to the owner's setting too, so a channel can't spend a token its setting
- * withholds. standard: everything but panel cards and applies (installs, settings, agents).
+ * withholds. standard: everything but applies (installs, settings, agents).
  */
-export function decides(m: ModuleInfo | undefined, card: { kind?: unknown; panel?: unknown }): boolean {
+export function decides(m: ModuleInfo | undefined, card: { kind?: unknown }): boolean {
   const key = Object.keys(m?.settings ?? {}).find((k) => k.endsWith("_decide"));
   const v = String((key && m?.settings?.[key]) ?? "all");
-  return v === "all" || (v === "standard" && card.panel !== true && !["apply", "kernel.apply"].includes(String(card.kind)));
+  return v === "all" || (v === "standard" && !["apply", "kernel.apply"].includes(String(card.kind)));
 }
 
 /** Text that can never hold an HTML comment: every `<!` and `-->` is neutralised in place (nothing is deleted, so nothing can rebuild one). */
@@ -88,17 +88,17 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
     if (!isChannel(m)) throw fail(403, "forbidden", `${module} isn't a channel that speaks as the owner (privileged: [speaks-as-owner])`);
     return m!;
   };
-  const mint = (card: string, digest: string, channel: string, kind: string, panel: boolean) => {
+  const mint = (card: string, digest: string, channel: string, kind: string) => {
     const tokens = { approve: randomBytes(32).toString("base64url"), reject: randomBytes(32).toString("base64url") };
-    const ins = db.prepare("INSERT INTO channel_tokens (hash, card, digest, channel, decision, created_at, kind, panel) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    for (const d of ["approve", "reject"] as const) ins.run(sha(tokens[d]), card, digest, channel, d, new Date(now()).toISOString(), kind, panel ? 1 : 0);
+    const ins = db.prepare("INSERT INTO channel_tokens (hash, card, digest, channel, decision, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    for (const d of ["approve", "reject"] as const) ins.run(sha(tokens[d]), card, digest, channel, d, new Date(now()).toISOString(), kind);
     return tokens;
   };
 
   /** The owner's pending cards (the records waiting for them) and recent outcomes, as the channels and the pages show them. */
   const ownerCards = async () => {
     const view = (r: ReturnType<Records["list"]>[number]) => ({
-      id: r.id, identifier: r.identifier ?? r.task, action: actionOf(r.kind), tier: r.state === "review" ? 1 : r.tier, panel: r.panel, digest: r.digest, sentence: r.card.sentence, changes: r.card.changes,
+      id: r.id, identifier: r.identifier ?? r.task, action: actionOf(r.kind), tier: r.state === "review" ? 1 : r.tier, digest: r.digest, sentence: r.card.sentence, changes: r.card.changes,
       reads: r.card.reads, cost: r.card.cost, details: r.card.details, target: r.card.target ?? "", requestedBy: r.requester.name || r.requester.key || r.requester.module || "", replaced: Boolean(r.replaced),
       reason: r.card.reason ?? "", review: r.review, state: r.state, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
       decidedBy: r.decided_by, createdAt: r.created_at,
@@ -203,12 +203,12 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
         const issued = db.prepare("SELECT 1 FROM channel_tokens WHERE card = ? AND channel = ? AND digest = ?").get(a.id, module, a.digest);
         let tokens: { approve: string; reject: string } | undefined;
         // A card the channel's decide setting withholds gets no tokens (it shows it as a link, or not at all).
-        if (!decides(m, { kind: a.action, panel: Boolean(a.panel) })) db.prepare("DELETE FROM channel_tokens WHERE card = ? AND channel = ?").run(a.id, module);
+        if (!decides(m, { kind: a.action })) db.prepare("DELETE FROM channel_tokens WHERE card = ? AND channel = ?").run(a.id, module);
         else if (!issued || resync) {
           db.prepare("DELETE FROM channel_tokens WHERE card = ? AND channel = ?").run(a.id, module);
-          tokens = mint(a.id, a.digest, module, String(a.action ?? ""), Boolean(a.panel));
+          tokens = mint(a.id, a.digest, module, String(a.action ?? ""));
         }
-        return { id: a.id, identifier: a.identifier, kind: a.action, tier: a.tier, panel: Boolean(a.panel), digest: a.digest, sentence: a.sentence, changes: a.changes, reads: a.reads, cost: a.cost,
+        return { id: a.id, identifier: a.identifier, kind: a.action, tier: a.tier, digest: a.digest, sentence: a.sentence, changes: a.changes, reads: a.reads, cost: a.cost,
           requestedBy: a.requestedBy, replaced: Boolean(a.replaced), ...(a.reason ? { reason: a.reason } : {}), ...(a.review ? { review: a.review } : {}), ...(tokens ? { tokens } : {}) };
       });
       // Owner cards that ended without running (rejected anywhere, replaced or expired): a channel edits the message it sent for them.
@@ -226,12 +226,12 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       const token = str(b.token, 200);
       if (!token) throw fail(400, "bad_request", "send {token, sender}");
       // Taken atomically: a token is spent once, even by two taps at the same moment.
-      const row = db.prepare("DELETE FROM channel_tokens WHERE hash = ? RETURNING card, digest, channel, decision, created_at, kind, panel").get(sha(token)) as { card: string; digest: string; channel: string; decision: "approve" | "reject"; created_at: string; kind: string; panel: number } | undefined;
+      const row = db.prepare("DELETE FROM channel_tokens WHERE hash = ? RETURNING card, digest, channel, decision, created_at, kind").get(sha(token)) as { card: string; digest: string; channel: string; decision: "approve" | "reject"; created_at: string; kind: string } | undefined;
       if (!row) throw fail(409, "conflict", "this decision is no longer valid: it was used, or the card was decided or replaced");
-      const restore = () => db.prepare("INSERT OR IGNORE INTO channel_tokens (hash, card, digest, channel, decision, created_at, kind, panel) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(sha(token), row.card, row.digest, row.channel, row.decision, row.created_at, row.kind, row.panel);
+      const restore = () => db.prepare("INSERT OR IGNORE INTO channel_tokens (hash, card, digest, channel, decision, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?)").run(sha(token), row.card, row.digest, row.channel, row.decision, row.created_at, row.kind);
       if (row.channel !== module) { restore(); throw fail(403, "forbidden", "this token was issued to another channel"); }
       // The setting as it is now (the owner may have narrowed it since the token was minted): a withheld card burns its tokens.
-      if (!decides(m, { kind: row.kind, panel: row.panel === 1 })) { db.prepare("DELETE FROM channel_tokens WHERE card = ? AND channel = ?").run(row.card, module); throw fail(403, "forbidden", `${module}'s decide setting keeps this card for the owner's other channels`); }
+      if (!decides(m, { kind: row.kind })) { db.prepare("DELETE FROM channel_tokens WHERE card = ? AND channel = ?").run(row.card, module); throw fail(403, "forbidden", `${module}'s decide setting keeps this card for the owner's other channels`); }
       const by = b.reply === true ? "owner:reply" : `owner:${channelId(module)}`;
       const via = channelId(module);
       const out = await decideCard(row.card, row.digest, row.decision, by, via).catch((e: Error & { status?: number }) => {

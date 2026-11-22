@@ -24,7 +24,7 @@ function kernel(t: { after: (f: () => void) => void }) {
     // The code host's plan and execute, in process: Tier 0 on its merits (an agents-org merge), merged at once.
     executors: () => ({ github: { plan: async (req: unknown) => (planned.push(req), { args: (req as { args: unknown }).args, targets: {} }), execute: async () => ({ ok: true, text: "Merged acme/app#3 as cccc" }) } as never }),
   });
-  const pr = (task: string, sha: string, branch = "agent/ACME-1/fix") => records.file({ kind: "github.pr", module: "github", args: { workspace: "ACME-1", only: [{ repo: "acme/app", branch, sha }], text: { title: "t", body: "b" } }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, panel: false, card, requester: { ...ENGINEER, task }, task, identifier: "ACME-1", state: "done" });
+  const pr = (task: string, sha: string, branch = "agent/ACME-1/fix") => records.file({ kind: "github.pr", module: "github", args: { workspace: "ACME-1", only: [{ repo: "acme/app", branch, sha }], text: { title: "t", body: "b" } }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card, requester: { ...ENGINEER, task }, task, identifier: "ACME-1", state: "done" });
   return { records, writes, notices, planned, pr };
 }
 const ask = (head: string, o: Record<string, unknown> = {}) => ({ task: "ACME-1", repo: "acme/app", number: 3, head, branch: "agent/ACME-1/fix", ...o });
@@ -51,7 +51,7 @@ test("no merge is filed for a head its task's PR record didn't push, an open mer
   assert.deepEqual(await k.writes.fileOwnMerge("github", ask(HEAD, { task: "ACME-2" })), { skip: "not-approved" }, "another task's PR");
   await assert.rejects(k.writes.fileOwnMerge("acme", ask(HEAD)), /acme doesn't own github\.merge/);
   // The agent already asked for this PR's merge at an earlier head: open, so nothing more.
-  k.records.file({ kind: "github.merge", module: "github", args: { prs: [{ repo: "acme/app", number: 3, head: OTHER }] }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, panel: false, card, requester: ENGINEER, task: "task-1", identifier: "ACME-1", state: "review" });
+  k.records.file({ kind: "github.merge", module: "github", args: { prs: [{ repo: "acme/app", number: 3, head: OTHER }] }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card, requester: ENGINEER, task: "task-1", identifier: "ACME-1", state: "review" });
   assert.deepEqual(await k.writes.fileOwnMerge("github", ask(HEAD)), { skip: "merging" });
   const c = kernel(t);
   c.pr("closed-task", HEAD);
