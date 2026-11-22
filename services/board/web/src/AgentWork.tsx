@@ -150,9 +150,11 @@ function LaneColumn({ lane, cards, board, loading }: { lane: Lane; cards: WorkCa
  * attention entry's `since`), so the oldest ask is never behind "Show more"; Done: newest close first; the rest: newest activity.
  */
 const OLDEST_FIRST = new Set<Lane>(["needs_you", "blocked"]);
+/** When the entry the card's callout shows began (the same pick as LaneLine). */
 const askedAt = (c: WorkCard, l: Lane) => {
-  const at = (c.state?.attention ?? []).filter((a) => (l === "needs_you" ? a.who === "owner" : a.who === "agent")).map((a) => a.since ?? "").filter(Boolean).sort()[0];
-  return at ?? c.state?.since ?? c.activityAt;
+  const att = c.state?.attention ?? [];
+  const shown = l === "needs_you" ? att.find((a) => a.who === "owner") : (att.find((a) => a.why === "failed") ?? (c.state?.blocker ? undefined : att.find((a) => a.who === "agent" && STUCK[a.why])));
+  return shown?.since ?? c.state?.since ?? c.activityAt;
 };
 function byLane(cards: WorkCard[]): Record<Lane, WorkCard[]> {
   const out = Object.fromEntries(LANES.map((l) => [l, [] as WorkCard[]])) as Record<Lane, WorkCard[]>;

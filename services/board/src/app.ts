@@ -534,7 +534,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const missing = [...new Set(cards.flatMap((i) => (i.parentId && !byId.has(i.parentId) ? [i.parentId] : [])))];
     const parents = new Map<string, string>();
     const lookup = (async () => {
-      for (let n = 0; n < missing.length; n += 4) for (const p of await Promise.all(missing.slice(n, n + 4).map((id) => pc.issueSummary(id).catch(() => null)))) if (p) parents.set(p.id, p.identifier);
+      for (let n = 0; n < missing.length; n += 4) await Promise.all(missing.slice(n, n + 4).map((id) => pc.issueSummary(id).then((p) => void parents.set(p.id, p.identifier), () => {})));
     })();
     await Promise.race([lookup, new Promise((r) => setTimeout(r, PARENTS_MS).unref())]);
     const out: WorkCard[] = [];
