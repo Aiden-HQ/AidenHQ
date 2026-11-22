@@ -323,6 +323,9 @@ writes:
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
   setup: { args: schemas/setup.json, floor: 1, card: *card }
+  # publish_module: the owner's share of a local module (docs/design/sharing.md). Only his own board save files it, bound to
+  # the preview's digest, source, repo, ref and base; a branch that moved since fails it, and he previews again.
+  publish_module: { args: schemas/publish_module.json, floor: 2, filer: owner, stale: fail, card: *card }
 # github_service_key: the kernel's bearer for github-mcp (both connections). github_auth_token: the board's, for its sign-in.
 # codehost_github_token: the code host's own token (the kernel knows the module by it; the name it had as codehost-github).
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates them when missing.

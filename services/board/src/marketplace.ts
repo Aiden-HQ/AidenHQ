@@ -10,6 +10,7 @@ interface Entry {
   enabled?: boolean;
   requires?: string[];
   agents?: string[];
+  routines?: string[];
   connections?: string[];
   apps?: string[];
   revision?: string;
@@ -36,6 +37,8 @@ function kindsOf(m: Entry): string[] {
 function addsOf(m: Entry): string[] {
   const out: string[] = [];
   if (m.agents?.length) out.push(`${plural(m.agents.length, "agent")}: ${m.agents.join(", ")}`);
+  // An imported module's routines are created paused (scripts/modules.ts): the owner turns each on.
+  if (m.routines?.length) out.push(`${plural(m.routines.length, "routine")}${m.tier === "declared" ? " (start paused)" : ""}: ${m.routines.join(", ")}`);
   if (m.connections?.length) out.push(`${plural(m.connections.length, "connection")}: ${m.connections.join(", ")}`);
   if (m.apps?.length) out.push(`${plural(m.apps.length, "app")}: ${m.apps.join(", ")}`);
   const writes = Object.keys(m.writes ?? {});

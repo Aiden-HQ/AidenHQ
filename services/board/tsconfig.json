@@ -15,5 +15,5 @@
     "types": ["node"]
   },
   "include": ["src", "test"],
-  "exclude": ["test/web"]
+  "exclude": ["test/web", "test/share-e2e.test.ts"]
 }

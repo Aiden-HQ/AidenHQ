@@ -1,5 +1,5 @@
 import type { AuthorKind, FlowSummary, IdleItem, JourneyInfo, JourneyList, JourneySort, Waterfall } from "../../src/flow";
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, FiledChange, SettingsData, Update } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
@@ -293,6 +293,7 @@ export const api = {
   testGoogle: () => call<{ ok: true } | { ok: false; message: string; fix?: string }>("POST", "/api/google/check"),
   testSignIn: (id: string) => call<{ ok: true } | { ok: false; message: string; fix?: string }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/check`),
   changeSettings: (changes: SettingChange[]) => call<{ identifier: string }>("POST", "/api/settings/change", { changes }),
+  sharePreview: (b: { module: string; repo: string; ref: string }) => call<SharePreview>("POST", "/api/modules/share/preview", b),
   settingsChanges: () => call<{ changes: FiledChange[] }>("GET", "/api/settings/changes"),
   apps: () => call<{ apps: AppRow[]; error?: string; node?: { up: boolean; login_url?: string } }>("GET", "/api/apps"),
   costLedger: (q: URLSearchParams) => call<CostLedger>("GET", `/api/costs/ledger?${q}`),

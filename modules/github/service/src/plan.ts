@@ -27,6 +27,9 @@ interface State {
   prs?: Pr[];
   repo?: string;
   allowedOrgs?: string | string[];
+  /** A publish's branch and the tip the owner previewed (publish_module). */
+  ref?: string;
+  base?: string;
 }
 
 const T = (tier: 0 | 1 | 2, rule: string, reason: string): Part => ({ tier, rule, reason });
@@ -57,6 +60,7 @@ export function planParts(action: string, s: State) {
   if (action === "merge") return (s.prs ?? []).map((p) => mergeParts(p, s));
   if (action === "close") return (s.prs ?? []).map((p) => [closePart(p, s)]);
   if (action === "create_repo") return [[createRepoPart(s)]];
+  if (action === "publish_module") return [[publishModulePart(s)]];
   return [];
 }
 
@@ -125,6 +129,18 @@ function createRepoPart(s: State) {
   if (same(repo, s.productRepo) || same(repo, s.instanceRepo)) return REJECT("core-repo-create", `${repo} is the product or instance repo`);
   if (name.length > 63 || !NEW_REPO_NAME.test(name)) return REJECT("new-repo-name", `\`${name}\` isn't a new repository's name: lowercase letters, digits and single hyphens, starting with a letter, 63 at most`);
   return T(0, "create-repo", `creating ${repo} is a new private repository: it changes no code, settings or access elsewhere`);
+}
+
+/**
+ * publish_module: { repo, ref, base, … }, the owner's share of a local module (docs/design/sharing.md). Always the owner's
+ * (Tier 2, filed only by his save): never the product or instance repo, never a repo on this server, only owner/name.
+ */
+function publishModulePart(s: State) {
+  const repo = String(s.repo ?? "");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return REJECT("publish-repo-name", `${repo.slice(0, 100)} isn't a repository's owner/name`);
+  if (same(repo, s.productRepo) || same(repo, s.instanceRepo)) return REJECT("core-repo-publish", `${repo} is the product or instance repo: a module is shared to a repo of its own`);
+  if (isLocal(repo)) return REJECT("local-publish", `${repo} is on this server: a shared module goes to a public repo`);
+  return T(2, "publish-module", `the owner's share of a local module to ${repo} \`${s.ref}\`, as he previewed it`);
 }
 
 /**
@@ -232,6 +248,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const targets = action === "merge" || action === "close"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
+    : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null }]));
   const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));

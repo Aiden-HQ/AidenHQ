@@ -840,9 +840,11 @@ grep -qF 'export const touchesReviewer' "$rgate" && ! grep -qE 'createEvalGate|d
 # him). The kernel's floors take every agents org (product #324 0c527d0f: `agentsOrgs`), never the product or instance repo,
 # and a local change request's merge is never floor 0 (localMerge: no CI review read it). Every filing runs the write.filed
 # checks before its tier (writes.ts), the platform check (check.ts: the owner-approval records change alone) a hard gate the
-# kernel runs in process. The reviewer eval triggers only on the reviewer's own code (evalgate.ts).
+# kernel runs in process. A share's publish (publish-module) is the owner's alone: only his save files it (`filer: owner`).
+# The reviewer eval triggers only on the reviewer's own code (evalgate.ts).
 rreview="modules/ai-reviewer/service/src/review.ts"
-[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "unrecognised" ' ] \
+[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "publish-module" T(2, "unrecognised" ' ] \
+  && grep -qF 'if (k.filer === "owner") throw fail(403, "owner-only"' kernel/src/writes.ts \
   && grep -qF 'if (ownerSave || priorVeto) return { tier: 2, merit, state: "owner" };' kernel/src/tier.ts \
   && grep -qF 'if (autonomy === "off") return { tier: 2, merit, cap: { by: "autonomy", value: "off" }, rule: "autonomy-off", state: "owner" };' kernel/src/tier.ts \
   && grep -qF 'const same = mine.find((r) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && MALICE.includes(r.reviewCode ?? "")' kernel/src/tier.ts \

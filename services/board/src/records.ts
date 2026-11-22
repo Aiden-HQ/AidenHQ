@@ -113,6 +113,10 @@ export type Records = {
   connectionOk(module: string): Promise<void>;
   /** The owner's typed settings change on their settings task: the kernel writes it and files its apply (kernel/src/settings-change.ts). `session`: the signed-in board session it was saved in, whose account the kernel checks and decides the record as. Throws the kernel's reason. */
   settingsChange(task: string, changes: unknown[], credential?: SettingsCredential): Promise<{ record: string; tier: number; state: string }>;
+  /** A local module's share preview (kernel/src/module-share.ts): what would leave, where, and the tip it binds. Throws the kernel's reason (`refused` on a 4xx). */
+  sharePreview(b: { module: string; repo: string; ref: string }): Promise<unknown>;
+  /** The owner's board save of a share preview on his settings task, filed and decided as his account. Throws as settingsChange does. */
+  share(task: string, change: Record<string, unknown>, credential?: SettingsCredential): Promise<{ record: string; tier: number; state: string }>;
   /** A module's own check of settings about to be filed (module.yaml `validate:`, kernel/src/module-validate.ts). Throws the kernel's reason. */
   validate(module: string, settings: Record<string, unknown>): Promise<Validation>;
   /** A card's "Explain" (explain.ts): the record whole and its task's request chain. Throws the kernel's answer (404 for no such record). */
@@ -189,6 +193,20 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
+  /** POST to the kernel: its answer, or its reason thrown (`refused`: the kernel's own 4xx or never reached, so nothing was filed). */
+  const post = async (path: string, body: unknown, ms: number) => {
+    if (!k) throw Object.assign(new Error("the board has no kernel to ask"), { refused: true });
+    const res = await fetch(`${k.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) }).catch((e: Error & { cause?: Cause }) => { throw Object.assign(e, { refused: neverConnected(e.cause) }); });
+    const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
+    return j;
+  };
+  const sharePreview: Records["sharePreview"] = (b) => post("/v1/modules/share/preview", b, 120_000);
+  const share: Records["share"] = async (task, change, credential) => {
+    const { kind: _kind, ...rest } = change;
+    const j = await post("/v1/modules/share", { task, ...rest, ...(credential ? { credential } : {}) }, 180_000);
+    return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
+  };
   const validate: Records["validate"] = async (module, settings) => {
     if (!k) return { ok: true };
     const res = await fetch(`${k.url}/v1/validate`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ module, settings }), signal: AbortSignal.timeout(20_000) });
@@ -205,5 +223,5 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, live, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
+  return { list, live, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, sharePreview, share, validate };
 }

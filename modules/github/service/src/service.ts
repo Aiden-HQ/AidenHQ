@@ -47,6 +47,7 @@ import { copyBoxBundle, publishRef } from "./aidenhq-sdk/box-bundle.ts";
 import { APPLY_PATHS } from "./aidenhq-sdk/instance-paths.ts";
 import { noteKept } from "./tidy.ts";
 import * as setupWrite from "./setup.ts";
+import { digestOf, upsertMarketplace } from "./share.ts";
 
 /**
  * The requester of a planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and args: it
@@ -264,6 +265,19 @@ export function createService(o: Options) {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the
     // args); it may push to any branch, others to their own task's (plan.ts branch-namespace).
     const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    if (kind.endsWith(".publish_module")) {
+      // The owner's preview, bound: the same files (their digest), a public repo, a folder that is this module's own, and the
+      // branch still at the tip he previewed. The record's own args are the preview's evidence; nothing else is read for it.
+      const files: Record<string, string> = Object.fromEntries((Array.isArray(a.files) ? a.files : []).map((f: { path: string; text: string }) => [f.path, f.text]));
+      if (digestOf(String(a.source), files) !== a.digest) throw fail(422, "the files aren't the ones previewed: preview again");
+      if (!access.connected()) throw fail(503, "GitHub isn't connected");
+      const d = await destination(String(a.repo), String(a.ref), String(a.module));
+      if (d.private) throw fail(422, `${d.s.slug} is private: a module is shared to a public repo`);
+      if (d.conflict) throw fail(422, d.conflict);
+      if (d.tip !== a.base) throw fail(409, `${d.s.slug} \`${a.ref}\` moved since your preview: preview again`);
+      const shown = Object.keys(files).sort().map((p) => `--- ${a.module}/${p} (${Buffer.byteLength(files[p]!)} bytes)\n${files[p]}`).join("\n");
+      return { state: { ...base, repo: d.s.slug, ref: String(a.ref), base: String(a.base) }, facts: { target: `${d.s.slug} ${a.ref}`, sentence: `Publish the ${a.module} module to ${d.s.slug} (\`${a.ref}\`), as previewed.`, diff: shown } };
+    }
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
       // Never a quiet switch to `local`: a repo for GitHub while GitHub is signed out is refused, saying so.
@@ -376,6 +390,8 @@ export function createService(o: Options) {
       if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier);
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
+      // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
+      if (rec.kind.endsWith(".publish_module")) return access.connected() ? publishModule(rec.args) : { ok: false, text: "GitHub isn't connected: preview again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -786,9 +802,9 @@ export function createService(o: Options) {
    * new text, or null to delete) are made from that same head, and the author, committer and dates are fixed by the head, so
    * the same head and files give the same commit.
    */
-  async function commitOnHead(repo: string, agent: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>) {
+  async function commitOnHead(repo: string, agent: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>, branch?: string) {
     const s = slugOf(repo);
-    const def = await defaultBranch(s.slug);
+    const def = branch ?? (await defaultBranch(s.slug));
     const { dir, sha: head } = await fetchRemote(s, def, "ws");
     const edits = await files(dir, head, def);
     const date = await git(dir, ["log", "-1", "--format=%cI", head]);
@@ -844,6 +860,42 @@ export function createService(o: Options) {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  }
+  /**
+   * Where a share lands (publish_module, docs/design/sharing.md): the repo as GitHub reports it (missing is refused), its
+   * branch's tip fetched into the ws cache, and why its `<module>/` folder or marketplace.json entry isn't this module's own.
+   */
+  async function destination(repo: string, ref: string, module: string) {
+    const s = slugOf(repo);
+    if (!BRANCH.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch name`);
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(module)) throw fail(400, `${module.slice(0, 100)} is not a module name`);
+    const r = await gh("GET", `/repos/${s.slug}`);
+    if (r.status === 404) throw fail(404, `${s.slug} isn't on GitHub (or your account can't see it)`);
+    if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}: ${r.status}`);
+    const { dir, sha: tip } = await fetchRemote(s, ref, "ws");
+    const listing = await fileAt(dir, tip, "marketplace.json");
+    let conflict: string | undefined;
+    try { upsertMarketplace(listing, module); } catch (e) { conflict = `${s.slug}: ${(e as Error).message}`; }
+    const listed = !conflict && listing !== undefined && upsertMarketplace(listing, module) === listing;
+    if (!conflict && !listed && (await git(dir, ["ls-tree", tip, "--", module]))) conflict = `${s.slug} already has a ${module}/ folder its marketplace.json doesn't list as this module`;
+    return { s, tip, private: r.body?.private !== false, conflict };
+  }
+  /**
+   * An approved share: the previewed files under `<module>/` (any other file there removed, so the folder is exactly the
+   * preview) and the marketplace.json entry, as one commit on the previewed tip, pushed without force: a branch that moved
+   * fails it, and the owner previews again.
+   */
+  async function publishModule(a: { repo: string; ref: string; base: string; source: string; module: string; files: { path: string; text: string }[] }) {
+    const s = slugOf(a.repo);
+    const files = Object.fromEntries(a.files.map((f) => [`${a.module}/${f.path}`, f.text]));
+    const sha = await commitOnHead(s.slug, "the owner's share", `feat: publish the ${a.module} module\n\nThe owner's previewed share of instance commit ${a.source.slice(0, 12)}.`, async (dir, head) => {
+      if (head !== a.base) throw fail(409, `${s.slug} \`${a.ref}\` moved since the preview: preview again`);
+      const had = (await git(dir, ["ls-tree", "-r", "-z", "--name-only", head, "--", a.module])).split("\0").filter(Boolean);
+      return { ...Object.fromEntries(had.filter((p) => !Object.hasOwn(files, p)).map((p) => [p, null])), ...files, "marketplace.json": upsertMarketplace(await fileAt(dir, head, "marketplace.json"), a.module) };
+    }, a.ref);
+    await push(await cache(s, "ws"), ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${a.ref}`]);
+    log("module published", { repo: s.slug, ref: a.ref, module: a.module, sha });
+    return { ok: true, text: `Published the ${a.module} module to ${s.slug} \`${a.ref}\` at ${sha.slice(0, 12)}.`, objects: [`github:${s.slug.toLowerCase()}@${sha}`] };
   }
   /** The release train's pin bump: one file edited as it is at the head. */
   const trainCommit = (repo: string, path: string, edit: (text: string) => string, message: string) =>
@@ -909,6 +961,14 @@ export function createService(o: Options) {
       }
       if (req.url === "/aidenhq/v1/executor/status" && req.method === "POST") return await status(req, res);
       if (await exec(req, res)) return;
+      // A share's preview (the kernel's executor key): where it would land, so the owner's save binds that tip.
+      if (req.url === "/aidenhq/v1/publish/tip" && req.method === "POST") {
+        if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });
+        if (!access.connected()) return send(res, 503, { error: "GitHub isn't connected" });
+        const b = await body(req);
+        const d = await destination(String(b.repo ?? ""), String(b.ref ?? ""), String(b.module ?? ""));
+        return send(res, 200, { repo: d.s.slug, base: d.tip, private: d.private, ...(d.conflict ? { conflict: d.conflict } : {}) });
+      }
       const ap = /^\/aidenhq\/v1\/apply\/(read|land|write)$/.exec(String(req.url ?? ""));
       if (ap && req.method === "POST") {
         if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });

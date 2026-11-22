@@ -31,7 +31,7 @@ import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
-import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
@@ -391,6 +391,9 @@ export function createApp(opts: AppOptions): Server {
       if (!board) throw new HttpError(401, "sign in");
       credential = { board };
     }
+    // A share is the owner's save on the board alone (its preview is a board page), one per task.
+    const sharing = changes.find((c) => c.kind === "share");
+    if (sharing && (changes.length > 1 || !credential || !("board" in credential))) throw new HttpError(400, "a share is saved on its own, from the module's page on the board");
     const { compiled, catalog } = readSources(settingsFiles());
     try {
       for (const ch of changes) checkChange(ch, compiled, catalog);
@@ -413,7 +416,7 @@ export function createApp(opts: AppOptions): Server {
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     let filed: { record: string; tier: number; state: string };
     try {
-      filed = await records.settingsChange(issue.id, changes, credential);
+      filed = sharing ? await records.share(issue.id, sharing, credential) : await records.settingsChange(issue.id, changes, credential);
     } catch (e) {
       if (!(e as { refused?: boolean }).refused) {
         // A lost response, a timeout or a 5xx: the kernel may have filed it, so the task stays open to show whatever it did.
@@ -1745,6 +1748,16 @@ export function createApp(opts: AppOptions): Server {
       method: "POST",
       path: /^\/api\/settings\/change$/,
       handle: async (_m, body) => fileSettingsChange(parse(ChangesSchema, body).changes),
+    },
+    {
+      // A local module's share preview (docs/design/sharing.md): exactly what would leave the instance, where, and what blocks it.
+      // Saving it is a settings change of kind share (above), bound to this answer's digest, source, repo, ref and base.
+      method: "POST",
+      path: /^\/api\/modules\/share\/preview$/,
+      handle: async (_m, body) => {
+        const b = parse(SharePreviewSchema, body);
+        return records.sharePreview(b).catch((e: Error & { refused?: boolean }) => { throw new HttpError(e.refused ? 422 : 502, e.message); });
+      },
     },
     {
       // The settings changes filed in the last two weeks, and where each stands (task, then its apply card).

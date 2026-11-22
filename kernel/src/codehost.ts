@@ -306,8 +306,32 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       return owner.id;
     } catch { return undefined; }
   }
+  /**
+   * Where a share would land (POST /aidenhq/v1/publish/tip, the code host's executor key): the branch's tip, whether the repo
+   * is private, and a folder or marketplace entry there that isn't this module's (module-share.ts preview). Throws the code
+   * host's refusal (a missing repo or branch, GitHub signed out).
+   */
+  async function publishTip(b: { repo: string; ref: string; module: string }): Promise<{ repo: string; base: string; private: boolean; conflict?: string }> {
+    const k = kind(), key = k?.executor && secret(k.executor.auth_secret);
+    if (!k?.executor || !key) throw fail(404, "sharing needs GitHub connected");
+    const url = new URL("/aidenhq/v1/publish/tip", k.executor.url).toString();
+    const to = await resolver.resolve(url);
+    const data = Buffer.from(JSON.stringify(b));
+    const got = await new Promise<{ status: number; body: string }>((ok, no) => {
+      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: 60_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}`, "content-type": "application/json", "content-length": data.length } }, (r) => {
+        let body = "";
+        r.on("data", (c) => (body += c)).on("end", () => ok({ status: r.statusCode ?? 500, body })).on("error", no);
+      });
+      req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`))).on("error", (e) => no((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`))).end(data);
+    });
+    let j: { repo?: unknown; base?: unknown; private?: unknown; conflict?: unknown; error?: unknown } = {};
+    try { j = JSON.parse(got.body); } catch { /* no JSON: the status says it */ }
+    if (got.status >= 300) throw fail(got.status >= 500 ? 502 : 422, String(j.error ?? `${CODEHOST} answered ${got.status}`).slice(0, 500));
+    if (typeof j.base !== "string" || !/^[0-9a-f]{40}$/.test(j.base) || typeof j.repo !== "string") throw fail(502, `${CODEHOST} named no tip`);
+    return { repo: j.repo, base: j.base, private: j.private !== false, ...(typeof j.conflict === "string" ? { conflict: j.conflict } : {}) };
+  }
   return {
-    ask, identity,
+    ask, identity, publishTip,
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");

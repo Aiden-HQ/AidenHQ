@@ -32,8 +32,10 @@ export type Bind = "repo" | "ref" | "commit";
  * One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`.
  * `binds`: a head-bound write (a review post on one commit): staleness is judged on these target fields alone, not on the
  * executor's code revision, the kind's declaration, its args or its other targets (writes.ts `boundOf`).
+ * `filer: owner`: only the owner's own verified save files it (fileKernel `owner`); no job, module or agent can.
+ * `stale: fail`: a record whose plan changed after the decision fails ("preview again") instead of being filed again.
  */
-export type Kind = { module: string; floor: Tier; filed_by?: string[]; binds?: Bind[]; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
+export type Kind = { module: string; floor: Tier; filed_by?: string[]; binds?: Bind[]; filer?: "owner"; stale?: "fail"; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
 /** A plan (executor@1's, or the kernel's own planner's). */
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string }; review?: ReviewContext };
 /** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
@@ -435,6 +437,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const r = records.get(id)!;
     try {
       if (!open) return void records.finish(id, false, "Not run: the task is closed, so a leftover request runs nothing.");
+      if (stale && k?.stale === "fail") return void outcomeOf(id, false, "Not run: what it acts on changed since your preview, so nothing was written. Preview again and save that.");
       if (stale) {
         records.close(id, "stale", "stale: what it acts on changed since it was approved");
         const next = k ? await file(r.kind, k, r.requester, r.args, r.task, undefined, r.identifier ?? undefined).catch((e: Error) => e) : new Error(`${r.kind} is no longer installed`);
@@ -493,6 +496,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     try { kind = routeKind(asked, args); } catch (e) { throw fail(400, "bad_args", (e as Error).message); }
     const k = kindOf_(kind);
     if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
+    if (k.filer === "owner") throw fail(403, "owner-only", `${kind} is filed only by the owner's own save on the board`);
     // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
     // requester's (floor, the executor's plan and autonomy: computeTier). A module files its own kinds, and another module's only when that kind's `filed_by` names it (the owner of the kind consents); a kernel
     // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
@@ -541,16 +545,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return { rec: { ...filed!, id: "precheck", digest: digestOf(base), created_at: at, updated_at: at } as Rec };
     },
     /**
-     * A kind the kernel plans (kernel.apply), filed by the kernel itself: the release updater (updates.ts, UPDATER) or the
-     * owner's typed settings change (settings-change.ts, SETTINGS). Planned and tiered as any requester's. A requester of kind
-     * `kernel` is set only here, never from a token, so the planner can tell the updater's own filing (a release move it
-     * verifies itself) from anyone else's. `owner`: the owner's own settings change from his signed-in board session (the
-     * account the kernel verified, settings-change.ts): his Save is his approval, so the record is his and is decided as his
-     * account at filing (computeTier `ownerSave`), never put to the reviewer.
+     * A write the kernel files itself: a kind it plans (kernel.apply) or a module kind with an executor (a share's
+     * github.publish_module), for the release updater (updates.ts, UPDATER) or the owner's typed settings change or share
+     * (settings-change.ts, module-share.ts: SETTINGS). Planned and tiered as any requester's. A requester of kind `kernel` is
+     * set only here, never from a token, so the planner can tell the updater's own filing (a release move it verifies itself)
+     * from anyone else's. `owner`: the owner's own save from his signed-in session (the account the kernel verified): his Save
+     * is his approval, so the record is his and is decided as his account at filing (computeTier `ownerSave`), never put to
+     * the reviewer. A `filer: owner` kind is filed only that way.
      */
     async fileKernel(kind: string, { args, task, requester, owner }: { args: unknown; task: string; requester: typeof UPDATER; owner?: { account: string; via: string } }): Promise<Rec> {
       const k = kindOf_(kind);
-      if (!k || !Object.hasOwn(planners, kind)) throw fail(404, "unknown_kind", `no kernel-planned kind ${kind}`);
+      if (!k || !(Object.hasOwn(planners, kind) || k.executor)) throw fail(404, "unknown_kind", `no kind ${kind} the kernel files`);
+      if (k.filer === "owner" && !owner) throw fail(403, "owner-only", `${kind} is filed only by the owner's own save`);
       const r = await file(kind, k, requester, args, task, undefined, undefined, Boolean(owner));
       if (owner) {
         const d = records.decide(r.id, r.digest, "approve", `account:${owner.account}`, owner.via);

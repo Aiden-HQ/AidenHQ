@@ -63,3 +63,11 @@
   .mod-meta { margin-left: 0; }
   .mods-search { flex: 1 1 100%; margin-left: 0; }
 }
+
+/* A local module's Share (ModulePage Share): the form, then the exact payload. */
+.mod-share { display: grid; gap: 12px; }
+.mod-share-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.mod-share-form .ui-field { flex: 1 1 200px; }
+.mod-share-list { margin: 0; padding-left: 18px; }
+.mod-share-file summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.mod-share-actions { display: flex; gap: 8px; }

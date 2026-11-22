@@ -659,7 +659,17 @@ export type SettingChange =
   | { kind: "unfork"; agent: string }
   | { kind: "pin"; name: string; sha: string | null }
   | { kind: "marketplace"; op: "add" | "update" | "remove"; name: string; source?: { source: "github"; repo: string }; sha?: string }
-  | { kind: "grants"; agent: string; connection: string; tools: string[] | null };
+  | { kind: "grants"; agent: string; connection: string; tools: string[] | null }
+  | { kind: "share"; module: string; repo: string; ref: string; source: string; base: string; digest: string };
+/** POST /api/modules/share/preview (kernel/src/module-share.ts): exactly what a share would send, where, and what blocks it. */
+export interface SharePreview {
+  module: string; repo: string; ref: string; source: string; base: string; digest: string; private: boolean; conflict?: string;
+  /** Each file whole (`text`) only when nothing blocks the share. */
+  files: { path: string; bytes: number; text?: string }[];
+  notShared: { path: string; why: string }[];
+  findings: { file: string; rule: string; detail: string }[];
+  isolation: "trusted" | "untrusted"; scripts: string[]; grants: Record<string, string[]>;
+}
 export type ChangeStage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
 export interface FiledChange {
   identifier: string;
