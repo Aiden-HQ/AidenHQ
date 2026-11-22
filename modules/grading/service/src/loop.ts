@@ -6,7 +6,7 @@
 import { openCard } from "./grader/cards.ts";
 
 type Json = any;
-export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, rubricHash, emit = () => {} }: {
+export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, presentNow, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, rubricHash, graderMarker, emit = () => {} }: {
   api: Json;
   pc: Json;
   log: (...a: unknown[]) => void;
@@ -14,6 +14,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   gather: Json;
   grade: Json;
   escalationFor: Json;
+  /** The deliverable's presence check (`grader/evidence.ts`'s presentNow), injected so this loop imports nothing from the grader. */
+  presentNow: Json;
   gradeNote: Json;
   template: Json;
   gradeDeps: Json;
@@ -24,6 +26,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   graderSpeaks: Json;
   /** The hash a pass's verdict names (grades.ts rubricHash): the store drops a verdict from a rubric since amended. */
   rubricHash: (rubric: string[]) => string;
+  /** The marker `gradeNote` puts on every grader note (`grader/evidence.ts`'s GRADER_MARKER), for the closes this loop words itself. */
+  graderMarker: string;
   emit?: (e: Json) => void;
 }) {
   const grading = new Set<string>();
@@ -46,6 +50,12 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     state.set(`owed:${task}`, JSON.stringify(steps));
     await settle(task, steps);
   }
+  /**
+   * A parent notice from the fields it was queued with, never by parsing its rendered text: a task's title is free text and can
+   * itself contain the phrase a parser would split on, which would then point the parent at the wrong task.
+   */
+  const tellText = (x: Json) =>
+    x.who ? `${x.who} is done, ${x.ungraded ? `ungraded: ${x.ungraded}` : "graded against its rubric"}: ${x.title}. Its result is on ${x.identifier}.` : String(x.text ?? "");
   async function settle(task: string, steps: Json[]) {
     while (steps.length) {
       const s = steps[0]!;
@@ -70,19 +80,59 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.
           const now = await pc.issue(task);
-          // An empty recorded version (no deliverable then) is stale once one appears.
-          const seen = now.status === "done" || now.status !== s.status ? undefined : await gather(s.deliverable, gradeDeps(now), s.rubric);
+          // An empty recorded version (no deliverable then) is stale once one appears. `gather()` can't tell a deliverable whose
+          // evidence isn't capturable (a deployed app whose live page is down) from no deliverable, so the presence check decides.
+          const deps = now.status === "done" || now.status !== s.status ? undefined : gradeDeps(now);
+          const seen = deps ? await gather(s.deliverable, deps, s.rubric) : undefined;
           const found = seen?.version ?? "";
           // A versionless close also waits out work that has started since: an open sub-task or a card on the task.
           const active = !s.version && now.status !== "done" && (Boolean(seen?.busy) || (await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some(openCard));
-          if (now.status !== "done" && (now.status !== s.status || active || (s.version ? found !== s.version : Boolean(found)))) {
+          // A deliverable whose evidence can't be captured has no version either: the presence check (escalationFor's) tells it
+          // from no deliverable at all, so a deployed-but-down app's close is stale instead of done/ungraded. A presence check
+          // that could not answer (GitHub or the apps registry unreachable) is not "absent": it waits for the next pass, but
+          // only so long. After the day a grade waits, an answer that never comes closes the task ungraded, saying the
+          // deliverable could not be read, rather than letting the close replay forever.
+          // A gathered version is itself proof the close is stale, and it is the answer already in hand: the presence check is
+          // only for a deliverable whose evidence could not be captured (no version), so it never runs — and never waits on an
+          // outage — over a deliverable `gather()` has already read.
+          const presence = !active && Boolean(deps) && !s.version && !found ? await presentNow(s.deliverable, deps) : undefined;
+          // Confirmed presence first: one recorded PR merged is proof the close is stale even when another PR's lookup failed
+          // (`present` and `unknown` are both true then), so the row goes back to grading instead of waiting on the uncertain one.
+          const present = Boolean(presence?.present);
+          const { unreadSince, ...plain } = s; // carried only while the wait is unread
+          let gaveUp = false;
+          if (presence?.unknown && !present) {
+            const since = typeof unreadSince === "string" ? unreadSince : new Date().toISOString();
+            if (Date.now() - Date.parse(since) < GRADE_WAIT_MS) {
+              steps[0] = { ...plain, unreadSince: since };
+              state.set(`owed:${task}`, JSON.stringify(steps));
+              throw new Error(`${s.deliverable?.kind ?? "the deliverable"} could not be read just now: waiting for the next pass`);
+            }
+            gaveUp = true;
+            steps[0] = plain;
+          }
+          if (now.status !== "done" && (now.status !== s.status || active || present || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });
             steps.length = 1;
-          } else if (now.status !== "done") await pc.setStatus(task, "done", s.note);
+          } else if (now.status !== "done") {
+            // The note keeps the grader's marker that gradeNote puts on every note: evidence collection filters grader comments by
+            // it, so an unmarked close would come back as the task's own evidence if the task were reopened and graded again.
+            const unreadable = `its deliverable could not be read just now (${s.deliverable?.kind ?? "the deliverable"})`;
+            const why = gaveUp ? `${unreadable}: closed ungraded\n\n${graderMarker}` : s.note;
+            // The parent's notice was queued with the close's first wording. An unreadable deliverable is not a missing one, so
+            // the notice says ungraded too. It is saved before the close: if the PATCH lands and its answer is lost, the next pass
+            // sees the task already done and sends this row, which must already carry the ungraded notice rather than the queued
+            // "graded against its rubric" one.
+            if (gaveUp) {
+              for (const x of steps) if (x.do === "tell") x.ungraded = unreadable;
+              state.set(`owed:${task}`, JSON.stringify(steps));
+            }
+            await pc.setStatus(task, "done", why);
+          }
         }
         else if (s.do === "block") await pc.block(task, s.note);
-        else if (!(await tellParent(s.issue, s.kind, s.text)) && s.fallback) await pc.comment(task, s.fallback);
+        else if (!(await tellParent(s.issue, s.kind, tellText(s))) && s.fallback) await pc.comment(task, s.fallback);
       } catch (err: Json) {
         const status = Number(err?.status);
         if (!(status >= 400 && status < 500 && status !== 429)) {
@@ -196,9 +246,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // after all is named as there). Fail open: nobody is asked to decide.
       const esc = await escalationFor(ev, g.deliverable, deps);
       state.set(`evidence-woken:${issue.id}`, ""); // a later round of work gets its own wake
-      // A deliverable that is there keeps its version, so the close isn't read as stale once that version is found again.
-      if (!esc.hold) ev.version = "";
-      v = { outcome: "error", model: "", criteria: [], reason: esc.hold ? `its deliverable is there (${esc.facts.join("; ").slice(0, 200)}) but its evidence never settled` : esc.reason };
+      // A deliverable that is there keeps its version, so the close isn't read as stale once that version is found again. One
+      // that could not be read keeps nothing: nothing was found to vouch for the version.
+      if (!esc.present) ev.version = "";
+      v = { outcome: "error", model: "", criteria: [], reason: esc.present ? `its deliverable is there (${esc.facts.join("; ").slice(0, 200)}) but its evidence never settled` : esc.hold ? `its deliverable could not be read just now (${esc.facts.join("; ").slice(0, 200) || "the lookup did not answer"}), so its close was not checked` : esc.reason };
     } else {
       // The author's model: its last job's engine and the agent's own model (setup's metadata); the grader is never of its family.
       const authorModel = `${state.lastJob(issue.id)?.engine ?? ""} ${agent?.metadata?.model ?? ""}`;
@@ -224,7 +275,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const note = gradeNote(v, rubric, ungraded ? "ungraded" : row.state, { version: ev.version, reason: ungraded || undefined });
     if (row.state === "satisfied") {
       // The row is satisfied now, so the close and the notice are owed steps: retried until they land, even across a restart.
-      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", text: `${issue.identifier} (${agent?.name ?? "its agent"}) is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      // The notice keeps its parts, not only the rendered sentence: a later close that changes the reason rewrites the reason and
+      // renders the notice again from these, so it never has to guess where the free-text title ends.
+      const notice = { who: `${issue.identifier} (${agent?.name ?? "its agent"})`, title: String(issue.title ?? ""), identifier: String(issue.identifier ?? issue.id), ...(ungraded ? { ungraded } : {}) };
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), version: ev.version, status: issue.status, deliverable: g.deliverable, rubric }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });

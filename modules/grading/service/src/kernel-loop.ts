@@ -5,10 +5,10 @@
 // An app's status, deploys and rendered view are read from apps-mcp with this module's own token (role apps.read, apps-evidence.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { createGradeLoop } from "./loop.ts";
-import { GRADE_SCHEMA, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
+import { GRADE_SCHEMA, GRADER_MARKER, escalationFor, gather, grade, gradeNote, template } from "./grader/grade.ts";
 import { findPrs, stripHidden } from "./grader/text.ts";
 import { openRouterAsk } from "./aidenhq-sdk/judge.ts";
-import { MAX_OTHER_FILES, taskPrRows } from "./grader/evidence.ts";
+import { MAX_OTHER_FILES, presentNow, taskPrRows } from "./grader/evidence.ts";
 import { createGithub } from "./github.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 import { appsEvidence, type AppsCall } from "./apps-evidence.ts";
@@ -176,9 +176,9 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
   };
   const loop = createGradeLoop({
     api: { get: async (path: string) => (path === "/internal/grades" ? due() : runner("GET", path, undefined)), post: (path: string, body: unknown) => runner("POST", path, body) },
-    pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn,
+    pc, log, state, gather, grade, escalationFor, presentNow, gradeNote, template, gradeDeps, tellParent, recordsOn,
     graderAsk, emit, rubricHash,
-    stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)),
+    stripHidden, graderSpeaks: (s?: string) => ["open", "pending", "awaiting_evidence", "needs_revision", "grading_failed"].includes(String(s)), graderMarker: GRADER_MARKER,
   });
   return { ...loop, runGrades: async () => { workCache.clear(); return loop.runGrades(); } };
 }

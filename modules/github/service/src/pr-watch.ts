@@ -241,14 +241,37 @@ export function startPrWatch(o: PrWatchOptions) {
       log(r.status < 300 ? "red policy re-run" : "policy re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
       return r.status < 300;
     }
-    /** Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and head of main. True when it did. */
+    /**
+     * Have GitHub update a behind, non-conflicting branch (rebase if the repo allows, else merge), at most once per head and
+     * head of main. True when it did. A refusal is cached only when it is permanent (a merge conflict, or no right to
+     * update): a 403 rate limit, a 5xx, a sha race or an unrecognized 422 may pass, so it is asked again after a backoff
+     * rather than made final for that head.
+     */
     async function updateBranch(pr: Json, base: string) {
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}:${base}`;
       const prior: string | undefined = state.updated[key];
       if (prior === "ok") return true; // an update GitHub has not shown yet is waited for, not asked about
       if (prior === "final") return false;
       if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) return "retry";
-      let retry = false;
+      // Permanent: a merge conflict, or no permission (or the PR/repo is gone: a 404 can't be fixed by asking again). A 403
+      // worded as a rate limit is a slow-down, not a refusal, and a 422 worded as a conflict is the only 422 that is final.
+      const permanent = (r: { status: number; body?: any }) => {
+        const message = String(r.body?.message ?? "");
+        if (r.status === 403) return !/rate limit|abuse/i.test(message);
+        return r.status === 404 || (r.status === 422 && /conflict/i.test(message));
+      };
+      // No permission, or the PR/repo gone: an answer about this token and endpoint, not about which method was asked. The
+      // other method's own answer doesn't lift it, so it is terminal by itself.
+      const denied = (r: { status: number; body?: any }) => r.status === 404 || (r.status === 403 && permanent(r));
+      // An answer is GitHub's word about this branch: a 422, or a 403/404 (a 403 worded as a rate limit is a "try later", not an
+      // answer). A 5xx, a timeout or a rate limit is no answer at all, and it leaves the branch's state unknown however the other
+      // method answered: a 5xx on the rebase is never made final by a conflict on the merge fallback, and the next tick asks again.
+      const answered = (r: { status: number; body?: any }) =>
+        r.status === 422 || r.status === 404 || (r.status === 403 && !/rate limit|abuse/i.test(String(r.body?.message ?? "")));
+      let unanswered = false;
+      let refused = false;   // no permission, or the PR/repo gone: an answer no retry can change
+      let transient = false; // an answer that says "not now" (a 422 that isn't a conflict): it is asked again
+      let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
         const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
         if (r.status < 300) {
@@ -258,14 +281,27 @@ export function startPrWatch(o: PrWatchOptions) {
           return true;
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
-        // Only a merge conflict or no right to update is permanent; a 5xx, a 429, a sha race or any other 422 may pass.
-        if (!(r.status === 403 || r.status === 404 || (r.status === 422 && /conflict/i.test(String(r.body?.message ?? ""))))) retry = true;
+        if (!answered(r)) unanswered = true;
+        // No permission (a 403 that is not a rate limit) or a gone repo/PR is terminal whichever method reported it: the other
+        // method's answer does not give the token a right it lacks. A conflict is terminal only when every method that
+        // answered said so: a "temporarily unavailable" 422 on the rebase is asked again even when the fallback reports a
+        // conflict, since GitHub may allow the rebase again and the fallback is not the only way through.
+        if (answered(r) && denied(r)) refused = true;
+        else if (answered(r) && !permanent(r)) transient = true;
+        last = r;
       }
-      if (!retry) { state.updated[key] = "final"; save(); return false; }
-      // Asked again in five minutes, and no task is woken meanwhile: the update owns this rebase until it is final.
+      // No answer on some method: retry after the backoff, never final for that head. Otherwise a permission/gone refusal, or a
+      // conflict from every method that answered, is terminal; any transient answer keeps the attempt retryable.
+      if (unanswered || !last || !(refused || !transient)) return retryLater(key);
+      state.updated[key] = "final";
+      save();
+      return false;
+    }
+    /** A transient refusal: asked again in five minutes, and no task is woken meanwhile (the update owns this rebase until it is final). */
+    function retryLater(key: string) {
       state.updated[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
       save();
-      return "retry";
+      return "retry" as const;
     }
     /** The breaker tripped: whoever asked for the task hears it once, the checks and the last failure's summary fenced as data. */
     async function tellAsker(pr: Json, task: string, red: string[], why: string): Promise<"sent" | "failed"> {

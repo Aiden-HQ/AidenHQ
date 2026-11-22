@@ -95,9 +95,18 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     return r.json as Issue;
   }
   const labelIds = (i: Issue) => i.labelIds ?? (i.labels ?? []).map((l) => l.id);
-  async function label(i: Issue, name: string) {
+  /**
+   * The company's labels, one read: a resolve that ends several holds names several of them. A read that fails is an error, never
+   * an empty list: a resolve that took it for "no such label" would move the task and delete its holds while their labels stayed
+   * on it, and `holds()` reads a label as a hold. The caller's retry asks again.
+   */
+  async function labelsOf(i: Issue) {
     const r = await owner("GET", `/api/companies/${encodeURIComponent(i.companyId ?? "")}/labels`);
-    const l = (Array.isArray(r.json) ? r.json : []).find((x: { name?: string }) => x.name === name) as { id: string } | undefined;
+    if (r.status !== 200 || !Array.isArray(r.json)) throw fail(502, "upstream", `the control plane answered ${r.status} for the company's labels`);
+    return r.json as { id: string; name?: string }[];
+  }
+  async function label(i: Issue, name: string) {
+    const l = (await labelsOf(i)).find((x) => x.name === name);
     if (!l) log(`label "${name}" missing in the control plane (run the setup)`);
     return l;
   }
@@ -294,24 +303,46 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     // The move first, in one PATCH with the label's removal: the hold goes only once the task has moved, so a failed call leaves
     // it for the module's retry (and a retry never posts its comment twice).
     const comment = typeof b.comment === "string" && b.comment ? { comment: b.comment.slice(0, 60_000) } : {};
+    // A verdict that ends the review (reopen, block) ends every hold of it: the other check's row is a hold of the same
+    // review, and leaving it behind would match a later submission of the task and stop its `ok` from closing. `ok` clears
+    // only its own row: while another check still holds the task, the task stays in review.
+    const ends = b.verdict === "reopen" || b.verdict === "block";
+    // The holds this verdict ends: this check's own, and — for a verdict that ends the review — the sibling holds recorded now.
+    // One set decides both the labels the PATCH below removes and the rows the transaction deletes, so every row deleted and
+    // its label go together: a label left behind is what `holds()` reads as a hold, and one whose row is gone would authorize
+    // that module's token with no recorded hold. A hold written while this verdict was being filed is not in this set, so it
+    // keeps its row and the label it wrote with it (a later submission's own hold) rather than losing its row alone.
+    const recordedNow = ends ? (db.prepare("SELECT check_id FROM check_holds WHERE task = ?").all(i.id) as { check_id: string }[]).map((r) => r.check_id) : [];
+    const ended = new Set<string>([id, ...recordedNow]);
+    // One read of the company's labels, however many checks the verdict ends — and only when some hold being ended has a label
+    // to take off. A check without one needs no label operation, so an outage of that endpoint must not stop its verdict.
+    const named = new Map(finishing());
+    const wanted = [...ended].some((x) => named.get(x)?.label);
+    const labels = wanted ? await labelsOf(i) : [];
+    const drop = new Set<string>();
+    for (const x of ended) {
+      const name = named.get(x)?.label;
+      const l = name ? labels.find((y) => y.name === name) : undefined;
+      if (l) drop.add(l.id);
+      else if (name) log(`label "${name}" missing in the control plane (run the setup)`);
+    }
+    // The PATCH replaces the whole list, so it is built from the task's labels as they are now, not as this resolve first read
+    // them: a hold that landed during the label read above has put its own label on the task, and a list from the older read
+    // would drop it while its row (not in `ended`) stays.
+    const ids = labelIds(await issue(i.id));
+    const left = ids.filter((x) => !drop.has(x));
     // An ok clears only this check's hold: while another check still holds the task it stays in review.
     const others = b.verdict === "ok" && db.prepare("SELECT 1 FROM check_holds WHERE task = ? AND check_id <> ?").get(i.id, id) !== undefined;
-    if (!others) {
-      const l = c.label ? await label(i, c.label) : undefined;
-      const ids = labelIds(i);
-      await patch(i, { status: to, ...(l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {}), ...comment });
-    } else {
-      // Another check still holds the task: this one's label goes, and its comment with it, the status stays.
-      const l = c.label ? await label(i, c.label) : undefined;
-      const ids = labelIds(i);
-      const drop = l && ids.includes(l.id) ? { labelIds: ids.filter((x) => x !== l.id) } : {};
-      const say = others ? comment : {};
-      if (Object.keys(drop).length || Object.keys(say).length) await patch(i, { ...drop, ...say });
-    }
-    // The hold ends with its verdict's fact.
+    if (!others) await patch(i, { status: to, ...(left.length !== ids.length ? { labelIds: left } : {}), ...comment });
+    else if (left.length !== ids.length || Object.keys(comment).length) await patch(i, { ...(left.length !== ids.length ? { labelIds: left } : {}), ...comment });
     inTx(db, "finish_resolved", () => {
-      db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, id);
-      strict(verdictFact(i.id, id, String(b.verdict)));
+      // Exactly the rows the label PATCH above ends, one by one: each gets its own verdict fact (with that check's id), so task
+      // state pairs held and verdict facts per check and a sibling whose row is gone but whose held fact stands never reads as
+      // unresolved.
+      for (const x of ended) {
+        db.prepare("DELETE FROM check_holds WHERE task = ? AND check_id = ?").run(i.id, x);
+        strict(verdictFact(i.id, x, String(b.verdict)));
+      }
     });
     log("finish check resolved", { task: i.identifier, check: id, verdict: b.verdict });
     return { ok: true };

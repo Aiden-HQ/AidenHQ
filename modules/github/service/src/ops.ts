@@ -113,8 +113,20 @@ export async function packBundle(ctx: Pick<OpsContext, "cacheDir" | "git" | "ini
 async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Promise<Answer> {
   const graph = async (query: string, what: string) => {
     const r = await ok(ctx, "POST", "/graphql", { query, variables: { owner: s.org, repo: s.name, number: b.number } });
-    if (r.body?.errors?.length || !r.body?.data?.repository?.[what]) throw fail(502, `GitHub has no readable ${s.slug}#${b.number}: ${JSON.stringify(r.body?.errors ?? []).slice(0, 200)}`);
-    return r.body.data;
+    // An error is no answer: the caller waits and asks again.
+    const noAnswer = () => fail(502, `GitHub has no readable ${s.slug}#${b.number}: ${JSON.stringify(r.body?.errors ?? []).slice(0, 200)}`);
+    if (r.body?.errors?.length) throw noAnswer();
+    const data = r.body?.data;
+    if (!data || typeof data !== "object") throw noAnswer();
+    const node = data.repository;
+    // A PR read answers null for a repository that is gone, and for the PR field of a repository that still has the others. That
+    // is GitHub's word that the PR is not there, not a failed read: keeping the nulls lets grading's presence check tell a PR
+    // that cannot reappear from one it could not read. Only the PR read does this: every other read treats a null as no answer.
+    if (what === "pullRequest" && node === null) return { repository: null };
+    if (!node || typeof node !== "object") throw noAnswer();
+    if (what === "pullRequest" && "pullRequest" in node && node.pullRequest === null) return data;
+    if (!node[what]) throw noAnswer();
+    return data;
   };
   if (b.kind === "pr") return { status: 200, json: await graph(PR_QUERY, "pullRequest") };
   if (b.kind === "issue") return { status: 200, json: await graph(ISSUE_QUERY, "issue") };

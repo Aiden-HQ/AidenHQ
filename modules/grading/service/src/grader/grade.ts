@@ -478,12 +478,17 @@ export function evidencePremise(awaiting: string | undefined, facts: string[] = 
  * Why a held grade closes ungraded when its wait is over. The deliverable is read again from the task's own record
  * (presentNow): present means the work is there (`hold`, with what was found). With nothing there, the reason is built from
  * the facts read now, never from the reason the wait captured; a deliverable that never existed keeps its own wording.
- * { hold: true, facts } or { reason, facts }.
+ * { hold: true, present, facts } (present: the work was found, else it could not be read) or { reason, facts }.
  */
 export async function escalationFor(ev: any, deliverable: any, deps: any): Promise<any> {
   if (ev.missing) return { reason: `finished without its deliverable: ${ev.awaiting}`, facts: [] };
-  const now = await presentNow(deliverable, deps).catch(() => ({ present: false, facts: [] }));
-  if (now.present) return { hold: true, facts: now.facts };
+  // A lookup that throws read nothing either: like `unknown`, that is not knowing it is absent, so it holds the row for
+  // another look rather than closing it ungraded on a reason that says the deliverable was never there.
+  const now = await presentNow(deliverable, deps).catch(() => ({ present: false, unknown: true, facts: [] }));
+  // Not knowing (the registry or GitHub unreachable) is not knowing it is absent: hold the row for another look. `present` is
+  // kept apart from `unknown` so the close can say which it is: the work was found, or it could not be read.
+  if (now.present) return { hold: true, present: true, facts: now.facts };
+  if (now.unknown) return { hold: true, present: false, facts: now.facts };
   return { reason: evidencePremise(ev.awaiting, now.facts), facts: now.facts };
 }
 

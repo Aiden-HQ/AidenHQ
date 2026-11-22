@@ -45,6 +45,7 @@ export function scheduleMove(store: Store, issue: Issue, input: z.infer<typeof S
   }
   // Parking is a move by hand, which drops any earlier schedule, so it goes first.
   if (input.park) store.move(issue.id, input.park);
-  store.schedule(issue.id, input.date, input.bucket, input.position);
+  // `parked` is what the rollover reads: only a card a schedule parked waits for its own move.
+  store.schedule(issue.id, input.date, input.bucket, input.position, Boolean(input.park));
   return { scheduled: { date: input.date, bucket: input.bucket, position: input.position }, movedNow: false };
 }

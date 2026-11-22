@@ -6,9 +6,28 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gradePrompt, template } from "../service/src/grader/grade.ts";
+import { parseRubric } from "../service/src/grades.ts";
 
 const RUBRICS = fileURLToPath(new URL("../rubrics", import.meta.url));
 const SERVICE_RUBRICS = fileURLToPath(new URL("../service/rubrics", import.meta.url));
+
+// A product PR merges on its approved card, so its merge is the deliverable: the standard template must never be read as
+// asking for an open PR there, or a merged PR fails its only unmet criterion and the task cannot close.
+test("the pr template's merged criterion is met by a merged PR and never reads as requiring an open PR, the product repo included", () => {
+  const merged = template("pr", RUBRICS).find((c) => c.startsWith("Merged into the default branch"));
+  assert.ok(merged, "the pr template has its merged criterion");
+  assert.match(merged, /AidenHQ product repo/, "the criterion names the AidenHQ product repo");
+  assert.match(merged, /met by the merged PR/, "a merged PR meets a criterion asking whether the PR was delivered");
+  assert.doesNotMatch(merged, /open PR/i, "the criterion carries no open-PR-as-deliverable reading");
+  assert.doesNotMatch(merged, /the owner merges/, "the criterion does not say the owner merges product PRs by hand");
+  // A delegator copies this line into a filed rubric, and a filed criterion is capped at 200 characters (parseRubric): a longer
+  // template line cannot be filed at all, so the merged criterion would have to be reworded on every delegation.
+  assert.ok(merged.length <= 200, `the merged criterion is ${merged.length} characters, over the 200 a filed rubric allows`);
+  assert.doesNotThrow(
+    () => parseRubric([merged, "The diff makes the change the task asked for", "A test covers the changed behaviour"]),
+    "a delegator can file the merged criterion in a rubric",
+  );
+});
 
 test("the pr template's Evidence criterion accepts proof in the task's completion comment after a merge", () => {
   const evidence = template("pr", RUBRICS).find((c) => c.startsWith("The description's Evidence section"));
