@@ -204,7 +204,7 @@ export function createEngine(d: EngineDeps) {
     && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["findings", "claimed_at", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
     ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
@@ -1392,7 +1392,7 @@ export function createEngine(d: EngineDeps) {
     if (github) for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
-        if (gated(cfg)) await claims(cfg);
+        if (gated(cfg)) { await claims(cfg); recheckClaims(cfg); }
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
@@ -1550,7 +1550,7 @@ export function createEngine(d: EngineDeps) {
     const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "claimed" : "dismissed";
     // `fixed` is a claim only: the finding stays open and gating, and the next mandatory review (which gets it first) closes it as fixed when it finds the defect gone.
     const changed = tx(() => {
-      const c = run(`UPDATE findings SET ${w === "fixed" ? "claim = ?" : "outcome = 'dismissed', outcome_at = ?, claim = ?"} WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL`, ...(w === "fixed" ? [claim] : [iso(), claim]), at.repo, at.number, id).changes;
+      const c = run(`UPDATE findings SET ${w === "fixed" ? "claim = ?, claimed_at = ?" : "outcome = 'dismissed', outcome_at = ?, claim = ?"} WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL`, ...(w === "fixed" ? [claim, iso()] : [iso(), claim]), at.repo, at.number, id).changes;
       if (c) dispose([id], at, outcome, `${label}: ${claim}`, by, evidence);
       return c;
     });
@@ -1640,6 +1640,21 @@ export function createEngine(d: EngineDeps) {
           run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
         }
       }
+    }
+  }
+
+  /**
+   * A `fixed` claim recorded after its head's mandatory recheck started was never read by it, and with no newer commit no review
+   * ever would: one more mandatory recheck of that head is queued (low effort, the same model). Once per claim: any mandatory recheck
+   * of the head made since the claim (queued, running, or ended, skipped included) is the one it gets.
+   */
+  function recheckClaims(cfg: Repo) {
+    for (const p of all<{ number: number; head: string; base: string; author: string }>("SELECT number, head, base, author FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
+      const at = one<{ at: string | null }>("SELECT MAX(claimed_at) at FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND severity = 'important' AND claim LIKE 'fixed:%'", cfg.repo, p.number)?.at;
+      if (!at) continue;
+      const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head);
+      if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR status = 'queued' OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
+      queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push" });
     }
   }
 
