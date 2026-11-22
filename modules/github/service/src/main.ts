@@ -42,7 +42,10 @@ const retiredAppId = Number(env.GITHUB_MIGRATE_FROM_APP ?? "");
 const migration = retiredAppId > 0
   ? startAppMigration({ access, appId: retiredAppId, cacheDir: env.CACHE_DIR ?? "/cache", fleetOrg, productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), instanceRepo: env.INSTANCE_REPO || undefined, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, log })
   : undefined;
-const reviewGate = createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key });
+const gateOptions = { gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key };
+const reviewGate = createReviewGate(gateOptions);
+// The watcher's own gate: its outage timer is separate, so a PR the merge queue never sees can't age the queue's bypass.
+const watchGate = createReviewGate(gateOptions);
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
@@ -66,7 +69,7 @@ if (env.PRODUCT_REPO) {
   for (const m of maintained) {
     if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(fleetOrg, m.repo) ? "all" : "dependabot");
   }
-  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, gh: access.rest, connected: () => access.connected(), log, flow: handle.flow, reviewGate });
+  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, gh: access.rest, connected: () => access.connected(), log, flow: handle.flow, reviewGate: watchGate });
 }
 const server = createServer((req, res) => void handle(req, res));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
