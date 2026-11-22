@@ -38,6 +38,8 @@ function fake(opts: {
   patch?: (body: any) => Response | { status: number; json: () => Promise<unknown>; headers?: Record<string, string> } | undefined;
   /** Creates the comment, then loses the answer (GitHub may have it; the caller never heard). */
   loseCommentPost?: boolean;
+  /** Creates the comment, then answers 502 (a gateway failed after GitHub saved it). */
+  failCommentPost?: boolean;
   /** Applies the state change, then loses the answer. */
   losePatchAnswer?: boolean;
   /** Holds each state PATCH until this resolves (a close that is in flight while another waits). */
@@ -112,11 +114,12 @@ function fake(opts: {
     }
     if (u.pathname.endsWith("/comments") && method === "POST") {
       const n = Number(u.pathname.match(/issues\/(\d+)\/comments$/)![1]);
-      if (opts.loseCommentPost) {
+      if (opts.loseCommentPost || opts.failCommentPost) {
         const id = comments.length + 1;
         const at = nextAt();
         comments.push({ id, html_url: `https://github.com/x#c${id}`, body: body.body, created_at: at });
         ((opts.timelines ??= {})[n] ??= []).push({ event: "commented", id, created_at: at });
+        if (opts.failCommentPost) return json(502, { message: "Bad Gateway" });
         throw new TypeError("fetch failed");
       }
       posted.push({ path: u.pathname, body });
@@ -579,7 +582,8 @@ it("an overlapping close whose budget runs out while it waits for the lock fails
   await first;
   // Only the first call posted the note; the second never reached even its reads.
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
-  expect(f.calls.filter((c) => c.method === "GET" && c.url.endsWith("/issues/1"))).toHaveLength(2); // assertTrusted, first call only
+  // The trusted-label gate now runs inside the lock too, so the second call makes no read at all: one GET, from the first call.
+  expect(f.calls.filter((c) => c.method === "GET" && c.url.endsWith("/issues/1"))).toHaveLength(1);
 });
 
 it("a pending note is kept through the refusal's advertised reset and the eviction cap, unlike a confirmed one", async () => {
@@ -649,6 +653,67 @@ it("a new close after a reopen gets a fresh marker, so it never takes the earlie
   expect(out).toMatchObject({ state: "closed" });
   expect(f.comments).toHaveLength(2);
   expect(out.objects).toEqual([`github:${PRODUCT}#1/comment/2`]);
+});
+
+it("a note the POST answered 502 for is reconciled on the retry, not posted again", async () => {
+  // GitHub saved the comment and a gateway answered 502: the POST's outcome is unknown, not a refusal, so the pending record
+  // must survive and the retry must look for its marker before sending another comment.
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  f.opts.failCommentPost = true;
+  const err = await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
+  expect((err as Error).message).toMatch(/whether the note posted is unknown/);
+  expect(f.comments).toHaveLength(1);
+  f.opts.failCommentPost = false;
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  // The one comment GitHub saved is reused; no second POST, and the state change went once.
+  expect(f.comments).toHaveLength(1);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(0);
+  expect(f.posted.filter((p) => p.path.endsWith("/issues/1"))).toHaveLength(1);
+});
+
+it("a state PATCH answered 5xx says the close's outcome is unknown and never tells the caller to PATCH again", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    patch: () => new Response(JSON.stringify({ message: "Bad Gateway" }), { status: 504 }),
+  });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const err = await maintainer(f).state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
+  // A maintainer may have reopened it since: the caller must read the issue's state, not re-send the PATCH.
+  expect((err as Error).message).toMatch(/answered the state change to closed with 504: whether the state change to closed landed is unknown/);
+  expect((err as Error).message).toMatch(/read the issue's state before retrying/);
+  expect((err as Error).message).not.toMatch(/did not complete/);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+});
+
+it("a close rechecks the trusted label once it has the lock, so a label untrusted while it queued stops it", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let began!: () => void;
+  const started = new Promise<void>((r) => (began = r));
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    holdPatch: () => {
+      began();
+      return held;
+    },
+  });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  const first = m.state(PRODUCT, 1, "closed", "completed", note);
+  await started;
+  const second = m.state(PRODUCT, 1, "closed", "completed", note);
+  // While the second close waits for the lock, a stranger replaces the label with their own: it is no longer trusted.
+  f.opts.timelines![1]!.push(labeled("random-user", "2026-01-01T00:05:00Z"));
+  release();
+  await first;
+  await expect(second).rejects.toThrow(/untrusted/);
+  // Only the first close acted: one note, one state change.
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(1);
+  expect(f.posted.filter((p) => p.path.endsWith("/issues/1"))).toHaveLength(1);
 });
 
 it("a lost POST whose comment scan hits the page cap stays unresolved instead of posting a duplicate", async () => {

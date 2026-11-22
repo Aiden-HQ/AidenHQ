@@ -138,6 +138,13 @@ function lostAnswer(e: unknown): boolean {
   return /fetch failed|socket hang up|ECONNRESET|ETIMEDOUT|other side closed/i.test(String((e as Error)?.message ?? ""));
 }
 
+/** Whether an error leaves the request's outcome unknown: a dropped connection, or a gateway's 5xx after GitHub may have applied it. */
+function ambiguous(e: unknown): boolean {
+  if (lostAnswer(e)) return true;
+  const status = (e as { status?: unknown })?.status;
+  return typeof status === "number" && status >= 500;
+}
+
 export class Maintainer {
   private roles = new Map<string, { role: string | null; at: number }>();
   /** Close notes this process posted (see `state`), by repo, issue, state and note text: what it posted, whether the state
@@ -479,7 +486,8 @@ export class Maintainer {
   /** One already-scrubbed comment as the owner. */
   private async postComment(r: MaintainedRepo, number: number, text: string) {
     const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
-    if (res.status !== 201) throw new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim());
+    // The status rides on the error: a 5xx may still have created the comment (a gateway answered, not GitHub), so it is not a refusal.
+    if (res.status !== 201) throw Object.assign(new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim()), { status: res.status });
     return {
       repo: r.repo,
       number,
@@ -638,14 +646,19 @@ export class Maintainer {
       if (bad) throw new GitHubRefused(bad);
     }
     const text = note === undefined ? undefined : this.scrubbed(r, note);
-    await this.assertTrusted(r, number);
     const key = text === undefined ? undefined : Maintainer.noteKey(r, number, state, text);
     // The note goes once. The decision, the post and the state change run under the key's lock, so an overlapping close of the
     // same note waits for the first to finish and then reuses it instead of posting a duplicate. A retry of the same call (the
     // note posted, the state change not confirmed) reuses it too; a close after a reopen posts its own. The record is this
     // process's own, so no comment on the issue (whose author this can't verify) can suppress a note.
-    if (key === undefined) return this.applyState(r, number, state, reason);
+    if (key === undefined) {
+      await this.assertTrusted(r, number);
+      return this.applyState(r, number, state, reason);
+    }
     return this.withNoteLock(key, async () => {
+      // The gate is rechecked here, after any wait for another close of the same note: a label that turned untrusted while this
+      // call was queued must stop it before it posts or changes anything.
+      await this.assertTrusted(r, number);
       const spec: NoteSpec = { text: text!, state, agent };
       const earlier = this.noted.get(key);
       // A record with no comment id is a POST whose answer was lost: find it on the issue before considering another one.
@@ -719,8 +732,9 @@ export class Maintainer {
       this.rememberNote(key, rec);
       return rec;
     } catch (e) {
-      // The note may or may not have landed. The pending record stays, so a retry reconciles by its marker first.
-      if (lostAnswer(e)) throw new Error("whether the note posted is unknown (the answer was lost); call this again with the same state and note, and this will reuse it if it landed");
+      // The note may or may not have landed (a dropped connection, or a gateway's 5xx on a POST GitHub may have saved). The
+      // pending record stays, so a retry reconciles by its marker first rather than posting a second copy.
+      if (ambiguous(e)) throw new Error("whether the note posted is unknown (the answer was lost); call this again with the same state and note, and this will reuse it if it landed");
       this.noted.delete(key);
       throw e;
     }
@@ -768,6 +782,9 @@ export class Maintainer {
       if (url) throw new Error(`${(e as Error).message}. ${reset}`.trim());
       throw e;
     }
+    // A gateway's 5xx may still have applied the change (GitHub answered through a proxy that then failed): the outcome is
+    // unknown, and telling the caller to PATCH again could undo a reopen in between.
+    if (res.status >= 500) throw new Error(`GitHub answered the state change to ${state} with ${res.status}: ${unknown}`);
     // A refusal that isn't a typed need (a 422 and the like) leaves the note posted just the same: say so, or a retry doubles it.
     if (res.status !== 200) throw new Error(`GitHub refused the state change (${res.status} ${res.body?.message ?? ""})${url ? `. ${reset}` : ""}`.trim());
     // The comment is this call's own GitHub object whether it posted it or reused it: the kernel records it for provenance.
