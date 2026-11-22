@@ -10,10 +10,11 @@ requires:
 contributes:
   warehouse.sources:
     - schema: src_security
-      about: "src_security.findings (CVE and App Auditor findings in what we run, by target) / changes"
+      about: "src_security.findings (CVE and App Auditor findings in what we run, by target) / changes / zerowire (Cloudflare Zero Wire briefings on critical CVEs)"
       views:
         - { name: findings, time: ingested_at, project: target, tsv: true, exclude: { column: verdict, value: not-affected } }
         - { name: changes, time: observed_at, project: scope }
+        - { name: zerowire, time: ingested_at, tsv: true }
 settings:
   # An App Auditor MCP server behind Cloudflare Access (optional). Used only when this URL is set and its Access service
   # token is in the vault (app_auditor_cf_client_id / _secret); empty = off.
@@ -105,7 +106,7 @@ services:
     security-scanner:
       build: ./scanner
       tmp: 64m
-      egress: true # grype's vulnerability database, App Auditor
+      egress: true # grype's vulnerability database, Cloudflare's Zero Wire feed, App Auditor
       links: [paperclip, sources] # Paperclip's webhook; the warehouse (shared sources)
       data:
         - sbom:/sbom:ro # written by the host timer
