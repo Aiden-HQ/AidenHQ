@@ -229,13 +229,15 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
       title="Code review"
       sub="Reviews on your pull requests, posted to GitHub as comments. Advice only: nothing blocks a merge."
       actions={
-        ready && config ? (
+        moduleOn && config ? (
           <>
-            <span className="rv-spend" title="Today's review spend across repos (UTC)">
-              {usd(spent)} <span className="rv-spend-of">today</span>
-            </span>
+            {ready && (
+              <span className="rv-spend" title="Today's review spend across repos (UTC)">
+                {usd(spent)} <span className="rv-spend-of">today</span>
+              </span>
+            )}
             <Button onClick={() => (location.hash = "#/reviews/new")}>Review a repo</Button>
-            <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>
+            {ready && <Button variant="primary" onClick={() => setDialog({ kind: "oneoff" })}>Review a PR</Button>}
           </>
         ) : undefined
       }
