@@ -37,7 +37,6 @@ test("the role template compiles as an instance agent in trial (tap 1): read-onl
   assert.equal(a.module, "instance");
   assert.equal(a.trial, true);
   assert.equal(a.reports_to, "architect");
-  assert.equal(a.budget, 10);
   assert.match(a.title, /^Chases pull requests/);
   assert.match(a.instructions, /agents\/review-chaser\/AGENTS\.md$/);
   assert.deepEqual(a.roles, []);
@@ -102,7 +101,7 @@ test("instance agents are validated like module agents, and can't take roles or 
   assert.throws(() => compile(product, withAgents({ x: { yaml: { roles: ["fleet-admin"] } } })), /x: an instance agent may not have roles/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { roles: ["architect"] } } })), /x: an instance agent may not have roles/);
   assert.throws(() => compile(product, withAgents({ architect: {} })), /duplicate agent: architect/);
-  assert.throws(() => compile(product, withAgents({ x: { yaml: { budget: undefined } } })), /x: budget is required/);
+  assert.throws(() => compile(product, withAgents({ x: { yaml: { budget: 10 } } })), /agent x: budget is gone: one install limit/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { reports_to: "nobody", trial: undefined } } })), /x: reports_to nobody, which is not enabled/);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { routines: { s: { title: "Prepare daily brief", schedules: [] } } } } })), /routine s needs a title no other routine has/);
   // Webhooks and their secrets come from modules only (an instance routine could otherwise take another's secret).
@@ -167,9 +166,11 @@ test("trial_writes: an agent that names none keeps today's behaviour, and a gran
   assert.deepEqual(partial.paperclip.agents.x.trial_withheld, ["chat_lane.wake_at"]);
   assert.throws(() => compile(product, withAgents({ x: { yaml: { trial_writes: undefined, connections: { slack: "read", chat_lane: ["chat_send", "wake_at"] } } } }, ["slack"])), /x: an agent in trial may not have chat_lane write tools \(chat_send, wake_at\); they come with tap 2/);
 });
-test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; no public GitHub write and no web", () => {
+test("the Fleet Steward's grants: reads, its predecessors' writes and settling stuck tasks; no public GitHub write, no handoff to the owner and no web", () => {
   // Roster merge 5.3 (Fleet Ops, Agent Coach, Librarian). It reads every agent's evidence (fleet-audit), so it must never
-  // gain a write that reaches outside the fleet: product bugs go to the Maintainer. An edit that widens this fails here.
+  // gain a write that reaches outside the fleet: product bugs go to the Maintainer. Inside the fleet it settles stuck work
+  // (fleet-settle: task_route, and task_finish/task_cancel on any agent's task) and hands nothing to the owner (no
+  // task_handoff). An edit that widens this fails here.
   const dir = mkdtempSync(join(tmpdir(), "inst-"));
   mkdirSync(join(dir, "agents"));
   writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github", "meetings", "grafana", "maintainer", "agent-builder"], settings: owner }));
@@ -177,12 +178,12 @@ test("the Fleet Steward's grants: reads, plus exactly its predecessors' writes; 
   const a = r.paperclip.agents["fleet-steward"];
   const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`)).sort();
   // routing_tune and routing_judge: the routing learning loop, each a reviewed kernel.apply of the instance's own routing.
-  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_handoff", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_wait"]);
+  assert.deepEqual(writes, ["apps.person_identity_decide", "fleet_steward.routing_judge", "fleet_steward.routing_tune", "ops_mcp.meeting_note_correct", "owner_channel.notify", "paperclip_tasks.coach_record", "paperclip_tasks.task_block", "paperclip_tasks.task_cancel", "paperclip_tasks.task_comment", "paperclip_tasks.task_create", "paperclip_tasks.task_delegate", "paperclip_tasks.task_finish", "paperclip_tasks.task_propose_rule", "paperclip_tasks.task_route", "paperclip_tasks.task_wait"]);
   assert.deepEqual(a.enabled_tools.github, ["github_product_issue_status", "github_issue_link"]);
   assert.equal(a.web_search, "disabled");
   assert.ok(!a.enabled_tools.apps.includes("web_view"));
   // product-issues: the digest's live-fix check reads the product-bug issues' status (github_product_issue_status); filing is the Maintainer's.
-  assert.deepEqual(a.roles, ["fleet-read", "fleet-audit", "librarian", "routing-tuner", "product-issues"]);
+  assert.deepEqual(a.roles, ["fleet-read", "fleet-settle", "fleet-audit", "librarian", "routing-tuner", "product-issues"]);
   assert.deepEqual(a.delegate_to, ["engineer", "app-maintainer", "app-owners", "architect", "maintainer"]);
   assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_product_issue"), "the Maintainer files product bugs");
 });

@@ -11,7 +11,7 @@ export type Shown = Finding & { option: string; lens: string };
 export type Coverage = { ran: string[]; failed: { id: string; why: string }[]; skipped: { id: string; why: string }[]; partial: { id: string; why: string }[] };
 /** One run of a repo review as the report reads it: its option (the tools run: `tools`, with its tool options), its lens, its end and its review. */
 export type ReportRun = { option: string; options?: string[]; lens: string | null; status: string; why: string | null; cost_usd: number; review: Review | null };
-export type ReportBatch = { repo: string; sha: string; created: string; run_usd: number; runs: ReportRun[]; lensOf: (option: string) => string };
+export type ReportBatch = { repo: string; sha: string; created: string; runs: ReportRun[]; lensOf: (option: string) => string };
 
 const RANK: Record<string, number> = { important: 0, nit: 1, pre_existing: 2 };
 
@@ -102,7 +102,7 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
     clean: "Clean: every option ran in full and found nothing important.",
   };
   const build = () => {
-    const out = [`# Repo review: ${b.repo}`, "", `Commit \`${b.sha}\` · ${b.created.slice(0, 10)} · ${usd(cost)} of a ${usd(b.run_usd)} cap`, "", `## Verdict`, "", HEADLINE[v], "",
+    const out = [`# Repo review: ${b.repo}`, "", `Commit \`${b.sha}\` · ${b.created.slice(0, 10)} · ${usd(cost)} spent`, "", `## Verdict`, "", HEADLINE[v], "",
       `${counts.important} important · ${counts.nit} nits · ${counts.pre_existing} pre-existing`, "", "## Findings by lens", ""];
     const lenses = [...new Set(groups.map((g) => g.lens))].sort((a, z) => (LENS_ORDER.indexOf(a) + 1 || 99) - (LENS_ORDER.indexOf(z) + 1 || 99));
     if (!groups.length) out.push("No findings.", "");
@@ -119,7 +119,7 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
     for (const f of coverage.partial) out.push(`- ${flat(f.id, 80)}: partial: ${flat(f.why, 300)}`);
     out.push("", "## Cost", "");
     for (const r of b.runs) out.push(`- ${flat(r.option, 80)}: ${usd(r.cost_usd)}`);
-    out.push(`- Total: ${usd(cost)} of ${usd(b.run_usd)}`, "");
+    out.push(`- Total: ${usd(cost)}`, "");
     const fix = groups.filter((g, i) => shown[i] && g.severity === "important").map((g) => `- ${flat(g.path, 300)}:${g.line}: ${flat(g.items[0]!.title, 200)}. ${flat(g.items[0]!.fix_brief, 600)}`);
     out.push("## Fix prompt", "", "Paste into Claude Code or Codex, in a checkout of this commit:", "",
       fence([`Fix these findings from a code review of ${b.repo} at ${b.sha}. For each, confirm it in the code first; fix it with a test if it holds, or say why it doesn't.`, "", ...(fix.length ? fix : ["(no important findings)"])].join("\n")), "");

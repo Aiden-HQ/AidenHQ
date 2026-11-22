@@ -42,6 +42,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     comments: async (repo, since) => (await get("comments", { repo, since })) as { comments: PrComment[]; cursor: string },
     permission: async (repo, login) => ((await get("permission", { repo, login })) as { permission: Permission }).permission,
     compare: async (repo, base, head) => (await get("compare", { repo, base, head })) as { merge_base: string; status: "ahead" },
+    patchId: async (repo, base, head) => (await get("patch-id", { repo, base, head })) as { id: string | null },
     mergeBase: async (repo, number, head) => (await get("merge-base", { repo, number, head })) as { merge_base: string },
     postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
@@ -70,7 +71,9 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
     base, incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
     option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
-    budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
+    // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
+    intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
+    previous: JSON.stringify({ findings: s.previous }),
   };
 }
 
@@ -95,8 +98,6 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
 /** A skip's reason as the notice's fixed words name it (seams' `why` starts with its key). */
 export function reasonOf(why: string | undefined): string | undefined {
   const w = String(why ?? "");
-  if (w.startsWith("budget: the instance")) return "budget_instance";
-  if (w.startsWith("budget")) return "budget_repo";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
 }
@@ -265,9 +266,14 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, fetcher: 
 /** github-mcp's internal review routes, as this module. */
 export function githubReview(base: string, token: () => string, fetcher: typeof fetch = fetch) {
   return async (op: "preview" | "execute", body: unknown) => {
-    const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/${op}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`github-mcp review ${op}: ${r.status} ${String((j as { detail?: string }).detail ?? "").slice(0, 300)}`);
+    // An execute answers when the post is done, however long github-mcp's write queue and GitHub's rate limits take: it sends a
+    // blank every 30 s meanwhile, so a stall (no bytes for fetch's body timeout) fails it, never a duration. A failure after the
+    // headers is the body's `error`. Only the preview, which makes no GitHub write, gets a short timeout.
+    const r = await fetcher(`${base.replace(/\/+$/, "")}/internal/review/${op}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), ...(op === "preview" ? { signal: AbortSignal.timeout(120_000) } : {}) });
+    // A body that can't be read (the connection dropped after the headers) rejects here: the outcome is unknown, never an empty one.
+    const text = await r.text();
+    const j = (() => { try { return JSON.parse(text); } catch { if (r.ok) throw new Error(`github-mcp review ${op}: an unreadable answer (${text.slice(0, 100)})`); return {}; } })();
+    if (!r.ok || (j as { error?: string }).error) throw new Error(`github-mcp review ${op}: ${r.status} ${String((j as { detail?: string }).detail ?? "").slice(0, 300)}`);
     return j;
   };
 }

@@ -89,7 +89,7 @@ test("the executor sees nothing before approval; approved, it runs once and the 
   assert.equal((await k.v1("GET", "/v1/writes?state=review", undefined, "the-reviewer-key")).status, 401);
   const verdict = { decision: "approve", reason: "fine", model: "~acme/model-a" };
   assert.equal((await review(p.approval, verdict)).json.record.state, "approved");
-  assert.deepEqual(k.reviewed.at(-1), { card: {}, panel: false });
+  assert.deepEqual(k.reviewed.at(-1), { card: {} });
   await until(() => k.records.get(p.approval).state === "done");
   // Revalidated (plan again) before the one execute, keyed by the record id.
   assert.equal(fx.plans.at(-1).revalidate, true);
@@ -157,8 +157,8 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   // The same request again while it is open is that record, never a second card.
   assert.equal((await pending(await tool("post_note", { note: "a" }))).approval, p.approval);
   const rec = k.records.get(p.approval);
-  // The reviewer escalates: the owner decides (Tier 2), never with a reviewer's or the code's stamp.
-  assert.equal((await review(p.approval, { decision: "escalate", reason: "owner's", model: "~acme/model-a" })).json.record.state, "owner");
+  // Escalated to the owner (his veto on the task): he decides (Tier 2), never with a reviewer's or the code's stamp.
+  assert.equal((await review(p.approval, { decision: "escalate", code: "owner_veto", reason: "owner's", model: "~acme/model-a" })).json.record.state, "owner");
   const decide = { digest: rec.digest, decision: "approve", by: "owner:chat", via: "chat" };
   // No route decides a record any more (channels spend tokens, channels.test.ts); the stamps writes.decide takes are closed.
   assert.equal((await k.v1("POST", `/v1/writes/${p.approval}/decide`, decide)).status, 404);
@@ -176,29 +176,19 @@ test("a changed target on revalidate gives stale and a refile; the owner's decis
   const open1 = await pending(await tool("post_note", { note: "v" }));
   const veto = await pending(await tool("post_note", { note: "w" }));
   const vr = k.records.get(veto.approval);
-  await review(veto.approval, { decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await review(veto.approval, { decision: "escalate", code: "owner_veto", reason: "r", model: "~acme/model-a" });
   k.writes.decide(veto.approval, { ...decide, digest: vr.digest, decision: "reject" });
   const again = await pending(await tool("post_note", { note: "v" }));
   assert.notEqual(again.approval, open1.approval);
   assert.equal(again.tier, 2);
   assert.equal(k.records.get(open1.approval).state, "cancelled");
   assert.equal((await pending(await tool("post_note", { note: "v" }))).approval, again.approval);
-  // The owner's no on a kind makes the next request on the task theirs (Tier 2), the reviewer still first.
+  // The owner's no on a kind makes the next request on the task his (Tier 2), straight to his card.
   const next = k.records.get(refiled[0].id);
-  await review(next.id, { decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await review(next.id, { decision: "escalate", code: "owner_veto", reason: "r", model: "~acme/model-a" });
   k.writes.decide(next.id, { ...decide, digest: next.digest, decision: "reject" });
   assert.equal((await pending(await tool("post_note", { note: "b" }))).tier, 2);
-  // Tier 2 on its merits (the veto): the reviewer's reject reaches the owner with its note, not a final no. A record only
-  // capped to Tier 2 (autonomy, merit 1) keeps Tier 1's final reject.
-  const merit = k.records.get(again.approval);
-  assert.equal(merit.merit, 2);
-  const rj = await review(merit.id, { decision: "reject", reason: "it widens access", model: "~acme/model-a" });
-  assert.equal(rj.json.record.state, "owner");
-  assert.match(rj.json.record.review, /^The AI reviewer rejected \(~acme\/model-a\): it widens access It is Tier 2 on its merits/);
-  // The board reads the merit tier from the kernel's list (recordApproval: baseTier, review_first).
-  assert.equal((await k.v1("GET", "/v1/writes?state=owner")).json.records.find((r) => r.id === merit.id)?.merit, 2);
-  const capped = k.records.file({ ...merit, args: { note: "capped" }, tier: 2, merit: 1, review_first: "final", state: "review" });
-  assert.equal((await review(capped.id, { decision: "reject", reason: "no", model: "~acme/model-a" })).json.record.state, "rejected");
+  assert.equal(k.records.get(again.approval).state, "owner", "the veto's card is his, no reviewer first");
 });
 
 test("a module write on a task under a routine's run task gets that routine's autonomy cap, as the runner's kinds do", async (t) => {
@@ -211,14 +201,14 @@ test("a module write on a task under a routine's run task gets that routine's au
   };
   const capped = await twin(t, { settings: { routines: { r1: "tier0" } }, onControl });
   const p = await capped.pending(await capped.tool("post_note", { note: "a" }));
-  assert.deepEqual(((r) => [r.tier, r.merit, r.review_first, r.cap])(capped.k.records.get(p.approval)), [2, 1, "final", { by: "routine", value: "tier0", routine: "r1" }]);
+  assert.deepEqual(((r) => [r.tier, r.merit, r.cap])(capped.k.records.get(p.approval)), [1, 1, { by: "routine", value: "tier0", routine: "r1" }]);
   // A trace the control plane can't answer now files nothing (never a stricter cap from a blip); once it answers, a
   // destructive tool (conn.tool, Tier 1) is capped the same way.
   down = true;
   assert.match(JSON.stringify(await (await capped.tool("note_drop", { id: "1" })).json()), /routine trace couldn't be read now/);
   down = false;
   const d = await capped.pending(await capped.tool("note_drop", { id: "1" }));
-  assert.deepEqual([d.tier, capped.k.records.get(d.approval).review_first, capped.k.records.get(d.approval).cap], [2, "final", { by: "routine", value: "tier0", routine: "r1" }]);
+  assert.deepEqual([d.tier, capped.k.records.get(d.approval).cap], [1, { by: "routine", value: "tier0", routine: "r1" }]);
   // A routine with full autonomy leaves it the reviewer's.
   const full = await twin(t, { settings: { routines: { r1: "full" } }, onControl });
   assert.equal((await full.pending(await full.tool("post_note", { note: "a" }))).tier, 1);
@@ -272,7 +262,7 @@ test("a repeat of one carded conn.tool call returns its record: one card, one ru
 test("a finished Tier 0 record of the same call never stands in for a call that now needs a card", async (t) => {
   const { k, tool, pending, moduleCalls } = await twin(t);
   const card = { sentence: "s", changes: "c", reads: "r", cost: "c", details: "d" };
-  const old = k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "note_drop", arguments: { id: 7 } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 0, panel: false, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run", task: "TASK-1" }, task: "TASK-1", state: "done" });
+  const old = k.records.file({ kind: "conn.tool", module: "twin", args: { connection: "twin", tool: "note_drop", arguments: { id: 7 } }, targets: {}, executor: { module: "twin" }, policy: "", tier: 0, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run", task: "TASK-1" }, task: "TASK-1", state: "done" });
   const p = await pending(await tool("note_drop", { id: 7 }));
   assert.notEqual(p.approval, old.id);
   assert.equal(k.records.get(p.approval).state, "review");
@@ -296,7 +286,7 @@ test("a destructive tool with no kind is conn.tool at Tier 1: replayed once, as 
   // The owner's no on that tool makes it theirs on the task; the task's other writes stay Tier 0.
   const q = await pending(await tool("note_drop", { id: 8 }));
   const qr = k.records.get(q.approval);
-  await review(q.approval, { decision: "escalate", reason: "r", model: "~acme/model-a" });
+  await review(q.approval, { decision: "escalate", code: "owner_veto", reason: "r", model: "~acme/model-a" });
   k.writes.decide(q.approval, { digest: qr.digest, decision: "reject", by: "owner:chat", via: "chat" });
   assert.equal((await pending(await tool("note_drop", { id: 9 }))).tier, 2);
   assert.match(await text(await tool("note_write", { text: "y" })), /note_write done/);
@@ -348,7 +338,7 @@ test("a replace with a claimed record reconciles it before A stops: its executor
   });
   t.after(() => ex.s.close());
   const k = await kernel(t, { secrets, connections: {}, writes: { "a.post": { module: "a", floor: 1, tools: [], executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
-  const base = { kind: "a.post", module: "a", args: {}, targets: {}, executor: { module: "a", url: `${ex.url}/x` }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false };
+  const base = { kind: "a.post", module: "a", args: {}, targets: {}, executor: { module: "a", url: `${ex.url}/x` }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1 };
   const done = k.records.file({ ...base, state: "claimed" }).id;
   const lost = k.records.file({ ...base, state: "claimed" }).id;
   const open = k.records.file({ ...base, state: "review" }).id;
@@ -361,7 +351,7 @@ test("a replace with a claimed record reconciles it before A stops: its executor
 
 test("a claimed record of a replaced module is carried to its successor's kind, and the successor's outcome settles it", async (t) => {
   const k = await kernel(t, { secrets, connections: {}, writes: {} });
-  const r = k.records.file({ kind: "old.post", module: "old", args: {}, targets: {}, executor: { module: "old", url: "http://old/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "claimed" });
+  const r = k.records.file({ kind: "old.post", module: "old", args: {}, targets: {}, executor: { module: "old", url: "http://old/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, state: "claimed" });
   assert.equal(k.records.carry(r.id, "new.post", "new", { module: "new" }), true);
   const c = k.records.get(r.id);
   assert.deepEqual([c.kind, c.module, c.executor.module, c.state], ["new.post", "new", "new", "claimed"]);
@@ -371,7 +361,7 @@ test("a claimed record of a replaced module is carried to its successor's kind, 
 
 test("only a code host's write outcomes name GitHub objects", async (t) => {
   const k = await kernel(t, { secrets, connections: {}, writes: {} });
-  const filed = (module) => k.records.file({ kind: `${module}.post`, module, args: {}, targets: {}, executor: { module, url: "http://x/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, panel: false, state: "claimed" }).id;
+  const filed = (module) => k.records.file({ kind: `${module}.post`, module, args: {}, targets: {}, executor: { module, url: "http://x/x" }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1, state: "claimed" }).id;
   k.writes.outcome(filed("github"), true, "done", ["github:o/r#1"]);
   k.writes.outcome(filed("twin"), true, "done", ["github:o/r#2"]);
   assert.ok(k.records.objectOf("github:o/r#1"));
@@ -406,20 +396,9 @@ test("another requester's identical request is its own record, and a stricter re
   assert.equal(k.records.get(c.id).state, "review");
 });
 
-test("a raise_cap card, the install cap's included, goes straight to the owner: no model call the cap would refuse", async (t) => {
-  const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }) });
-  const card = { target: "AidenHQ day cap", sentence: "Double it.", changes: "c", reads: "Nothing new.", cost: "Up to $10.00 more.", details: "d" };
-  const args = (agentId) => ({ scope: "day", agentId, subject: "2026-11-18", cap: 10, spent: 10.2, to: 20 });
-  for (const [task, who] of [["TASK-9", "install"], ["TASK-8", "ag-ada"]]) {
-    const r = k.writes.fileNative("kernel.raise_cap", { task, args: args(who), card, reason: "a cap", rule: "raise-cap" });
-    assert.deepEqual([r.state, r.tier, r.review_first], ["owner", 2, null]);
-  }
-  assert.equal(k.reviewed.length, 0, "no model call: the cap it raises would refuse one");
-});
-
 test("the owner's reason for a rejection reaches the requester's task, fenced and neutralised", async (t) => {
   const k = await kernel(t, { repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" } });
-  const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 2, panel: false, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", identifier: "ACME-1", state: "owner" });
+  const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 2, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", identifier: "ACME-1", state: "owner" });
   k.writes.decide(r.id, { digest: r.digest, decision: "reject", by: "account:owner", via: "web", reason: "Wrong fix: change the retry, not the timeout. ```<!-- x -->" });
   await new Promise((res) => setTimeout(res, 50));
   const n = k.notices.find((x) => x.text.startsWith("**Rejected**"));
@@ -432,7 +411,7 @@ test("revalidate at execution: a reviewer's yes doesn't run once autonomy is off
   const { readFileSync, writeFileSync } = await import("node:fs");
   const k = await kernel(t, { reviewer: async () => ({ decision: "approve", reason: "fine", model: "~acme/model-a" }), repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance", agentsOrg: "acme" } });
   // A Tier 1 record the AI reviewer approved, then autonomy turned off before it ran.
-  const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 1, panel: false, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "review" });
+  const r = k.records.file({ kind: "acme.post", module: "acme", args: { note: "x" }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 1, card: { sentence: "x", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "review" });
   k.records.review(r.id, r.digest, { decision: "approve", by: "reviewer:~acme/model-a", note: "fine" });
   writeFileSync(k.grantsFile, JSON.stringify({ ...JSON.parse(readFileSync(k.grantsFile, "utf8")), autonomy: "off" }));
   await new Promise((res) => setTimeout(res, 50));
@@ -482,7 +461,7 @@ test("a kernel job's write names its own workspace, whatever its args say", asyn
 });
 
 // Flow facts (facts.ts) of records: written in the move's transaction, only when the move wins, only for tier 1 and 2.
-const filing = (over = {}) => ({ kind: "twin.post_note", module: "twin", args: { n: 1 }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 1, panel: false,
+const filing = (over = {}) => ({ kind: "twin.post_note", module: "twin", args: { n: 1 }, targets: {}, executor: { module: "twin" }, policy: "p", tier: 1,
   card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "t1", state: "review", ...over });
 const dbFile = () => join(mkdtempSync(join(tmpdir(), "flow-")), "kernel.db");
 
@@ -502,7 +481,7 @@ test("records write facts in the same transaction", () => {
     ["record.filed", "filed", "agent:ada"], ["record.decided", "reviewer:approved", "module:ai-reviewer"], ["record.held", "held", "kernel"],
     ["record.decided", "owner:approved", "account:a1"], ["record.claimed", "claimed", "kernel"], ["record.landed", "done", "kernel"]]);
   assert.ok(rows.every((f) => f.subject === `record:${r.id}`));
-  assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, panel: false, requester: "ada", state: "review" });
+  assert.deepEqual(rows[0].data, { kind: "twin.post_note", tier: 1, requester: "ada", state: "review" });
   const merge = records.file(filing({ kind: "github.merge", args: { prs: [{ repo: "Acme/App", number: 7, head: "a".repeat(40) }] }, task: "t2" }));
   assert.equal(facts.forTask("t2")[0].data.pr, "acme/app#7", "a PR's write names it, lowercase");
   assert.ok(merge.id);
@@ -523,11 +502,11 @@ test("migrates and drops events", () => {
   records.db.exec("CREATE TABLE events (id TEXT PRIMARY KEY, type TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL)");
   const ev = records.db.prepare("INSERT INTO events (id, type, at, data) VALUES (?, ?, ?, ?)");
   const at = "2026-11-18T10:00:00.000Z";
-  ev.run("e-1", "approval.filed", at, JSON.stringify({ record: one.id, kind: one.kind, tier: 1, panel: false, requester: "ada", task: "t1" }));
+  ev.run("e-1", "approval.filed", at, JSON.stringify({ record: one.id, kind: one.kind, tier: 1, requester: "ada", task: "t1" }));
   ev.run("e-2", "approval.decided", at, JSON.stringify({ record: one.id, decision: "approve", by: "account:a1", via: "web" }));
   ev.run("e-3", "approval.held", at, JSON.stringify({ record: one.id, why: "cap" }));
   ev.run("e-4", "write.outcome", at, JSON.stringify({ record: one.id, kind: one.kind, ok: false, text: "no" }));
-  ev.run("e-5", "approval.filed", at, JSON.stringify({ record: zero.id, kind: zero.kind, tier: 0, panel: false, requester: "ada", task: "t0" }));
+  ev.run("e-5", "approval.filed", at, JSON.stringify({ record: zero.id, kind: zero.kind, tier: 0, requester: "ada", task: "t0" }));
   ev.run("e-6", "gate.would_block", at, JSON.stringify({ gate: "judge.finish", task: "WOR-1", verdict: "deny", reason: "r", via: "task_finish" }));
   ev.run("e-7", "finish.verdict", at, JSON.stringify({ task: "t1", check: "grading.grade", verdict: "reopen" }));
   const facts = openFacts(records.db);

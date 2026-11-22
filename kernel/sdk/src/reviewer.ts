@@ -5,11 +5,8 @@
 // The module calls models through the gateway with `model_token` (a reviewer token the kernel minted for this review), never a
 // vendor key. It can't change a tier: the verdict is the requester's input, and the records bind it to their digest.
 //
-// Deviations from the spec's sketch, kept until 3b moves review orchestration into the kernel: one dispatch carries the panel
-// (`request.panel`) and the module runs it itself, so the second reviewer is asked only after a first approve, and an unsure
-// first hands its note to the second (both as before); the two votes decide (the module's review()); the verdict is today's shape (decision, code, reason, model, second,
-// flag), and `panel_marked` says the first reviewer called the change authority-expanding, so the requester records that on
-// its card before acting on the verdict.
+// The verdict is approve or reject (malice only), or escalate with code reviewer_failed for a review that couldn't finish:
+// the kernel tries once more, then approves (fail open; owner, 2026-11-22).
 //
 // The requester reads the changed files with `fileContext` (services/shared/review-files.ts) and sends each whole, whatever
 // its size: the reviewer shows what fits inline and reads the rest with read-only tools over the request.
@@ -19,48 +16,49 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export interface ReviewCard { action: string; rule: string; target?: string; sentence?: string; reason?: string;
-  /** The repositories that are one product for scope (the product repo and the official modules repo): code's own. */
-  product?: string[] }
+export interface ReviewCard { action: string; rule?: string; target?: string; sentence?: string; reason?: string }
 /**
  * `list`: each changed file at the reviewed head, plain text whole or code's note (media, binary); `leftOut`: the files it
  * can't read (binary); `changed`: the code host's own numstat of the change, read at filing: the reviewer checks the diff against it.
  */
 export interface Files { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }
-export interface SourceRecords { where: string; records: Record<string, unknown>[] }
-/** One Tier 1 request as the reviewer reads it. Everything but `card.action`, `card.rule` and `panel` is data an agent or a stranger wrote. */
+/** One request as the reviewer reads it. Everything but `card.action` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
-  card: ReviewCard; diff: string; files?: Files; chain?: string; siblings?: string; sources?: SourceRecords;
-  requesterModel?: string; panel?: boolean; previous?: string[];
-  /**
-   * The task grader's latest verdict that sent the work back, rendered by the kernel from the grading store: each rubric
-   * criterion's number and met, and the rubric's own text for an unmet one. Absent: no such verdict or no grading module.
-   */
-  grader_note?: string;
+  card: ReviewCard; diff: string; files?: Files; chain?: string; requesterModel?: string;
   /**
    * The task's comments as they stand, oldest first, rendered by the kernel: each under a label line code wrote (the owner's
    * own typed words, or an agent by its place in the request: the delegating agent, the chief of staff, the requesting agent,
    * another agent) with its text quoted line by line. The text is its author's; only the labels are code's.
    */
   comments?: string;
-    /** `decisions`: the instance's decisions.md, read by the requester from the instance repo's default branch. */
-  decisions?: { where: string; text: string };
   /** The ledger's name for the model calls (the card's review, or an agent's check before filing). */
   component?: string;
 }
+export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string }
 /**
- * `second`: the panel's second approval; `second_unsure`: an approval whose other reviewer was unsure (owner, 2026-11-20), never
- * in `second`, given only with `whole`: code verified the input whole (the diff matched the code host's count, every changed
- * file and the whole diff reachable by the reviewer, a request chain).
+ * Instance details in a GitHub write (a conn.tool card on the github connection: a comment, an issue, a review): a tailnet
+ * host (*.ts.net), a home-directory path, or an IPv4 address other than loopback. A GitHub thread is outside the instance and
+ * often public, and no issue or review needs these, so code refuses it itself: a model once approved a triage comment that
+ * pasted the host, its address and a runner log path as "in scope". (github-mcp's scrub redacts owner data from the
+ * comments when they are sent; this is the refusal before that, for every GitHub write.) The kernel runs it before it asks the
+ * reviewer (review-loop.ts), so it never fails open; the reviewer runs it too (review.ts).
  */
-export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string; second?: string; second_unsure?: string; whole?: boolean; flag?: boolean; panel_marked?: boolean }
-/** The model's "I can't tell" (a second reviewer is asked; both unsure, or unsure over missing input, the request goes back to the agent). */
-export const UNSURE = "reviewer_unsure";
-/** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "siblings", "sources", "decisions", "requesterModel", "panel", "previous", "grader_note", "comments"] as const;
+export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined) {
+  const text = String(diff ?? "");
+  if (card?.action !== "conn.tool" || !/^tool: github\./.test(text)) return [];
+  const found = [
+    ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
+    ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
+    ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)].filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0])),
+  ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
+  return [...new Set(found)];
+}
 
-/** The module's reviewer: one request in, one verdict out. `onPanel` records that the change needs a second reviewer. */
-export type Review = (req: ReviewRequest, ctx: { modelToken: string; onPanel: () => Promise<void> }) => Promise<Verdict>;
+/** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
+export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "requesterModel", "comments"] as const;
+
+/** The module's reviewer: one request in, one verdict out. */
+export type Review = (req: ReviewRequest, ctx: { modelToken: string }) => Promise<Verdict>;
 
 /**
  * A handler for POST `<path>/review`: answers and returns true, or returns false for any other path. It accepts at once and
@@ -100,9 +98,8 @@ export function serveReviewer(review: Review, { key, kernelUrl = process.env.AID
     // Only the fields a reviewer reads, each only when the requester sent it: an absent field keeps the reviewer's default.
     const request = Object.fromEntries(REQUEST_FIELDS.filter((k) => body.request![k] !== undefined).map((k) => [k, body.request![k]])) as unknown as ReviewRequest;
     send(res, 202, { accepted: true });
-    let marked = false;
-    const v = await review(request, { modelToken, onPanel: async () => { marked = true; } }).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 300) }));
-    await deliver(id, token, "error" in v ? v : { ...v, ...(marked ? { panel_marked: true } : {}) });
+    const v = await review(request, { modelToken }).catch((e: Error) => ({ error: String(e.message ?? e).slice(0, 300) }));
+    await deliver(id, token, v);
     return true;
   };
 }

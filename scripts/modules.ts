@@ -10,6 +10,7 @@ import { validateImages } from "./computers.ts";
 import { validate } from "../kernel/src/writes.ts";
 import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT } from "./edge.ts";
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
+import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
 import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
@@ -26,11 +27,10 @@ import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
 export type Obj = Record<string, any>;
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.ts); the instance turns it on or off per agent.
-// caps: the agent's spend caps (grantEntry); not agent-safe (kernel/src/apply-tier.ts), so changing them is the owner's.
 // autonomy: a routine's cap on approvals (ROUTINE_AUTONOMY); changing it is always the owner's (tiers.mjs).
 // handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
 // connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "caps", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "status", "model", "autonomy"] };
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "status", "model", "autonomy"] };
 /**
  * A routine's `autonomy`: the cap on approvals for tasks its runs start (the run task and what it delegates), the stricter of
  * it and the instance's `autonomy` (kernel/src/apply-tier.ts). The default `full` adds no cap (owner, 2026-11-13), except
@@ -47,7 +47,7 @@ const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
 // write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "budget", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
+const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
 // An instance agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
@@ -133,13 +133,16 @@ export const LEGACY_HOST_ENV: Record<string, string[]> = {
 export const OPS_NETWORKS: Record<string, string> = { ci: "aidenhq-ci" };
 const legacyOf = (name: string) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
 
-/** Fleet default spend caps in USD (owner decision, wave 1): per run, per task, per agent per UTC day. */
-export const CAPS = { run_usd: 2, task_usd: 10, day_usd: 30 };
+/**
+ * Spend settings this release removed (one install limit, enforced by the model gateway; one cap per task): an instance or
+ * module that still sets one fails compile with the replacement named (spendGone).
+ */
+export const SPEND_GONE = "is gone: one install limit, spend_day_usd / spend_month_usd, and settings.task_usd per task";
 
 /**
  * The wave-1 part of an agent's grants-table entry (scripts/paperclip-setup.ts writeGrants), for the model gateway and the
  * grader: `models`, every model id the agent may call (its model, its runner models, its routines' models; OpenRouter ids,
- * `openrouter/` dropped); `caps`, the fleet defaults with the agent's own over them; `graded`, whether tasks delegated to it
+ * `openrouter/` dropped); `graded`, whether tasks delegated to it
  * are graded by default (the board's completion gate and the runner's grader enforce it).
  */
 /** An agent's `chat:` block, checked, with defaults: every lane tool must be one of its own granted tools ("connection.tool"). */
@@ -168,7 +171,7 @@ export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
   // many of its jobs run at once, and each of its routines' model.
   const own = Object.entries(routines).filter(([, r]: [string, Obj]) => runs(r) && (r.model || r.reasoning_effort));
   return {
-    name: a.name, models, caps: { ...CAPS, ...(a.caps ?? {}) }, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
+    name: a.name, models, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
     profile: a.profile ?? "crew", ...(a.reports_to ? { reports_to: a.reports_to } : {}), ...(a.engine ? { engine: a.engine } : {}), ...(a.engines ? { engines: a.engines } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
     max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
     // Teams (expandTeams): the team record's members and routing weights; a member's team record key and repo preferences.
@@ -401,20 +404,27 @@ function resolveEnabled(all: Map<string, Obj>, wanted: string[]) {
  */
 const codehostOrgs = (enabled: Obj, settings: Obj) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
+/** Fails on a spend setting this release removed (SPEND_GONE), naming it. */
+function spendGone(instance: Obj) {
+  const st = instance.settings ?? {}, cr = st.code_review ?? {};
+  for (const k of ["eval_day_usd", "ci_review_day_usd", "ci_review_repo_day_usd"]) if (st[k] != null) fail(`settings.${k} ${SPEND_GONE}`);
+  if (cr.day_usd != null) fail(`settings.code_review.day_usd ${SPEND_GONE}`);
+  for (const [i, r] of (Array.isArray(cr.repos) ? cr.repos : []).entries()) {
+    if (r?.day_usd != null) fail(`settings.code_review.repos.${i}.day_usd ${SPEND_GONE}`);
+    for (const m of ["on_open", "on_push"]) if ([r?.[m] ?? []].flat().some((c: Obj) => c?.run_usd != null)) fail(`settings.code_review.repos.${i}.${m}: run_usd ${SPEND_GONE}`);
+  }
+  for (const [k, a] of Object.entries<Obj>(instance.overrides?.agents ?? {})) if (a?.caps != null) fail(`overrides.agents.${k}.caps ${SPEND_GONE}`);
+}
+
 /**
  * The gateway's CI code review switches (config/gateway.json `ci`, kernel/src/gateway/ci.ts): only the agents org's app repos;
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
  * effort the code-review job gets with its CI token (always one of the allowed models).
  */
 function ciReview(settings: Obj) {
-  const usd = (k: string) => {
-    const v = Number(settings[k]);
-    if (!(v > 0 && v <= 1000)) fail(`settings.${k}: USD per day, above 0 and at most 1000`);
-    return v;
-  };
   const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m: unknown) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
   const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
-  return { orgs: [settings.agents_org].filter(Boolean), models, review, repo_day_usd: usd("ci_review_repo_day_usd"), day_usd: usd("ci_review_day_usd") };
+  return { orgs: [settings.agents_org].filter(Boolean), models, review };
 }
 
 /**
@@ -677,6 +687,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const settings: Obj = {};
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
+  spendGone(instance);
   settings.computers_max ??= defaultComputersMax();
   if (settings.upstream === "prs") { settings.upstream = "issues"; warnings.push("setting upstream: prs was removed in this release: treated as issues"); }
   setupFlows(enabledDefs, compiled, settings);
@@ -1117,9 +1128,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (a.graded != null && typeof a.graded !== "boolean") fail(`${key}: graded is true, false or absent`);
     if (a.profile != null && !JOB_PROFILES.includes(a.profile)) fail(`${key}: profile is ${JOB_PROFILES.join(", ")} (absent: crew)`);
-    if (a.caps == null) continue;
-    if (typeof a.caps !== "object" || Array.isArray(a.caps)) fail(`${key}: caps is {run_usd, task_usd, day_usd}`);
-    for (const [f, v] of Object.entries<Obj>(a.caps)) if (!(f in CAPS) || typeof v !== "number" || !(v > 0) || v > 1000) fail(`${key}: caps.${f} isn't a cap (${Object.keys(CAPS).join(", ")}: USD, above 0, at most 1000)`);
+    if (a.caps != null) fail(`${key}: caps ${SPEND_GONE}`);
   }
 
   // model: and reasoning_effort: on a routine run its tasks with those instead of the agent's (grantEntry's `routines`: the
@@ -1222,11 +1231,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k: string) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
-  // The model gateway's CI review and day caps (config/gateway.json, re-read per call; prices come from OpenRouter itself).
-  // spend_day_usd: the install-wide daily cap on every model call (docs/design/quiet-start.md); unset, none.
-  if (settings.spend_day_usd != null && !(typeof settings.spend_day_usd === "number" && settings.spend_day_usd > 0 && settings.spend_day_usd <= 10_000)) fail("settings.spend_day_usd: USD a day, above 0 (unset for no cap)");
-  if (!(typeof settings.eval_day_usd === "number" && settings.eval_day_usd >= 0 && settings.eval_day_usd <= 10_000)) fail("settings.eval_day_usd: USD a day, 0 or more");
-  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), ...(settings.spend_day_usd != null ? { install_day_usd: settings.spend_day_usd } : {}), eval_day_usd: settings.eval_day_usd };
+  // The model gateway's CI review and spend limits (config/gateway.json, re-read per call; prices come from OpenRouter itself):
+  // the install's day and month on every model call, and one cap per task.
+  for (const k of ["spend_day_usd", "spend_month_usd", "task_usd"]) if (!(typeof settings[k] === "number" && settings[k] > 0 && settings[k] <= 100_000)) fail(`settings.${k}: USD, above 0`);
+  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([, a]) => a.module === "instance")) });
@@ -1509,9 +1517,11 @@ export function checkEntries(name: string, def: Obj) {
  * result is titled, the spec's fields (each a kind of CHECK_KINDS), the files of its `dir` (laid in the box at
  * /aidenhq-out/recipe, small text files) and, by field, what the kernel enforces: `declares` (a package.json script the base
  * keeps), `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits'), `model`
- * ({ max_usd }: a model token of the check's own, capped at its spec's `budget_usd` up to max_usd) and `result` (true: the
+ * (true: a model token of the check's own) and `result` (true: the
  * recipe writes a JSON result the receipt binds).
  */
+/** The most a check job's model token may spend (USD); its time ceiling is the launcher's (MAX_CHECK_MIN). */
+export const MAX_CHECK_USD = 100;
 const JUDGED_SPEC = ["repo", "judge_commit", "subject_commit", "cases_from", "policy_hash"];
 export function checkJobs(name: string, def: Obj, root: string) {
   const out: Obj = {};
@@ -1521,13 +1531,13 @@ export function checkJobs(name: string, def: Obj, root: string) {
     const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a: unknown) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
-    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > 120) fail(`${where}: timeout_min is whole minutes, 1 to 120`);
+    if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > MAX_CHECK_MIN) fail(`${where}: timeout_min is whole minutes, 1 to ${MAX_CHECK_MIN}`);
     if (typeof r.title !== "string" || !r.title || r.title.length > 120) fail(`${where}: title is a short text`);
     const spec = r.spec ?? {};
     if (!spec || typeof spec !== "object" || Object.entries<string>(spec).some(([k, v]) => !/^[a-z_]{1,30}$/.test(k) || !(v in CHECK_KINDS))) fail(`${where}: spec maps field names to ${Object.keys(CHECK_KINDS).join(", ")}`);
     if (r.declares != null && (typeof r.declares !== "string" || spec.base !== "sha")) fail(`${where}: declares names a package.json script and needs spec.base (sha)`);
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
-    if (r.model != null && (typeof r.model !== "object" || Object.keys(r.model).join() !== "max_usd" || !(r.model.max_usd > 0 && r.model.max_usd <= 100) || spec.budget_usd !== "usd")) fail(`${where}: model is { max_usd: 0-100 } and needs spec.budget_usd (usd)`);
+    if (r.model != null && r.model !== true) fail(`${where}: model is true or absent (a recipe's own spend cap ${SPEND_GONE})`);
     if (r.result != null && r.result !== true) fail(`${where}: result is true or absent`);
     if ((r.model != null || r.result != null) && r.judged != null) fail(`${where}: a judged run takes neither model nor result`);
     let judged;
@@ -1548,7 +1558,7 @@ export function checkJobs(name: string, def: Obj, root: string) {
         files[f.name] = readFileSync(join(dir, f.name), "utf8");
       }
     }
-    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: { max_usd: r.model.max_usd } } : {}), ...(r.result ? { result: true } : {}) };
+    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: true } : {}), ...(r.result ? { result: true } : {}) };
   }
   return out;
 }
@@ -1629,9 +1639,9 @@ function instanceAgents(instanceDir: string, settings: Obj, paperclip: Obj, rout
     const handbook = join(dir, key, "AGENTS.md");
     if (!existsSync(handbook)) fail(`agent ${key}: missing agents/${key}/AGENTS.md`);
     const def = substitute(readYaml(file), settings);
+    if (def.budget != null) fail(`agent ${key}: budget ${SPEND_GONE}`);
     for (const f of Object.keys(def)) if (!INSTANCE_AGENT_FIELDS.includes(f)) fail(`agent ${key}: ${f === "roles" ? "an instance agent may not have roles" : `unknown field ${f} (known: ${INSTANCE_AGENT_FIELDS.join(", ")})`}`);
-    for (const f of ["name", "description", "model", "budget"]) if (def[f] == null || def[f] === "") fail(`agent ${key}: ${f} is required`);
-    if (typeof def.budget !== "number" || !(def.budget > 0)) fail(`agent ${key}: budget is USD per month, a number above 0`);
+    for (const f of ["name", "description", "model"]) if (def[f] == null || def[f] === "") fail(`agent ${key}: ${f} is required`);
     if (def.max_parallel != null && !(Number.isInteger(def.max_parallel) && def.max_parallel >= 1 && def.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
     if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
     const { description, routines, ...rest } = def;
@@ -1652,7 +1662,7 @@ function instanceAgents(instanceDir: string, settings: Obj, paperclip: Obj, rout
  * enabled module agent) becomes the team record, which keeps its key, roles, routines and description (one address for
  * delegation, routines and role filing) and never runs; each member becomes a real agent with a permanent key, a copy of the
  * template with the team's `defaults` and then its own fields over it, and no roles of its own (a member's job gets the team
- * record's at admission). The team's `caps.day_usd` is the record's day cap, counted over every member's spend.
+ * record's at admission).
  */
 export function expandTeams(instance: Obj, paperclip: Obj) {
   const names = new Set(Object.values<Obj>(paperclip.agents).map((a) => a.name));
@@ -1668,14 +1678,12 @@ export function expandTeams(instance: Obj, paperclip: Obj) {
       if (paperclip.agents[k]) fail(`teams.${team}.members.${k}: the key is already an agent's`);
       if (names.has(m.name)) fail(`teams.${team}.members.${k}: another agent is already called ${m.name}`);
       names.add(m.name);
-      if (instance.overrides?.agents?.[k]?.caps) fail(`overrides.agents.${k}.caps: a member has no cap of its own; set teams.${team}.caps`);
       const { handbook, ...own } = { ...(t.defaults ?? {}), ...m };
       // The record keeps the template's fast chat lane (chat:) and heartbeat routine (its runs are routed like any team task).
       const { team: _, avatar: __, chat: ___, heartbeat: ____, ...base } = structuredClone(tpl);
       paperclip.agents[k] = { ...base, ...own, ...(handbook ? { handbook_line: handbook } : {}), member_of: key };
     }
     tpl.team = { name: team, members: Object.keys(t.members), weights: weightsOf(t.routing) };
-    if (t.caps) tpl.caps = { ...(tpl.caps ?? {}), day_usd: t.caps.day_usd };
   }
 }
 

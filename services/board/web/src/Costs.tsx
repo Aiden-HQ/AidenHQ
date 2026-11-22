@@ -5,7 +5,7 @@ import type { FeatureCost, CostLedger, CostTop, LedgerMetrics, LedgerPeriod } fr
 import { Tag } from "./ui";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.
-//  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, agents nearest their day cap.
+//  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, the install's spend limits.
 //  2. Spend over time by model (stacked bars) and the by-model table.
 //  3. By agent and by kind of call; 4. a drill-down into one agent or model (top runs and tasks).
 // The view lives in the URL (#/costs?range=7d&bucket=day&agent=…), so it can be linked.
@@ -18,7 +18,7 @@ const pct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : `${Math.round(x * 100)}
 const secs = (ms: number | null) => (ms == null ? "—" : ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 1e4 ? 0 : 1)} s` : `${ms} ms`);
 const short = (model: string) => model.replace(/^openrouter\//, "").split("/").pop()!.replace(/^~/, "");
 const cacheHit = (m: LedgerMetrics) => (m.input + m.cached ? m.cached / (m.input + m.cached) : null);
-const LANES: Record<string, string> = { agent: "Agent runs", engineer: "Engineer jobs", advisor: "Advisor", fanout: "Fan-out", grader: "Grader", reviewer: "AI reviewer", source: "Sources and intake", "ci-code-review": "App CI code review", aside: "Side chat" };
+const LANES: Record<string, string> = { agent: "Agent runs", engineer: "Engineer jobs", advisor: "Advisor", fanout: "Fan-out", grader: "Grader", reviewer: "AI reviewer", source: "Sources and intake", "ci-code-review": "App CI code review", aside: "Side chat", check: "Check jobs" };
 const lane = (k: string) => LANES[k] ?? k;
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
@@ -142,7 +142,7 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
   const { from, to } = bounds(view);
   const bucket = bucketOf(view, to - from);
   const rangeKey = `${view.range}|${view.from}|${view.to}|${bucket}|${tick}`;
-  // The time chart buckets by the viewer's clock; the caps, "today" and the custom dates stay UTC.
+  // The time chart buckets by the viewer's clock; the limits, "today" and the custom dates stay UTC.
   const query = () => new URLSearchParams({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset: String(-new Date().getTimezoneOffset()) });
   const ledger = useLoad<CostLedger>(rangeKey, () => api.costLedger(query()), onSignIn);
   const focus: Record<string, string> | null = view.agent ? { agent: view.agent } : view.model ? { model: view.model } : null;
@@ -241,13 +241,11 @@ function Overview({ d }: { d: CostLedger }) {
     ["Last 7 days", o.week, "the 7 before"],
     ["Last 30 days", o.month, "the 30 before"],
   ];
-  const near = o.caps.slice(0, 4);
-  const calm = o.caps.length - near.length;
   return (
     <section className="cost-overview" aria-label="Overview">
       {tiles.map(([label, p, vs]) => (
         <div key={label} className="cost-tile">
-          <span className="cost-tile-label" title={label.startsWith("Today") ? "The UTC day so far: the same day OpenRouter and the daily spend caps count" : undefined}>{label}</span>
+          <span className="cost-tile-label" title={label.startsWith("Today") ? "The UTC day so far: the same day OpenRouter and the install's day limit counts" : undefined}>{label}</span>
           <span className="cost-tile-value">{usd(p.usd)}</span>
           <Delta cur={p.usd} prev={p.prev} vs={vs} />
           {label.startsWith("Today") && key && <span className="cost-tile-note" title="OpenRouter's own figure for the key: every caller of it, itemised here or not">OpenRouter shows {usd(key.today)} today</span>}
@@ -260,16 +258,21 @@ function Overview({ d }: { d: CostLedger }) {
         ) : (
           <span className="cost-tile-note">{key ? "The OpenRouter key has no spend limit." : `OpenRouter key: ${"error" in o.key ? o.key.error : ""}`}</span>
         )}
-        {near.map((c) => (
-          <Meter key={c.agentId} label={`${c.name}, today`} used={c.usd} cap={c.cap} />
-        ))}
-        <span className="cost-tile-note">{o.caps.length ? `Day caps per agent (UTC day).${calm > 0 ? ` ${calm} more agent${calm === 1 ? "" : "s"} further from theirs.` : ""}` : "No agent has spent anything today."}</span>
+        {o.limits ? (
+          <>
+            <Meter label="Install, today (UTC)" used={o.limits.day.spent} cap={o.limits.day.cap} />
+            <Meter label="Install, this month (UTC)" used={o.limits.month.spent} cap={o.limits.month.cap} />
+            <span className="cost-tile-note">The install's spend limits (settings spend_day_usd spend_month_usd and task_usd): model calls stop at a limit.</span>
+          </>
+        ) : (
+          <span className="cost-tile-note">The install's spend limits are not available.</span>
+        )}
       </div>
     </section>
   );
 }
 
-/** Spend against a cap: the fill turns amber past 70% and red past 90%. */
+/** Spend against a limit: the fill turns amber past 70% and red past 90%. */
 function Meter({ label, used, cap }: { label: string; used: number; cap: number }) {
   const share = cap > 0 ? Math.min(1, used / cap) : 0;
   const level = share >= 0.9 ? "bad" : share >= 0.7 ? "warn" : "ok";
@@ -515,15 +518,7 @@ function AgentTable({ d, focus, onOpen }: { d: CostLedger; focus: string | null;
     { key: "usd", label: "Spend", cls: "ct-usd", value: (r) => r.usd, render: (r) => usd(r.usd) },
     { key: "calls", label: "Calls", value: (r) => r.calls, render: (r) => compact(r.calls) },
     { key: "per", label: "$ / call", cls: "ct-wide", value: (r) => (r.calls ? r.usd / r.calls : 0), render: (r) => (r.calls ? `$${(r.usd / r.calls).toPrecision(2)}` : "—") },
-    // An agent no longer granted has no cap in force: its day shows without one.
-    { key: "today", label: "Today vs cap", cls: "ct-cap", value: (r) => (r.dayCap ? r.today / r.dayCap : 0), render: (r) => (r.dayCap == null ? usd(r.today) : (
-      <span className="ct-capcell" title={`${usd(r.today)} of the ${usd(r.dayCap)} day cap`}>
-        <span className={`ct-minibar ${r.today / r.dayCap >= 0.9 ? "bad" : r.today / r.dayCap >= 0.7 ? "warn" : "ok"}`}>
-          <span style={{ width: `${Math.min(100, (r.today / r.dayCap) * 100)}%` }} />
-        </span>
-        {pct(r.today / r.dayCap)}
-      </span>
-    )) },
+    { key: "today", label: "Today", cls: "ct-usd", value: (r) => r.today, render: (r) => usd(r.today) },
   ];
   const { head, sorted } = useSort(cols, "usd");
   const system = d.lanes.filter((l) => !["agent", "advisor", "fanout", "engineer"].includes(l.lane)).reduce((s, l) => s + l.usd, 0);

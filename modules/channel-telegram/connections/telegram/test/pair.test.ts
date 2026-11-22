@@ -17,7 +17,7 @@ describe("pairing", () => {
     expect(Buffer.from(code, "base64url")).toHaveLength(16);
     expect(pairing.paired()).toBe(false);
     expect(pairing.pairedAt()).toBeNull();
-    expect(pairing.redeem(code, 42)).toBe(true);
+    expect(pairing.redeem(code, 42)).toBe("paired");
     expect(store.ownerChat()).toBe("42");
     expect(pairing.paired()).toBe(true);
     expect(pairing.pairedAt()).toBe(new Date(1_000_000).toISOString());
@@ -26,30 +26,84 @@ describe("pairing", () => {
   it("a used code pairs nobody", async () => {
     const { store, pairing } = setup();
     const code = pairing.mint();
-    expect(pairing.redeem(code, 42)).toBe(true);
+    expect(pairing.redeem(code, 42)).toBe("paired");
     const sent: [string, string][] = [];
     expect(await handleStart(start(77, code), pairing, store, async (c, t) => sent.push([c, t]))).toBe(true);
     expect(store.ownerChat()).toBe("42");
     expect(sent).toEqual([["77", expect.stringMatching(/didn't work/)]]);
   });
 
-  it("an expired code pairs nobody", () => {
+  it("an expired code pairs nobody, and is used up", () => {
     const { store, pairing, tick } = setup();
     const code = pairing.mint();
     tick(CODE_TTL_MS + 1);
-    expect(pairing.redeem(code, 42)).toBe(false);
+    expect(pairing.redeem(code, 42)).toBe("expired");
     expect(store.ownerChat()).toBeUndefined();
+    expect(pairing.redeem(code, 42)).toBe("wrong");
+  });
+
+  it("handleStart says each outcome: paired, expired, wrong and a group chat, with a chat id and no code", async () => {
+    const { store, pairing, tick } = setup();
+    const logged: { fields: Record<string, unknown>; msg: string }[] = [];
+    const log = { info: (fields: Record<string, unknown>, msg: string) => void logged.push({ fields, msg }) };
+    const sent: [string, string][] = [];
+    const send = async (c: string, t: string) => void sent.push([c, t]);
+
+    // Paired: the chat's id, and neither the code nor a token.
+    const code = pairing.mint();
+    expect(await handleStart(start(42, code), pairing, store, send, log)).toBe(true);
+    expect(logged).toEqual([{ fields: { chatId: 42 }, msg: "chat paired" }]);
+    expect(JSON.stringify(logged)).not.toContain(code);
+
+    // Expired: told apart from a wrong code, both in the answer and the log.
+    logged.length = 0;
+    sent.length = 0;
+    const gone = pairing.mint();
+    tick(CODE_TTL_MS + 1);
+    expect(await handleStart(start(77, gone), pairing, store, send, log)).toBe(true);
+    expect(sent).toEqual([["77", expect.stringMatching(/expired/)] ]);
+    expect(logged).toEqual([{ fields: { chatId: 77, reason: "expired" }, msg: "pairing code rejected" }]);
+    logged.length = 0;
+    sent.length = 0;
+    expect(await handleStart(start(77, "no-such-code"), pairing, store, send, log)).toBe(true);
+    expect(sent).toEqual([["77", expect.stringMatching(/didn't work/)] ]);
+    expect(logged).toEqual([{ fields: { chatId: 77, reason: "wrong" }, msg: "pairing code rejected" }]);
+
+    // A chat over its wrong-try limit is told to wait, not that its code was wrong.
+    logged.length = 0;
+    sent.length = 0;
+    const fresh = pairing.mint();
+    for (let i = 0; i < 5; i++) await handleStart(start(88, `wrong${i}`), pairing, store, async () => undefined);
+    expect(await handleStart(start(88, fresh), pairing, store, send, log)).toBe(true);
+    expect(sent).toEqual([["88", expect.stringMatching(/Too many tries/)] ]);
+    expect(logged).toEqual([{ fields: { chatId: 88, reason: "limited" }, msg: "pairing code rejected" }]);
+    expect(store.ownerChat()).toBe("42");
+
+    // A group never pairs, and says it in one line.
+    logged.length = 0;
+    expect(await handleStart(start(99, pairing.mint(), "group"), pairing, store, send, log)).toBe(true);
+    expect(store.ownerChat()).toBe("42");
+    expect(logged).toEqual([{ fields: { chatId: 99, reason: "group" }, msg: "pairing refused: not a private chat" }]);
   });
 
   it("six wrong codes in a minute from one chat are refused, another chat still pairs", () => {
     const { store, pairing, tick } = setup();
     const code = pairing.mint();
-    for (let i = 0; i < 5; i++) expect(pairing.redeem(`wrong${i}`, 66)).toBe(false);
-    expect(pairing.redeem(code, 66)).toBe(false); // the sixth try, even with the right code
+    for (let i = 0; i < 5; i++) expect(pairing.redeem(`wrong${i}`, 66)).toBe("wrong");
+    expect(pairing.redeem(code, 66)).toBe("limited"); // the sixth try, even with the right code
     expect(store.ownerChat()).toBeUndefined();
     tick(1000);
-    expect(pairing.redeem(code, 42)).toBe(true); // the code wasn't used up by the refused try
+    expect(pairing.redeem(code, 42)).toBe("paired"); // the code wasn't used up by the refused try
     expect(store.ownerChat()).toBe("42");
+  });
+
+  it("forgets a chat whose wrong tries have aged out of the window", () => {
+    const { pairing, tick } = setup();
+    const code = pairing.mint();
+    expect(pairing.redeem("wrong", 66)).toBe("wrong");
+    tick(60_001); // the wrong-try window (5 tries a minute)
+    // One wrong try from long ago neither limits this chat nor keeps it: the right code still pairs it.
+    expect(pairing.redeem(code, 66)).toBe("paired");
   });
 
   it("an existing env chat id is seeded once", () => {

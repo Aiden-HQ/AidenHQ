@@ -163,7 +163,6 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
             timezone={board.timezone}
             label="Snooze"
             onPick={(date) => {
-              setBucket("backlog");
               void onSnooze(issue.id, date).then(reload);
             }}
           />

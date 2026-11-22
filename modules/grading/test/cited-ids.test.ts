@@ -158,3 +158,74 @@ test("a job cited under a misspelled owner resolves to the graded PR's real owne
   assert.equal(refused.awaiting, undefined, "any other 403 is final");
   assert.match(refused.facts.join("\n"), /could not be read \(Resource not accessible by integration\)/);
 });
+
+test("a cited repo resolves exactly first, then by dashes and case only when one known repo matches; a bare citation skips an unreadable repo", async () => {
+  const seen: string[] = [];
+  const deps = citeDeps({
+    citedJob: async (repo: string) => {
+      seen.push(repo);
+      if (repo === "acme/nogrant") throw Object.assign(new Error("no grant"), { status: 403 });
+      return { name: "ci", state: "completed", conclusion: "success" };
+    },
+  });
+  const [job] = citedIds(["ci: https://github.com/acme/my.app/actions/runs/1/job/7"], "WOR-9");
+  await resolveCitation(job!, deps, ["acme/my_app"]);
+  assert.equal(seen.pop(), "acme/my.app", "dots and underscores are different repos: no variant match");
+  await resolveCitation(job!, deps, ["acme/my.app", "acme/my_app"]);
+  assert.equal(seen.pop(), "acme/my.app", "an exact match wins");
+  const [dashed] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/7"], "WOR-9");
+  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "AidenHQ/Aiden-HQ"]);
+  assert.equal(seen.pop(), "AidenHQ/AidenHQ", "two variants are ambiguous: the cited spelling is used");
+
+  const [bare] = citedIds(["ci: job 424242"], "WOR-9");
+  const r = await resolveCitation(bare!, deps, ["acme/nogrant", "acme/app"]);
+  assert.equal(r.exists, true, "a refused repo does not stall a bare citation");
+  assert.equal(r.repo, "acme/app");
+});
+
+test("a dash-only variant never hides the cited repo: the job is looked for there too", async () => {
+  const seen: string[] = [];
+  const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return repo === "acme/my-app" ? { name: "ci", state: "completed", conclusion: "success" } : null; } });
+  const [job] = citedIds(["ci: https://github.com/acme/my-app/actions/runs/1/job/7"], "WOR-9");
+  const r = await resolveCitation(job!, deps, ["acme/myapp"]);
+  assert.deepEqual(seen, ["acme/myapp", "acme/my-app"]);
+  assert.equal(r.repo, "acme/my-app");
+  seen.length = 0;
+  await resolveCitation(job!, deps, ["Acme/My-App"]);
+  assert.equal(seen.length, 1, "the same repo in another case is looked up once");
+});
+
+test("a repo listed twice is not ambiguous; a bare citation refused everywhere is shown once as unreadable", async () => {
+  const seen: string[] = [];
+  const deps = citeDeps({ citedJob: async (repo: string) => { seen.push(repo); return { name: "ci", state: "completed", conclusion: "success" }; } });
+  const [dashed] = citedIds(["ci: https://github.com/AidenHQ/AidenHQ/actions/runs/1/job/7"], "WOR-9");
+  await resolveCitation(dashed!, deps, ["Aiden-HQ/AidenHQ", "Aiden-HQ/AidenHQ"]);
+  assert.equal(seen.pop(), "Aiden-HQ/AidenHQ");
+
+  const [bare] = citedIds(["ci: job 424242"], "WOR-9");
+  const denied = citeDeps({ citedJob: async (repo: string) => { throw Object.assign(new Error(`no grant on ${repo}`), { status: 403 }); } });
+  const out = await citedEvidence([bare!], denied, ["acme/a", "acme/b"]);
+  assert.equal(out.awaiting, undefined);
+  assert.match(out.facts.join("\n"), /could not be read \(no grant on acme\/a\)/);
+});
+
+test("a bare job citation tries every candidate repo: found, none, a refusal (403 or 404), or a rate limit", async () => {
+  const err = (status: number, message: string, headers?: object) => Object.assign(new Error(message), { status, headers });
+  const ok = { name: "ci", state: "completed", conclusion: "success" };
+  const cases: { name: string; answers: any[]; want: RegExp; awaiting?: boolean }[] = [
+    { name: "found after a refusal and a 404", answers: [err(403, "no grant"), err(404, "no code host"), ok], want: /cited Actions job 424242 in acme\/c: exists/ },
+    { name: "null everywhere is no such job", answers: [null, null, null], want: /no such Actions job/ },
+    { name: "a refusal and no find is unreadable", answers: [null, err(403, "Resource not accessible by integration"), null], want: /could not be read \(Resource not accessible by integration\)/ },
+    { name: "a 404 from the code host is a refusal, not no such job", answers: [null, err(404, "no GitHub code host here"), null], want: /could not be read \(no GitHub code host here\)/ },
+    { name: "a rate limit is retried", answers: [err(403, "no grant"), err(403, "forbidden", { "retry-after": "60" })], want: /could not be read yet/, awaiting: true },
+  ];
+  for (const k of cases) {
+    const answers = [...k.answers];
+    const deps = citeDeps({ citedJob: async () => { const a = answers.shift(); if (a instanceof Error) throw a; return a; } });
+    const [bare] = citedIds(["ci: job 424242"], "WOR-9");
+    const out = await citedEvidence([bare!], deps, ["acme/a", "acme/b", "acme/c"]);
+    assert.match(String(k.awaiting ? out.awaiting : out.facts.join("\n")), k.want, k.name);
+    assert.equal(out.awaiting !== undefined, Boolean(k.awaiting), k.name);
+  }
+});
+

@@ -3,15 +3,14 @@
 // is one conditional UPDATE, so two deciders (a channel, the reviewer, a restart) can't both win.
 //   review → (approve) approved | (escalate) owner | (reject) rejected | stale        owner → approved | rejected | stale
 //   approved → claimed (once) → done | failed | unknown        anything open → cancelled (replaced, expired, its module removed)
-// A record headed for the reviewer carries how the owner follows it (`review_first`, tier.ts): the reviewer's verdict is
-// held to that here, whatever the verdict says. Open records expire after 7 days: decided within a week or not at all.
+// The reviewer's approve, reject (stale for a moved head) or escalation (to the owner) moves a record in review. Open records expire after 7 days: decided within a week or not at all.
 // Each move of a record with tier ≥ 1 writes its flow fact (facts.ts: record.filed, record.decided, record.held, record.claimed,
 // record.landed, record.failed) in the move's own transaction, only when the move won; a fact error never fails the move.
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { FINAL_CODES, type Cap, type ReviewFirst } from "./tier.ts";
+import type { Cap } from "./tier.ts";
 import { decider, openFacts, type Fact } from "./facts.ts";
 import { inTx } from "./factlog.ts";
 import { addObjects, objectOf, objectsSince } from "./objects.ts";
@@ -31,12 +30,10 @@ export const isUpdater = (q: Requester | undefined) => q?.kind === UPDATER.kind 
 export type Card = { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string };
 export type Rec = {
   id: string; kind: string; module: string; args: unknown; targets: Record<string, unknown>; executor: { module: string; url?: string; rev?: string }; policy: string;
-  digest: string; tier: 0 | 1 | 2; panel: boolean; card: Card;
-  /** The tier before the autonomy caps (tier.ts): 2 means the owner's on its merits. Null on older records. */
+  digest: string; tier: 0 | 1 | 2; card: Card;
+  /** The tier before the autonomy caps (tier.ts). Null on older records. */
   merit?: 0 | 1 | 2 | null; requester: Requester; task: string; state: State;
   review: string | null; decided_by: string | null; via: string | null; outcome: { ok: boolean; text: string } | null; created_at: string; updated_at: string;
-  /** How the owner follows the reviewer (tier.ts): null, the reviewer decides; final; owner. */
-  review_first?: ReviewFirst | null;
   /** The tier rule's code (the requester's classifier), the reviewer's reason code, and when it was decided. */
   rule?: string | null; review_code?: string | null; decided_at?: string | null;
   /** Why the owner rejected it, in their words (optional, up to 500 chars; the requester is told). */
@@ -45,8 +42,6 @@ export type Rec = {
   identifier?: string | null;
   /** It replaced an open request on the same task, kind and target: a typed reply can't approve it, only a tap. */
   replaced?: boolean;
-  /** The hash of the request chain the reviewer read (an unsure-twice rejection lifts once it changes). */
-  chain?: string | null;
   /** Requests on the same task and kind with the same target replace each other while open (the requester's key). */
   target?: string | null;
   /** The content key the owner's veto binds to ("?" unknown: fails closed against any veto); null when the kind has none. */
@@ -58,12 +53,12 @@ export type Rec = {
 };
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
-/** Open records past this are expired: decided within a week or not at all. */
+/** Records past this are expired: decided within a week of filing, and run within a week of the approval (an approved record retries a transient failure meanwhile). */
 export const TTL_MS = 7 * 86_400_000;
 /** Decided by the owner: never the reviewer, a stale close, the code (kernel) or a Tier 0 run. */
 export const OWNER_SQL ="decided_by IS NOT NULL AND decided_by NOT LIKE 'reviewer:%' AND decided_by NOT LIKE 'stale:%' AND decided_by NOT LIKE 'kernel%'";
 
-/** A kind as people read it: the kernel's and the runner's own by their short names (push, apply, raise_cap), others whole. */
+/** A kind as people read it: the kernel's and the runner's own by their short names (push, apply), others whole. */
 export const actionOf = (kind: string) => kind.replace(/^(runner|kernel)\./, "");
 
 /** JSON with sorted keys: the digest's input. */
@@ -105,7 +100,9 @@ export function openRecords(file: string, now = () => new Date()) {
   const row = (r: any): Rec | undefined => {
     if (!r) return undefined;
     for (const c of JSON_COLS) r[c] = r[c] == null ? null : JSON.parse(r[c]);
-    return { ...r, panel: r.panel === 1, replaced: r.replaced === 1 };
+    // panel, review_first and chain are columns of the retired panel and review-first flow, no longer read (owner, 2026-11-22).
+    const { panel: _p, review_first: _f, chain: _c, ...rest } = r;
+    return { ...rest, replaced: r.replaced === 1 };
   };
   const rows = (rs: unknown[]) => rs.map((r) => row(r)!);
   const get = (id: string) => row(db.prepare("SELECT * FROM records WHERE id = ?").get(id));
@@ -134,22 +131,22 @@ export function openRecords(file: string, now = () => new Date()) {
    */
   const move = (id: string, from: State[], to: State, set: { review?: string; review_code?: string | null; decided_by?: string; via?: string; owner_reason?: string; tier?: number; outcome?: unknown; decided_at?: string; chain?: string | null; cap?: string; review_first?: string } = {}, fresh = false): boolean => {
     const cols = Object.keys(set);
-    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND created_at > ?" : ""}`)
+    const r = db.prepare(`UPDATE records SET state = ?, updated_at = ?${OPEN.includes(to) ? "" : ", context = NULL"}${cols.map((c) => `, ${c} = ?`).join("")} WHERE id = ? AND state IN (${from.map(() => "?").join(",")})${fresh ? " AND COALESCE(decided_at, created_at) > ?" : ""}`)
       .run(to, iso(), ...cols.map((c) => (c === "outcome" ? JSON.stringify((set as any)[c]) : (set as any)[c] ?? null)), id, ...from, ...(fresh ? [cutoff()] : []));
     return r.changes === 1;
   };
   /** The code closed an open record (expired, replaced): its closing fact, written in the same transaction. */
   const cancelled = (id: string, via: "expired" | "replaced") => fact(id, "record.decided", "code:cancelled", "kernel", () => ({ decision: "cancelled", decider: "code", via }));
-  /** Open records past their 7 days: cancelled as expired (a decided one keeps who decided it), each with its closing fact. */
+  /** Open records past their 7 days (an approved one counted from its decision): cancelled as expired, each with its closing fact. */
   const expire = () => {
-    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND created_at <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
+    const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND COALESCE(decided_at, created_at) <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
     if (!ids.length) return;
     const at = iso(), outcome = JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" });
     inTx(db, "records_expire", () => {
       for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
     });
   };
-  const shownState = (r: Rec) => (OPEN.includes(r.state) && r.created_at <= cutoff() ? "expired" : r.state);
+  const shownState = (r: Rec) => (OPEN.includes(r.state) && (r.decided_at ?? r.created_at) <= cutoff() ? "expired" : r.state);
 
   return {
     db,
@@ -168,10 +165,10 @@ export function openRecords(file: string, now = () => new Date()) {
         }
         const replaced = old.length;
         db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, r.panel ? 1 : 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            r.review_first ?? null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, r.chain ?? null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null);
+          .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
+            null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null);
         const requester = r.requester.key || r.requester.module || "";
-        fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, panel: r.panel, requester, state: r.state, ...prOf(r.args) }));
+        fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, requester, state: r.state, ...prOf(r.args) }));
         db.exec("COMMIT");
       } catch (e) {
         db.exec("ROLLBACK");
@@ -197,14 +194,14 @@ export function openRecords(file: string, now = () => new Date()) {
       return {
         created: q("SELECT tier, COUNT(*) AS n FROM records WHERE created_at >= ? AND tier > 0 GROUP BY tier", at) as { tier: number; n: number }[],
         decided: q("SELECT tier, state, COUNT(*) AS n FROM records WHERE decided_at >= ? GROUP BY tier, state", at) as { tier: number; state: string; n: number }[],
-        pending: q("SELECT CASE state WHEN 'review' THEN 1 ELSE 2 END AS tier, COUNT(*) AS n FROM records WHERE state IN ('review','owner') AND created_at > ? GROUP BY 1", cutoff()) as { tier: number; n: number }[],
+        pending: q("SELECT CASE state WHEN 'review' THEN 1 ELSE 2 END AS tier, COUNT(*) AS n FROM records WHERE state IN ('review','owner') AND COALESCE(decided_at, created_at) > ? GROUP BY 1", cutoff()) as { tier: number; n: number }[],
       };
     },
     shownState,
     /** The open records of this content on this task (a repeated request returns its own, never a second card). */
     /** The same request that is running or already ran (done or failed) since `since`: a repeat of it is not a new write. */
     ran: (task: string, kind: string, digest: string, since: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('claimed','done','failed') AND created_at > ? ORDER BY created_at DESC").all(task, kind, digest, since)),
-    open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND created_at > ?").all(task, kind, digest, cutoff())),
+    open: (task: string, kind: string, digest: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE task = ? AND kind = ? AND digest = ? AND state IN ('review','owner','approved') AND COALESCE(decided_at, created_at) > ?").all(task, kind, digest, cutoff())),
     /** A claimed record of a module its successor absorbed (`replaces`) moves to the successor's kind, so the successor reports its outcome. */
     carry(id: string, kind: string, module: string, executor: Rec["executor"]): boolean {
       return db.prepare("UPDATE records SET kind = ?, module = ?, executor = ? WHERE id = ? AND state = 'claimed'").run(kind, module, JSON.stringify(executor), id).changes === 1;
@@ -231,31 +228,20 @@ export function openRecords(file: string, now = () => new Date()) {
       return keys(content).some((k) => decided.find((r) => keys(r.content).includes(k))?.state === "rejected");
     },
     /**
-     * The reviewer's verdict on a record in review, bound to its digest and held to its review-first: approve decides it
-     * (only a Tier 1 record without review-first, and with the panel only when a second reviewer approved too or was unsure), reject closes
-     * it (stale for stale_head; never on the owner's-on-merits record, except code's own refusals), escalate hands it to the
-     * owner with the note. A refusal is the reason as a string.
+     * The reviewer's verdict on a record in review, bound to its digest: approve decides it, reject closes it (stale for
+     * stale_head), escalate hands it to the owner with the note. A refusal is the reason as a string.
      */
-    review(id: string, digest: string, v: { decision: "approve" | "reject" | "escalate"; by: string; note: string; code?: string; chain?: string }): Rec | string {
+    review(id: string, digest: string, v: { decision: "approve" | "reject" | "escalate"; by: string; note: string; code?: string }): Rec | string {
       const r = get(id);
       if (!r) return "no such record";
       if (shownState(r) !== "review") return `this record is ${shownState(r)}`;
       if (r.digest !== digest) return "the digest doesn't match this record";
-      // Two approvals (`+`), or one approval and the other reviewer unsure about the request, with the input code verified
-      // whole (`;unsure:`, the owner's rule of 2026-11-20).
-      if (r.panel && v.decision === "approve" && !v.by.includes("+") && !/;unsure:/.test(v.by)) return "an authority-expanding record needs a second reviewer's approval too";
-      if (v.decision === "approve" && (r.review_first || r.tier === 2 || (r.args as { ownerRequired?: unknown } | null)?.ownerRequired === true)) return "after the reviewer, the owner decides this record (escalate it)";
-      if (v.decision === "reject" && r.review_first === "owner" && !FINAL_CODES.includes(v.code ?? "")) return "this record is the owner's on its merits: escalate the reject to them";
       const note = v.note.slice(0, 2000);
       const to: State = v.decision === "approve" ? "approved" : v.decision === "escalate" ? "owner" : v.code === "stale_head" ? "stale" : "rejected";
-      const ok = moved(() => move(id, ["review"], to, { review: note, review_code: v.code ?? null, ...(to === "owner" ? { tier: 2 } : { decided_by: v.by, via: "review", decided_at: iso() }), ...(v.chain ? { chain: v.chain } : {}) }, true),
+      const ok = moved(() => move(id, ["review"], to, { review: note, review_code: v.code ?? null, ...(to === "owner" ? { tier: 2 } : { decided_by: v.by, via: "review", decided_at: iso() }) }, true),
         () => fact(id, "record.decided", `reviewer:${to}`, "module:ai-reviewer", () => ({ decision: to, decider: "reviewer", via: "review", ...(v.code ? { code: v.code } : {}) })));
       if (!ok) return "it changed meanwhile";
       return get(id)!;
-    },
-    /** The first reviewer found it authority-expanding: from now on it needs a second reviewer's approval too. Never cleared. */
-    markPanel(id: string, digest: string): boolean {
-      return db.prepare("UPDATE records SET panel = 1 WHERE id = ? AND digest = ? AND state = 'review'").run(id, digest).changes === 1;
     },
     /** The owner's decision on a record waiting for them, bound to its digest. */
     decide(id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason = ""): Rec | string {
@@ -275,7 +261,7 @@ export function openRecords(file: string, now = () => new Date()) {
      */
     hold(id: string, cap: Cap, why: string): boolean {
       const r = get(id);
-      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, review_first: "final", cap: JSON.stringify(cap), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
+      return Boolean(r) && moved(() => move(id, ["approved"], "owner", { tier: 2, cap: JSON.stringify(cap), decided_at: iso(), review: `${r!.review ?? ""}\n\nHeld for the owner before it ran: ${why}`.trim() }, true),
         () => fact(id, "record.held", "held", "kernel", () => ({ why })));
     },
     /** approved → claimed, once, within its 7 days. */

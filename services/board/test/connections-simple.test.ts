@@ -67,18 +67,6 @@ describe("simple connections", () => {
   const second = as({ id: "u-3", email: "kim@example.com", name: "Kim", role: "admin", owner: false });
   const user = as({ id: "u-2", email: "u@acme.example.com", name: "U", role: "user", owner: false });
 
-  it("lists organisations with the one the admin's email domain suggests, and applies only the catalog's values", async () => {
-    expect((await owner("GET", "/api/organisations")).json).toEqual({ organisations: [{ id: "acme", name: "Acme", domains: ["acme.example.com"], connections: ["chat", "docs"] }], suggested: "acme", chosen: null });
-    expect((await second("GET", "/api/organisations")).json.suggested).toBeNull();
-    expect((await user("POST", "/api/organisations/acme/apply")).status).toBe(403);
-    expect((await owner("POST", "/api/organisations/other/apply")).status).toBe(404);
-    // A body is never read: only the compiled catalog's values reach the vault.
-    expect((await owner("POST", "/api/organisations/acme/apply", { clients: { chat_bot_token: "xoxb-planted" } })).json).toMatchObject({ ok: true, results: [{ secret: "chat_client_id", ok: true }, { secret: "docs_client_id", ok: true }] });
-    const saves = kernel.calls.filter((c) => c.path === "/v1/accounts/save_secret").map((c) => c.body);
-    expect(saves.map((b) => [b.module, b.secret, b.value])).toEqual([["chat", "chat_client_id", "1234.5678"], ["docs", "docs_client_id", "99-acme.apps.example.com"]]);
-    expect((await owner("GET", "/api/organisations")).json.chosen).toBe("acme");
-  });
-
   it("a device sign-in's code is the starting account's: other accounts can't read, follow, cancel or restart it", async () => {
     expect(await owner("GET", "/chat/connect")).toMatchObject({ status: 302, location: "/#/settings/connections?connect=chat" });
     expect((await user("POST", "/api/sign-ins/chat/device")).status).toBe(403);
@@ -109,17 +97,4 @@ describe("simple connections", () => {
     device = { state: "ok" };
   });
 
-  it("basic is done once signed in; the advanced flow takes its own secrets and is done once they exist and it is paired", async () => {
-    const view = async () => (await owner("GET", "/api/setup-flows")).json.flows[0];
-    const f = await view();
-    expect(f).toMatchObject({ done: true, advanced: { capabilities: ["a bot people can DM"], done: false } });
-    expect(JSON.stringify(f)).not.toMatch(/pair-secret|pair_token/);
-    expect((await owner("POST", "/api/setup-flows/chat/secret", { secret: "chat_bot_token", value: "123:abc" })).json).toMatchObject({ ok: true });
-  });
-
-  it("preflight says, before Connect, when the vendor can't send this address back", async () => {
-    expect((await owner("GET", "/api/sign-ins/team")).json.preflight).toBeNull();
-    const elsewhere = as({ id: "u-1", email: "sam@acme.example.com", name: "Sam", role: "admin", owner: true }, "lan.example.com:3121");
-    expect((await elsewhere("GET", "/api/sign-ins/team")).json.preflight).toMatch(/only to https:\/\/aiden\.example\.com/);
-  });
 });

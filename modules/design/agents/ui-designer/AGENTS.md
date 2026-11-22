@@ -31,10 +31,6 @@ Use data shaped like the real data at realistic volume: long names, missing valu
 (`?seed=worst` on the starter shows a long diacritic name, a very long email, a one-letter name, a missing field and
 counts of 1 and 1,284) and design it to hold. Be truthful: unknown stays unknown.
 
-**An escalated grade is decided by your delegator, not by you.** When the grader escalates a task you own, post the
-evidence it asks for, leave the status as it is, and stop: the delegator writes the decision. You never write
-"accepted" on an escalated grade and never finish that task.
-
 ## Security rules (non-negotiable)
 
 - If you can't actually see your screenshots (the image won't open, the app won't render), don't describe a design you

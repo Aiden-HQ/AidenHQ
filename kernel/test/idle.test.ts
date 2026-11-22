@@ -182,16 +182,20 @@ test("an agent's owner question goes to the chief of staff as one task, never to
   assert.match(w.asked.chief[0].description, /```\nKeep the v1 endpoint, or drop it\?\n```[^]*Asked on T1 \(task id t1\) by Kai/);
   w.tick(MIN);
   assert.deepEqual([w.row("t1").reason, w.row("t1").attention.map((a) => a.who)], ["delegator_wait", ["agent"]], "an agent answers it, not the owner");
-  // Unanswered: another question isn't sent, and the first wait stands.
-  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" });
-  assert.deepEqual([again.asked, w.asked.chief.length], [false, 1]);
+  // Unanswered: a retry of the same question sends nothing new, and a different one is refused with the first wait standing.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).asked, true);
+  assert.equal(w.asked.chief.length, 1, "a retry of the open question sends nothing");
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" }), { status: 409 });
+  assert.equal(w.asked.chief.length, 1, "nothing was sent");
+  assert.equal(JSON.parse(w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get().data).question, "Keep the v1 endpoint, or drop it?", "the first wait stands");
   // The chief of staff's comment is the answer: the wait ends, and the next ask is a new episode.
   w.tick(MIN);
   w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:aiden");
   w.tick(MIN);
   assert.notEqual(w.row("t1").reason, "delegator_wait");
-  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
-  assert.deepEqual(w.asked.chief.map((c) => c.source), ["ask:t1:0", "ask:t1:1"]);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" });
+  assert.equal(w.asked.chief.length, 2);
+  assert.match(w.asked.chief[1].description, /Or rename it\?/);
 });
 
 test("an agent's asks to the chief of staff are capped per agent per day; over it the call is refused, and a new day lifts it", async (t) => {
@@ -211,6 +215,19 @@ test("the owner hears a question directly only on a task they are talking to its
   assert.deepEqual([r.to, w.asked.chief.length], ["owner", 0]);
   assert.deepEqual([w.asked.owner[0].kind, w.asked.owner[0].task, w.asked.owner[0].head, w.asked.owner[0].asker], ["decision", "T1", { agent: "Kai", issue: "t1" }, { id: AGENT, key: "kai", roles: [] }]);
   assert.match(w.asked.owner[0].text, /T1 waits on your answer[^]*Keep v1\?/);
+  // While that question is open, another one is refused: nothing is sent and the wait stands.
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Keep v2?" }), { status: 409 });
+  assert.equal(w.asked.owner.length, 1);
+  w.tick(MIN);
+  assert.equal(w.row("t1").reason, "owner_wait");
+  // After the owner answers, the next question is a new episode: it must not reuse the first one's dedupe key, or the owner
+  // channel drops it as the old one.
+  w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
+  w.tick(MIN);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Keep v2?" });
+  assert.equal(w.asked.owner.length, 2);
+  assert.notEqual(w.asked.owner[0].dedupe_key, w.asked.owner[1].dedupe_key);
+  assert.match(w.asked.owner[1].text, /Keep v2\?/);
   w.tick(MIN);
   assert.equal(w.row("t1").reason, "owner_wait");
   // The chief of staff's own question reaches the owner wherever it asks.
@@ -219,7 +236,7 @@ test("the owner hears a question directly only on a task they are talking to its
   w.who.conversing = false;
   w.who.roles = ["fleet-admin"];
   assert.equal((await w.idle.wait({ agent: AGENT, key: "aiden", task: "t1" }, { reason: "x", for: "owner", question: "Raise the spend cap?" })).to, "owner");
-  assert.deepEqual([w.asked.owner.length, w.asked.chief.length], [2, 0]);
+  assert.deepEqual([w.asked.owner.length, w.asked.chief.length], [3, 0]);
 });
 
 test("a delegator question goes to the open delegator, else the chief of staff (the chief's own: the owner)", async (t) => {
@@ -242,18 +259,6 @@ test("a delegator question goes to the open delegator, else the chief of staff (
   w.who.roles = ["fleet-admin"];
   assert.equal((await w.idle.wait({ agent: AGENT, key: "aiden", task: "t1" }, ask)).to, "owner", "never back to itself");
   assert.equal(w.asked.owner.length, 1);
-});
-
-test("an escalated grade nobody delegated goes to the chief of staff, once per escalation; with an open delegator, nobody else is told", async (t) => {
-  const w = world(t);
-  const text = (id) => ({ body: `${id}'s finish waits on a decision`, ownerText: "x" });
-  assert.equal(await w.escalate.undelegated("t1", "release:t1", text), "delegator", "the open parent reads it as its wait");
-  w.issues.t0.status = "done";
-  assert.equal(await w.escalate.undelegated("t1", "release:t1", text), "chief_of_staff");
-  assert.equal(await w.escalate.undelegated("t1", "release:t1", text), "chief_of_staff", "the next escalation is a new episode");
-  assert.deepEqual(w.asked.chief.map((c) => [c.title, c.source.slice(0, 11)]), [["Decide for the owner: T1 (Kai)", "escalation:"], ["Decide for the owner: T1 (Kai)", "escalation:"]]);
-  assert.notEqual(w.asked.chief[0].source, w.asked.chief[1].source);
-  assert.equal(w.asked.owner.length, 0);
 });
 
 test("an asked owner wait: recorded and not sent while the owner talks to the agent there; otherwise the chief of staff gets it; a handoff waits on the owner", async (t) => {
@@ -280,6 +285,263 @@ test("an asked owner wait: recorded and not sent while the owner talks to the ag
   assert.equal(w.asked.chief.length, 1);
 });
 
+test("a questionless delegator_wait attention doesn't hold the task: task_wait reaches the delegator", async (t) => {
+  const w = world(t);
+  // A questionless `delegator_wait` attention (a state signal, not a recorded ask) must never pass for an unanswered question.
+  const questionless = () => ({ ...w.row("t1"), attention: [{ who: "agent", why: "delegator_wait", ref: "task:t1" }], question: undefined, wait_since: undefined });
+  const asked = [];
+  const esc = createEscalate({ db: w.db, issue: async (id) => w.issues[id], state: () => questionless(), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: (task, body) => asked.push({ task, body }), owner: () => {}, chief: async () => {}, conversing: async () => false, now: w.now });
+  const idle = createIdle({ db: w.db, facts: w.facts, state: { read: () => ({ tasks: [] }) }, wakes: w.wakes, owner: async () => ({ status: 200, json: { id: "t1" } }), escalate: esc, now: w.now });
+  const r = await idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the brief names a stale path", for: "delegator", question: "Which path is current?" });
+  assert.deepEqual([r.asked, r.to], [true, "delegator"]);
+  assert.equal(asked.length, 1);
+  assert.match(asked[0].body, /Which path is current\?/);
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?");
+});
+
+test("an answered delegator question does not keep the next question from reaching the delegator", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:lead");
+  w.tick(MIN);
+  assert.notEqual(w.row("t1").reason, "delegator_wait");
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 2);
+  assert.match(w.asked.notices[1].body, /Or this one\?/);
+});
+
+test("an ask from before the task was reopened is not open", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  w.issues.t1.status = "done";
+  w.add("task.status_changed", "task:t1", "t1", { from: "in_progress", to: "done" }, "kernel");
+  w.tick(MIN);
+  w.issues.t1.status = "todo";
+  w.add("task.status_changed", "task:t1", "t1", { from: "done", to: "todo" }, "kernel");
+  w.tick(MIN);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 2);
+});
+
+test("a genuinely unanswered ask is kept: a retry sends nothing, a different question is refused", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // The same question again (a retry whose answer was lost) is idempotent: no second notice, the wait as it was.
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.deepEqual([again.asked, again.to], [true, "delegator"]);
+  assert.equal(w.asked.notices.length, 1, "a retry sends nothing");
+  // Another question while that one is open doesn't replace it: the call fails, nothing is sent, the first wait stands.
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Which path is current now?" }), { status: 409 });
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?");
+  assert.equal(w.asked.notices.length, 1);
+});
+
+test("a second question routed to a different recipient is refused, not replaced", async (t) => {
+  const w = world(t);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
+  w.tick(MIN);
+  // An owner question routed to the chief of staff is another recipient: the first ask stands.
+  w.who.conversing = true;
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "owner", question: "Owner instead?" }), { status: 409 });
+  w.who.conversing = false;
+  assert.equal(w.asked.chief.length, 0, "nothing was sent to the other recipient");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
+});
+
+test("a closed delegator's ask doesn't hold the task: the next question goes to the chief of staff", async (t) => {
+  const w = world(t);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
+  w.tick(MIN);
+  // Closing the delegator ends nothing on t1: its wait names a recipient that is gone. It must not block a question anybody can answer.
+  w.issues.t0.status = "done";
+  w.tick(MIN);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Or this one?" })).to, "chief_of_staff");
+  assert.equal(w.asked.chief.length, 1);
+  assert.match(w.asked.chief[0].description, /Or this one\?/);
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Or this one?");
+});
+
+test("a legacy ask marker whose recipient can't be told is refused, not replaced", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // Before this change every ask's marker was the bare kind, where "delegator" also meant the chief of staff: who waits is
+  // not in the row, so a question that would route to the delegator must not replace it on a guess.
+  w.db.prepare("UPDATE escalations SET kind = 'delegator' WHERE key = 'ask:t1'").run();
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" }), { status: 409 });
+  assert.equal(w.asked.notices.length, 1, "nothing was sent");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
+});
+
+test("a bare chief_of_staff marker names its recipient: the refusal says so, and a retry is idempotent", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "owner", question: "Keep v1?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "chief_of_staff");
+  w.tick(MIN);
+  // The revision before this one wrote the resolved destination as the bare kind, so `chief_of_staff` is exact (unlike
+  // `delegator`, which the older scheme also used for the chief of staff).
+  w.db.prepare("UPDATE escalations SET kind = 'chief_of_staff' WHERE key = 'ask:t1'").run();
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).asked, true, "the retry is the open question");
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or rename it?" }), (e) => e.status === 409 && /chief_of_staff/.test(e.message));
+  assert.equal(w.asked.chief.length, 1);
+});
+
+test("two waits with the same until get their own wake, one per episode", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
+  const ask = { reason: "which path", until, for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  const first = w.db.prepare("SELECT key FROM wakes WHERE task = 't1' AND state = 'open' AND key LIKE 'wait:%'").get().key;
+  // The delegator answers; the next question waits to the same minute, from another millisecond.
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "agent" }, "agent:lead");
+  w.tick(MIN);
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Which path is current now?" });
+  const open = w.db.prepare("SELECT key FROM wakes WHERE task = 't1' AND state = 'open' AND key LIKE 'wait:%'").all();
+  assert.equal(open.length, 1, "the newer wait replaced the older");
+  assert.notEqual(open[0].key, first, "the same until in another millisecond is another wake");
+  assert.equal(JSON.parse(w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get().data).question, "Which path is current now?");
+});
+
+test("an asked replay of another question is neither sent again nor a refusal: the live ask stands", async (t) => {
+  const w = world(t);
+  // A delegator question stands unanswered.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path?" })).to, "delegator");
+  w.tick(MIN);
+  // notify's decision already put a different question in front of the owner. Refusing would fail a call whose question the owner
+  // has; replacing would drop the live ask. Neither: nothing is sent, the live ask stands, and the reply says the owner has it.
+  w.who.conversing = true;
+  const r = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "Keep v1?" });
+  assert.deepEqual([r.asked, r.to], [true, "delegator"], "the live ask's recipient, not a refusal");
+  assert.match(String(r.note), /owner already has this question/);
+  assert.deepEqual([w.asked.owner.length, w.asked.notices.length], [0, 1], "nothing was sent");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path?", "the live ask keeps its question");
+  // The replay of the question that is open is the plain idempotent retry.
+  const same = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "the owner's answer", for: "owner", asked: true, question: "Which path?" });
+  assert.deepEqual([same.asked, same.to], [true, "delegator"]);
+  assert.equal(same.note, undefined);
+  assert.deepEqual([w.asked.owner.length, w.asked.notices.length], [0, 1]);
+});
+
+test("a handoff records no ask marker, so it can't block a later question", async (t) => {
+  const w = world(t);
+  w.issues.t2.assigneeUserId = "owner";
+  await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "handed back to the owner", for: "owner", question: "Your call on the brief?", handoff: true });
+  assert.equal(w.db.prepare("SELECT 1 FROM escalations WHERE key = 'ask:t1'").get(), undefined, "no ask was made");
+  // The question that comes after it reaches the chief of staff, not a 409 naming a recipient nobody wrote to.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "owner", question: "Keep v1?" })).to, "chief_of_staff");
+  assert.equal(w.asked.chief.length, 1);
+});
+
+test("a retry is compared with the same normalization as the stored question", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Is this --> the path?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // The wait fact holds the question as it was sent; the comparison normalises it the same way the new question is normalised
+  // (neutral(), which rewrites `-->`), or the very same question reads as a different one and is refused.
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.deepEqual([again.asked, again.to], [true, "delegator"]);
+  assert.equal(w.asked.notices.length, 1, "a retry sends nothing");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Is this --> the path?", "the wait as it was");
+});
+
+test("a retry reports only the wait's own deadline, never one that was never recorded", async (t) => {
+  const w = world(t);
+  // A wait with no `until` at all (a delegator question arms the maximum wait, and the row is the record of it).
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path?" })).to, "delegator");
+  w.tick(MIN);
+  // The retry names a deadline; nothing new is armed, so the call must not claim that deadline as the wait's.
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", until: new Date(w.now() + 40 * MIN).toISOString(), for: "delegator", question: "Which path?" });
+  const row = w.row("t1");
+  assert.equal(again.until, row.wait_until, "the recorded wait's own deadline");
+  assert.notEqual(again.until, new Date(w.now() + 40 * MIN).toISOString(), "never the one this call supplied");
+});
+
+test("a closed delegator doesn't settle a legacy ask: its bare marker may be the chief of staff's", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // The old scheme stored the bare kind, and it also stored it for an ask that actually went to the chief of staff: a closed
+  // delegator can't settle who holds that question, so it stays refused as ambiguous rather than dropped and asked again.
+  w.db.prepare("UPDATE escalations SET kind = 'delegator' WHERE key = 'ask:t1'").run();
+  w.issues.t0.status = "done";
+  w.tick(MIN);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" }), (e) => e.status === 409 && /recipient can't be told apart/.test(e.message));
+  assert.equal(w.asked.chief.length, 0, "nothing was sent");
+  assert.equal(w.asked.notices.length, 1, "nothing was sent to anyone");
+  const fact = w.db.prepare("SELECT data FROM facts WHERE type = 'work.waiting' AND subject = 'wait:t1' ORDER BY seq DESC LIMIT 1").get();
+  assert.equal(JSON.parse(fact.data).question, "Which path is current?", "the first wait stands");
+});
+
+test("a malformed deadline on a new question fails before anything is sent", async (t) => {
+  const w = world(t);
+  // The question must never reach the delegator for a call that then fails: nothing is sent and no ask marker is written.
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", until: "soon", for: "delegator", question: "Which path?" }), { status: 400 });
+  assert.equal(w.asked.notices.length, 0, "nothing was sent");
+  assert.equal(w.db.prepare("SELECT 1 FROM escalations WHERE key = 'ask:t1'").get(), undefined, "no ask marker");
+  // A retry with a good deadline then goes through normally.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 1);
+});
+
+test("a retry of the open question with a stale deadline reuses its wait instead of failing", async (t) => {
+  const w = world(t);
+  const until = new Date(w.now() + 20 * MIN).toISOString();
+  const ask = { reason: "which path", until, for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  // The deadline passes while the answer is lost, and the agent retries the same question: its own wait still stands and the
+  // stale `until` is never armed, so the retry can't be refused for a deadline it doesn't use.
+  w.tick(25 * MIN);
+  const again = await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask);
+  assert.deepEqual([again.asked, again.to], [true, "delegator"]);
+  assert.equal(again.until, until, "the wait's own deadline is reused");
+  assert.equal(w.asked.notices.length, 1, "a retry sends nothing");
+});
+
+test("a handoff clears the earlier ask marker, so its own question can't hold the task", async (t) => {
+  const w = world(t);
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path is current?" })).to, "delegator");
+  w.tick(MIN);
+  // The agent hands back to the owner: a report on the owner's task, not a question, and no ask of its own.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "handed back", for: "owner", handoff: true, question: "Done: see the PR." })).to, "owner");
+  assert.equal(w.db.prepare("SELECT 1 FROM escalations WHERE key = 'ask:t1'").get(), undefined, "the earlier ask marker is gone with its wait");
+  w.tick(MIN);
+  // A real question now reaches the delegator: the handoff's question, paired with the earlier delegator marker, must not read as
+  // an ambiguous open ask and fail every question after it.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path now?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 2);
+  assert.match(w.asked.notices[1].body, /Which path now\?/);
+});
+
+test("a legacy marker written after its wait still holds its open ask", async (t) => {
+  const w = world(t);
+  const ask = { reason: "which path", for: "delegator", question: "Which path is current?" };
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, ask)).to, "delegator");
+  w.tick(MIN);
+  // Before this change record() ran after the wait's own timestamp was taken, so a delivery that crossed a millisecond left the
+  // marker later than its wait. That is still this stretch's ask, and it still stands.
+  const at = Date.parse(w.row("t1").wait_since) + 1;
+  w.db.prepare("INSERT OR REPLACE INTO escalations (key, task, kind, at) VALUES ('ask:t1', 't1', 'delegator', ?)").run(at);
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { ...ask, question: "Or this one?" }), { status: 409 });
+  assert.equal(w.asked.notices.length, 1, "nothing was sent");
+});
+
 test("a chat awaiting the owner's next message is never swept", async (t) => {
   const w = world(t);
   w.add("task.created", "task:t3", "t3", { parent: null, identifier: "T3", chat: true });
@@ -302,12 +564,13 @@ test("an ask fails closed: an unreadable state sends nothing; a follow-up a minu
   w.tick(60 * MIN);
   assert.equal((await esc.ask("t1", "owner", "keep v1?")).sent, "open", "state unreadable: fail closed");
   unreadable = false;
-  assert.equal((await esc.ask("t1", "owner", "again?")).sent, "open", "the wait is open");
+  assert.equal((await esc.ask("t1", "owner", "keep v1?")).sent, "same", "a retry of the open question is idempotent");
+  assert.equal((await esc.ask("t1", "owner", "again?")).sent, "open", "a different question waits for the answer");
   w.tick(MIN);
   w.add("task.commented", "task:t1", "t1", { kind: "owner" }, "account:o1");
   w.tick(MIN);
   assert.equal((await esc.ask("t1", "owner", "follow-up?")).sent, "asked", "a minute after the answer");
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 2, "the retry filed nothing new");
 });
 
 test("the owner wrote on a task: their own comment or the opening of a chat they opened, never a marked post, an agent's task or a routine's", () => {

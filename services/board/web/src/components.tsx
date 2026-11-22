@@ -8,7 +8,7 @@ import { GOOGLE_WEB_HINT } from "./connections";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { TaskState } from "./ui/TaskState";
-import { SOURCE_NAMES, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn } from "./util";
+import { SOURCE_NAMES, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn, untilLabel } from "./util";
 
 /** A crew member's portrait (or its monogram, AgentAvatar), or a letter for you. */
 export function Avatar({ assignee, size }: { assignee: Assignee | undefined; size?: number }) {
@@ -127,7 +127,7 @@ interface CardProps {
   onOpen: (card: Card) => void;
   onDone?: (card: Card) => void;
   onMove?: (card: Card, bucket: Bucket) => void;
-  /** Snooze into Backlog until a date; needs the board's timezone for the presets. */
+  /** Snooze until a date, parked by it (Tomorrow, Later or Backlog); needs the board's timezone for the presets. */
   onSnooze?: (card: Card, date: string) => void;
   /** Merge into another of your tasks, picked from `targets`. */
   onMerge?: (card: Card, into: Card) => void;
@@ -154,7 +154,8 @@ export function CardView({ card, assignees, selected, overlay, closed, onOpen, o
           <Chips card={card.crew ? { ...card, working: undefined } : card} />
           {card.scheduled && (
             <span className="tag when" title={`Moves to the top of ${BUCKET_NAMES[card.scheduled.bucket]} on ${card.scheduled.date}`}>
-              ↑ {BUCKET_NAMES[card.scheduled.bucket]} {shortDate(card.scheduled.date)}
+              {/* A move to Today is a snooze. */}
+              {card.scheduled.bucket === "today" && timezone ? `⏰ until ${untilLabel(todayIn(timezone), card.scheduled.date)}` : `↑ ${BUCKET_NAMES[card.scheduled.bucket]} ${shortDate(card.scheduled.date)}`}
             </span>
           )}
           {card.carried ? (
@@ -294,7 +295,7 @@ export function MoveMenu({ current, onPick, label }: { current?: Bucket; onPick:
   );
 }
 
-/** Snooze: park the task in Backlog and bring it back on top of Today on a date. */
+/** Snooze: park the task by its date (Tomorrow, Later or Backlog) and bring it back on top of Today on a date. */
 export function SnoozeMenu({ timezone, onPick, label }: { timezone: string; onPick: (date: string) => void; label?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [picking, setPicking] = useState(false);

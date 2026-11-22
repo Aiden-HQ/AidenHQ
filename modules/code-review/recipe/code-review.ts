@@ -6,7 +6,7 @@
 // AGENTS.md) is ever loaded as codex config or instructions. Its config is written here; the house rules come from the
 // base commit. Text in the PR that addresses a reviewer gets the stricter pass: the higher effort and an explicit warning.
 // The answer must be the JSON the prompt asks for (codex's --output-schema isn't used: with it, the model answers at once
-// instead of using its tools); anything else is no verdict (fails closed). No dependencies; Node 22+;
+// instead of using its tools); anything else is no verdict (the gate passes it with a note). No dependencies; Node 22+;
 // `codex` on PATH (the workflow installs it, pinned).
 //   node code-review.ts <base> <head> > review.json
 // Env: CI_REVIEW_KEY (a CI token from the model gateway, or an OpenRouter key), CI_REVIEW_URL (the gateway's /api/v1, which
@@ -20,8 +20,8 @@
 // Exit: 0 a review; 1 a confirmed provider error (HTTP 429 or 5xx, a provider quota 402, a dropped connection, in codex's
 // events or stderr): the workflow retries once; 2 the model gateway refused (bad token, our own spend cap, model not
 // allowed: permanent); 3 any other run
-// without a verdict (a timeout, an answer that isn't the JSON asked for, no diff read, an unexplained exit): the PR's
-// content can cause that, so it is never retried (the gate fails it).
+// without a verdict (a timeout, an answer that isn't the JSON asked for, no diff read, an unexplained exit): the workflow
+// retries it once too; if it still has no verdict the gate passes it with a note (neutral, never a failed check).
 //   node code-review.ts --lockfiles <base> <head>   the PR's package-lock.json changes, summarised (lockSummary); exit 3
 //   when it adds a package, changes one's version or source, or adds an install script (the workflow: a critical path).
 import { randomBytes } from "node:crypto";
@@ -143,7 +143,7 @@ ${lsp ? `env = { REVIEW_LSP = ${q(lsp)} }\n` : ""}`;
 }
 
 /**
- * codex's answer as the gate's JSON, or undefined when there is no review (fails closed): it must have finished its turn
+ * codex's answer as the gate's JSON, or undefined when there is no review (no verdict): it must have finished its turn
  * (turn.completed) after reading the diff with its tools, with a final message that is exactly the JSON PROMPT asks for (a ```json fence around it is allowed),
  * every finding with a title, a priority 0-3, a path and a line. Paths are made relative to the checkout.
  */
@@ -221,7 +221,7 @@ function lockfiles(git: Git, base: string, head: string) {
 /**
  * Why the run produced no review, from codex's error events and stderr: [kind, a short cause]. kind: permanent (the gateway
  * refused: 401-403, our own spend cap, a model not allowed), transient (a confirmed provider error: HTTP 429 or 5xx, a quota
- * 402, a dropped or refused connection), else none (no verdict: never retried).
+ * 402, a dropped or refused connection), else none (no verdict).
  */
 export function why(events: CodexEvent[], stderr: unknown) {
   const messages = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "");

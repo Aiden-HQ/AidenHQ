@@ -21,8 +21,7 @@ CREATE TABLE IF NOT EXISTS greeted (task TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS summarized (parent TEXT PRIMARY KEY, batch INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS stopped (job TEXT PRIMARY KEY, why TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS escalated (task TEXT PRIMARY KEY, episode TEXT NOT NULL, card TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS platform_blocked (task TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);
-DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS starting; DROP TABLE IF EXISTS ended; DROP TABLE IF EXISTS sessions;`;
+DROP TABLE IF EXISTS jobs; DROP TABLE IF EXISTS starting; DROP TABLE IF EXISTS ended; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS platform_blocked;`;
 // A job's end states (kernel jobs.ts); any other state is still live.
 const ENDED = new Set(["done", "failed", "cancelled", "timeout", "lost"]);
 // A comment on a finished or blocked task would reopen it: those get no note.
@@ -40,12 +39,17 @@ const RESUME: Record<string, string> = {
   // follow() below: the retry of a run that didn't get to finish (kernel wakes.ts schedule prefixes a module's cause).
   "scheduled: retry": "Your last run on this task ended before finishing (its computer or the kernel went away)",
 };
-// A job that didn't get to finish for want of its machinery is retried this many times in a row, a little later each time,
-// before whoever asked is told: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
+// A job that didn't get to finish for want of its machinery is retried each time later (doubling, up to MAX_RETRY_MS), and whoever asked is not told, for as long as its task is open when it
+// never started (that costs nothing), else up to MAX_RAN_TRIES: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
 // no kernel followed it (a reboot), or one killed by a signal it didn't send itself (its computer went away, an OOM kill). A run
 // that exited with an error of its own is not: the same run would fail the same way, so its notice goes out at once.
-const START_TRIES = 3;
 const RETRY_MS = 2 * 60_000;
+const MAX_RETRY_MS = 30 * 60_000;
+// A run that ran costs model spend: one that keeps ending unfinished is retried this many times, then its notice goes out and it is dropped.
+const MAX_RAN_TRIES = 6;
+// Busy is a load condition that clears: a handed-back wake waits at most this long.
+const MAX_DEFER_MS = 5 * 60_000;
+const retryIn = (tries: number) => Math.min(RETRY_MS * 2 ** (tries - 1), MAX_RETRY_MS);
 /** A job the kernel couldn't start: it ended failed with no exit code (admission.ts); a run that ran always has one. */
 const neverStarted = (j: { state: string; exit: number | null }) => j.state === "failed" && j.exit == null;
 /** A job its machinery ended (above): never started, lost, or killed by a signal (an exit above 128, jobs.ts adopt's rule). */
@@ -68,29 +72,11 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
  */
 const blockedEpisode = (task: Issue) => `blocked:${(task.blockedBy ?? []).filter((b) => !CLOSED.has(b.status)).map((b) => b.id).sort().join(",")}`;
 
-/**
- * The GitHub code host's fixed rule code for a change only the platform line may publish (modules/github/service/src/plan.ts
- * `PLATFORM_ONLY`): a product PR that changes `.github/`, or a bare product push. Retrying cannot fix it — the task's
- * provenance decides the role (kernel admission.ts) — so a run ending on it blocks its task here instead of drawing another.
- * Matched on the kernel's own facts together — the code, the kind asked for and the module whose kind it is — never on the
- * refusal's words: a code an executor made up blocks nothing, the module alone is too broad (another of its kinds could return
- * the same code), and every other refusal keeps today's course.
- */
-const PLATFORM_ONLY = "platform-only";
-/** The module that owns `github.pr`/`github.push` (its module.yaml kinds): the only source a platform-only block answers. */
-const PLATFORM_SOURCE = "github";
-/** The publish kinds that rule refuses: a product PR that changes `.github/`, and a bare product push. */
-const PLATFORM_KINDS = new Set(["github.pr", "github.push"]);
-const platformOnly = (v: JobView) => v.refusedCode === PLATFORM_ONLY && v.refusedSource === PLATFORM_SOURCE && PLATFORM_KINDS.has(String(v.refusedKind ?? ""));
-/** What a run that ended on that refusal says once, on its task: the refusal, and that it is the task's last run until someone moves it. */
-const blockedNote = (why: string) =>
-  `**Blocked, and not retried:** ${why}\n\nThis task draws no further runs until a person or another task changes it: only the platform line may publish that change.`;
-
 /** A kernel answer that retrying never changes: a refusal (4xx, except 429's "busy") or an agent the kernel holds no key for. */
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
 /**
  * Refusals a recompile or a re-queue clears (admission.ts: grants, profile or dispatcher list replaced under an older table,
- * provenance not settled, the task moved under the wake): the wake is kept and tried `START_TRIES` times, each after its lease.
+ * provenance not settled, the task moved under the wake): the wake is kept and tried again for as long as its task is open, each time later (retryIn).
  */
 const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task-not-assigned", "provenance-unsettled"]);
 const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || e.status === 409) && TRIES_AGAIN.has(e.body?.type ?? "");
@@ -100,6 +86,8 @@ const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || 
  * missing job). Nobody needs to act (the new assignee has its own wake), so such a wake is dropped with a log line and no notice.
  */
 const STALE = new Set(["task-not-assigned", "task-closed"]);
+// A stale-looking refusal may be a reassignment still landing: tried this many times, then dropped.
+const STALE_TRIES = 3;
 const stale = (e: KernelError) => STALE.has(e.body?.type ?? "") || (e.status === 404 && e.body?.type !== "no-job");
 
 /** The kernel's refusal type and words, kept in the sentence so a reader sees what stopped it, not `idle · orphaned`. */
@@ -141,9 +129,11 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
   const judges = new Map<string, ReturnType<typeof progressTracker>>();
   // Jobs whose follow failed with an error worth retrying: how often, and not before when (a restart starts fresh).
   const backoff = new Map<string, { fails: number; next: number }>();
-  // A refused wake start: how many tries so far, and whether its notice went out. Kept until the drop is confirmed, never
+  // A refused wake start: how many tries so far, not before when, and whether its notice went out. Kept until the drop is confirmed, never
   // cleared ahead of it, so a wake that comes back on its lease neither restarts the retries nor says the same thing twice.
-  const refusals = new Map<string, { tries: number; noticed: boolean }>();
+  const refusals = new Map<string, { tries: number; noticed: boolean; next: number }>();
+  // A wake the kernel handed back (no computer free, the launcher unreachable): how many times, and not before when.
+  const deferred = new Map<string, { tries: number; next: number }>();
 
   /**
    * After a run of an agent's task ends, whoever asked hears what it needs: a task left blocked, with the run's reply as the reason;
@@ -154,12 +144,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const job = v.id;
     // A run that ended on a refused write says so on its task; its asker (told below) decides. The task's status is left as it
     // is: Paperclip takes "blocked" only with the tasks that block it, and a refusal is not another task.
-    // The platform line's refusal is the exception, recorded and said in `follow` where the run ends: no job without that role
-    // may publish the change, so the task is blocked once (whatever filed it) and `handle` drops its wakes until a person or
-    // another task changes it. Its status is never set. Other refusals (a moved head, red checks, a namespace) stay the agent's.
-    const platform = platformOnly(v);
     if (!agentMade(task)) return;
-    if (!platform && v.refused && task.status !== "blocked" && task.parentId) await kernel.post(job, { kind: "notice", body: `**Blocked:** ${v.refused}` });
+    if (v.refused && task.status !== "blocked" && task.parentId) await kernel.post(job, { kind: "notice", body: `**Blocked:** ${v.refused}` });
     if (task.status === "blocked" || v.refused) {
       const episode = blockedEpisode(task);
       const reason = fence("AGENT", (v.refused ?? said ?? stopped ?? "its run ended without saying why.").slice(0, 600));
@@ -219,38 +205,21 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
         if (!stopped && unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
-          let tries = 0;
-          for (const j of runs) { if (!unfinished(j)) break; tries++; }
+          let tries = 0, ran = 0;
+          for (const j of runs) { if (!unfinished(j)) break; tries++; if (!neverStarted(j)) ran++; }
           // A run that ran is retried only on a task still in its agent's hands (todo or in progress, an agent assigned): one it
           // left blocked or handed back to the owner waits on them, not on a retry.
           const t = await kernel.task(v.task);
           const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
-          if (tries < START_TRIES && open) {
-            await kernel.schedule({ task: v.task, at: Date.now() + RETRY_MS * tries, cause: "retry", id: `retry.${v.id}` });
+          if (open && (neverStarted(v) || ran < MAX_RAN_TRIES)) {
+            await kernel.schedule({ task: v.task, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` });
             await kernel.ack(v.id);
             log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
             continue;
           }
         }
         const o = outcome({ ...v, stopped });
-        // A run that ended on the github module's platform-line refusal leaves its task blocked, once: no job without that
-        // role may publish the change, so the next run would end the same way. Its words ride the run's own outcome post — a
-        // job posts one notice, so a second `notice` here would be dropped — and the record follows them, so a post that fails
-        // is retried with its words still ahead of it. `handle` drops the task's wakes until a person, or the task that asked
-        // for this one, re-scopes it. Every other refusal (a moved head, red checks, a namespace) stays the agent's to fix.
-        // A later refusal (a run that started before the block, or one a way out let through that ended the same way) says its
-        // words again but is not a second block; it moves the block's date forward, so a word that came between the two does not
-        // clear a refusal it predates.
-        const platform = platformOnly(v);
-        const blocked = platform && !q("SELECT 1 FROM platform_blocked WHERE task = ?").get(v.task);
-        const block = blocked ? blockedNote(v.refused!) : undefined;
-        if (o && block) await kernel.post(v.id, { ...o, body: `${o.body}\n\n${block}` });
-        else if (o) await kernel.post(v.id, o);
-        else if (block) await kernel.post(v.id, { kind: "notice", body: block });
-        // Dated when the run ended (the latest moment it could not publish): only a word that comes after it is news the refusal
-        // was not made under. One the run took as live input is older than this, so it settles nothing — the run already tried
-        // after it and still could not publish — and a later one wakes the task, finds the block dated before it, and clears it.
-        if (platform) q("INSERT INTO platform_blocked (task, reason, at) VALUES (?, ?, ?) ON CONFLICT (task) DO UPDATE SET reason = excluded.reason, at = excluded.at").run(v.task, v.refused!.slice(0, 1000), v.ended ?? now());
+        if (o) await kernel.post(v.id, o);
         const task = await kernel.task(v.task);
         if (!CLOSED.has(String(task.status))) await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
         await kernel.ack(v.id);
@@ -288,34 +257,6 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const dir = (tick.dir ??= await kernel.directory());
     const agents = tick.agents;
     for (const id of new Set([task.assigneeAgentId, task.createdByAgentId, ...comments.map((c) => c.authorAgentId)])) if (id && !agents.has(id)) { const a = await kernel.agent(id); if (a) agents.set(id, a); }
-
-    // A task a run left on the platform line's refusal draws no run until the change it needs is established. Three things
-    // establish one, each attributed to who said it: the owner's own comment newer than the refusal; a comment by the task that
-    // asked for this one (its asker) or a fleet overseer — the "another task" that may re-scope the work — and the task being
-    // closed (nothing is left to run). The blocked assignee's own words settle nothing: it cannot publish that change, and its
-    // comment would only spend another run on the same refusal. Neither does an unrelated agent's comment, or a status or holder
-    // that merely looks different: those fields say what the task is now, never who moved them, so a person or the task that
-    // delegated it settles it instead.
-    const blocked = q("SELECT reason, at FROM platform_blocked WHERE task = ?").get(task.id) as { reason: string; at: number } | undefined;
-    if (blocked) {
-      const clearing = comments.some((c) => {
-        if (c.deletedAt) return false; // a deleted (or hidden) comment is no one's word any more
-        // Strictly after the run's end, where the block is dated: a word the run already had is not news it could not publish under.
-        if (Date.parse(String(c.createdAt ?? "")) <= blocked.at) return false;
-        const who = speaker(c, task, dir);
-        // "agent" is the asker's words on a task it filed, or a fleet overseer's; "ours" is the blocked assignee's own.
-        return who === "owner" || who === "agent";
-      });
-      // Still no way out and still open: the block stands and this wake draws nothing. The holder is read now, not when the
-      // run ended, so a wake for an agent the task has since left says so rather than implying the block stopped it.
-      if (!clearing && !CLOSED.has(String(task.status))) {
-        const stale = Boolean(task.assigneeAgentId) && w.agent !== task.assigneeAgentId;
-        await kernel.drop(w.key, stale ? `blocked: the task is no longer ${w.agent}'s to run` : `blocked: ${blocked.reason}`);
-        log("wake dropped: the task waits on the platform line", { task: task.identifier, wake: w.key, status: task.status, stale });
-        return;
-      }
-      q("DELETE FROM platform_blocked WHERE task = ?").run(task.id);
-    }
 
     if (/^routine(:|$)/.test(w.cause) && (await routines.coalesce(task))) return kernel.drop(w.key, "folded into an earlier run of its routine");
     if (w.cause === "comment") {
@@ -378,7 +319,12 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const build = (resumed: boolean) => buildPrompt({ user: owner, task, parent, down, profile: dir[w.agent]?.profile ?? "crew", agentName: assignee?.name, thread: threadSection(owner, entries, { resumed }), words, resumed });
     const r = await kernel.start({ wake: w.key, prompt: build(ran), ...(ran ? { full_prompt: build(false) } : {}) });
     // Busy (429), or admitted but deferred for want of a computer (the kernel handed the wake back): nothing ran, so nothing is seen.
-    if ("busy" in r || r.job.state === "deferred") return log("busy: the wake comes back", { task: task.identifier, wake: w.key });
+    if ("busy" in r || r.job.state === "deferred") {
+      const tries = (deferred.get(w.key)?.tries ?? 0) + 1;
+      deferred.set(w.key, { tries, next: now() + Math.min(retryIn(tries), MAX_DEFER_MS) });
+      return log("busy: the wake comes back later", { task: task.identifier, wake: w.key, tries, retry_in_s: Math.min(retryIn(tries), MAX_DEFER_MS) / 1000 });
+    }
+    deferred.delete(w.key);
     q("INSERT INTO seen (task, comment) VALUES (?, ?) ON CONFLICT DO UPDATE SET comment = excluded.comment").run(w.task, comments.at(-1)?.id ?? "");
     log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
@@ -404,19 +350,21 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       await routines.sweep(async () => Object.keys(await kernel.directory()));
       const tick = { agents: new Map<string, Agent>(), redirected: new Set<string>() };
       for (const w of await kernel.claim(20)) {
+        // A wake refused for a reason a recompile clears waits out its backoff: left alone, its lease runs out and it comes back.
+        if (Math.max(refusals.get(w.key)?.next ?? 0, deferred.get(w.key)?.next ?? 0) > now()) continue;
         // A claim whose handling was lost (the answer never came) leaves the row claimed: its lease brings it back if no job came of
-        // it, and a job that did is in the open list. A refusal that a recompile or a re-queue clears is retried a few times that
-        // way first; any other refusal is final, and says so on the task before the row goes, so it is never a silent
+        // it, and a job that did is in the open list. A refusal that a recompile or a re-queue clears is retried that way, later each
+        // time; any other refusal is final, and says so on the task before the row goes, so it is never a silent
         // `idle · orphaned`.
         await handle(w, tick).then(() => refusals.delete(w.key)).catch(async (e: Error) => {
           if (!permanent(e)) return log("wake failed", { wake: w.key, err: e.message });
           // Kept until the drop is confirmed: a wake that comes back on its lease neither restarts the tries nor says its piece twice.
-          const had = refusals.get(w.key) ?? { tries: 0, noticed: false };
-          const next = { tries: had.tries + 1, noticed: had.noticed };
+          const had = refusals.get(w.key) ?? { tries: 0, noticed: false, next: 0 };
+          const next = { tries: had.tries + 1, noticed: had.noticed, next: clears(e) && !stale(e) ? now() + retryIn(had.tries + 1) : 0 };
           refusals.set(w.key, next);
           const dropped = () => kernel.drop(w.key, e.message).then(() => true, (err: Error) => (log("wake refused: its drop failed, kept for its lease", { wake: w.key, task: w.task, err: err.message }), false));
           const gone = async () => (await dropped()) && (refusals.delete(w.key), log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), true);
-          if (clears(e) && next.tries < START_TRIES) return log("wake refused: retried when its lease runs out", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, err: e.message.slice(0, 200) });
+          if (clears(e) && (!stale(e) || next.tries < STALE_TRIES)) return log("wake refused: retried later", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, retry_in_s: retryIn(next.tries) / 1000, err: e.message.slice(0, 200) });
           if (stale(e)) return void (await gone(), log("wake stale: dropped without a notice", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status }));
           // The word goes out before the row — every dropped wake, including one another run answers or that left this dispatcher's
           // hands (the notice says which). The task's notice first, else the owner's. Neither landed: keep the row for its lease.

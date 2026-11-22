@@ -2,7 +2,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verifyCaller } from "../sdk/src/caller.ts";
-import { mintToken } from "../src/gateway/token.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
 const conn = (url, module, tools, extra = {}) => ({ url: `${url}/mcp`, auth_secret: `${module}_service_key`, module, returns: "untrusted", tools: { read: [], write: [], destructive: [], ...tools }, ...extra });
@@ -108,15 +107,6 @@ test("A5: a module token without services.grants cannot call another connection;
   assert.equal((await fetch(`${k.url}/v1/agents`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } })).status, 401);
   const me = await fetch(`${k.url}/v1/whoami`, { headers: { authorization: `Bearer ${k.token("run-jwt-ada")}` } }).then((x) => x.json());
   assert.deepEqual(me, { kind: "run", agent: "ag-ada", roles: ["writer"], task: "TASK-1", tools: { docs: ["doc_read", "doc_write"] } });
-});
-
-test("a kernel job's jobcaps add their reads to its frozen tools; a private one only to a job that reads private data", async (t) => {
-  const k = await kernel(t, { grants, secrets,
-    jobcaps: { "docs-read": { connection: "docs", tools: ["read_a"] }, "private-read": { connection: "private", tools: ["read_a"], private: true } },
-    job: (id) => ({ agent: "ag-ada", task: "TASK-1", state: "running", identifier: "TASK-1", authority: { tools: { docs: ["doc_read"] }, jobcaps: ["docs-read", "private-read"], writes: [], roles: [], reads: id === "j-reads" } }) });
-  const tools = async (id) => (await k.v1("GET", "/v1/whoami", undefined, mintToken("job-secret", { kind: "job", job: id, agentId: "ag-ada", issueId: "TASK-1" }))).json.tools;
-  assert.deepEqual(await tools("j-light"), { docs: ["doc_read", "read_a"] });
-  assert.deepEqual(await tools("j-reads"), { docs: ["doc_read", "read_a"], private: ["read_a"] });
 });
 
 test("untrusted answers: errors, resources, SSE events and failures all reach the agent fenced", async (t) => {

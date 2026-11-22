@@ -22,16 +22,20 @@ test("the executor posts only this service's own record for its run; the poster 
   assert.equal(posted.state, "pending");
   const w = calls.find(([p]) => p === "/v1/writes")[1];
   assert.deepEqual([w.kind, w.task, w.args.repo, w.args.pr, w.args.head, w.args.review.repo, w.args.review.pr], ["code-review.post", "t-1", "acme/x", 3, head, "acme/x", 3]);
-  await poster.ack({ repo: "acme/x", number: 3, head, state: "skipped", why: "budget: the instance has $0.00 of its $200 left" });
-  assert.deepEqual(calls.at(-1)[1].args, { repo: "acme/x", pr: 3, head, phase: "skipped", reason: "budget_instance" });
+  await poster.ack({ repo: "acme/x", number: 3, head, state: "skipped", why: "draft: drafts are reviewed when marked ready" });
+  assert.deepEqual(calls.at(-1)[1].args, { repo: "acme/x", pr: 3, head, phase: "skipped", reason: "draft" });
 });
 
 test("the check job's spec is exactly the recipe's fields, base the merge base, a full review from it, rechecking the open findings", async () => {
   const { checkSpec } = await import("../service/src/adapters.ts");
   const s = { repo: "acme/x", number: 9, base: "b".repeat(40), head: "h".repeat(40), merge_base: "m".repeat(40), combo: { engine: "codex", model: "~a/b", effort: "high" },
-    focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, budget_usd: 1.5, ignore: ["*.lock"], max_nits: 3 };
+    focus: null, incremental_from: null, full: true, previous: [{ id: "f1", severity: "nit", path: "a", line: 1, title: "t" }], mandatory: false, ignore: ["*.lock"], max_nits: 3,
+    intent: `Fix refunds\r\n\r\nRefunds now go negative on purpose.\u0007${"x".repeat(3000)}` };
   const spec = checkSpec(s);
-  assert.deepEqual(Object.keys(spec).sort(), ["base", "budget_usd", "combo", "focus", "incremental_from", "lens", "option", "pr", "previous", "setup_files", "target"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["base", "combo", "focus", "incremental_from", "intent", "lens", "option", "pr", "previous", "setup_files", "target"]);
+  // The kernel's text kind (no control characters but newline and tab, at most 2000): a CRLF body never fails the run's start.
+  assert.match(spec.intent, /^Fix refunds\n\nRefunds now go negative on purpose\.x+$/);
+  assert.equal(spec.intent.length, 2000);
   assert.equal(spec.base, "m".repeat(40));
   // A combo on a PR: no option, no pending setup.
   assert.deepEqual([spec.target, spec.option, spec.lens, spec.setup_files, spec.pr], ["pr", "", "", "{}", "9"]);
@@ -41,7 +45,6 @@ test("the check job's spec is exactly the recipe's fields, base the merge base, 
   const tools = { "maint.knip": { lens: "maintainability", cmd: "knip", output: "knip" } };
   assert.deepEqual(checkSpec({ ...s, target: "tree", profile: "code-review-tools", tools }), { base: s.head, options: JSON.stringify(tools) });
   assert.equal(spec.incremental_from, spec.base);
-  assert.equal(spec.budget_usd, "1.5000");
   assert.deepEqual(JSON.parse(spec.combo), { ...s.combo, ignore: ["*.lock"], max_nits: 3, mandatory: false });
   assert.deepEqual(JSON.parse(spec.previous), { findings: s.previous });
 });

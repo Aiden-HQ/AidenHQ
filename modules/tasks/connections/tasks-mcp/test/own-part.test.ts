@@ -1,9 +1,10 @@
 // An agent-filed task under the owner's task is the agent's to finish: done closes it, and a handoff
-// goes back to the owner. Only a part the owner gave the agent stays open for the owner's replies.
+// keeps it and asks its delegator (the chief of staff when nobody delegated it), never the owner. Only a part the owner gave
+// the agent stays open for the owner's replies.
 // The tasks module against a fake Paperclip.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bridge } from "./helpers.ts";
+import { bridge, waits } from "./helpers.ts";
 
 async function call(tool, args, createdByAgentId, status = "in_progress") {
   const patches = [];
@@ -32,7 +33,7 @@ async function call(tool, args, createdByAgentId, status = "in_progress") {
       res.end("{}");
     });
   };
-  const r = await bridge({ handler, agents: { me: { key: "roadmap-keeper", roles: [] } }, task: "cur" }).call(tool, args);
+  const r = await bridge({ handler, agents: { me: { key: "roadmap-keeper", roles: [] } }, task: "cur", acceptWaits: true }).call(tool, args);
   return { error: r.result?.isError ? r.result.content[0].text : undefined, patches };
 }
 
@@ -42,10 +43,11 @@ test("task_finish closes a task this agent filed under the owner's task", async 
   assert.deepEqual(patches, [{ issue: "cur", status: "done", comment: "Done: answers transcribed." }]);
 });
 
-test("a handoff of an agent-filed task gives it back to the owner instead of parking it on the agent", async () => {
-  const { error, patches } = await call("task_handoff", { issue: "cur", comment: "Waiting on your call." }, "me");
+test("a handoff of an agent-filed task stays with the agent and asks its delegator, never the owner", async () => {
+  const { error, patches } = await call("task_handoff", { issue: "cur", comment: "Run the slash command /deploy." }, "me");
   assert.equal(error, undefined);
-  assert.deepEqual(patches, [{ issue: "cur", assigneeUserId: "owner", assigneeAgentId: null, status: "todo", comment: "Waiting on your call." }]);
+  assert.deepEqual(patches, [{ issue: "cur", status: "todo", comment: "Run the slash command /deploy." }]);
+  assert.deepEqual(waits.at(-1), { for: "delegator", reason: "handed back: waiting on the delegator's call", question: "Run the slash command /deploy." });
 });
 
 test("a task this agent filed and then handed off can still be finished with done", async () => {

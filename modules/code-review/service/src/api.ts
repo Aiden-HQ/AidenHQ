@@ -6,12 +6,12 @@
 //   GET  /reviews/:id                    → { run, review, findings: [{ id, severity, path, line, title, outcome }] }
 //   POST /reviews { pr_url, combos?, focus?, full? } → { runs }   a one-off review of any open or merged PR the instance can read, one run per
 //                                        combo (default: the repo's on_open), each posted
-//   POST /reviews { target: { repo, commit? }, options?, combo?: { model, effort }, run_usd? } → { batch, sha, runs }   a repo
+//   POST /reviews { target: { repo, commit? }, options?, combo?: { model, effort } } → { batch, sha, runs }   a repo
 //                                        review of the whole tree at a commit (default: the default branch's head, resolved now)
 //   GET  /reviews/:batch/report          → the repo review's report (text/markdown), once it ended
 //   GET  /catalog?repo=&commit=          → { sha, options, recommended }   the options the repo's tree fits, and the commit
-//   GET  /repos                          → { repos (with today spend), day_usd, day_spent_usd, … }
-//   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
+//   GET  /repos                          → { repos (with today spend), day_spent_usd, … }
+//   GET  /engines                        → { engines }  each engine's efforts, and offered models
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
 //   POST /findings/dismiss { repo, number, id, reason, by? } → { dismissed }   the owner dismisses an open finding (the board)
 //   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }] }   the github module's merge

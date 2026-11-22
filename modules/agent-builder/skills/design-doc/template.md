@@ -14,7 +14,6 @@ If nothing happens: it waits. Nothing is built until you say ready.
 | **Its job** | Finds pull requests waiting on review and drafts a nudge for whoever holds each one |
 | **What wakes it** | Its weekday schedule, or a request ("chase the reviews on acme/api") |
 | **Schedule** | Weekdays at 10:00 |
-| **Budget** | $10 a month |
 | **Reports to** | The Agent Architect while in trial, then Aiden |
 
 ## How each run works
@@ -52,7 +51,7 @@ In words:
 
 | Runs | Each run | A month |
 |---|---|---|
-| Weekdays at 10:00 (about 22 a month) | about $0.10 | about $2.20 of its $10 budget |
+| Weekdays at 10:00 (about 22 a month) | about $0.10 | about $2.20 |
 
 ## Trial plan
 

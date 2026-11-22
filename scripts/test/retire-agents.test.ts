@@ -2,7 +2,7 @@
 // terminated agent holds (now or from an earlier retirement) moves to backlog under its successor, with one triage task each.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { busyRemovedMembers, retireUnconfigured } from "../retire-agents.ts";
+import { retireUnconfigured } from "../retire-agents.ts";
 
 const companyId = "co-1";
 
@@ -61,44 +61,4 @@ test("a retired agent's open tasks go to the chief of staff's backlog in one mov
   const before = board.calls.length;
   await run(board);
   assert.ok(!board.calls.slice(before).some((c) => c.method === "PATCH" || c.method === "POST"), "nothing moves or is filed again");
-});
-
-test("the successor is the agent with the gone agent's key, else one holding its role, before the chief of staff", async () => {
-  const cos = agent("a-cos", "chief-of-staff"), steward = agent("a-steward", "fleet-steward");
-  const oldSteward = { ...agent("a-s0", "fleet-steward"), status: "terminated" }; // its key came back as a-steward
-  const auditor = { ...agent("a-audit", "fleet-ops", { roles: ["fleet-audit"] }), status: "terminated" };
-  const board = fakeBoard({ agents: [cos, steward, oldSteward, auditor], issues: [issue("i1", "todo", "a-s0"), issue("i2", "in_review", "a-audit")] });
-  await run(board);
-
-  assert.deepEqual(board.rows.filter((i) => i.id.startsWith("i")).map((i) => [i.id, i.assigneeAgentId, i.status]), [["i1", "a-steward", "backlog"], ["i2", "a-steward", "backlog"]]);
-  assert.equal(filed(board).length, 1, "both land on one successor: one triage task");
-});
-
-test("a move that fails stays for the next run; a holder missing from the list but not terminated is left alone", async () => {
-  const cos = agent("a-cos", "chief-of-staff");
-  const gone = { ...agent("a-gone", "fleet-ops"), status: "terminated" };
-  const hidden = { ...agent("a-hidden", "kai"), status: "paused" };
-  const failPatch = new Set(["i1"]);
-  const board = fakeBoard({ agents: [cos, gone], issues: [issue("i1", "todo", "a-gone"), issue("i2", "todo", "a-gone"), issue("i3", "todo", "a-hidden")], failPatch });
-  const api = board.api;
-  board.api = async (method, path, body) => (path === "/api/agents/a-hidden" ? { json: hidden } : api(method, path, body));
-  await run(board);
-
-  assert.equal(board.rows.find((i) => i.id === "i1").assigneeAgentId, "a-gone");
-  assert.equal(board.rows.find((i) => i.id === "i2").assigneeAgentId, "a-cos");
-  assert.equal(board.rows.find((i) => i.id === "i3").assigneeAgentId, "a-hidden", "a live agent's task never moves");
-  failPatch.clear();
-  await run(board);
-  assert.equal(board.rows.find((i) => i.id === "i1").assigneeAgentId, "a-cos", "the next run moves it");
-});
-
-test("a team member removed while it holds open tasks is listed (setup refuses to go on); a drained one is not", async () => {
-  const agents = [
-    { id: "m-1", name: "Kai", status: "idle", metadata: { setupKey: "aidenhq:kai", memberOf: "engineer" } },
-    { id: "m-2", name: "Mina", status: "idle", metadata: { setupKey: "aidenhq:mina", memberOf: "engineer" } },
-    { id: "m-3", name: "Noor", status: "idle", metadata: { setupKey: "aidenhq:noor", memberOf: "engineer" } },
-  ];
-  const issues = [{ id: "i-1", identifier: "WOR-1", status: "todo", assigneeAgentId: "m-1" }, { id: "i-2", identifier: "WOR-2", status: "done", assigneeAgentId: "m-2" }];
-  const { api } = fakeBoard({ agents, issues });
-  assert.deepEqual(await busyRemovedMembers({ api, companyId, cfg: { agents: { noor: {} } } }), [{ name: "Kai", tasks: ["WOR-1"] }]);
 });

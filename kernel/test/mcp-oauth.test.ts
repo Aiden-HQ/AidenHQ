@@ -55,7 +55,7 @@ async function kernel(t) {
   const records = openRecords(join(dir, "kernel.db"));
   const writes = createWrites({ records, registry: () => ({ "acme.deploy": { module: "acme", floor: 2, tools: [] } }), connections: () => ({}), secret: () => "", resolver: {}, onTask: { open: async () => true, notify: async () => {} }, replay: async () => ({ ok: false, text: "" }) });
   const channels = createChannels({ db: records.db, records, writes, board: async () => ({ status: 404, json: {} }), owner: async () => ({ status: 200, json: {} }), modules: () => ({}) });
-  const card = (n) => records.file({ kind: "acme.deploy", module: "acme", args: { n }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 2, panel: false, card: { sentence: `Deploy ${n}.`, changes: "c", reads: "r", cost: "0", details: "" }, requester: { agent: "", key: "ada", name: "ada", roles: [], kind: "run" }, task: "t-7", identifier: "WOR-7", state: "owner" });
+  const card = (n) => records.file({ kind: "acme.deploy", module: "acme", args: { n }, targets: {}, executor: { module: "acme" }, policy: "p", tier: 2, card: { sentence: `Deploy ${n}.`, changes: "c", reads: "r", cost: "0", details: "" }, requester: { agent: "", key: "ada", name: "ada", roles: [], kind: "run" }, task: "t-7", identifier: "WOR-7", state: "owner" });
   const { s, url } = await serve(createAdmin({ accounts, cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [FRONT, "admin.example.com", "localhost:3120"], origins: () => [ISSUER], frameOrigins: () => [] }));
   // The backplane's routes, as the board calls them.
   const boardKey = "b".repeat(40);

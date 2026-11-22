@@ -12,8 +12,8 @@
 // A check job has no task, no Paperclip identity, no tools and no GitHub credential. Its workspace is a snapshot of
 // `repo@head` (the code host's `snapshot` op: no .git, no credentials, asked as the module that asked for the check); its box
 // is the `engineer` image, a fresh one per run. Its env is exactly checkEnv's: only a judged run (the reviewer eval) or a model
-// recipe (below) gets a model credential, a `check` token the gateway caps (the eval day cap, eval_day_usd, or the recipe's own
-// per-check cap) and that the tool proxy and the writes route refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
+// recipe (below) gets a model credential, a `check` token that counts against the install's spend limit like any call and that
+// the tool proxy and the writes route refuse. The recipe's files are laid in the out folder (`/aidenhq-out/recipe`) and its argv runs in the workspace.
 //
 // A recipe with a `base` in its spec runs on the change itself: the box makes its own two-commit history from the base and head
 // snapshots (the recipe's script does it from /aidenhq-out/base), so `git diff $AIDENHQ_BASE HEAD` is exactly the change. A
@@ -44,9 +44,8 @@
 // Every recipe's box gets its spec, with the repo and head, at /aidenhq-out/spec.json (data, never argv or env), and each spec
 // field of kind sha (not a value an earlier field already named) as that commit's tree at
 // /aidenhq-out/<field>: the recipe makes its own history from them (`base` as before; a review's `incremental_from`).
-// A recipe with `model: { max_usd }` (a code review) gets a model credential of its own: a `check` token for this check alone
-// (component `<run>:<check id>`), capped at the spec's `budget_usd` (never above the recipe's max_usd) on its own run key, that
-// lapses with the recipe's time limit. A recipe with `result: true` writes one JSON object to /aidenhq-out/result.json (at most
+// A recipe with `model: true` (a code review) gets a model credential of its own: a `check` token for this check alone
+// (component `<run>:<check id>`) on its own run key, that lapses with the recipe's time limit. A recipe with `result: true` writes one JSON object to /aidenhq-out/result.json (at most
 // RESULT_MAX bytes): it passes only when that came out, the kernel stamps a model recipe's with `cost_usd` (its token's spend,
 // from the gateway's ledger, never the box's say) and `tokens` (that attempt's input, cached and output tokens, the same ledger) and the receipt signs the exact bytes' sha256 (`result`). The result is the
 // recipe's output, made from the repo's text: data for its reader, never instructions.
@@ -83,8 +82,8 @@ export type Recipe = {
   module: string; argv: string[]; timeout_min: number; title: string; spec: Record<string, keyof typeof KINDS>; files: Record<string, string>;
   cwd_from?: string; declares?: string;
   judged?: { cwd: string; cases: string; files: string[]; expect: string[] };
-  /** A model credential for this check alone, capped at spec.budget_usd and never above max_usd. */
-  model?: { max_usd: number };
+  /** A model credential for this check alone. */
+  model?: true;
   /** The recipe writes one JSON object to /aidenhq-out/result.json; the receipt binds its sha256. */
   result?: boolean;
 };
@@ -122,8 +121,8 @@ export interface CheckBox {
   launch(o: { check: string; image: "engineer"; workspace: string; out: string; cwd: string; argv: string[]; env: Record<string, string>; timeoutMs: number; readOnly?: boolean; waiting?: (waiting: boolean) => void }): Promise<BoxRun>;
   follow(run: BoxRun, signal: AbortSignal): Promise<BoxOut | "gone" | "detached">;
 }
-/** Where a check is when its box runs: a code recipe's budget, or a judged run's pass and its cases. */
-type Step = { capUsd: number; prior: number } | { n: 1 | 2; names: string[]; added: string[]; first?: { passed: number; total: number } };
+/** Where a check is when its box runs: a code recipe's spend before this attempt, or a judged run's pass and its cases. */
+type Step = { prior: number } | { n: 1 | 2; names: string[]; added: string[]; first?: { passed: number; total: number } };
 /** A run that a draining kernel stopped following (the next one does), or whose box is gone (lost). */
 class Detached extends Error {}
 class Gone extends Error {}
@@ -139,11 +138,12 @@ export class CheckError extends Error {
 const TAIL = 4000;
 /** The whole env a check's box gets: nothing of the kernel's own, no GitHub or tool credential; a model token only for a judged
  * run (the eval) or a model recipe, each its own `check` token (OPENROUTER_API_KEY: the name the launcher registers it by). */
-export function checkEnv(kind: "plain" | "judged" | "model", { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
+export function checkEnv(kind: "plain" | "result" | "judged" | "model", { modelToken, gatewayUrl }: { modelToken?: string; gatewayUrl?: string } = {}): Record<string, string> {
   const env: Record<string, string> = { CI: "1", HOME: `${BOX_OUT}/home`, npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false" };
-  if (kind !== "plain") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? "") });
+  if (kind === "judged" || kind === "model") Object.assign(env, { OPENROUTER_API_KEY: String(modelToken ?? ""), OPENROUTER_BASE_URL: String(gatewayUrl ?? "") });
   if (kind === "judged") env.EVAL_RESULT = `${BOX_OUT}/result.json`;
-  if (kind === "model") Object.assign(env, { AIDENHQ_SPEC: `${BOX_OUT}/spec.json`, AIDENHQ_RESULT: `${BOX_OUT}/result.json` });
+  // A result recipe's spec and result files: a model recipe's, or a plain one's (a tools check: no token at all).
+  if (kind === "model" || kind === "result") Object.assign(env, { AIDENHQ_SPEC: `${BOX_OUT}/spec.json`, AIDENHQ_RESULT: `${BOX_OUT}/result.json` });
   return env;
 }
 
@@ -275,9 +275,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   box: CheckBox;
   /** The snapshot op, asked as this module (the one that asked for the check: its own grant decides what it may read). */
   snapshot: (module: string) => Snapshot;
-  /** A `check` model token (gateway_job_secret): the eval's (component `eval:<head>`, the eval day cap) or a model recipe's
-   * (component `<run>:<attempt>`, its own run cap `capUsd`), lapsing after `ttlMs`. */
-  modelToken: (component: string, o: { ttlMs: number; capUsd?: number }) => string;
+  /** A `check` model token (gateway_job_secret): the eval's (component `eval:<head>`) or a model recipe's (component
+   * `<run>:<attempt>`), lapsing after `ttlMs`. */
+  modelToken: (component: string, o: { ttlMs: number }) => string;
   /** What a model token has spent so far (the gateway's ledger, by the token's run key: its sha256), in USD. */
   spent?: (runKey: string) => number;
   /** A model token's tokens so far (the same ledger): stamped on a model recipe's result. */
@@ -389,22 +389,19 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (base === "yes" && now === "no") return no(`the change removes ${r.title}, which its base declares`);
       if (now === "no") return { verdict: "pass" as const, ran: false, summary: `${repo} declares no \`${r.declares}\` script` };
     }
-    let token: string | undefined, capUsd = 0;
+    let token: string | undefined;
     if (r.model) {
-      // One budget per check, across its attempts: a retry gets only what the earlier ones left.
-      capUsd = Math.floor(Math.min(Number(spec.budget_usd) - prior, r.model.max_usd) * 10_000) / 10_000;
-      if (!(capUsd >= 0.01)) return { verdict: "fail" as const, ran: false, summary: `${r.title} has spent its budget ($${prior.toFixed(2)} of $${Number(spec.budget_usd).toFixed(2)})`, cost: prior };
-      token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000, capUsd });
+      token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000 });
       // Its run key on the row before it runs: a run a restart loses still has its spend counted (recover).
       minted(runKey(token));
     }
-    const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv("plain");
-    const step = { capUsd, prior };
+    const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv(r.result ? "result" : "plain");
+    const step = { prior };
     const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }), step);
     return codeEnded(r, dir, o, token ? runKey(token) : undefined, step);
   }
   /** A code recipe's verdict from its run's end (this kernel's run, or one it followed after a restart): `key`, its model token's run key. */
-  function codeEnded(r: Recipe, dir: string, o: BoxOut, key: string | undefined, { capUsd, prior }: { capUsd: number; prior: number }) {
+  function codeEnded(r: Recipe, dir: string, o: BoxOut, key: string | undefined, { prior }: { prior: number }) {
     const ok = o.exit === 0 && !o.timedOut;
     const used = key ? spent(key) : 0;
     const cost = key ? Math.round((prior + used) * 10_000) / 10_000 : undefined;
@@ -412,8 +409,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     // A result recipe passes when its result came out: one JSON object, small, read never through a link.
     let result: Record<string, unknown> | undefined;
     try { const j = JSON.parse(smallFile(join(dir, "out", "result.json"), RESULT_MAX) ?? ""); if (j && typeof j === "object" && !Array.isArray(j)) result = j; } catch {}
-    // Worth one retry only when it neither ran out of time nor spent (nearly) all its budget: a provider error, a crash.
-    if (!ok || !result) return { verdict: "fail" as const, ran: true, summary: `${r.title} produced no result: ${tail(o)}`, cost, retry: !o.timedOut && used < capUsd * 0.9 };
+    // Worth one retry only when it didn't run out of time: a provider error, a crash.
+    if (!ok || !result) return { verdict: "fail" as const, ran: true, summary: `${r.title} produced no result: ${tail(o)}`, cost, retry: !o.timedOut };
     if (cost !== undefined) result.cost_usd = cost;
     if (key && tokens) result.tokens = tokens(key);
     return { verdict: "pass" as const, ran: true, summary: `${r.title} came out`, result: JSON.stringify(result), cost };
@@ -548,14 +545,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (b?.task !== undefined && !(typeof b.task === "string" && /^[\w-]{1,100}$/.test(b.task))) throw new CheckError(400, "bad-request", "task is a task id");
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
       const spec = checkSpec(run, recipe, b.spec);
-      if (recipe.model && !(Number(spec.budget_usd) > 0)) throw new CheckError(400, "bad-spec", `a ${run} check's spec.budget_usd is more than 0`);
       const hash = specHash(spec, recipe);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
-      // A check that couldn't run (error, lost) runs again when asked again. A model recipe's, at most twice in all; a result
-      // recipe that ended without its result gets that one retry only after a provider error or crash (not a timeout or its
-      // budget run out), on what its budget has left.
+      // A check that couldn't run (error, lost) runs again when asked again; a result recipe that ended without its result runs
+      // again only after a provider error or crash (not a timeout): spend is the gateway's limits', never a tries count.
       // A check restarts have lost MAX_LOST times runs no more (each lost run may have spent).
-      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && (!recipe.model || had.tries < 2) && had.lost < MAX_LOST;
+      const again = had && (had.state === "done" ? Boolean(recipe.result && !had.result && had.retry) : had.state !== "running") && had.lost < MAX_LOST;
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
@@ -581,7 +576,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
           adopting.push(execute(r.id, recipe, JSON.parse(r.follow)));
           continue;
         }
-        // What its model token spent counts against the check's budget, as a finished run's does.
+        // What its model token spent counts in the check's cost, as a finished run's does.
         const cost = r.run_key ? Math.round((Number(r.cost_usd ?? 0) + spent(r.run_key)) * 10_000) / 10_000 : undefined;
         if (end(r.id, r.at, "lost", cost !== undefined ? { cost } : {})) bump(r.id);
       }

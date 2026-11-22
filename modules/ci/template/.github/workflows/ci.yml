@@ -228,6 +228,8 @@ jobs:
         # fetch-depth 0 fetched every branch, the PR's head included (app PRs come from branches of the same repo).
         run: |
           set +e
+          # A step that ends before it records an outcome (its setup failed) is a run without a verdict: neutral, with its cause.
+          trap 'grep -qE "^(CODEGENIE_EXIT|CODE_REVIEW_SKIPPED|CODE_REVIEW_DONE)=" "$GITHUB_ENV" || printf "CODEGENIE_EXIT=3\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=no-verdict\nCODEGENIE_CAUSE=the Review step ended before it recorded a result\n" >> "$GITHUB_ENV"' EXIT
           if [ "${REVIEW_MODE:-}" = reuse ]; then
             echo "::notice::The PR's patch is the same as at its green review of $REVIEW_FROM: that verdict stands, no new review."
             echo "CODE_REVIEW_DONE=1" >> "$GITHUB_ENV"
@@ -310,12 +312,17 @@ jobs:
             exit 0
           fi
           echo "Changed lines: $lines, review depth: $depth${critical:+ (touches $critical)}"
-          gave_up() { # $1: cause. No review, permanent: the gate fails the check.
+          gave_up() { # $1: cause. No review, permanent: the gate passes it as no verdict, naming the cause.
             echo "::error::$1"
             printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
             exit 0
           }
-          [ -z "$codexcfg" ] || gave_up "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it."
+          # A policy refusal, not a missing verdict: the gate blocks it (a prompt-injection guard).
+          if [ -n "$codexcfg" ]; then
+            echo "::error::The PR changes codex config ($codexcfg)"
+            printf 'CODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=policy\nCODEGENIE_CAUSE=%s\n' "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it." >> "$GITHUB_ENV"
+            exit 0
+          fi
           # The model key. On AidenHQ's runners (AIDENHQ_GATEWAY_URL, set on the runner container) the review spends through
           # the instance's model gateway: this job's GitHub OIDC token is traded there for a CI token bound to this repo and
           # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger, with zero data
@@ -353,19 +360,31 @@ jobs:
               REVIEW_MINUTES="$1" node "$rv/code-review.ts" "$from" "$HEAD_SHA" > "$RUNNER_TEMP/review.json"
             code=$?
           }
-          # No verdict is never a pass: the gate fails it (fail closed, whatever the size). One retry only after a confirmed
-          # provider error (exit 1: HTTP 429 or 5xx, a provider quota 402, a dropped connection), when time is left; never after
-          # a timeout or an answer that isn't a review (exit 3: the PR's content can cause it), nor after a refusal (exit 2:
-          # the gateway's 401-403 or our own spend cap, which a retry can't fix).
+          # No verdict is neutral: the gate passes it with a comment (fail open, whatever the size). One retry after a provider
+          # error (exit 1: HTTP 429 or 5xx, a provider quota 402, a dropped connection) or a run without a verdict (exit 3: a
+          # timeout, an answer that isn't a review), when time is left; never after a refusal (exit 2: the gateway's 401-403 or
+          # our own spend cap, which a retry can't fix).
           review 40
           attempts=1
-          if [ "$code" = 1 ]; then
+          if [ "$code" = 1 ] || [ "$code" = 3 ]; then
             left=$(( (85 * 60 - SECONDS) / 60 - 1 ))
             if [ "$left" -ge 10 ]; then
-              echo "::warning::The model provider failed: retrying in 60 seconds."
+              echo "::warning::The review gave no verdict: retrying in 60 seconds."
+              # Findings the first attempt published still decide, whatever the retry did: merged into a retry that left a
+              # readable result (its completion and coverage stand), else the first result is restored.
+              cp "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/review.1.json"; code1=$code
               sleep 60
               review $(( left < 40 ? left : 40 ))
               attempts=2
+              pub='((.findings // []) + (.summaryOnlyFindings // [])) | length > 0'
+              if jq -e "$pub" "$RUNNER_TEMP/review.1.json" >/dev/null 2>&1; then
+                if jq -e '.findings | type == "array"' "$RUNNER_TEMP/review.json" >/dev/null 2>&1; then
+                  jq -s '.[1] + { findings: (.[1].findings + (.[0].findings // [])), summaryOnlyFindings: ((.[1].summaryOnlyFindings // []) + (.[0].summaryOnlyFindings // [])) }' \
+                    "$RUNNER_TEMP/review.1.json" "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/review.m.json" && mv "$RUNNER_TEMP/review.m.json" "$RUNNER_TEMP/review.json"
+                else
+                  cp "$RUNNER_TEMP/review.1.json" "$RUNNER_TEMP/review.json"; code=$code1
+                fi
+              fi
             fi
           fi
           printf 'CODEGENIE_EXIT=%s\nCODEGENIE_ATTEMPTS=%s\n' "$code" "$attempts" >> "$GITHUB_ENV"
@@ -398,7 +417,7 @@ jobs:
           node "$RUNNER_TEMP/codegenie-gate.ts" "$RUNNER_TEMP/review.json" "${CODEGENIE_EXIT:-1}"
       # Only once the job has passed: what this head's review covered, for the next push's Prior review step. A commit
       # status, not a comment: only this workflow's token sets it, and it points at this run, which that step checks.
-      # None after a partial review (its uncovered hunks must be reviewed again). Failing to set it costs only a full
+      # None after a partial review or a run without a verdict (its uncovered hunks must be reviewed again). Failing to set it costs only a full
       # review next time, never this verdict.
       - name: Record
         env:

@@ -165,7 +165,7 @@ export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, g
     db, log, workDir, gatewayUrl, recipes, box: checkBoxes({ call, pool, ...(spawnRun ? { spawnRun } : {}), ...(pollMs ? { pollMs } : {}) }),
     secret: () => secret("receipt_secret"),
     snapshot: snapshots(ask),
-    modelToken: (component, { ttlMs, capUsd }) => mintToken(secret("gateway_job_secret"), { kind: "check", component, ttlMs, ...(capUsd !== undefined ? { capUsd } : {}) }),
+    modelToken: (component, { ttlMs }) => mintToken(secret("gateway_job_secret"), { kind: "check", component, ttlMs }),
     ...(spent ? { spent } : {}),
     ...(tokens ? { tokens } : {}),
   });

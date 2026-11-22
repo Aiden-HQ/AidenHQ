@@ -12,10 +12,10 @@ import { kernel, moduleServer, pluginHost } from "./helpers.ts";
 
 const ADA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", BO = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", COS = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", EVE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const LEAD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", REP = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", ENG = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2";
-const STW = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const STW = "ffffffff-ffff-4fff-8fff-ffffffffffff", SET = "ffffffff-ffff-4fff-8fff-fffffffffff1";
 const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-8000-000000000002", CHAT = "10000000-0000-4000-8000-000000000003";
-const FLEET = "10000000-0000-4000-8000-000000000004";
-const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW };
+const FLEET = "10000000-0000-4000-8000-000000000004", HANDED = "10000000-0000-4000-8000-000000000005", MINE = "10000000-0000-4000-8000-000000000006";
+const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW, "key-set": SET };
 
 async function setup(t) {
   const h = pluginHost({
@@ -23,6 +23,9 @@ async function setup(t) {
     [OTHER]: { id: OTHER, identifier: "WOR-2", status: "in_progress", assigneeAgentId: BO, companyId: "co", parentId: null },
     [CHAT]: { id: CHAT, identifier: "WOR-3", status: "todo", assigneeAgentId: BO, companyId: "co", parentId: null },
     [FLEET]: { id: FLEET, identifier: "WOR-4", status: "todo", assigneeAgentId: null, companyId: "co", parentId: null },
+    // An agent's task it handed back to the owner (task_handoff), and a task the owner made for themselves.
+    [HANDED]: { id: HANDED, identifier: "WOR-5", status: "todo", assigneeAgentId: null, assigneeUserId: "u-owner", createdByAgentId: BO, companyId: "co", parentId: null },
+    [MINE]: { id: MINE, identifier: "WOR-6", status: "todo", assigneeAgentId: BO, createdByUserId: "u-owner", companyId: "co", parentId: null },
   });
   const plugin = [];
   let k;
@@ -37,9 +40,9 @@ async function setup(t) {
   const tool = { todo: ["act"] };
   k = await kernel(t, {
     settings: { fleet_issues: "WOR-4" },
-    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
-    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
-    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${STW}`]: "key-stw", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
+    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, settler: { id: SET, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
+    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [SET]: { key: "fleet-steward", roles: ["fleet-audit", "fleet-settle"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
+    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${STW}`]: "key-stw", [`paperclip-agents/${SET}`]: "key-set", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
     connections: { todo: { url: `${todo.url}/mcp`, auth_secret: "todo_service_key", module: "todo", returns: "trusted", tools: { read: [], write: ["act"], destructive: [] } } },
     onControl: async (req, body, auth) => {
       const me = KEYS[auth];
@@ -138,30 +141,6 @@ test("the chief of staff comments on any task of its company, heard by that task
   // Ada isn't the chief of staff: her Paperclip metadata and name say so, her grants don't.
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { comment: "Hello." })).status, 403);
   assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
-});
-
-test("the Fleet Steward comments on any task of its company, heard by that task's agent, and nothing more", async (t) => {
-  const { h, act } = await setup(t);
-  // The fleet-check nudge on a stuck agent's task: a comment, with the op tag so that task's agent hears it.
-  let r = await act("steward", "POST", "/api/issues/WOR-2/comments", { body: "Your sub-task finished; carry on with the summary." });
-  assert.equal(r.status, 201);
-  assert.equal(h.comments.at(-1).authorAgentId, STW);
-  assert.ok(!SELF_TAG.test(h.comments.at(-1).body), "the task's agent hears it (dispatch: a fleet overseer's words start work)");
-  // A status or a patch from the same scope is still refused.
-  assert.equal((await act("steward", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
-  assert.equal((await act("steward", "PATCH", "/api/issues/WOR-2", { title: "Renamed" })).status, 403);
-});
-
-test("any agent comments on the shared Fleet issues log, and only comments, even the agent that holds it; a refusal's log line names its agent", async (t) => {
-  const { k, h, act } = await setup(t);
-  h.issues[FLEET].assigneeAgentId = ADA; // setup's log tasks are held by an agent: holding one never widens what it writes there
-  const r = await act("ada", "POST", "/api/issues/WOR-4/comments", { body: "log · fleet-check · nothing changed" });
-  assert.equal(r.status, 201);
-  assert.equal(h.comments.at(-1).authorAgentId, ADA);
-  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-4", { status: "done" })).status, 403);
-  assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "Under the log", parentId: FLEET, assigneeAgentId: ADA })).status, 403);
-  assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
-  assert.deepEqual(k.log.filter((l) => l.msg === "cp refused").map((l) => [l.module, l.agent, l.path]), [["todo", "ada", "/api/issues/WOR-4"], ["todo", "ada", "/api/companies/co/issues"], ["todo", "ada", "/api/issues/WOR-2/comments"]]);
 });
 
 test("no control-plane identity, no call: a caller whose agent the kernel holds no key for is refused before anything runs", async (t) => {

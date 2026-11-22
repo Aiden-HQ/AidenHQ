@@ -4,7 +4,6 @@ name: Triage Bot
 description: Sorts a named feed (a Slack channel or label) into act, delegate or ignore and, after trial, files tasks for the ones that need action; does not do the work itself.
 reports_to: architect
 model: ~deepseek/deepseek-flash-latest
-budget: 5 # USD per month
 trial: true
 connections:
   slack?: read

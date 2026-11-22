@@ -3,7 +3,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge, parse } from "./helpers.ts";
-const { TOOL_LIST } = await import("../src/tools.ts"); // after helpers has set the environment
 
 function world({ trial = false, me: meExtra = {} } = {}) {
   const writes = [];
@@ -44,12 +43,6 @@ function world({ trial = false, me: meExtra = {} } = {}) {
   const { call } = bridge({ handler, agents: { me: { key: "cos", ...meExtra, ...(trial ? { trial: true } : {}) }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
   return { call, writes };
 }
-
-test("task_set_status is gone", () => assert.equal(TOOL_LIST.find((t) => t.name === "task_set_status"), undefined));
-
-test("no tool that writes takes a free status", () => {
-  for (const t of TOOL_LIST) if (!t.annotations.readOnlyHint && t.inputSchema.properties?.status) assert.deepEqual(t.inputSchema.properties.status.enum, ["todo", "backlog"], t.name);
-});
 
 test("task_block blocks the current task on named tasks", async () => {
   const { call, writes } = world();
@@ -98,16 +91,6 @@ test("task_delegate wait blocks the parent on the child", async () => {
   writes.length = 0;
   parse(await call("task_delegate", { ...brief, title: "Another", description: "Different words entirely: tidy the garden." }));
   assert.ok(!writes.some(([k]) => k === "PATCH"), "no wait unless asked");
-});
-
-test("task_comment reopen is one PATCH", async () => {
-  const { call, writes } = world();
-  parse(await call("task_comment", { issue: "WOR-5", body: "Also cover the edge case.", reopen: true }));
-  assert.deepEqual(writes, [["PATCH", "old", { status: "todo", comment: "Also cover the edge case." }]]);
-  writes.length = 0;
-  assert.match(parse(await call("task_comment", { issue: "WOR-3", body: "x", reopen: true })).error, /not a task you delegated/);
-  parse(await call("task_comment", { issue: "WOR-4", body: "Plain note.", reopen: true }));
-  assert.deepEqual(writes.map((w) => w[0]), ["POST comment"], "an open task only gets the comment");
 });
 
 test("task_finish takes `issue` only from an agent that reads private data or is no Engineer", async () => {

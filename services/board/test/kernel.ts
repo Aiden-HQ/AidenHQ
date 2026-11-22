@@ -20,6 +20,8 @@ export async function fakeKernel(): Promise<{
   calls: { path: string; body: any }[];
   /** Answers for other account ops by path (a status and a body); anything unlisted is a 404. */
   ops: Record<string, [number, unknown]>;
+  /** What the next save_secret reports as restarted services: the module's own, unless a test sets it ([] after a recreate began). */
+  restarted: { services: string[] | null };
   close: () => void;
 }> {
   const codes = new Map<string, { account: FakeAccount; origin: string; state: string }>();
@@ -29,6 +31,7 @@ export async function fakeKernel(): Promise<{
   const digests = new Map<string, string>();
   const calls: { path: string; body: any }[] = [];
   const saved: Record<string, boolean> = {};
+  const restarted: { services: string[] | null } = { services: null };
   const ops: Record<string, [number, unknown]> = {};
   const server: Server = createServer(async (req, res) => {
     let text = "";
@@ -54,7 +57,7 @@ export async function fakeKernel(): Promise<{
       case "/v1/accounts/save_secret":
       case "/v1/accounts/setup_status": {
         if (!sessions.get(body.token)) return send(401, { error: { message: "sign in" } });
-        if (req.url!.endsWith("save_secret")) return body.value === "bad" ? send(400, { error: { message: "that doesn't look like a bot token" } }) : (saved[body.secret] = true, send(200, { ok: true, restarted: [body.module] }));
+        if (req.url!.endsWith("save_secret")) return body.value === "bad" ? send(400, { error: { message: "that doesn't look like a bot token" } }) : (saved[body.secret] = true, send(200, { ok: true, restarted: restarted.services ?? [body.module] }));
         return send(200, { secrets: { ...saved } });
       }
       case "/v1/auth/mcp":
@@ -122,6 +125,7 @@ export async function fakeKernel(): Promise<{
     },
     calls,
     ops,
+    restarted,
     close: () => server.close(),
   };
 }

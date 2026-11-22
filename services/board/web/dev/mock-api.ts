@@ -65,7 +65,7 @@ const board = () => ({
   brief: null, done: [], recurring: [],
   assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, avatar: a.avatar }))],
   labels: [], prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
-  spend: { spent: 3.42, cap: 10 }, google: null, signIns: [],
+  spend: { day: { spent: 3.42, cap: 50 }, month: { spent: 61.2, cap: 1000 } }, google: null, signIns: [],
 });
 
 const chatRows = () => mock.empty ? [] : [
@@ -132,10 +132,12 @@ const settingsData = () => ({
   settings: [
     { key: "owner_name", module: "core", value: "Alex", set: true, known: true, switch: false, doc: "What agents call you." },
     { key: "autonomy", module: "core", value: "full", set: false, known: true, default: "full", values: ["full", "reviewed", "manual"], switch: false, doc: "Who decides writes: the AI reviewer, or you." },
-    { key: "spend_day_usd", module: "core", value: 10, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a day." },
+    { key: "spend_day_usd", module: "core", value: 50, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC day." },
+    { key: "task_usd", module: "core", value: 20, set: true, known: true, switch: false, doc: "The most one task may spend on models, whichever agents work on it." },
+    { key: "spend_month_usd", module: "core", value: 1000, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC calendar month." },
     { key: "quiet_start", module: "core", value: false, set: true, known: true, switch: true, doc: "Nothing runs on a schedule until you turn it on." },
   ],
-  agents: [], choices: { heartbeatHours: [1, 4, 24], models: ["deepseek-flash", "gpt-luna"] }, approvals: { pending: 2 }, spend: { defaults: { run_usd: 2, task_usd: 10, day_usd: 30 }, pendingRaises: 0 },
+  agents: [], choices: { heartbeatHours: [1, 4, 24], models: ["deepseek-flash", "gpt-luna"] }, approvals: { pending: 2 },
   updates: { current: { name: "2026.11.19", product: "9c1496b" }, auto: true, timezone: "Asia/Dubai", checkedAt: ago(60), available: null, error: null, last: { release: "2026.11.19", outcome: "installed", at: ago(1300), by: "auto" } },
 });
 
@@ -243,13 +245,13 @@ function route(method: string, url: URL): [number, unknown] {
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];
   if ((x = m(/^\/api\/approvals\/([^/]+)\/explain$/))) return [200, { explanation: explanation(decodeURIComponent(x[1]!)) }];
-  if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1]!, agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null, capUsd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
+  if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1]!, agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]!) }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/tasks$/))) {
     const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: named("WOR-790", STATES.running), updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: named("WOR-806", FAILED), updatedAt: ago(52), from: null }];
     return url.searchParams.get("view") === "history" ? [200, { rows: [{ identifier: "WOR-700", title: "Set up the invoices repo", state: named("WOR-700", STATES.done), updatedAt: ago(3000), from: null }, { identifier: "WOR-698", title: "A task you stopped", state: named("WOR-698", STATES.stopped), updatedAt: ago(4000), from: null }], next: null }] : [200, { needs: [rows[1]], ongoing: [rows[0], { identifier: "WOR-831", title: "Re-run the nightly import", state: named("WOR-831", STATES.held), updatedAt: ago(6), from: null }, { identifier: "WOR-832", title: "Merge the export change", state: named("WOR-832", STATES.review), updatedAt: ago(4), from: "WOR-818" }, { identifier: "WOR-834", title: "Wait for CI on the export PR", state: named("WOR-834", STATES.moduleWait), updatedAt: ago(50), from: null }, { identifier: "WOR-835", title: "Wait for the design review", state: named("WOR-835", STATES.stalled), updatedAt: ago(400), from: null }, { identifier: "WOR-833", title: "Wait for the design answer", state: named("WOR-833", STATES.delegator), updatedAt: ago(33), from: "WOR-818" }] }];
   }
-  if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, reopen: { graded: 12, reopened: 1, escalated: 0 }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
+  if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, reopen: { graded: 12, reopened: 1 }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
   if ((x = m(/^\/api\/modules\/([^/]+)$/))) {
     const mod = modules().find((r) => r.name === x![1]) ?? modules()[0]!;
     return [200, { module: mod, agents: mod.agents.map(profile), ongoing: [], routines: [], authority: { connections: mod.connections, writes: [{ kind: "push", tier: 1 }], secrets: [], prompts: [], readme: `# ${mod.name}\n\n${mod.description}` }, neededBy: mod.neededBy, requires: mod.requires }];

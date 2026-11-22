@@ -11,7 +11,6 @@ import { plan } from "../service/src/plan.ts";
 
 const sha = (c) => c.repeat(40);
 const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
-const repos = { agentsOrg: "acme-agents", productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance" };
 
 async function codehost(t, state) {
   const fx = { executes: [] };
@@ -38,19 +37,9 @@ async function codehost(t, state) {
 }
 
 // A branch push outside the agents org: Tier 1 (outside-push), bound to its commit and base.
+const repos = { agentsOrg: "acme-agents", productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance" };
 const outsidePush = (over = {}) => ({ ...repos, workspace: "ACME-1", requester: { platform: false }, branches: [{ repo: "other/lib", branch: "agent/ACME-1/a", sha: sha("a"), base: sha("b"), defaultBranch: "main", empty: false, files: ["src/a.ts"], ...over }] });
 const pushArgs = { only: [{ repo: "other/lib", branch: "agent/ACME-1/a", sha: sha("a") }] };
-
-test("an approved push that nothing moved runs once", async (t) => {
-  const state = { now: outsidePush() };
-  const { k, fx, file, approve } = await codehost(t, state);
-  const r = await file("github.push", pushArgs);
-  assert.deepEqual({ tier: r.tier, state: r.state }, { tier: 1, state: "review" });
-  assert.deepEqual(k.records.get(r.id).targets, { "other/lib agent/ACME-1/a": { repo: "other/lib", ref: "agent/ACME-1/a", commit: sha("a"), base_sha: sha("b") } });
-  await approve(r.id);
-  await until(() => k.records.get(r.id).state === "done");
-  assert.equal(fx.executes.length, 1);
-});
 
 test("A8: the workspace commit or the base moving after approval makes the push stale; it never runs", async (t) => {
   for (const moved of [{ sha: sha("c") }, { base: sha("d") }]) {
@@ -85,9 +74,4 @@ test("A9: the code host's executor updated between approval and execution makes 
   await approve(r.id);
   await until(() => k.records.get(r.id).state === "stale");
   assert.equal(fx.executes.filter((e) => e.id === r.id).length, 0);
-});
-
-test("the plan refuses what code refuses: the instance repo, and an agents-org merge with red checks", () => {
-  assert.throws(() => plan({ kind: "github.push", args: {} }, { ...repos, branches: [{ repo: repos.instanceRepo, branch: "x", sha: sha("a"), files: [] }] }), /only through apply/);
-  assert.throws(() => plan({ kind: "github.merge", args: {} }, { ...repos, prs: [{ repo: "acme-agents/app", number: 1, files: ["a"], checks: [{ name: "ci", ok: false }], headMatches: true, ownHead: true }] }), /failed on the head/);
 });

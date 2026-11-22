@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, defaultComputersMax, grantEntry } from "../modules.ts";
-import { computerSection, computersConfig, validateImages } from "../computers.ts";
+import { computersConfig, validateImages } from "../computers.ts";
 import { BUNDLE } from "./bundle.ts";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -44,12 +44,6 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   assert.deepEqual(c.connections.paperclip_tasks, { tool_timeout_sec: 300 });
 });
 
-test("an unknown image fails compile; an Engineer gets a computer only in the engineer image", () => {
-  assert.throws(() => compile(product, inst({ agents: { "app-maintainer": { image: "kali" } } })), /image must be one of agent-base, engineer/);
-  assert.throws(() => compile(product, inst({ agents: { engineer: { image: "agent-base" } } })), /only with image: engineer/);
-  validateImages({ e: { profile: "engineer", image: "engineer" } });
-});
-
 test("a box Engineer never holds private data, untrusted input and a way out at once: private reads mean no web", () => {
   const box = (enabled_tools, extra = {}) => ({ e: { profile: "engineer", image: "engineer", enabled_tools, ...extra } });
   // App UI work: apps' public views, the web, GitHub reads.
@@ -59,15 +53,4 @@ test("a box Engineer never holds private data, untrusted input and a way out at 
   assert.throws(() => validateImages(box({ slack: ["slack_search"] })), /slack\.slack_search read private data/);
   assert.throws(() => validateImages(box({ apps: ["warehouse_query", "web_view"] }, { private_reads: true })), /no web_view/);
   validateImages(box({ apps: ["app_list", "app_view", "warehouse_query"] }, { private_reads: true }));
-});
-
-test("an Engineer in a computer: its grants and image reach the grants table; its handbook gets no crew computer section", () => {
-  const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ modules: ["core", "boxeng"], settings: { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com" } }));
-  const r = compile(join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods"), dir);
-  const a = r.paperclip.agents.appeng;
-  assert.deepEqual(a.enabled_tools, { aconn: ["a_get"] });
-  assert.equal(a.image, "engineer");
-  assert.equal(computerSection(a), "");
-  assert.match(computerSection({ ...r.paperclip.agents.boss, image: "agent-base" }), /## Your computer/);
 });

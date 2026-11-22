@@ -16,7 +16,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   const data = text ? JSON.parse(text) : {};
   // Not signed in, or no authenticator yet: the app shows the right screen.
   if ((res.status === 401 && data.error === "sign in") || (res.status === 403 && data.error === "totp")) throw new SignInRequired();
-  if (!res.ok) throw new Error(data.error ?? `${res.status}`);
+  if (!res.ok) throw new HttpStatusError(res.status, data.error ?? `${res.status}`);
   return data as T;
 }
 
@@ -42,6 +42,15 @@ export interface ReviewsSetup {
 export class SignInRequired extends Error {
   constructor() {
     super("sign in");
+  }
+}
+
+/** A refused request, with its HTTP status: a page can tell a 409 (the service is still restarting) from a failure. */
+export class HttpStatusError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
   }
 }
 
@@ -125,6 +134,10 @@ export interface SetupFlowView {
   /** Signed in, and its Reconnect may pick what to grant. */
   scopes?: boolean;
   paired: boolean;
+  /** A saved secret's services are being recreated: the Pair step waits rather than treating the module's 409 as an error. */
+  restarting?: boolean;
+  /** How much of that restart is left (ms): the page counts it down on its own clock, which need not match the board's. */
+  restarting_for?: number;
   done: boolean;
   dismissed: boolean;
   /** A module with modes (board.setup_flows `choose`): what is live, what the owner picked, and the options. */
@@ -247,10 +260,10 @@ export const api = {
   organisationApply: (id: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, {}),
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string }>("GET", "/api/setup-flows"),
-  setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/secret`, { secret, value }),
+  setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean; restarted?: string[]; restarting_for?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/secret`, { secret, value }),
   setupChoose: (module: string, value: string, inputs: Record<string, string>) => call<{ ok: boolean; identifier?: string }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/choose`, { value, inputs }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/dismiss`, {}),
-  setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/pair`, {}),
+  setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number; expires_in?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/pair`, {}),
   setupPaired: (module: string) => call<{ paired: boolean; paired_at?: string | number }>("GET", `/api/setup-flows/${encodeURIComponent(module)}/pair`),
   welcome: () => call<WelcomeState>("GET", "/api/welcome"),
   welcomeFinish: (done: string[], skipped: string[]) => call<{ ok: boolean; identifier?: string }>("POST", "/api/welcome/finish", { done, skipped }),

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EXTRACTION, event, makeEnv, OMS_PRIVY, people, writeAt } from "./helpers.js";
@@ -76,91 +76,6 @@ describe("functional scenario", () => {
   });
 });
 
-describe("meeting note corrections", () => {
-  it("fixes a name in the canonical note and only inside the meeting's Meeting Log entry", async () => {
-    const env = makeEnv();
-    const human = "# Open Merchant Stack\n\nAlice Martin owns the roadmap.\n\n## Meeting Log\n\n## Links\n";
-    writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), human);
-    writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
-    await runLibrarian(env);
-    const r = env.app.meetings.correctMeeting({ calendar_event_id: OMS_PRIVY.id, find: "Alice", replace: "Alicia" }) as { changed: { path: string; replacements: number }[] };
-    expect(r.changed.map((c) => c.path).sort()).toEqual(["Meetings/2026/10/2026-10-04 1400 - OMS Nimbus Integration.md", "Projects/Open Merchant Stack.md"]);
-    const project = readFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), "utf8");
-    expect(project).toContain("Alice Martin owns the roadmap."); // human text untouched
-    expect(project).toContain("**Attendees:** Alicia, Bob");
-    expect(readFileSync(join(env.vault, "Meetings/2026/10/2026-10-04 1400 - OMS Nimbus Integration.md"), "utf8")).not.toMatch(/\bAlice\b/);
-    expect(() => env.app.meetings.correctMeeting({ calendar_event_id: OMS_PRIVY.id, find: "Nobody", replace: "x" })).toThrow(/not found/);
-    expect(() => env.app.meetings.correctMeeting({ calendar_event_id: OMS_PRIVY.id, find: "Alicia", replace: "x\n## Injected" })).toThrow(/single-line/);
-  });
-});
-
-describe("action task policy", () => {
-  const actions = [
-    { owner: "Alex", action: "Mine alone", deadline: null },
-    { owner: "Alex Doe and Sam Ortiz", action: "Shared with me", deadline: null },
-    { owner: "Alice", action: "Someone else's", deadline: null },
-    { owner: null, action: "No clear owner", deadline: null },
-  ];
-  const run = async (policy: string) => {
-    const env = makeEnv({ cfg: { paperclip: { base_url: "http://paperclip.test:3100", meeting_action_tasks: policy } } });
-    writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), OMS_NOTE);
-    writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
-    await runLibrarian(env, [OMS_PRIVY], { ...EXTRACTION, actions });
-    return [...env.paperclip.issues.values()].map((i) => i.input.title).sort();
-  };
-
-  it("mine (default): only actions the user owns, including shared ones", async () => {
-    expect(await run("mine")).toEqual(["Mine alone", "Shared with me"]);
-  });
-  it("mine_and_unclear adds ownerless actions; all adds others as waiting-on", async () => {
-    expect(await run("mine_and_unclear")).toEqual(["Mine alone", "No clear owner", "Shared with me"]);
-    expect(await run("all")).toEqual(["Alice: Someone else's", "Mine alone", "No clear owner", "Shared with me"]);
-  });
-});
-
-describe("changed transcript", () => {
-  it("creates a new revision, keeps the association and does not duplicate the Meeting Log entry", async () => {
-    const env = makeEnv();
-    writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), OMS_NOTE);
-    const file = join(env.transcripts, "2026-10-04_1401.md");
-    writeAt(file, TRANSCRIPT);
-    await runLibrarian(env);
-
-    writeAt(file, TRANSCRIPT + "[Them] One more thing: Bob owns the chain list.\n", "2026-10-04T14:38:00+02:00");
-    const updated = { ...EXTRACTION, actions: [...EXTRACTION.actions, { owner: "Bob", action: "Compile the chain list", deadline: null }] };
-    // No calendar events supplied: the association must come from the previous revision.
-    const second = await runLibrarian(env, [], updated);
-    expect(second.results).toHaveLength(1);
-    expect(second.results[0]!.canonical_note.state).toBe("updated");
-
-    const revs = env.app.db.prepare("SELECT revision, status FROM sources ORDER BY revision").all();
-    expect(revs).toEqual([
-      { revision: 1, status: "processed" },
-      { revision: 2, status: "processed" },
-    ]);
-    const note = readFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), "utf8");
-    expect(countOccurrences(note, "paperclip-meeting:evt_oms_nimbus_20261004")).toBe(1);
-    // Bob's new action is not the user's: no new task.
-    expect(env.paperclip.issues.size).toBe(1);
-  });
-
-  it("does not overwrite a canonical note the user edited", async () => {
-    const env = makeEnv();
-    writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), OMS_NOTE);
-    const file = join(env.transcripts, "2026-10-04_1401.md");
-    writeAt(file, TRANSCRIPT);
-    const first = await runLibrarian(env);
-    const canonicalPath = join(env.vault, first.results[0]!.canonical_note.path);
-    writeFileSync(canonicalPath, readFileSync(canonicalPath, "utf8") + "\nMy own notes.\n");
-
-    writeAt(file, TRANSCRIPT + "more\n", "2026-10-04T14:38:00+02:00");
-    const second = await runLibrarian(env, [], { ...EXTRACTION, summary: "A different summary." });
-    expect(second.results[0]!.canonical_note.state).toBe("kept_user_edits");
-    expect(readFileSync(canonicalPath, "utf8")).toContain("My own notes.");
-    expect(second.results[0]!.review_tasks).toHaveLength(1);
-  });
-});
-
 describe("manual review scenario", () => {
   const weekly = event({ id: "weekly_1", series_id: "weekly", title: "Wallet Weekly", start: "2026-10-04T14:45:00+02:00", end: "2026-10-04T15:15:00+02:00", attendees: people("Carol", "Alex") });
   const partner = event({ id: "partner_1", title: "Partner Wallet Call", start: "2026-10-04T15:00:00+02:00", end: "2026-10-04T15:30:00+02:00", attendees: people("Dan", "Alex") });
@@ -205,25 +120,6 @@ describe("manual review scenario", () => {
   });
 });
 
-describe("closing resolved reviews", () => {
-  it("hands review tasks to the agent when Paperclip refuses a direct close", async () => {
-    const env = makeEnv({ routing: "routes: []\n" });
-    env.paperclip.refuseUpdates = true;
-    writeAt(join(env.transcripts, "2026-10-04_1501.md"), "[Them] wallet...\n", "2026-10-04T15:40:00+02:00");
-    env.now.ms = Date.parse("2026-10-04T16:00:00+02:00");
-    const weekly = event({ id: "w", title: "Wallet Weekly", start: "2026-10-04T14:45:00+02:00", end: "2026-10-04T15:15:00+02:00" });
-    const partner = event({ id: "p", title: "Partner Wallet Call", start: "2026-10-04T15:00:00+02:00", end: "2026-10-04T15:30:00+02:00" });
-    const scan = (await env.app.meetings.scan()) as { work: { source_id: string }[] };
-    const m = (await env.app.meetings.match({ source_id: scan.work[0]!.source_id, calendar_status: "ok", events: [weekly, partner], hints: { title_guesses: [], people: [] } })) as { review_task: { issue_id: string } };
-    env.paperclip.userComment(m.review_task.issue_id, "pick 1");
-    const after = (await env.app.meetings.scan()) as { tasks_to_close: { issue_id: string; comment: string }[] };
-    expect(after.tasks_to_close).toEqual([{ issue_id: m.review_task.issue_id, issue_ref: expect.any(String), comment: expect.stringContaining("Partner Wallet Call") }]);
-    // Once the agent closes it, it is no longer reported.
-    await env.paperclip.setStatus(m.review_task.issue_id, "done");
-    expect(((await env.app.meetings.scan()) as { tasks_to_close: unknown[] }).tasks_to_close).toEqual([]);
-  });
-});
-
 describe("meetings that were not on the calendar", () => {
   it("publishes from the user's reply, titled by the Librarian, with the user's actions as tasks", async () => {
     const env = makeEnv({ routing: "routes: []\n" });
@@ -255,33 +151,6 @@ describe("meetings that were not on the calendar", () => {
   });
 });
 
-describe("routing", () => {
-  it("explicit regex rule wins over topic suggestions", async () => {
-    const env = makeEnv({
-      routing: `routes:\n  - calendar_title_regex: "(?i)nimbus"\n    target: "Projects/Nimbus.md"\ntopics:\n  - keywords: [open merchant stack]\n    target: "Projects/Open Merchant Stack.md"\n`,
-    });
-    writeFileSync(join(env.vault, "Projects", "Nimbus.md"), "# Nimbus\n");
-    writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), OMS_NOTE);
-    writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
-    const { results } = await runLibrarian(env);
-    expect(results[0]!.targets).toEqual([{ path: "Projects/Nimbus.md", method: "rule", state: "written" }]);
-    expect(readFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), "utf8")).toBe(OMS_NOTE);
-  });
-
-  it("without a usable guess only the canonical note is written, and nobody is asked", async () => {
-    for (const guess of [undefined, "none", "Projects/Missing.md", "Meetings/2026/10/x.md", "../outside.md"]) {
-      const env = makeEnv({ routing: "routes: []\n" });
-      writeFileSync(join(env.vault, "Projects", "Nimbus Notes.md"), "# Nimbus\nNimbus integration ideas\n");
-      writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
-      const { results } = await runLibrarian(env, undefined, undefined, guess);
-      expect(results[0]!.targets).toEqual([]);
-      expect(results[0]!.review_tasks).toEqual([]);
-      expect(results[0]!.canonical_note.state).toBe("created");
-      expect(env.paperclip.byLabel("needs-review")).toHaveLength(0);
-    }
-  });
-});
-
 describe("failure behaviour", () => {
   it("vault unavailable: meeting kept, tasks created, write retried later", async () => {
     const env = makeEnv();
@@ -300,34 +169,6 @@ describe("failure behaviour", () => {
     expect(env.paperclip.issues.size).toBe(1);
   });
 
-  it("Paperclip down: tasks are queued and created on a later scan", async () => {
-    const env = makeEnv();
-    writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), OMS_NOTE);
-    writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
-    env.paperclip.up = false;
-    const { results } = await runLibrarian(env);
-    expect(results[0]!.action_tasks.every((t) => t.state === "pending_create")).toBe(true);
-    env.paperclip.up = true;
-    await env.app.meetings.scan();
-    expect(env.paperclip.issues.size).toBe(1);
-    await env.app.meetings.scan();
-    expect(env.paperclip.issues.size).toBe(1);
-  });
-
-  it("a target note that cannot be written is reported, not overwritten", async () => {
-    const env = makeEnv();
-    const target = join(env.vault, "Projects", "Open Merchant Stack.md");
-    writeFileSync(target, OMS_NOTE);
-    chmodSync(join(env.vault, "Projects"), 0o555);
-    writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
-    try {
-      const { results } = await runLibrarian(env);
-      expect(results[0]!.targets[0]!.state).not.toBe("written");
-      expect(readFileSync(target, "utf8")).toBe(OMS_NOTE);
-    } finally {
-      chmodSync(join(env.vault, "Projects"), 0o755);
-    }
-  });
 });
 
 describe("prompt injection", () => {

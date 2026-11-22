@@ -69,14 +69,11 @@ export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden
 export const SKIP_REASONS = {
   draft: "this is a draft pull request",
   fork: "this pull request comes from a fork; a maintainer asks for a review with `aiden review`",
-  budget_repo: "this repository's daily review budget is used up",
-  budget_instance: "the daily review budget for all repositories is used up",
   superseded: "a newer commit arrived",
   stopped: "reviews are stopped on this pull request (`aiden review always` starts them again)",
   unchanged: "nothing changed since the last review",
   ignored: "every changed file is ignored by this repository's review settings",
   no_access: "the pull request can't be read",
-  daily_limit: "the daily limit of automatic reviews is reached; ask with `aiden review`",
 } as const;
 /** A command's answer, in fixed words (`aiden review help|always|focus: …|status` with no review yet). */
 export const ANSWERS = {
@@ -108,8 +105,9 @@ export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
 
 /** The commit status code review mirrors its merge verdict to (code-review computes it, per PR head, from its /v1/verdict). */
 export const STATUS_CONTEXT = "aidenhq/review";
-/** The verdict's reason (code-review engine.ts's verdict codes; "pass" when there is none) and the commit state each one is. */
-const STATUS_STATE = { pass: "success", ungated: "success", queued: "pending", running: "pending", not_started: "pending", moved: "pending", findings: "failure", failed: "failure", incomplete: "failure", not_reviewed: "failure", config: "failure" } as const;
+/** The verdict's reason (code-review engine.ts's verdict codes; "pass" when there is none, "failed" for a pass with a mandatory
+ * review that failed past its retries) and the commit state each one is. */
+const STATUS_STATE = { pass: "success", ungated: "success", queued: "pending", running: "pending", not_started: "pending", moved: "pending", findings: "failure", failed: "success", incomplete: "failure", not_reviewed: "failure", config: "failure" } as const;
 export const StatusArgsSchema = z.object({
   repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
   pr: z.number().int().min(1),
@@ -135,7 +133,7 @@ export function renderStatus(a: StatusArgs): { state: "pending" | "failure" | "s
     not_started: "Review starting",
     moved: "A newer commit is being reviewed",
     findings: `${open}: fix and push, or answer on its thread (fixed / disputed …)`,
-    failed: `Review failed: comment "aiden review" to run it again`,
+    failed: `Not reviewed: the review failed past its retries, so it doesn't block. Comment "aiden review" to run it again`,
     incomplete: `Partial review: comment "aiden review full"`,
     not_reviewed: `Not reviewed: comment "aiden review"`,
     config: "The code review setting has errors",

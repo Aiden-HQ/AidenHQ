@@ -1,26 +1,25 @@
 // settings.code_review (instance.yaml), as the module's service reads it (CODE_REVIEW_SETTINGS, the setting as JSON): the watched
-// repos, each with the combos (engine, model, effort) each moment runs, their caps, and the instance-wide day cap. Defaults live
+// repos, each with the combos (engine, model, effort) each moment runs. Defaults live
 // here and in module.yaml; a repo that doesn't validate is dropped loudly (its error is listed), never half-used.
 
 // The recipe's values (recipe/engines.ts runs the review in its own box: no shared import across that image boundary).
 // `models`: the short list the board and the Reviewer Manager offer for each (any other OpenRouter id may be typed; the gateway
 // refuses one OpenRouter doesn't list).
 export const ENGINES = {
-  codex: { label: "Codex", efforts: ["minimal", "low", "medium", "high", "xhigh"], run_usd: 5,
+  codex: { label: "Codex", efforts: ["minimal", "low", "medium", "high", "xhigh"],
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"] },
-  "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 5,
+  "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high", "xhigh", "max"],
     models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"] },
-  codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"], run_usd: 5,
+  codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"],
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "z-ai/glm-5.3"] },
-  "codex-native": { label: "Codex review", efforts: ["minimal", "low", "medium", "high", "xhigh"], run_usd: 5,
+  "codex-native": { label: "Codex review", efforts: ["minimal", "low", "medium", "high", "xhigh"],
     models: ["~openai/gpt-terra-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "~deepseek/deepseek-flash-latest"] },
 } as const;
 export type Engine = keyof typeof ENGINES;
 
-/** One review run's reviewer: its engine, model and effort, the most the run may spend (its model token's hard cap; the
- * engine's default when unset: $5), and whether it is mandatory: a mandatory combo's review gates the repo's merges (the
+/** One review run's reviewer: its engine, model and effort, and whether it is mandatory: a mandatory combo's review gates the repo's merges (the
  * merge queue merges a PR only when its mandatory combos reviewed its head and none of their important findings is open). */
-export type Combo = { engine: Engine; model: string; effort: string; run_usd: number; mandatory: boolean };
+export type Combo = { engine: Engine; model: string; effort: string; mandatory: boolean };
 /** The moments a repo is reviewed at. */
 export const MOMENTS = ["on_open", "on_push"] as const;
 export type Repo = {
@@ -30,20 +29,19 @@ export type Repo = {
   drafts: boolean;
   /** manual: a fork PR is reviewed only when someone with write access asks; auto: like any other. */
   forks: "manual" | "auto";
-  day_usd: number; ignore: string[]; max_nits: number;
+  ignore: string[]; max_nits: number;
 };
 /** `lenses`: repo reviews and the option catalog are on (off by default until their security review is done). */
-export type Config = { repos: Repo[]; day_usd: number; lenses: boolean; errors: string[] };
+export type Config = { repos: Repo[]; lenses: boolean; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
-  on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", run_usd: 5, mandatory: false }],
-  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", run_usd: 5, mandatory: false }],
-  drafts: false, forks: "manual", day_usd: 200, ignore: [], max_nits: 5,
+  on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", mandatory: false }],
+  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", mandatory: false }],
+  drafts: false, forks: "manual", ignore: [], max_nits: 5,
 };
 /** A repo is gated (its merges wait for code review) when any of its combos is mandatory. */
 export const gated = (r: Pick<Repo, "on_open" | "on_push">) => [...r.on_open, ...r.on_push].some((c) => c.mandatory);
-export const INSTANCE_DAY_USD = 200;
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
 
@@ -51,20 +49,18 @@ const SLUG = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 const num = (v: unknown, d: number, min = 0, max = 100_000) => (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : v === undefined ? d : NaN);
 
-/** A combo checked whole (engine, model and effort together, the run cap filled in): the combo, or why not. */
+/** A combo checked whole (engine, model and effort together): the combo, or why not. */
 export function combo(raw: unknown): Combo | { error: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "a combo is { engine, model, effort }" };
   const c = raw as Record<string, unknown>;
-  const extra = Object.keys(c).filter((k) => !["engine", "model", "effort", "run_usd", "mandatory"].includes(k));
-  if (extra.length) return { error: `unknown field ${extra.join(", ")} (a combo is engine, model, effort and optionally run_usd and mandatory)` };
+  const extra = Object.keys(c).filter((k) => !["engine", "model", "effort", "mandatory"].includes(k));
+  if (extra.length) return { error: `unknown field ${extra.join(", ")} (a combo is engine, model, effort and optionally mandatory)` };
   const e = ENGINES[c.engine as Engine];
   if (!e) return { error: `engine is one of ${Object.keys(ENGINES).join(", ")}` };
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return { error: "model is an OpenRouter model id such as ~deepseek/deepseek-flash-latest" };
   if (!(e.efforts as readonly string[]).includes(c.effort as string)) return { error: `effort for ${c.engine} is one of ${e.efforts.join(", ")}` };
-  const run_usd = num(c.run_usd, e.run_usd, 0.01, 20);
-  if (Number.isNaN(run_usd)) return { error: "run_usd is a number of dollars, 0.01 to 20" };
   if (c.mandatory !== undefined && typeof c.mandatory !== "boolean") return { error: "mandatory is true or false" };
-  return { engine: c.engine as Engine, model: c.model, effort: c.effort as string, run_usd, mandatory: c.mandatory === true };
+  return { engine: c.engine as Engine, model: c.model, effort: c.effort as string, mandatory: c.mandatory === true };
 }
 
 /** A list of combos (a moment's, or a one-off's): the combos, or the first reason one isn't. */
@@ -98,7 +94,7 @@ function repo(raw: unknown): Repo | { error: string } {
   // A gated repo has a mandatory combo at both moments: a PR's first head is covered by on_open's, each later one by on_push's.
   if (out.on_open.some((c) => c.mandatory) !== out.on_push.some((c) => c.mandatory)) return { error: "a mandatory combo goes in both on_open and on_push (a PR's first head is reviewed by on_open's, each push by on_push's)" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
-  for (const k of ["day_usd", "max_nits"] as const) if (Number.isNaN(num(out[k], 0))) return { error: `${k} is a number` };
+  if (Number.isNaN(num(out.max_nits, 0))) return { error: "max_nits is a number" };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };
   return out;
 }
@@ -121,8 +117,6 @@ export function readConfig(text: string | undefined): Config {
     else if (twice.has(v.repo)) errors.push(`repos[${i}]: ${v.repo} is listed more than once`);
     else repos.push(v);
   }
-  const day_usd = num(raw.day_usd, INSTANCE_DAY_USD);
-  if (Number.isNaN(day_usd)) errors.push("day_usd is a number");
   if (raw.lenses !== undefined && typeof raw.lenses !== "boolean") errors.push("lenses is true or false");
-  return { repos, day_usd: Number.isNaN(day_usd) ? INSTANCE_DAY_USD : day_usd, lenses: raw.lenses === true, errors };
+  return { repos, lenses: raw.lenses === true, errors };
 }

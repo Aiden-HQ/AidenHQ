@@ -12,7 +12,6 @@ const KEY = z.string().regex(/^[a-z][a-z0-9_]{0,60}$/);
 const AGENT = z.string().regex(/^[a-z0-9][a-z0-9-]{0,60}$/);
 const NAME = z.string().regex(/^[a-z0-9][a-z0-9-]{0,60}$/);
 const SHA = z.string().regex(/^[0-9a-f]{40}$/);
-const CAP = z.number().positive().max(1000);
 const SCALAR = z.union([z.string().max(500), z.number().finite(), z.boolean()]);
 const MODEL = z.string().regex(/^[A-Za-z0-9~][\w./~:@-]{0,119}$/);
 /** Handbook text: Markdown without control characters but tab and newlines. */
@@ -22,8 +21,6 @@ export const ChangeSchema = z.discriminatedUnion("kind", [
   // A setting a module declares `type: object` takes a whole map (settings.code_review); the module's own page checks its shape.
   z.object({ kind: z.literal("setting"), key: KEY, value: z.union([SCALAR, z.array(z.union([z.string().max(200), z.number().finite()])).max(50), z.record(z.string(), z.unknown())]) }).strict(),
   z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
-  // An agent's own spend caps (overrides.agents.<key>.caps; the owner's, Tier 2), USD.
-  z.object({ kind: z.literal("caps"), agent: AGENT, value: z.object({ run_usd: CAP, task_usd: CAP, day_usd: CAP }).partial().strict() }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
   z.object({ kind: z.literal("module"), name: NAME, on: z.boolean() }).strict(),
   // A routine's schedules, status or model (overrides.routines.<key>).
@@ -173,12 +170,6 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
     if (ch.tools && new Set(ch.tools).size !== ch.tools.length) throw new ChangeRefused("each tool once");
     return ch;
   }
-  if (ch.kind === "caps") {
-    if (!Object.keys(ch.value).length) throw new ChangeRefused("name at least one cap");
-    if (a.member_of) throw new ChangeRefused(`${a.name ?? ch.agent} is a team member: it has no cap of its own (the team's day cap covers it)`);
-    if (a.team && Object.keys(ch.value).some((k) => k !== "day_usd")) throw new ChangeRefused("a team has one cap: day_usd, over all its members' spend");
-    return ch;
-  }
   if (ch.field === "model") {
     if (typeof ch.value !== "string" || !/^[A-Za-z0-9~][\w.\/~:@-]{0,119}$/.test(ch.value)) throw new ChangeRefused("a model is its id, like openrouter/~deepseek/deepseek-flash-latest");
   } else if (ch.field === "reasoning_effort") {
@@ -208,7 +199,6 @@ export function describe(ch: Change, compiled: Compiled | null): string {
   if (ch.kind === "handbook") return `${name}'s own handbook`;
   if (ch.kind === "unfork") return `${name} back on its module's handbook`;
   if (ch.kind === "grants") return `${name}'s ${ch.connection} tools → ${ch.tools === null ? "the module's" : ch.tools.join(", ") || "none"}`;
-  if (ch.kind === "caps") return `${name}'s caps → ${Object.entries(ch.value).map(([k, v]) => `${k.replace("_usd", "")} $${v}`).join(", ")}`;
   const field = { model: "model", reasoning_effort: "effort", heartbeat: "heartbeat", max_parallel: "parallel jobs" }[ch.field];
   const v = ch.field === "heartbeat" ? (ch.value === false ? "off" : `every ${ch.value}h`) : String(ch.value);
   return `${name}'s ${field} → ${v}`;

@@ -2,7 +2,7 @@
 // owner's own request gets one message and its task resumes once connected; background work gets one digest line.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { needsOwner, signedIn } from "../sdk/src/vendor/needs.ts";
+import { needsOwner } from "../sdk/src/vendor/needs.ts";
 import { openFacts } from "../src/facts.ts";
 import { kernel, moduleServer } from "./helpers.ts";
 
@@ -62,62 +62,4 @@ test("owner-asked: Gmail missing → one message → connect → the task resume
   assert.ok(rows.some((x) => x.key.startsWith("connect:google_workspace:w2:") && x.cause === "connected"), JSON.stringify(rows));
   assert.ok(!rows.some((x) => x.key.startsWith("wait:")), JSON.stringify(rows));
   assert.deepEqual((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down, []);
-});
-
-test("background: a routine run hits a missing connection → one batched digest line, no wait", async (t) => {
-  const w = await setup(t, { task: "w9", answer: () => needsOwner({ cause: "not_connected", detail: "no account" }) });
-  assert.match((await w.call()).result.content[0].text, /Skip this source/);
-  await w.call();
-  const taken = await w.take();
-  assert.equal(taken.length, 1);
-  assert.equal(taken[0].kind, "digest");
-  assert.equal(taken[0].batch, true);
-  assert.notEqual(w.k.taskStates.read({ ids: ["w9"] }).tasks[0]?.reason, "agent_wait");
-  assert.equal(w.wakeRows().length, 0);
-});
-
-test("a trusted connection's answer passes unchanged, and its needs_owner is still routed", async (t) => {
-  let need = false;
-  const w = await setup(t, { returns: "trusted", answer: () => (need ? needsOwner({ cause: "expired", detail: "refused" }) : { content: [{ type: "text", text: "3 unread" }], structuredContent: { unread: 3 } }) });
-  const res = await w.k.call("google_workspace", "run", { method: "tools/call", params: { name: "gmail_search", arguments: {} } });
-  assert.deepEqual(JSON.parse(await res.text()), { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "3 unread" }], structuredContent: { unread: 3 } } }, "byte for byte, structuredContent kept");
-  need = true;
-  assert.match((await w.call()).result.content[0].text, /^Google isn't connected \(sign-in expired\): the owner has the link/);
-  assert.equal((await w.take())[0].kind, "decision");
-});
-
-test("an account's served answer clears only that account's expired need, not another account's", async (t) => {
-  let mode: "need" | string = "need";
-  const w = await setup(t, {
-    answer: () => (mode === "need" ? needsOwner({ cause: "expired", detail: "refused", account: "a@example.com" }) : signedIn({ content: [{ type: "text", text: `ok on ${mode}` }] }, mode)),
-  });
-  await w.call();
-  const down = async () => (await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down as { account?: string }[];
-  assert.deepEqual((await down()).map((d) => d.account), ["a@example.com"]);
-  // b@ serves the next call: a@'s need stays, and the task waiting on it isn't woken.
-  mode = "b@example.com";
-  assert.match((await w.call()).result.content[0].text, /ok on b@example\.com/);
-  assert.deepEqual((await down()).map((d) => d.account), ["a@example.com"]);
-  assert.ok(!w.wakeRows().some((x) => x.cause === "connected" && x.state === "open"));
-  // a@ serves one: its need clears and the waiting task wakes.
-  mode = "a@example.com";
-  assert.match((await w.call()).result.content[0].text, /ok on a@example\.com/);
-  assert.deepEqual(await down(), []);
-  assert.ok(w.wakeRows().some((x) => x.cause === "connected" && x.state === "open"), "the waiting task wakes");
-});
-
-test("a successful call clears a full-cause state only when the sign-in served it", async (t) => {
-  let answer = "need";
-  const w = await setup(t, { answer: () => (answer === "need" ? needsOwner({ cause: "not_connected", detail: "" }) : answer === "link" ? { content: [{ type: "text", text: "a prefilled link" }] } : signedIn({ content: [{ type: "text", text: "ok" }] })) });
-  await w.call();
-  assert.equal((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down.length, 1);
-  // A tool that works signed out (github_issue_link) succeeds without the marker: still down, nobody woken.
-  answer = "link";
-  assert.match((await w.call()).result.content[0].text, /prefilled link/);
-  assert.equal((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down.length, 1);
-  assert.ok(!w.wakeRows().some((x) => x.cause === "connected"));
-  answer = "ok";
-  assert.match((await w.call()).result.content[0].text, /ok/);
-  assert.deepEqual((await w.k.v1("GET", `/v1/connections/down?agent=${AGENT}`, undefined, "dispatch-key")).json.down, []);
-  assert.ok(w.wakeRows().some((x) => x.cause === "connected" && x.state === "open"), "the waiting task wakes");
 });

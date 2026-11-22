@@ -39,7 +39,7 @@ writeFileSync(
     { name: "grafana", enabled: true, connections: [], settings: {}, setup: "Set GRAFANA_URL." },
   ]),
 );
-writeFileSync(files.grants, JSON.stringify({ autonomy: "full", agents: { "id-1": { key: "chief-of-staff", caps: { run_usd: 2, task_usd: 10, day_usd: 60 }, graded: false }, "id-2": { key: "devops", graded: true } } }));
+writeFileSync(files.grants, JSON.stringify({ autonomy: "full", agents: { "id-1": { key: "chief-of-staff", graded: false }, "id-2": { key: "devops", graded: true } } }));
 writeFileSync(join(dir, "revs.jsonl"), JSON.stringify({ at: "2026-11-13T06:00:00Z", agent: "devops", product_sha: "a".repeat(40), instance_sha: "b".repeat(40) }) + "\n");
 
 const pc = { me: async () => "me-1", agents: async () => [], labels: async () => [], company: async () => ({ issuePrefix: "WOR" }) } as unknown as Paperclip;
@@ -85,7 +85,7 @@ describe("settings routes", () => {
     expect((await get("/api/settings/connections", "")).status).toBe(401);
   });
 
-  it("show each setting with its source and live value, each agent's model, schedules and caps, and the instance's versions", async () => {
+  it("show each setting with its source and live value, each agent's model, schedules, and the instance's versions", async () => {
     const r = await get("/api/settings");
     expect(r.status).toBe(200);
     const d = JSON.parse(r.text);
@@ -95,7 +95,7 @@ describe("settings routes", () => {
     expect(d.settings.find((s: { key: string }) => s.key === "example_flag")).toMatchObject({ switch: true, value: "on" });
     expect(d.settings.find((s: { key: string }) => s.key === "example_flag").live).toBeUndefined(); // read only at compile: nothing live to show
     const aiden = d.agents.find((a: { key: string }) => a.key === "chief-of-staff");
-    expect(aiden).toMatchObject({ name: "Aiden", heartbeatHours: 6, caps: { day_usd: 60, run_usd: 2 }, routines: [{ key: "daily-brief", schedules: [{ label: "weekday morning" }] }] });
+    expect(aiden).toMatchObject({ name: "Aiden", heartbeatHours: 6, routines: [{ key: "daily-brief", schedules: [{ label: "weekday morning" }] }] });
     expect(d.instance).toMatchObject({ product: "a".repeat(40), instance: "b".repeat(40), lastChangeAt: "2026-11-13T06:00:00Z", boardTimezone: "Europe/London" });
   });
 

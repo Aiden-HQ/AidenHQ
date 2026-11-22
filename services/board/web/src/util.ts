@@ -1,4 +1,4 @@
-import type { Assignee, Card } from "./types.js";
+import type { Assignee, Bucket, Card } from "./types.js";
 
 export function ago(iso: string, now = Date.now()): string {
   const s = Math.max(0, (now - Date.parse(iso)) / 1000);
@@ -87,7 +87,19 @@ export function addDays(d: string, n: number): string {
 }
 
 /** Today's YYYY-MM-DD in the board's timezone. */
-export const todayIn = (timeZone: string) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+export function todayIn(timeZone: string): string {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+/** Where Snooze parks a task until `date`: tomorrow waits in Tomorrow, 2 to 7 days out in Later, further out in Backlog. */
+export function parkBucket(today: string, date: string): Bucket {
+  return date <= addDays(today, 1) ? "tomorrow" : date <= addDays(today, 7) ? "later" : "backlog";
+}
+
+/** "Thu" for a date within a week of `today`, else "Oct 15". */
+export const untilLabel = (today: string, date: string) =>
+  date <= addDays(today, 7) ? new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: "short" }) : shortDate(date);
 
 /**
  * Snooze's presets from `today`: tomorrow, in 2 days, Friday (when it's later than that) and next

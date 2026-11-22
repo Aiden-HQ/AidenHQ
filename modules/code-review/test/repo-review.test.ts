@@ -37,21 +37,18 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
-test("repo reviews are off until lenses is on; run_usd defaults to 25 and runs from 1 to 150; options must fit the tree", async () => {
+test("repo reviews are off until lenses is on; options must fit the tree", async () => {
   await assert.rejects(world({ lenses: false }).engine.repoReview({ target: { repo: REPO } }), /repo reviews are off/);
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO } });
-  assert.equal(b.run_usd, 25);
   // Recommended and fitting the tree: knip (package.json), gitleaks and the Cloudflare skill; never vulture (no Python).
   assert.deepEqual(b.options, ["maint.knip", "sec.gitleaks", "sec.cloudflare"]);
-  await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, run_usd: 151 }), /run_usd is 1 to 150/);
-  await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, run_usd: 0.5 }), /run_usd is 1 to 150/);
   await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["maint.vulture"] }), /not offered for acme\/app: maint.vulture/);
 });
 
 test("the commit is resolved once at start: the default branch moving mid-run changes nothing; tools then each model option run in sequence", async () => {
   const w = world();
-  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks", "sec.cloudflare"], run_usd: 10 });
+  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks", "sec.cloudflare"] });
   assert.equal(b.sha, sha("1"));
   await w.tick();
   assert.equal(w.started.length, 1); // the tools run alone first
@@ -60,27 +57,13 @@ test("the commit is resolved once at start: the default branch moving mid-run ch
   w.finish(0, { findings: [w.finding("k1", { option: "maint.knip", severity: "nit" })] });
   await w.tick();
   assert.equal(w.started.length, 2);
-  assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skill, w.started[1].option, w.started[1].lens, w.started[1].head, w.started[1].budget_usd],
-    ["code-review", "skill:sec.cloudflare", "claude-code", "security-audit", "sec.cloudflare", "security", sha("1"), 10]);
+  assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skill, w.started[1].option, w.started[1].lens, w.started[1].head],
+    ["code-review", "skill:sec.cloudflare", "claude-code", "security-audit", "sec.cloudflare", "security", sha("1")]);
   w.finish(1, {}, 1.5);
   await w.tick();
   const [batch] = w.engine.batches({});
   assert.deepEqual([batch.status, batch.sha, batch.verdict, batch.cost_usd], ["done", sha("1"), "clean", 1.5]);
   assert.match(w.engine.report(b.batch), new RegExp(`Commit \`${sha("1")}\``));
-});
-
-test("a spent cap skips the remaining model options, each with the reason, and the report counts them as coverage gaps", async () => {
-  const w = world();
-  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.cloudflare", "sec.deepsec"], run_usd: 2 });
-  await w.tick();
-  assert.equal(w.started[0].budget_usd, 2);
-  w.finish(0, {}, 2);
-  await w.tick();
-  assert.equal(w.started.length, 1);
-  const runs = w.engine.runs({ repo: REPO });
-  assert.deepEqual(runs.map((r) => [r.option, r.status, r.why]).sort(), [["sec.cloudflare", "done", null], ["sec.deepsec", "skipped", "run cap spent"]]);
-  assert.equal(w.engine.batches({})[0].verdict, "incomplete");
-  assert.match(w.engine.report(b.batch), /sec\.deepsec: skipped: run cap spent/);
 });
 
 test("display groups the same lens, file and overlapping lines, but storage keeps each option's observation", async () => {
@@ -108,7 +91,7 @@ test("the report stays within 78,000 characters, leaving nits out first and sayi
   const nits = Array.from({ length: 400 }, (_, i) => ({ id: `n${i}`, severity: "nit", path: `src/f${i}.ts`, line: 1, title: "a nit", why: "x".repeat(400), evidence: "y".repeat(400), fix_brief: "z" }));
   const important = { id: "i1", severity: "important", path: "src/a.ts", line: 1, title: "a bug", why: "w", evidence: "e", fix_brief: "fix it" };
   const review = { findings: [important, ...nits], coverage: { reviewed: [], excluded: [], incomplete: null } };
-  const out = render({ repo: REPO, sha: sha("1"), created: "2026-11-22T10:00:00Z", run_usd: 25, runs: [{ option: "maint.knip", lens: "maintainability", status: "done", why: null, cost_usd: 0, review }], lensOf: () => "maintainability" });
+  const out = render({ repo: REPO, sha: sha("1"), created: "2026-11-22T10:00:00Z", runs: [{ option: "maint.knip", lens: "maintainability", status: "done", why: null, cost_usd: 0, review }], lensOf: () => "maintainability" });
   assert.ok(out.markdown.length <= REPORT_MAX, `${out.markdown.length}`);
   assert.match(out.markdown, /a bug/);
   const [, left] = /Not shown[^:]*: (\d+) nits/.exec(out.markdown);
@@ -150,7 +133,7 @@ test("deepsec's set-up files are asked for once as a setup PR through the code h
 test("a data version 1 database keeps its PR runs, reviews and findings readable", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`CREATE TABLE runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL,
-    engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, run_usd REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
+    engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
     cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
     important INTEGER NOT NULL DEFAULT 0, nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
     focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, due INTEGER NOT NULL, created INTEGER NOT NULL,

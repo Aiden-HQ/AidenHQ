@@ -19,9 +19,9 @@ const base = {
 const with_ = (patch) => ({ ...structuredClone(base), ...patch });
 const tier = (head, code = false, b = base) => classifyModules([authorityDiff("acme-crm", b, head, code)]);
 
-test("a handbook-only change is Tier 1, no panel", () => {
+test("a handbook-only change is Tier 1", () => {
   const t = tier(structuredClone(base));
-  assert.deepEqual([t.tier, t.panel, t.rule, t.reviewFirst], [1, false, "module-config", false]);
+  assert.deepEqual([t.tier, t.rule], [1, "module-config"]);
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, base, false)]), ["acme-crm: text only (review)"]);
 });
 
@@ -31,10 +31,10 @@ test("an agent's skills list is module text, like its prompts: the reviewer's, n
   assert.deepEqual(authorityLines([authorityDiff("acme-crm", base, head, false)]), ["acme-crm: text only (review)"]);
 });
 
-test("a code change without new authority is Tier 1 with panel", () => {
+test("a code change without new authority is Tier 1", () => {
   const head = with_({ services: { run: { "crm-mcp": { image: IMG.replace("1.0", "1.1"), port: 8080, env: { LOG: "debug" } } } } });
   const t = tier(head, true);
-  assert.deepEqual([t.tier, t.panel, t.rule], [1, true, "module-config"]);
+  assert.deepEqual([t.tier, t.rule], [1, "module-config"]);
   // A read tool, a new read-only agent, a description: still the reviewer's alone.
   const more = with_({ description: "x", connections: { crm: { ...base.connections.crm, tools: { read: ["crm_search", "crm_get"], write: ["crm_note"] } } }, agents: { ...base.agents, scout: { model: "m", connections: { crm: "read" } } } });
   assert.equal(tier(more).tier, 1);
@@ -65,14 +65,13 @@ test("a new write kind, privileged entry, secret, role, write tool, services.gra
     join: with_({ services: { run: { "crm-mcp": { image: IMG, port: 8080, join: ["acme-db"] } } } }),
     egress: with_({ services: { run: { "crm-mcp": { image: IMG, port: 8080, egress: true } } } }),
     "isolation toward trusted": [with_({ isolation: "trusted" }), with_({ isolation: "untrusted" })],
-    "model spend": with_({ services: { ...base.services, models: { day_usd: 5 } } }),
     "unrecognised key": with_({ hooks: ["x"] }),
     "a default grant": with_({ default_grants: [{ tools: ["crm.crm_write"] }] }),
   };
   for (const [what, v] of Object.entries(owners)) {
     const [head, b] = Array.isArray(v) ? v : [v, base];
     const t = tier(head, false, b);
-    assert.deepEqual([t.tier, t.reviewFirst, t.rule], [2, true, "module-authority"], what);
+    assert.deepEqual([t.tier, t.rule], [2, "module-authority"], what);
   }
 });
 

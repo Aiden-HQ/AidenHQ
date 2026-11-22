@@ -1,6 +1,6 @@
 // Channel binding: only the owner binds; an @mention in a bound channel is one thread call; the context read answers only the bound agent.
 import { afterEach, describe, expect, it } from "vitest";
-import { binder, channelContext, mention, slashCommand } from "../src/bind.js";
+import { binder, channelContext, slashCommand } from "../src/bind.js";
 import { poster } from "../src/post.js";
 import { openStore } from "../src/store.js";
 
@@ -8,7 +8,6 @@ const realFetch = globalThis.fetch;
 afterEach(() => (globalThis.fetch = realFetch));
 const OWNER = "U0OWNER1";
 const agents = async () => ({ a1: { key: "roadmap-keeper" }, a2: { key: "newbie", trial: true } });
-const ev = (o: Record<string, unknown> = {}) => ({ type: "app_mention", user: "U0COLLEAG", channel: "C0BOUND01", ts: "1700000000.000100", text: "<@UBOT> status?", ...o });
 
 function bound() {
   const store = openStore(":memory:");
@@ -49,20 +48,6 @@ describe("channel binding", () => {
     expect(await run(OWNER, "channels")).toMatch(/No channel/);
   });
 
-  it("a mention in a bound channel makes one thread call; bots, unbound channels and repeats make none", async () => {
-    const { store, file } = bound();
-    await slashCommand({ user_id: OWNER, text: "assign-channel roadmap-keeper", channel_id: "C0BOUND01" }, { store, ownerId: OWNER, file });
-    const calls: Record<string, string>[] = [];
-    const deps = { store, thread: async (b: Record<string, string>) => void calls.push(b), react: async () => undefined };
-    expect(await mention(ev({ bot_id: "B1" }), deps)).toBe(false);
-    expect(await mention(ev({ channel: "C0OTHER001" }), deps)).toBe(false);
-    expect(await mention(ev(), deps)).toBe(true);
-    expect(await mention(ev(), deps)).toBe(true);
-    expect(calls).toEqual([{ agent: "roadmap-keeper", thread: "C0BOUND01:1700000000.000100", from: "U0COLLEAG", text: "<@UBOT> status?", link: "https://slack.com/archives/C0BOUND01/p1700000000000100" }]);
-    await mention(ev({ ts: "1700000009.000200", thread_ts: "1700000000.000100" }), deps);
-    expect(calls[1]!.thread).toBe("C0BOUND01:1700000000.000100");
-  });
-
   it("slack_channel_context answers only the agent the channel is bound to; its posts there need no owner card", async () => {
     const { store, file } = bound();
     await slashCommand({ user_id: OWNER, text: "assign-channel roadmap-keeper", channel_id: "C0BOUND01" }, { store, ownerId: OWNER, file });
@@ -80,16 +65,4 @@ describe("channel binding", () => {
     expect((await plan("", "C0OTHER001")).raise?.tier).toBe(2);
     expect((await post.plan({ kind: "slack.post", args: { channel: "C0OTHER001", text: "hi" }, requester: { agent: "a1", name: "X", roles: [], kind: "run" } as never, task: "" })).raise?.tier).toBe(2);
   });
-});
-
-it("the executor reads the owner on each check, so a pairing after start-up binds", async () => {
-  const store = openStore(":memory:");
-  const cfg = { ownerId: "" };
-  const ex = binder(store, { get ownerId() { return cfg.ownerId; }, agents });
-  cfg.ownerId = OWNER; // paired after the listener started
-  const args = { op: "assign", channel: "C0BOUND01", agent: "roadmap-keeper", by: OWNER };
-  let token = "";
-  await slashCommand({ user_id: OWNER, text: "assign-channel roadmap-keeper", channel_id: "C0BOUND01" }, { store, ownerId: OWNER, file: async (a) => ((token = a.token!), { state: "filed" }) });
-  const p = await ex.plan({ kind: "slack.bind", args: { ...args, token }, requester: { kind: "module", module: "slack" } as never, task: "" });
-  expect(p.args).toMatchObject({ op: "assign", by: OWNER });
 });

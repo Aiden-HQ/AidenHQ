@@ -102,20 +102,18 @@ test("a setting change sets exactly that key; an unknown kind or a stray field i
   assert.equal(filed.length, 1);
 });
 
-test("on a team, the record's settings edit teams.<t>.defaults, a member's its entry, the day cap teams.<t>.caps; the rest is refused", () => {
+test("on a team, the record's settings edit teams.<t>.defaults, a member's its entry; the rest is refused", () => {
   const compiled = { agents: { engineer: { team: { name: "engineering", members: ["kai"] } }, kai: { member_of: "engineer" }, lead: {} } };
   const text = "product: x\nteams:\n  engineering:\n    template: engineering.engineer\n    members:\n      kai: { name: Kai }\n";
   const plan = (changes) => YAML.parse(planFiles(changes, { read: (p) => (p === "instance.yaml" ? text : undefined), isInstance: () => false, teamOf: (k) => (k === "engineer" ? { team: "engineering", record: true } : k === "kai" ? { team: "engineering", record: false } : undefined), moduleHandbook: () => undefined, bundle: [] }).get("instance.yaml"));
-  const out = plan([{ kind: "agent", agent: "engineer", field: "model", value: "openrouter/m1" }, { kind: "agent", agent: "kai", field: "max_parallel", value: 3 }, { kind: "caps", agent: "engineer", value: { day_usd: 50 } }, { kind: "agent", agent: "lead", field: "model", value: "m2" }]);
+  const out = plan([{ kind: "agent", agent: "engineer", field: "model", value: "openrouter/m1" }, { kind: "agent", agent: "kai", field: "max_parallel", value: 3 }, { kind: "agent", agent: "lead", field: "model", value: "m2" }]);
   assert.equal(out.teams.engineering.defaults.model, "openrouter/m1");
   assert.equal(out.teams.engineering.members.kai.max_parallel, 3);
-  assert.equal(out.teams.engineering.caps.day_usd, 50);
   assert.equal(out.overrides.agents.lead.model, "m2");
   assert.equal(out.overrides.agents.engineer, undefined);
   const src = { compiled, catalog: [] };
-  for (const bad of [{ kind: "caps", agent: "kai", value: { day_usd: 5 } }, { kind: "caps", agent: "engineer", value: { run_usd: 5 } }, { kind: "agent", agent: "kai", field: "heartbeat", value: 4 }, { kind: "agent", agent: "engineer", field: "max_parallel", value: 11 }])
-    assert.throws(() => checkTyped(bad, src), /member|one cap|team|can't be/);
-  checkTyped({ kind: "caps", agent: "engineer", value: { day_usd: 5 } }, src);
+  for (const bad of [{ kind: "caps", agent: "engineer", value: { day_usd: 5 } }, { kind: "agent", agent: "kai", field: "heartbeat", value: 4 }, { kind: "agent", agent: "engineer", field: "max_parallel", value: 11 }])
+    assert.throws(() => checkTyped(bad, src), /isn't a change|team|can't be/);
 });
 
 test("an agent writes a structured setting its module names its role a writer of, on its own task, and nothing else", async () => {

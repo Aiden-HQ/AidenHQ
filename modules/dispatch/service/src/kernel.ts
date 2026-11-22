@@ -32,7 +32,6 @@ export interface Kernel {
   /** A comment into a running job; the wake is delivered only when `sent`. */
   input(job: string, b: { text: string; from: string; wake: string }): Promise<{ sent: boolean }>;
   /** A job's outcome on its task, posted by the kernel as the agent, once per (job, kind) (F5). */
-  /** One post per (job, kind): the platform block's words go in the run's own outcome body, never in a second post. */
   post(job: string, b: { kind: "reply" | "notice" | "status"; body: string; status?: string; blocked_by?: string[] }): Promise<void>;
   /** Stop a running job (its task was closed under it). */
   stop(job: string): Promise<void>;

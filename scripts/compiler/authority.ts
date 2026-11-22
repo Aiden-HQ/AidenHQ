@@ -1,7 +1,6 @@
 // The authority diff (spec §5.7): what a module change hands out that it did not before, read from its manifest and its
-// code diff, never from its own description. Every module change goes to the AI reviewer first; a change marked `owner`
-// (new authority) then goes to the owner too, with the reviewer's verdict on the card. Under full autonomy only the
-// `ownerOnly` ones do (tier.ts computeTier): new authority from a module that isn't official, and new spend from any.
+// code diff, never from its own description. Every module change goes to the AI reviewer, which reads these lines (new
+// authority marked `owner`, a module that isn't official's or new spend `ownerOnly`, listed first) and blocks only malice.
 // Pure: callers read the manifests.
 //
 // Lines are built from code-chosen words and ids cleaned to [\w.:@/-], never from manifest prose, because they are shown on
@@ -14,10 +13,10 @@ import { heir } from "../../kernel/src/successor.ts";
 type Dict = Record<string, unknown>;
 export type ModuleDef = Dict;
 /**
- * `ownerOnly`: the owner's under every autonomy (new authority from a module that isn't official, or new spend). `spend`: a
+ * `ownerOnly`: new authority from a module that isn't official, or new spend (listed first for the reviewer). `spend`: a
  * spend or limit increase, which the card names as one.
  */
-export type Change = { what: string; owner: boolean; ownerOnly?: true; spend?: true };
+export type Change = { what: string; owner: boolean; ownerOnly?: true };
 /** `official`: the module is read from the product's own modules/ (ModuleInput.official); marketplace and fork lines never are. */
 export type ModuleDiff = { module: string; changes: Change[]; code: boolean; official?: true };
 /**
@@ -179,7 +178,6 @@ function join(b: Dict, a: Dict, h: Dict, conflict: (where: string) => void, path
 export function authorityDiff(name: string, base: ModuleDef | undefined, head: ModuleDef | undefined, codeChanged: boolean, replacing: { name: string; def?: ModuleDef }[] = [], origin: { base?: string; head?: string } = {}, conns: Dict = {}, official = false): ModuleDiff {
   const changes: Change[] = [];
   const owner = (what: string) => changes.push({ what, owner: true, ...(official ? {} : { ownerOnly: true as const }) });
-  const spend = (what: string) => changes.push({ what, owner: true, ownerOnly: true, spend: true });
   const review = (what: string) => changes.push({ what, owner: false });
   if (head) {
     for (const r of replacing) {
@@ -314,9 +312,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const c of keys(hg)) if (widerGrant(bg[c], hg[c])) owner(`services.grants: writes or reads more of ${id(c)}`);
   const share = (x: Dict) => list(map(x.workspaces).share_with).concat(list(map(map(x.services).workspaces).share_with));
   for (const m of added(share(b), share(head))) owner(`shares its workspace with ${id(m)}`);
-  const usd = (x: Dict) => Number(map(map(x.services).models).day_usd ?? 0);
-  if (usd(head) > usd(b)) spend(`model spend up to ${id(usd(head))} USD a day`);
-  for (const k of keys(hs).filter((k) => !["run", "data", "grants", "workspaces", "models"].includes(k) && !eq(bs[k], hs[k]))) owner(`services: unrecognised key ${id(k)}`);
+  for (const k of keys(hs).filter((k) => !["run", "data", "grants", "workspaces"].includes(k) && !eq(bs[k], hs[k]))) owner(`services: unrecognised key ${id(k)}`);
 
   if (!eq(b.board_env, head.board_env)) owner("changes the board's environment (board_env)");
   // Isolation: an install is measured from the most restrictive level, so a trusted install says so; agents and apps inherit
@@ -380,9 +376,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     else if (profile(now) !== profile(was)) review(`${at}: profile check (its jobs get no tools or writes)`);
     if (now.private_reads === true && was.private_reads !== true) review(`${at}: reads private data (its jobs get no web search)`);
     else if (now.private_reads !== true && was.private_reads === true) review(`${at}: stops reading private data`);
-    const caps = (x: Dict) => Number(map(x.caps).day_usd ?? 0);
-    if (caps(now) > caps(was)) spend(`${at}: day_usd up to ${id(caps(now))}`);
-    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "caps", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
+    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
   }
   // Routines: a routine's autonomy (its cap on approvals) is the owner's, as everywhere.
   const [bro, hro] = [map(b.routines), map(head.routines)];
@@ -394,20 +388,18 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   return { module: name, changes, code: codeChanged, ...(official ? { official: true as const } : {}) };
 }
 
-export type Classified = { tier: 1 | 2; panel: boolean; rule: "module-authority" | "module-config"; reason: string; reviewFirst: boolean; ownerOnly?: true };
+export type Classified = { tier: 1 | 2; rule: "module-authority" | "module-config"; reason: string };
 
 /**
- * The tier of a set of module changes: AI review always, first; the owner after it when any change is new authority
- * (`ownerOnly` when one of those is the owner's under every autonomy; those lines come first in the reason).
+ * The tier of a set of module changes (the AI reviewer's either way): 2 when any change is new authority, its lines first in
+ * the reason (`ownerOnly` ones first of all).
  */
 export function classifyModules(diffs: ModuleDiff[]): Classified {
   const lines = (only: boolean) => diffs.flatMap((d) => d.changes.filter((c) => c.owner && Boolean(c.ownerOnly) === only).map((c) => `${d.module}: ${c.what}`));
   const owners = [...lines(true), ...lines(false)];
-  const ownerOnly = diffs.some((d) => d.changes.some((c) => c.ownerOnly));
-  const panel = diffs.some((d) => d.code);
   const all = owners.length ? owners : diffs.map((d) => `${d.module}: ${d.changes.map((c) => c.what).join(", ")}`);
   const reason = `${owners.length ? "new module authority" : "module changes without new authority"}: ${all.slice(0, 8).join("; ")}${all.length > 8 ? `; and ${all.length - 8} more` : ""}`;
-  return owners.length ? { tier: 2, panel, rule: "module-authority", reason, reviewFirst: true, ...(ownerOnly ? { ownerOnly: true as const } : {}) } : { tier: 1, panel, rule: "module-config", reason, reviewFirst: false };
+  return owners.length ? { tier: 2, rule: "module-authority", reason } : { tier: 1, rule: "module-config", reason };
 }
 
 /** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */

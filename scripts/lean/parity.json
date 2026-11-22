@@ -133,8 +133,8 @@
     "n": 16,
     "workflow": "Graded done, reopen on failed grade",
     "today": [
-      "modules/grading/test/parity.test.ts",
-      "modules/grading/test/grades.test.ts"
+      "modules/grading/test/grades.test.ts",
+      "modules/grading/test/settle.test.ts"
     ],
     "next": "grading task.finish check"
   },
@@ -148,7 +148,7 @@
   },
   {
     "n": 18,
-    "workflow": "Spend caps, raise_cap card",
+    "workflow": "The install spend limit and the task cap",
     "today": [
       "kernel/test/gateway.test.ts"
     ],
