@@ -118,12 +118,13 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
     // destination. Bare "owner" is the owner either way; bare "delegator" is the requested category, where it also stood for
     // the chief of staff, so who waits on one can't be told from the row: it is `"ambiguous"`.
     const to = exact ? marker.kind.slice(3) : marker.kind === "owner" || marker.kind === "chief_of_staff" ? marker.kind : undefined;
+    // Nobody can answer an ask whose delegator has gone, and that settles the legacy `delegator` kind too: a bare delegator row is
+    // only ambiguous while a delegator is there to have been asked; with none, the question it held has no answerer left.
+    if ((to === "delegator" || (!exact && marker.kind === "delegator")) && !(await delegatorOf(t))) return undefined;
     if (to !== "owner" && to !== "delegator" && to !== "chief_of_staff") return "ambiguous";
     // The wait fact and the marker are written together: an owner ask is an owner wait, every other one a delegator wait. A
     // row that disagrees with its own wait is not this ask's destination either.
     if (answeredBy === "owner" ? to !== "owner" : to === "owner") return "ambiguous";
-    // Nobody can answer an ask whose delegator has closed: it doesn't hold the task against a question routed elsewhere.
-    if (to === "delegator" && !(await delegatorOf(t))) return undefined;
     return { to, question: row.question };
   }
 
@@ -181,9 +182,10 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
      * goes to the open delegator, else the chief of staff (else the owner, for the chief of staff's own task). `asked`: the
      * question reached the owner already (the agent's reply, notify): recorded, not sent, when it may go to them directly;
      * otherwise it goes to the chief of staff. One open ask per task: while a recorded question is unanswered, only a retry of
-     * that same question goes through (`same`, nothing sent, the wait untouched); another one is `open` and nothing is sent.
+     * that same question goes through (`same`, nothing sent, the wait untouched); an `asked` replay of another question is
+     * `asked-open` (nothing sent, the live ask untouched, the owner has the newer question); another one is `open`.
      */
-    async ask(task: string, who: "owner" | "delegator", question: string, asked = false, beforeSend?: () => void): Promise<{ sent: "asked" | "same" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo }> {
+    async ask(task: string, who: "owner" | "delegator", question: string, asked = false, beforeSend?: () => void): Promise<{ sent: "asked" | "asked-open" | "same" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo }> {
       const q = neutral(question).trim().slice(0, 1500);
       const t = await issue(task);
       if (!q || !t || CLOSED.includes(String(t.status))) return { sent: "gone" };
@@ -200,8 +202,11 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
         // A retry of the question already open is idempotent: nothing is sent twice and the recorded wait stands as it is. The
         // wait fact holds the question as the caller sent it; the comparison normalises both the same way `q` was.
         if (neutral(open.question).trim().slice(0, 1500) === q) return { sent: "same", to: open.to };
-        // One open ask per task: a different question waits for the answer, and the caller fails actionably (idle.ts). This holds
-        // for an `asked` replay too: the owner got that different question, but it doesn't replace a live ask either.
+        // An `asked` replay that may go to the owner directly was already delivered (notify): refusing it would fail a call whose
+        // question the owner has, and recording it would replace the live ask. The live ask stands and the caller is told the
+        // owner has the newer question too, so the agent can read that reply rather than lose it.
+        if (asked && to === "owner") return { sent: "asked-open", to: open.to };
+        // One open ask per task: a different question waits for the answer, and the caller fails actionably (idle.ts).
         return { sent: "open", to: open.to };
       }
       // The caller's own precondition (a wait that must arm) is checked before anything leaves the kernel: a question a recipient
