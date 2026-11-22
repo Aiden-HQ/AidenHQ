@@ -1606,8 +1606,8 @@ export function createEngine(d: EngineDeps) {
           const key = `reply:${r.id}`;
           if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
           if (!open.has(t.finding)) {
-            // Not gating: closed (consumed) or still open with its post pending (left unread for the poll that sees it gate).
-            if (!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", cfg.repo, p.number, t.finding)) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
+            // Not gating: consumed, unless it is an important finding of a mandatory run whose post hasn't settled (left unread for the poll that sees it gate).
+            if (!one("SELECT 1 FROM findings f JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.outcome IS NULL AND f.severity = 'important' AND x.mandatory = 1 AND x.posted != 'posted'", cfg.repo, p.number, t.finding)) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
             continue;
           }
           const m = answerOf(r.body);
