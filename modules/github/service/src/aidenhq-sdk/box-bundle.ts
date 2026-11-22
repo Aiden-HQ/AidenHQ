@@ -7,6 +7,8 @@ import { join, sep } from "node:path";
 
 /** Where the in-box `aidenhq` leaves a branch's bundle, relative to the task's workspace. */
 export const bundlePath = (sha: string) => `.aidenhq/bundles/${sha}.bundle`;
+/** The one ref a bundle carries, named by the sha alone so no branch decides it; hosts fetch it into the branch they push. The in-box `aidenhq` (plain node) writes the same literal. */
+export const publishRef = (sha: string) => `refs/aidenhq/publish/${sha}`;
 const MAX_BUNDLE = 1 << 30;
 const IDENT = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 const SHA = /^[0-9a-f]{40}$/;

@@ -38,6 +38,7 @@
 // kernel with the token: /v1/writes, /v1/jobtools, /c/<connection>/mcp), AIDENHQ_RUN_TOKEN (the job's `ahqj_` token, which
 // names the job: the kernel takes the job, its task and its workspace from it, never from the request) and
 // AIDENHQ_TASK_WORKTREE (the task's workspace folder, whose clones <name> or <org>--<name> the code host pushes from).
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -136,7 +137,7 @@ const cloneOf = (repo) => {
  * A branch's commit in this workspace's clone of org/repo (cloneOf), the one the code host takes, with the branch's bundle
  * beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
  */
-const commitOf = (repo, branch) => {
+const shaOf = (repo, branch) => {
   const [org, name] = repo.split("/");
   const dir = cloneOf(repo).have;
   if (!dir) fail(`this workspace has no clone of ${repo} (${name} or ${org}--${name})`, 2);
@@ -146,9 +147,48 @@ const commitOf = (repo, branch) => {
   } catch {
     fail(`${repo} has no branch \`${branch}\` in ${dir}`, 2);
   }
-  mkdirSync(join(workspace, ".aidenhq", "bundles"), { recursive: true });
-  execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
   return sha;
+};
+const bundle = (repo, branch, sha) => {
+  const dir = cloneOf(repo).have;
+  const out = join(workspace, ".aidenhq", "bundles");
+  mkdirSync(out, { recursive: true });
+  // Written beside the final file and checked first: a bundle of a branch that moved since sha was read never replaces the good one.
+  // The file is named by the sha alone and carries one ref named by the sha alone (publishRef in kernel/sdk/src/box-bundle.ts, which
+  // the code hosts fetch), so every branch at that commit makes the same file and none can overwrite another's. The ref stays after: it
+  // holds the same sha every time, and deleting it would race a parallel bundle of that sha.
+  const pub = `refs/aidenhq/publish/${sha}`;
+  const tmp = join(out, `${sha}.${process.pid}.tmp`);
+  try {
+    if (execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { encoding: "utf8" }).trim() !== sha) throw new Error(`${branch} moved since ${sha.slice(0, 12)} was checked`);
+    try { execFileSync("git", ["-C", dir, "update-ref", pub, sha], { stdio: ["ignore", "ignore", "pipe"] }); } catch (e) { // a parallel bundle of this sha may hold the ref's lock
+      const now = (() => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", pub], { encoding: "utf8" }).trim(); } catch { return ""; } })();
+      if (now !== sha) throw new Error(`could not set ${pub}: ${String(e.stderr ?? e.message).trim().slice(0, 300)}`);
+    }
+    execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", tmp, pub], { stdio: ["ignore", "ignore", "inherit"] });
+    const heads = execFileSync("git", ["-C", dir, "bundle", "list-heads", tmp], { encoding: "utf8" }).split("\n").filter(Boolean);
+    if (heads.length !== 1 || heads[0] !== `${sha} ${pub}`) throw new Error(`the bundle of ${branch} doesn't hold ${sha.slice(0, 12)}`);
+    renameSync(tmp, join(out, `${sha}.bundle`));
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+};
+const commitOf = (repo, branch) => { const sha = shaOf(repo, branch); bundle(repo, branch, sha); return sha; };
+/**
+ * Publish asks for the record self-review.ts leaves in the clone's git dir (branch -> {base, head, open}) for the head it files:
+ * a review ran on that commit, whatever it found (findings judged wrong still publish; the skill puts them in the PR body).
+ */
+const checked = new Map(); // branch -> the sha that passed; filing refuses a branch that moved since (and bundles only then)
+const needSelfReview = (repo, branch) => {
+  const dir = cloneOf(repo).have;
+  if (!dir) fail(`this workspace has no clone of ${repo}`, 2);
+  const sha = shaOf(repo, branch);
+  let seen;
+  try {
+    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), `self-review-${createHash("sha256").update(branch).digest("hex")}.json`), "utf8")).head;
+  } catch {}
+  checked.set(`${repo} ${branch}`, sha);
+  if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
 };
 const CONVENTIONAL = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|style|revert)(\([a-z0-9][a-z0-9._\/-]*\))?!?: \S/;
 /** The subject of the branch's first commit (the oldest one no remote branch has), the one a squash merge would carry. */
@@ -196,9 +236,20 @@ const lines = [];
 if (command === "publish" || command === "review") {
   if (!words.length || words.length % 2) fail("name branches as <org/repo> <branch> pairs", 2);
   const body = withFixes(flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : "", fixes);
+  if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
-    const sha = commitOf(repo, branch);
+    const sha = shaOf(repo, branch);
+    if (command === "publish" && checked.get(`${repo} ${branch}`) !== sha) { // moved while an earlier write ran: say so, keep the earlier results
+      bad.push(`${repo} ${branch}`);
+      lines.push(`${repo} ${branch}: not published; it moved after its self-review check, run self-review again`);
+      continue;
+    }
+    try { bundle(repo, branch, sha); } catch (e) {
+      bad.push(`${repo} ${branch}`);
+      lines.push(`${repo} ${branch}: not published; its bundle failed (${String(e.message).slice(0, 300)})`);
+      continue;
+    }
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);

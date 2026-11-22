@@ -70,7 +70,7 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "Say hi");
   const head = git(ws, "rev-parse", "HEAD");
   // What `aidenhq publish` does in the box: the branch's bundle, the one file the kernel reads.
-  const bundle = (sha, branch) => (mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true }), git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`));
+  const bundle = (sha) => (mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true }), git(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha), git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`));
   bundle(head, "greet");
   // The agent plants config and hooks in its clone: none of it ever runs on the host.
   const pwned = join(dir, "pwned");
@@ -102,7 +102,8 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   mkdirSync(other);
   writeFileSync(join(ws, "two.txt"), "2\n"); git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "two");
   const two = git(ws, "rev-parse", "HEAD");
-  git(ws, "bundle", "create", "--quiet", join(other, `${two}.bundle`), "refs/heads/greet");
+  git(ws, "update-ref", `refs/aidenhq/publish/${two}`, two);
+  git(ws, "bundle", "create", "--quiet", join(other, `${two}.bundle`), `refs/aidenhq/publish/${two}`);
   const bundles = join(tasks, "TASK-1", ".aidenhq", "bundles");
   symlinkSync(join(other, `${two}.bundle`), join(bundles, `${two}.bundle`));
   const publishTwo = () => writes.request(job, { kind: "codehost.push", args: { only: [{ repo: "local/hello", branch: "greet", sha: two }] } });
@@ -192,7 +193,8 @@ test("a local merge's refusals, through the real host: a moved head, a check mis
   const first = git(ws, "rev-parse", "HEAD");
   const push = async (sha) => {
     mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true });
-    git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), "refs/heads/feat");
+    git(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha);
+    git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`);
     await writes.wait((await writes.request(job, { kind: "codehost.pr", args: { only: [{ repo: "local/app", branch: "feat", sha }], text: { title: "a", body: "b" } } })).id, 15_000);
   };
   await push(first);
@@ -230,7 +232,8 @@ test("a local merge's refusals, through the real host: a moved head, a check mis
   const conflict = git(ws, "rev-parse", "HEAD");
   const bundleOf = (sha, branch) => {
     mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true });
-    git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`);
+    git(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha);
+    git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`);
   };
   bundleOf(conflict, "feat-two");
   await writes.wait((await writes.request(job, { kind: "codehost.pr", args: { only: [{ repo: "local/app", branch: "feat-two", sha: conflict }], text: { title: "two", body: "b" } } })).id, 15_000);

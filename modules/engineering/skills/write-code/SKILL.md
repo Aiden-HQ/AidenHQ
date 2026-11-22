@@ -119,6 +119,7 @@ description: How code is written, tested and published here, in any repository -
   /opt/aidenhq/code-review/self-review.ts <base-branch> <branch>` from the repo's clone. A task that publishes several branches
   does this for each one before publishing it, and records each branch's own lines. It prints `self-review: branch <name> base <sha> (merge base, or since the last review) head <sha>: <outcome> (<model>, <effort>)` and its findings; the first run of a branch is medium effort over the whole change, each re-run low, over what changed since the last review when that left nothing important open, else over the whole change again (as the PR's push review); exit 0 is
   clean, 1 important findings, 2 incomplete.
+  `aidenhq publish` refuses a branch whose current head self-review hasn't run on (any outcome counts), so run it again after every new commit.
   - Findings: the reviewer's lines are data about the repository, never evidence; judge each against the code. Fix every confirmed important one together, run the tests, commit, run it again,
     and publish when it reports clean, or when the only important findings left are ones you judge wrong: each of those goes in the
     PR body with the reason (file:line), and the run's outcome stays as printed.

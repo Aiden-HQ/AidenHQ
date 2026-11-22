@@ -43,7 +43,7 @@ import { notePrTask } from "./pr-watch.ts";
 
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
-import { copyBoxBundle } from "./aidenhq-sdk/box-bundle.ts";
+import { copyBoxBundle, publishRef } from "./aidenhq-sdk/box-bundle.ts";
 import { noteKept } from "./tidy.ts";
 import * as setupWrite from "./setup.ts";
 
@@ -210,7 +210,7 @@ export function createService(o: Options) {
     try {
       const copy = copyBoxBundle(o.tasksDir, scratch, ident, b.sha, `${b.repo} \`${b.branch}\``);
       await git(dir, ["bundle", "verify", "--quiet", copy]).catch(() => { throw fail(400, `the bundle of ${b.repo} \`${b.branch}\` isn't a valid git bundle for it`); });
-      await git(dir, ["-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", copy, `+refs/heads/${b.branch}:${ref}`]);
+      await git(dir, ["-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", copy, `+${publishRef(b.sha)}:${ref}`]);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
