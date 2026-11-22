@@ -179,6 +179,7 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         if (Date.now() >= deadline) return void (state.ended = false);
         continue;
       }
+      if (Date.now() >= deadline) return void (state.ended = false);
       afterId = "0";
     }
     let id = afterId;

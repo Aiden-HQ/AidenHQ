@@ -110,7 +110,8 @@ it("more than a page of records at one modified time (a bulk edit) are read by i
   // A budget that runs out inside the tie saves "<time>#<id>"; the next pass starts after that id.
   const part = fakeStore();
   part.scopes.set("contacts", { baselined: true, cursor: TIE });
-  await syncObject(part.store, call, "contacts", opts({ deadline: Date.now() - 1 }));
+  const slowTie = async (tool: string, args: Record<string, any>) => (args.filterGroups[0].filters[0].operator === "EQ" && (await new Promise((r) => setTimeout(r, 40))), call(tool, args));
+  await syncObject(part.store, slowTie, "contacts", opts({ deadline: Date.now() + 20 }));
   const first = part.scopes.get("contacts")!.cursor!;
   expect(first).toMatch(/^2026-09-01T04:00:00.000Z#\d+$/);
   const done = Number(first.split("#")[1]);
