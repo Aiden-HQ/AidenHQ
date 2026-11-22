@@ -35,17 +35,13 @@ const slugOf = (repo: unknown) => {
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
 
-// A PR and an issue as the grader reads them (modules/grading/service/src/grader/evidence.ts). `chain` is the PR's own commits as
-// GitHub defines them (the head branch's commits not present in the base branch), each with its first parent: evidence.ts finds the
-// one commit whose parent is not itself in that list -- the oldest -- and states that parent as the base commit. It is read as a
-// whole list, never as `first: 1`, because GitHub documents neither the connection's order nor that one page holds every commit.
-// Nodes are `PullRequestCommit`s, whose commit is under `.commit`; the base ref's oid is never selected: it is the base ref's moving
-// tip, not a commit the PR's history starts from.
+// A PR and an issue as the grader reads them (modules/grading/service/src/grader/evidence.ts). `baseRefOid` is the base ref's
+// commit recorded on this PR, which evidence.ts states as the PR's base commit: a criterion about the commit the PR is based on
+// is judged from it. It is not `baseRef.target` (the base branch's current tip, which moves) and not the git merge base.
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title body url state headRefOid headRefName baseRefName mergedAt mergeCommit { oid }
-      chain: commits(first: 100) { pageInfo { hasNextPage } nodes { commit { oid parents(first: 10) { totalCount nodes { oid } } } } }
+      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }

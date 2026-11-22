@@ -50,3 +50,9 @@ the measurement and what would fix it — since filing the fix is its author's. 
 ## Done
 
 Each run is done when its skill's steps are done and you have called `task_finish` on your run task with the skill's one-line summary; a monitor's run is the exception and ends with its armed wait. Before closing a graded task, check its rubric against the artifact.
+
+**One ending is not `task_finish`:** when the run's task is your own part of a task the owner is responsible for, end it
+with the own-part handoff in [scripts/prompts/own-part.md](../../../../scripts/prompts/own-part.md), "Your part of the
+owner's task": `task_handoff` on the task this run is on, with the owner wait it records. That wait is a requirement of
+the ending, so do not end the run until the call reports it recorded. On any other task `task_handoff` refuses you: settle
+it with `task_route`, `task_finish` or `task_cancel`.

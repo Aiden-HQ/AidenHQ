@@ -54,6 +54,10 @@ const UNTRUSTED_SECTION = section("untrusted");
 // The words every agent uses with one meaning, and the shape of a handoff and its report.
 const GLOSSARY_SECTION = section("glossary");
 const HANDOFF_SECTION = section("handoff");
+// The own-part ending (a part of the owner's task): only an agent that holds task_handoff can end a run that way, so this
+// section goes to those agents alone (an agent without the tool would read an ending it is refused). The delegation and
+// report-back guidance above is every agent's, whatever its grant.
+const OWN_PART_SECTION = section("own-part");
 /** The owner's standing outcomes (compile's `outcomes`, from instance.yaml), each with its owning agent. */
 function outcomesSection(cfg: Obj) {
   const list = cfg.outcomes ?? [];
@@ -100,6 +104,7 @@ export function handbookParts(cfg: Obj, key: string, a: Obj, { repo, instanceDir
     ["glossary", codex ? GLOSSARY_SECTION : ""],
     ["outcomes", codex ? outcomesSection(cfg) : ""],
     ["handoff", codex ? HANDOFF_SECTION : ""],
+    ["own-part", codex && a.enabled_tools?.paperclip_tasks?.includes("task_handoff") ? OWN_PART_SECTION : ""],
     ["approvals", codex ? APPROVALS_SECTION : ""],
     ["web", !codex ? "" : a.web_search === "disabled" ? WEB_SECTION.replace("You have live web search, `web_view`", "You have `web_view`") : WEB_SECTION],
     ["app-followup", codex ? appFollowupSection(a) : ""],
