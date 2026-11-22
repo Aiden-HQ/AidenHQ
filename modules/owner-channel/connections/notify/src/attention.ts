@@ -58,6 +58,8 @@ export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours
   const day = new Date(now).toISOString().slice(0, 10);
   const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
   if (key && store.getKv(key) === day) return true;
+  // One need is one line: a pending line with the same dedupe key (an earlier day's) gives way to this one.
+  if (key) store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => i.key !== key)));
   queueDigest(store, { agent: "AidenHQ", text: m.text, source: "kernel", kind: "fyi", ...(key ? { key } : {}) }, now);
   if (key) store.setKv(key, day);
   return true;
@@ -74,6 +76,19 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 const DIGEST_MAX = 3000;
 const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`;
 
+const NEED = "connect:";
+/**
+ * Which of these dedupe keys are connection-need lines (`connect:<key>`) the kernel no longer confirms down: a recovered, expired or
+ * removed need is never told. A kernel that can't be read keeps every line: better to tell the owner than to hide a real outage.
+ * Both the digest and an immediate send ask here.
+ */
+export async function goneNeeds(dedupeKeys: (string | undefined)[], liveNeeds?: () => Promise<string[]>): Promise<Set<string>> {
+  const needs = dedupeKeys.filter((k): k is string => Boolean(k?.startsWith(NEED)));
+  if (!liveNeeds || !needs.length) return new Set();
+  const live = await liveNeeds().then((k) => new Set(k), () => undefined);
+  return live ? new Set(needs.filter((k) => !live.has(k.slice(NEED.length)))) : new Set();
+}
+
 /**
  * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
  * message's items leave the queue (and are told) only once it went; a failed send keeps the rest for the next tick.
@@ -82,17 +97,11 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
   let q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  // A connection-need line goes only while the kernel still confirms that need down; a recovered, expired or removed one drops out.
-  // A kernel that can't be read keeps every line: better to tell the owner than to hide a real outage.
-  if (liveNeeds && q.some((i) => i.key?.startsWith("batch:connect:"))) {
-    const live = await liveNeeds().then((k) => new Set(k), () => undefined);
-    if (live) {
-      const gone = new Set(q.filter((i) => i.key?.startsWith("batch:connect:") && !live.has(i.key.slice("batch:connect:".length))).map((i) => i.id));
-      if (gone.size) {
-        q = q.filter((i) => !gone.has(i.id));
-        store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !gone.has(i.id))));
-      }
-    }
+  const gone = await goneNeeds(q.map((i) => i.key?.replace(/^batch:/, "")), liveNeeds);
+  if (gone.size) {
+    const stays = (i: Item) => !gone.has(String(i.key?.replace(/^batch:/, "")));
+    q = q.filter(stays);
+    store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter(stays)));
   }
   const batches: Item[][] = [];
   for (const i of q) {

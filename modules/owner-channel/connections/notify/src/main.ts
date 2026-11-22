@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { flushDigest, queueBatch } from "./attention.js";
+import { flushDigest, goneNeeds, queueBatch } from "./attention.js";
 import { kernelClient } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { KINDS, notify, retry, sendDigest, type Deps, type Kind } from "./notify.js";
@@ -119,6 +119,11 @@ const take = async () => {
   const done: number[] = [];
   try {
     for (const m of await kernel.take()) {
+      // A connection need the kernel no longer confirms down is not told, by digest or at once.
+      if (m.batch === true && (await goneNeeds([m.dedupe_key], () => kernel.liveNeeds())).size) {
+        if (Number.isInteger(m.id)) done.push(m.id);
+        continue;
+      }
       // A kernel batch line waits for the digest slot (or goes as an fyi when there are no digest hours).
       if (m.batch === true && queueBatch(store, d.attention!, { text: String(m.text ?? ""), ...(m.dedupe_key ? { dedupe_key: String(m.dedupe_key) } : {}) })) {
         if (Number.isInteger(m.id)) done.push(m.id);
