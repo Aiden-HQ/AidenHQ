@@ -29,11 +29,15 @@ ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr
 # A one-off that dies without --rm keeps its whole writable layer forever, and nothing else prunes stopped containers. Only
 # containers that are stopped AND over a day old go; container prune never removes a volume, so no data is touched. The
 # script (ops/prune-docker-containers.sh) checks `State.FinishedAt` — `docker container prune --filter until=` filters on
-# created time, so it could remove a compose service an apply's generation snapshot had just stopped.
+# created time, so it could remove a compose service an apply's generation snapshot had just stopped. The script records its
+# own exit status under this invocation (the same record the image step's wrapper writes): a listing that failed while the
+# daemon was unreachable can recover before the verification's own re-listing, and a fresh listing with nothing to remove
+# would then read as a clean scan — the record is how the verification still sees this run's scan never completed.
 ExecStart=-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
 # Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, cache under 20 GB,
-# no one-off stopped over a day still there — and reads the image prune's recorded status, so a prune that did nothing at
-# all is a failed unit (UnitFailed), not a silent success, while each step above still ran whatever the ones before it did.
+# no one-off stopped over a day still there — and reads the image and container steps' recorded status, so a prune that did
+# nothing at all is a failed unit (UnitFailed), not a silent success, while each step above still ran whatever the ones
+# before it did.
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-verify.sh
 
 # The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).

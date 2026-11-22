@@ -74,4 +74,17 @@ for id in $ids; do
   fi
 done
 
-[ "$failed" -eq 0 ] || exit 1
+rc=0
+[ "$failed" -eq 0 ] || rc=1
+# The unit's step is `-`-prefixed, so this exit status never reaches systemd by itself. ops/prune-docker-verify.sh reads it
+# from the state file: a listing that failed while the daemon was unreachable can recover before the verification's own
+# re-listing, and a fresh listing with nothing eligible would then read as a clean scan. The record is one atomic write,
+# the shape ops/prune-docker-step.sh writes, under this run's systemd INVOCATION_ID (or this process's pid when run by
+# hand, which no other step shares).
+state="${AIDENHQ_STATE_DIR:-${HOME:-/nonexistent}/.local/state/aidenhq}/prune-docker"
+mkdir -p "$state" 2>/dev/null || true
+if [ -d "$state" ]; then
+  printf '%s %s\n' "${INVOCATION_ID:-manual-$$}" "$rc" > "$state/containers.tmp" 2>/dev/null \
+    && mv -f "$state/containers.tmp" "$state/containers" 2>/dev/null
+fi
+exit "$rc"

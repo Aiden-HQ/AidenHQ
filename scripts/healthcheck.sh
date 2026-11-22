@@ -256,7 +256,9 @@ unit_runs_applied() { # service, name [env]
   # it before would let a space in it split the one argument systemd printed as a quoted word.
   argv=()
   split_argv "$argv_text"
-  for i in "${!argv[@]}"; do argv[i]="${argv[i]//\$\{AIDENHQ_DIR\}/$dir}"; done
+  # The replacement is quoted: since bash 5.2 an unquoted `&` in it means "the matched text" (patsub_replacement), so a
+  # checkout at /home/me/A&B would resolve to /home/me/A${AIDENHQ_DIR}B and the check would fail a unit systemd runs fine.
+  for i in "${!argv[@]}"; do argv[i]="${argv[i]//\$\{AIDENHQ_DIR\}/"$dir"}"; done
   [ -n "$path" ] && [ "${#argv[@]}" -gt 0 ] || { echo "the unit's ExecStart has no executable or argv: $line"; return 1; }
   executable="$(realpath "$path" 2>/dev/null || printf '%s' "$path")"
   program="$(realpath "${argv[0]}" 2>/dev/null || command -v "${argv[0]}" 2>/dev/null || printf '%s' "${argv[0]}")"
@@ -346,9 +348,9 @@ unit_runs_applied() { # service, name [env]
 if [ -e "$HOME/.config/systemd/user/prune-docker.timer" ]; then
   check "docker prune timer runs the applied checkout's container step" unit_runs_applied prune-docker.service prune-docker-containers prune-docker
   check "docker prune timer runs the applied checkout's verification" unit_runs_applied prune-docker.service prune-docker-verify prune-docker
-  # The image and container steps are `-`-prefixed, so their failures reach the verification through the status
-  # ops/prune-docker-step.sh records. The wrapper is a script too, and a stale checkout's copy writes its records where the
-  # applied verification does not read them.
+  # The image and container steps are `-`-prefixed, so their failures reach the verification through the status they record
+  # (ops/prune-docker-step.sh for the image step, ops/prune-docker-containers.sh itself for the container step). The wrapper
+  # is a script too, and a stale checkout's copy writes its records where the applied verification does not read them.
   check "docker prune timer runs the applied checkout's step wrapper" unit_runs_applied prune-docker.service prune-docker-step prune-docker
 else
   printf '  skip  docker prune (timer not installed)\n'

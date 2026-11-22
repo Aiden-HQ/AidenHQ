@@ -225,6 +225,24 @@ test("an exec that names the checkout through ${AIDENHQ_DIR} expands after the s
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
 });
 
+test("a checkout path with a literal & is substituted as itself, not as the matched text", { skip: NOT_LINUX }, async () => {
+  // Since bash 5.2 an unquoted `&` in a substitution's replacement means "the matched text": an instance at /home/me/A&B
+  // would resolve to /home/me/A${AIDENHQ_DIR}B and fail a unit systemd runs correctly. The checkout must go in literally.
+  const base = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(base, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  const amped = join(base, "A&B");
+  mkdirSync(amped);
+  for (const e of ["scripts", "ops", "bin", "config", "home", "healthz", "execstart"]) renameSync(join(base, e), join(amped, e));
+  writeFileSync(join(amped, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${amped}\n`);
+  writeFileSync(join(amped, "execstart"), [
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-verify.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  ].join("\n") + "\n");
+  const r = await run(amped);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
+});
+
 const services = [
   { port: "8085", name: "glean", label: "Glean", check: "glean sign-in" },
   { port: "8087", name: "grafana", label: "Grafana", check: "grafana sign-in" },

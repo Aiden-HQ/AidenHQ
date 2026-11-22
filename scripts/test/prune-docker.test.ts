@@ -55,7 +55,10 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   // The image and container prunes go through the step wrapper, which records their status for the verification: the `-`
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
+  // The container step records its own status: a listing that failed while the daemon was unreachable can recover before
+  // the verification's re-listing, and its fresh listing would then read as a clean scan, so its status has to be kept.
   assert.ok(execs.some((e) => e === "-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
+  assert.match(commands(script), /\$state\/containers|"\$state\/containers"/, "the container step records its status for the verification");
   // The cache is snapshotted by its own prefixed step, immediately after the two builder prunes and before the image and
   // container prunes (which take minutes on a large host): a build adding cache while those run does not get into the
   // snapshot.
@@ -140,7 +143,7 @@ test("the apply-time prunes are independent too, and keep the same retention", (
 function fakeDocker({
   containers = [], cache = "10.52GB", daemonUp = true, cacheRow = true, imagePruneFails = false,
   uninspectable = [], vanishOnRm = [], vanishOnInspect = [], relistFails = false, systemDfFails = false,
-  restartedBeforeRm = [], reclaimable = "", sizeMissing = false,
+  restartedBeforeRm = [], reclaimable = "", sizeMissing = false, labelListFails = false,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prune-docker-"));
   const bin = join(dir, "bin");
@@ -165,7 +168,9 @@ case "$1 $2" in
   "info") exit ${daemonUp ? 0 : 1} ;;
   "ps -aq")
     case "$*" in
-      *"label="*) grep 'labelled$' "\${rows_file}" | cut -d'|' -f1 ;;
+      *"label="*)
+        ${labelListFails ? `[ "\${PRUNE_LABEL_FAIL:-0}" = 1 ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }` : ""}
+        grep 'labelled$' "\${rows_file}" | cut -d'|' -f1 ;;
       ${relistFails ? `*) [ "\${PRUNE_RELIST_FAIL:-0}" = 1 ] || exit 0; echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;` : ""}
       *) cut -d'|' -f1 "\${rows_file}" ;;
     esac
@@ -253,6 +258,31 @@ test("only one-offs stopped over a day are removed, and never with their volumes
   assert.match(r.calls, /^ps -aq --filter label=aidenhq\.oneoff=1/m, r.calls);
   assert.match(r.out, /never: never started, kept/, r.out);
   assert.doesNotMatch(r.calls, /rm -[a-z]*v/, "docker rm takes no -v: volumes stay");
+  assert.equal(r.status, 0, r.out);
+});
+
+test("a container listing that failed while the daemon was down still fails the run once Docker answers again", () => {
+  // The step is `-`-prefixed, so its exit status never reaches systemd. With only the verification's own re-listing, a
+  // listing that failed while the daemon was unreachable and recovered would read as a clean scan with nothing to remove.
+  assert.match(script, /containers/);
+  const state = mkdtempSync(join(tmpdir(), "prune-containers-status-"));
+  mkdirSync(join(state, "prune-docker"));
+  writeFileSync(join(state, "prune-docker/images"), "inv-l 0\n");
+  writeFileSync(join(state, "prune-docker/build-cache"), 'inv-l 0\n{"Type":"Build Cache","Size":"1GB","Reclaimable":"0B"}\n');
+  const down = fakeDocker({ labelListFails: true });
+  let r = down.run("ops/prune-docker-containers.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-l", PRUNE_LABEL_FAIL: "1" });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /could not list the containers/);
+  assert.equal(readFileSync(join(state, "prune-docker/containers"), "utf8").trim(), "inv-l 1", "the step records its own failure");
+  // Docker answers again by the time the verification re-lists, and nothing is eligible: the recorded status is what
+  // still fails the unit.
+  const up = fakeDocker({});
+  r = up.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-l", DOCKER: join(up.bin, "docker") });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /containers prune step exited 1/);
+  // A run whose listing did complete is clean.
+  writeFileSync(join(state, "prune-docker/containers"), "inv-l 0\n");
+  r = up.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-l", DOCKER: join(up.bin, "docker") });
   assert.equal(r.status, 0, r.out);
 });
 
@@ -354,6 +384,7 @@ test("the verification reads an absent Build Cache row and a failed image prune 
   const state = mkdtempSync(join(tmpdir(), "prune-state-"));
   mkdirSync(join(state, "prune-docker"));
   writeFileSync(join(state, "prune-docker/images"), "inv-1 1\n");
+  writeFileSync(join(state, "prune-docker/containers"), "inv-1 0\n");
   d = fakeDocker({ imagePruneFails: true });
   r = d.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-1" });
   assert.equal(r.status, 1, r.out);
@@ -363,7 +394,21 @@ test("the verification reads an absent Build Cache row and a failed image prune 
   r = fakeDocker({}).run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-2" });
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /left no status/);
+  // Outside systemd no step ran, so no record is expected at all.
   r = fakeDocker({}).run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state });
+  assert.equal(r.status, 0, r.out);
+  // The container step's own failure is read the same way: a listing that failed while the daemon was down can recover
+  // before this re-listing, and a fresh listing with nothing eligible would otherwise read as a clean scan.
+  const cstate = mkdtempSync(join(tmpdir(), "prune-state-c-"));
+  mkdirSync(join(cstate, "prune-docker"));
+  writeFileSync(join(cstate, "prune-docker/images"), "inv-c 0\n");
+  writeFileSync(join(cstate, "prune-docker/build-cache"), 'inv-c 0\n{"Type":"Build Cache","Size":"1GB","Reclaimable":"0B"}\n');
+  writeFileSync(join(cstate, "prune-docker/containers"), "inv-c 1\n");
+  r = fakeDocker({}).run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: cstate, INVOCATION_ID: "inv-c" });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /containers prune step exited 1/);
+  writeFileSync(join(cstate, "prune-docker/containers"), "inv-c 0\n");
+  r = fakeDocker({}).run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: cstate, INVOCATION_ID: "inv-c" });
   assert.equal(r.status, 0, r.out);
   // A labelled container the daemon lists but cannot inspect is a cleanup that could not be checked: a failure.
   d = fakeDocker({ containers: [{ id: "ghost", running: "false", finished: "2", oneoff: true }], uninspectable: ["ghost"] });
@@ -520,10 +565,11 @@ test("the cap is judged on the cache right after pruning, not on a later read a 
   const state = mkdtempSync(join(tmpdir(), "prune-snapshot-"));
   const step = (d, name = "build-cache", ...cmd) => spawnSync("bash", [join(repo, "ops/prune-docker-step.sh"), name, ...(cmd.length ? cmd : ["docker", "system", "df", "--format", "{{json .}}"])],
     { env: { PATH: `${d.bin}:/usr/bin:/bin`, AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-run" }, encoding: "utf8" });
-  // The image step ran too (with its own status): the verification reports every missing record, and this test is about
-  // the cache snapshot.
+  // The image and container steps ran too (with their own status): the verification reports every missing record, and
+  // this test is about the cache snapshot.
   const pruned0 = fakeDocker();
   assert.equal(step(pruned0, "images", "docker", "image", "prune", "-af").status, 0);
+  assert.equal(step(pruned0, "containers", "bash", "-c", "exit 0").status, 0);
   // The builder prunes finished at 10.52 GB: the step right after them records exactly that.
   const pruned = fakeDocker({ cache: "10.52GB" });
   assert.equal(step(pruned, "build-cache", "docker", "system", "df", "--format", "{{json .}}").status, 0);

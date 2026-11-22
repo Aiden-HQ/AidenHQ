@@ -223,10 +223,12 @@ in that snapshot, over 20 GB with nothing reclaimable is a build holding that ca
 reclaimable bytes at all mean the cap did not hold. The snapshot, its status and its invocation are one record, so a run
 is only ever judged on its own result, and the cap's only tolerance is the precision Docker printed the size with.
 
-The image and container steps run through `ops/prune-docker-step.sh`, which records the step's exit status for the
-verification: the `-` prefix keeps a failure from skipping the next step, and the verification reads the record, so a
-failed image prune still fails the unit without running the same 48 h prune a second time. A `build-cache` snapshot that
-could not be read is reported as unknown, never as "nothing cached".
+Each step's exit status is recorded for the verification: the `-` prefix keeps a failure from skipping the next step, and
+the verification reads the record, so a failed prune still fails the unit without running the same 48 h prune a second
+time. The image step is wrapped by `ops/prune-docker-step.sh`, which writes it; `ops/prune-docker-containers.sh` writes its
+own, since a container listing that failed while the daemon was unreachable can recover before the verification's
+re-listing, and that fresh listing alone would read as a clean scan. A `build-cache` snapshot that could not be read is
+reported as unknown, never as "nothing cached".
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

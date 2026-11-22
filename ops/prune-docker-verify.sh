@@ -14,9 +14,10 @@
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
 #      should have removed it), and every container it lists can be read (an unreadable one is a cleanup it could not do,
 #      not a clean run);
-#   4. the image step's recorded exit status is 0 (its `-` prefix keeps a failure from skipping the next step, and this is
-#      how it still fails the unit), and the `build-cache` step — which took the snapshot the cap is judged on — could run
-#      and save it;
+#   4. the image and container steps' recorded exit status is 0 (their `-` prefix keeps a failure from skipping the next
+#      step, and this is how it still fails the unit — a container listing that failed while the daemon was unreachable can
+#      recover before the re-listing below, so the fresh listing alone would read as a clean scan), and the `build-cache`
+#      step — which took the snapshot the cap is judged on — could run and save it;
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
@@ -44,7 +45,7 @@ step_status() { # name -> the status of this invocation's step, or nothing (the 
   [ "$run" = "${INVOCATION_ID:-manual-$$}" ] && printf '%s' "$rc"
   return 0
 }
-for name in images; do
+for name in images containers; do
   rc="$(step_status "$name")"
   case "$rc" in
     # Under systemd every -prefixed step above ran, so a missing status means the wrapper could not record its result:
