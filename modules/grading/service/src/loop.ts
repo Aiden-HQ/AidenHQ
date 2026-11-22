@@ -51,6 +51,28 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     await settle(task, steps);
   }
   /**
+   * Whether the row still holds the filing a queued step was computed on. A step saved before steps carried a filing names
+   * none, and is checked against the row as it stands now rather than skipped: a close queued before an amendment must not
+   * land on the amended row. "unknown" is a read that failed: the step stays queued and the next pass asks again, so a blip
+   * neither drops a move that is still owed nor applies one that may be stale.
+   */
+  async function stillFiled(task: string, filing?: string, step?: Json): Promise<"ok" | "stale" | "unknown"> {
+    let row: Json;
+    try {
+      row = await api.get(`/internal/grades/${encodeURIComponent(task)}`);
+    } catch (err: Json) {
+      log("a queued move waits: the grade state could not be read", { issue: task, err: String(err?.message ?? err).slice(0, 200) });
+      return "unknown";
+    }
+    if (!row) return "unknown";
+    if (filing) return !row.filing || row.filing === filing ? "ok" : "stale";
+    // A step saved before steps carried a filing names none. The row it settled is the only proof it is still current: a
+    // satisfied row holding the same rubric and deliverable is that row, and anything else (restarted, amended, still open)
+    // means the filing it closed is gone, so it is not replayed.
+    if (row.state !== "satisfied") return "stale";
+    return JSON.stringify(row.rubric) === JSON.stringify(step?.rubric) && JSON.stringify(row.deliverable) === JSON.stringify(step?.deliverable) ? "ok" : "stale";
+  }
+  /**
    * A parent notice from the fields it was queued with, never by parsing its rendered text: a task's title is free text and can
    * itself contain the phrase a parser would split on, which would then point the parent at the wrong task.
    */
@@ -79,6 +101,14 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
         else if (s.do === "done") {
           // Replayed later: still the task and evidence the grader saw? Else the verdict is stale: drop the close and the notice,
           // and send the row back to waiting so the next pass grades what is there now.
+          // A close queued before filings were named carries none: it is checked against the row as it stands now instead of
+          // replaying blindly onto a rubric amended since.
+          const filed = await stillFiled(task, s.filing, s);
+          if (filed === "unknown") return;
+          if (filed === "stale") {
+            log("a satisfied verdict is stale: the filing was replaced", { issue: task });
+            return;
+          }
           const now = await pc.issue(task);
           // An empty recorded version (no deliverable then) is stale once one appears. `gather()` can't tell a deliverable whose
           // evidence isn't capturable (a deployed app whose live page is down) from no deliverable, so the presence check decides.
@@ -242,6 +272,10 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // most MAX_WAKES times; a reason already woken, or one past the cap, ends the wait now.
       const nudge = ev.busy || waitOver ? "" : await stalled(issue, g, ev.awaiting);
       if (nudge === "wake") {
+        // The wake moves the task back to todo: only for the filing this pass read. A row amended meanwhile is a different
+        // filing, and waking its assignee for a reason the amendment may have removed is the same staleness a verdict is.
+        const filed = await stillFiled(g.issueId, filing);
+        if (filed !== "ok") return;
         await wake(issue, ev.awaiting);
         if (g.state !== "awaiting_evidence") await api.post(verdictPath, { version: "", outcome: "awaiting_evidence", rubric: filing });
         return;

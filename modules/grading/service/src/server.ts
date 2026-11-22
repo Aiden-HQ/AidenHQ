@@ -12,7 +12,7 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { kernelJwks, verifyCaller, type JWKS } from "./aidenhq-sdk/caller.ts";
-import { GRADE_CHECK_MS, Conflict, Grades, Invalid, completionGate, parseAmendment, parseFiling, parseVerdict, prRefAllowed, graderNote, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
+import { GRADE_CHECK_MS, Conflict, Grades, Invalid, completionGate, parseAmendment, parseFiling, parseVerdict, prRefAllowed, graderNote, rubricHash, settleClosedGrades, type KnownRepos, type CompletionPath } from "./grades.ts";
 import { template } from "./grader/grade.ts";
 
 type Issue = { id: string; identifier?: string; status: string; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null };
@@ -171,7 +171,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     // One task's grade state (null: ungraded): a sub-task whose grade will speak keeps its progress to itself. The id is
     // decoded as the verdict route does: the grade loop encodes whatever id it was given, and task ids are not all UUIDs.
     const one = /^\/internal\/grades\/([^/]+)$/.exec(path);
-    if (method === "GET" && one) return { state: grades.get(decodeURIComponent(one[1]!))?.state || null };
+    if (method === "GET" && one) {
+      // The state, and the filing the row holds now: a queued move saved before filings were named reads it to tell whether it
+      // still describes the row (a rubric amended since is a different filing, and its close must not land).
+      const g = grades.get(decodeURIComponent(one[1]!));
+      return g ? { state: g.state, filing: rubricHash(g.rubric, g.deliverable, g.revision), rubric: g.rubric, deliverable: g.deliverable } : { state: null };
+    }
     const m = /^\/internal\/grades\/([^/]+)\/verdict$/.exec(path);
     if (method !== "POST" || !m) throw new HttpError(404, "no such route");
     const issue = await kernel.issue(decodeURIComponent(m[1]!));

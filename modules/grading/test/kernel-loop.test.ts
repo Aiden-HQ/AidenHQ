@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { completionGate, rubricHash } from "../service/src/grades.ts";
 import { createGrading } from "../service/src/server.ts";
 import { createKernelGradeLoop, verifiedMerges } from "../service/src/kernel-loop.ts";
+import { wordsEvidence } from "../service/src/grader/evidence.ts";
 
 const answer = (met) => ({ verdict: met.every((m) => m === "yes") ? "satisfied" : "needs_revision", criteria: met.map((m, i) => ({ id: String(i + 1), met: m, evidence: m === "yes" ? "shown" : "missing" })) });
 
@@ -139,6 +140,86 @@ test("a revision move queued by a verdict on a rubric since amended never reopen
   db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t5', ?)").run(JSON.stringify([{ do: "reopen", note: "the grader sent it back" }]));
   await loop.runGrades();
   assert.equal(issue.status, "todo");
+});
+
+test("a close queued before filings were named is checked against the row, and dropped when it was amended", async () => {
+  // A step saved before closes carried a filing names none. It must not replay onto a rubric amended since: the row is read
+  // instead, and the close is dropped rather than closing the task on a criterion the amendment replaced.
+  const issue = { id: "t9", identifier: "WOR-9", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t9", filed, { kind: "report", ref: "" });
+  const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
+  grades.amend("t9", corrected, { by: "agent:cos", delegator: "agent:cos" });
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  // A close the pass before the amendment queued: it carries no filing, and its version is whatever the report's evidence
+  // reads now, so the version check passes and only the filing check can stop it landing on the amended row.
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t9', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", deliverable: { kind: "report", ref: "" }, rubric: filed }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "in_review", "the stale close is not replayed onto the amended row");
+  assert.deepEqual(calls.resolve, [], "the task is not closed on a filing the amendment replaced");
+});
+
+test("a close queued before filings were named still lands when its row is the same satisfied one", async () => {
+  // The recovery must not over-drop: a step saved before filings were named, on a row that is still satisfied at the same
+  // rubric and deliverable, is that row's close and lands.
+  const issue = { id: "t11", identifier: "WOR-11", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t11", filed, { kind: "report", ref: "" });
+  grades.record("t11", { version: "v1", outcome: "satisfied", model: "m", criteria: [], rubric: rubricHash(filed, { kind: "report", ref: "" }, 0) });
+  assert.equal(grades.get("t11").state, "satisfied");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  const now = await wordsEvidence({ comments: async () => [{ id: "c1", authorType: "agent", authorAgentId: "eng", body: "It is said.", createdAt: "2026-11-18T09:00:00Z" }], attachments: async () => [], assignee: "eng", delegator: { agentId: "cos" } });
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t11', ?)").run(JSON.stringify([{ do: "done", note: "graded against its rubric", version: now.version, status: "in_review", deliverable: { kind: "report", ref: "" }, rubric: filed }]));
+  await loop.runGrades();
+  assert.equal(issue.status, "done", "the close lands on the row it was queued for");
+});
+
+test("a wake for missing evidence is not applied to a row amended while the pass ran", async (t) => {
+  // The wake moves the task back to todo, so it is the same staleness as a verdict: only the filing the pass read may wake it.
+  // An app deliverable that is not deployed awaits evidence, so the pass reaches the wake path.
+  const issue = { id: "t10", identifier: "WOR-10", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const kernel = async (method, path, body) => {
+    if (path === "/v1/cp/read/api/issues/t10") return issue;
+    if (path.endsWith("/comments")) return [];
+    if (path.endsWith("/attachments")) return [];
+    if (path === "/v1/cp/read/api/agents/eng") return { id: "eng", name: "Dana" };
+    if (path.startsWith("/v1/cp/read/api/companies/co/issues")) return [];
+    if (path === "/v1/work?task=t10") return { busy: false, jobs: [], records: [] };
+    if (path === "/v1/checks/t10") return calls.resolve.push(body.verdict), (issue.status = body.verdict === "ok" ? "done" : "todo"), {};
+    if (path === "/v1/wakes") return calls.wake.push(body), { posted: true };
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  grades.file("t10", ["says where Legacy is used", "links each source", "names the next step"], { kind: "app", ref: "roadmap-keeper" });
+  completionGate(grades, "t10", "finish_turn");
+  // The amendment lands after the pass took the row it is grading, before it acts on the wait.
+  let amended = false;
+  const loop = createKernelGradeLoop({ db, runner, due: () => {
+    const list = grades.due();
+    if (!amended && list.some((x) => x.issueId === "t10")) {
+      amended = true;
+      grades.amend("t10", ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"], { by: "agent:cos", delegator: "agent:cos" });
+    }
+    return { grades: list, resubmitted: [] };
+  }, kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+  // Past the wake grace (two minutes), well inside the day a grade waits.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10 * 60_000;
+  t.after(() => { Date.now = realNow; });
+  await loop.runGrades();
+  assert.deepEqual(calls.wake, [], "an amended row is not woken for evidence its old filing was waiting on");
+  assert.equal(issue.status, "in_review", "the task is not moved back to todo for a filing it no longer holds");
 });
 
 test("a reopen whose grade-state read fails is retried, never replayed or dropped", async () => {
