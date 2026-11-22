@@ -86,7 +86,7 @@ import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
 import { createWakes, wakeNotice } from "./wakes.ts";
-import { createWorkspaceSweep, pruneSkillRuntimes } from "./workspaces.ts";
+import { createDiskSweep, pruneSkillRuntimes } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
 import { readEngines } from "./sandbox.ts";
@@ -467,10 +467,17 @@ every(() => {
   sweeping = true;
   void idle.sweep().catch((e: Error) => log("idle sweep failed", { err: e.message })).finally(() => { sweeping = false; });
 }, 5 * 60_000);
-// A closed task's workspace goes after CLOSED_DAYS (workspaces.ts): hourly, and once soon after start.
-const sweepWorkspaces = createWorkspaceSweep({ db: records.db, owner: ownerApi, workDir: sandbox.workDir, log });
-const sweepDisk = () => { void sweepWorkspaces().catch((e: Error) => log("workspace sweep failed", { err: e.message })); try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); } };
-every(sweepDisk, 3_600_000);
+// The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
+// go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
+const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
+let diskSweeping = false;
+const sweepDisk = () => {
+  if (diskSweeping) return;
+  diskSweeping = true;
+  void sweepFolders().catch((e: Error) => log("disk sweep failed", { err: e.message })).finally(() => { diskSweeping = false; });
+  try { pruneSkillRuntimes({ companiesDir: path.join(dataDir, "paperclip/instances/default/companies"), log }); } catch (e) { log("skill runtime prune failed", { err: (e as Error).message }); }
+};
+every(sweepDisk, 15 * 60_000);
 once(sweepDisk, 60_000);
 // A stop: the jobs go on for the next kernel (KillMode=process); this one stops following them, offsets saved. A restart
 // (SIGUSR2) drains once the listeners are up (drain, below); before that it stops at once, as a stop does.

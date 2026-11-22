@@ -1,43 +1,112 @@
-// A closed task's workspace goes (W11 of phase 2; the runner's removeClosedWorkspaces): a kernel job's workspace is
-// <workDir>/tasks/<identifier> (boxes.ts), kept between the task's runs. Once the task has been done or cancelled for
-// CLOSED_DAYS, with no live job, it is removed, as `aidenhq cleanup` would. What was published is in its repository already;
-// what wasn't is gone with the task. Its build-cache layers (<workDir>/.cache-layers/<identifier>, a job's copy-on-write
-// overlays) go with it. Never a comment: one would reopen the closed task.
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+// The host's disk stays bounded (docs/operations.md "Disk"): what the kernel's jobs and checks leave on disk goes once it is
+// no longer used, so `/` never grows without bound. One pass, every 15 minutes and soon after start, walks what is ON DISK:
+//   <workDir>/tasks/<identifier>         a task's workspace (boxes.ts), kept between its jobs;
+//   <workDir>/.cache-layers/<identifier> its jobs' copy-on-write build-cache overlays;
+//   <stateDir>/<engine>/<agent>_<task>   a job's engine home (sandbox.ts engineState: the Codex home, its sessions), for
+//                                        engines with per-task state. The stateDir itself (default ~/.local/state/aidenhq-runner,
+//                                        despite the name the kernel's own) is never removed: only these per-task homes;
+//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left behind by a kernel that died mid-check.
+// A folder goes when nothing live uses it (no admitted or running job on its task; no running check of that attempt) and
+// either its task has been done or cancelled for CLOSED_DAYS, or it has been idle (its last job's end, or the folder's own
+// mtime when no job names it) for IDLE_DAYS, whatever the task's state: an idle task that resumes clones again, and its next
+// job starts a fresh session. Over PRESSURE of a disk used, both limits drop (a day idle, closed at all). What was published
+// is in its repository already; what wasn't goes with the folder. Docker's growth is prune-docker.timer's (ops/units).
+//
+// Each folder is checked and renamed into its root's .trash in one synchronous step (no admission can slip in between),
+// and the trash is then removed off the event loop, so a 100 GB first pass never stalls the gateway.
+import { execFile } from "node:child_process";
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statfsSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { Api } from "./channels.ts";
+import { promisify } from "node:util";
+import { checkAttempt } from "./checkjobs.ts";
 
-export const CLOSED_DAYS = 3;
-const ID = /^[\w.-]{1,100}$/;
+export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
+const DAY = 86_400_000;
+const CLOSED = new Set(["done", "cancelled"]);
+/** engineState's folder name for an agent's task (sandbox.ts). */
+const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_");
+const execFileP = promisify(execFile);
 
-export function createWorkspaceSweep({ db, owner, workDir, log = () => {}, now = Date.now }: {
-  db: DatabaseSync; owner: Api; workDir: string; log?: (msg: string, f?: Record<string, unknown>) => void; now?: () => number;
+/** The fraction of each filesystem used (as `df` and the DiskSpaceLow rule count it), the fullest one. */
+export const diskUsed = (paths: string[]) => Math.max(...paths.map((p) => { try { const s = statfsSync(p); return 1 - s.bavail / s.blocks; } catch { return 0; } }));
+
+export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}, now = Date.now, used = () => diskUsed([workDir, "/"]) }: {
+  db: DatabaseSync; workDir: string; stateDir: string;
+  /** The engine kinds that keep a home per task (config/engines.json `state: task`). */
+  engines: () => string[];
+  log?: (msg: string, f?: Record<string, unknown>) => void; now?: () => number; used?: () => number;
 }) {
-  // A task swept after its last job (`at`: that job's start): a later job on a reopened task makes it a candidate again.
-  db.exec("CREATE TABLE IF NOT EXISTS swept (task TEXT PRIMARY KEY, at INTEGER NOT NULL)");
-  /** One pass, at most `budgetMs` long: each task a job ran on since it was last swept, with no live job. */
-  return async function sweep(budgetMs = 5 * 60_000) {
+  /** Who used a folder: the (agent, task) pairs of its jobs, and when the last one ended. */
+  type Use = { pairs: { agent: string; task: string }[]; last: number };
+  const add = (m: Map<string, Use>, key: string | null, agent: string, task: string, last: number) => {
+    if (!key) return;
+    const u = m.get(key) ?? { pairs: [], last: 0 };
+    u.pairs.push({ agent, task }); u.last = Math.max(u.last, last);
+    m.set(key, u);
+  };
+  const LIVE = "state IN ('admitted', 'running')";
+  const liveIdent = (identifier: string) => Boolean(db.prepare(`SELECT 1 FROM jobs WHERE identifier = ? AND ${LIVE} LIMIT 1`).get(identifier));
+  const livePair = (u?: Use) => Boolean(u?.pairs.some(({ agent, task }) => db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND agent = ? AND ${LIVE} LIMIT 1`).get(task, agent)));
+  const closedAt = (task: string) => {
+    const r = db.prepare("SELECT json_extract(data, '$.to') AS st, at FROM facts WHERE subject = ? AND type = 'task.status_changed' ORDER BY at DESC, seq DESC LIMIT 1").get(`task:${task}`) as { st?: string; at: string } | undefined;
+    return r && CLOSED.has(String(r.st)) ? Date.parse(r.at) : undefined;
+  };
+
+  /** One pass, at most `budgetMs` long. */
+  return async function sweep(budgetMs = 10 * 60_000) {
     const until = now() + budgetMs;
-    const tasks = db.prepare(`SELECT j.task, MAX(j.at) AS last FROM jobs j LEFT JOIN swept s ON s.task = j.task GROUP BY j.task
-      HAVING last > COALESCE(MAX(s.at), 0) AND SUM(j.state IN ('admitted', 'running')) = 0`).all() as { task: string; last: number }[];
-    for (const { task, last } of tasks) {
-      if (now() > until) break;
-      const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).catch(() => undefined);
-      if (!r || r.status !== 200) continue;
-      const i = r.json as { identifier?: string; status?: string; updatedAt?: string };
-      if (!["done", "cancelled"].includes(String(i.status)) || !(Date.parse(String(i.updatedAt)) < now() - CLOSED_DAYS * 86_400_000)) continue;
-      if (ID.test(String(i.identifier))) {
-        for (const dir of [join(workDir, "tasks", String(i.identifier)), join(workDir, ".cache-layers", String(i.identifier))]) {
-          if (!existsSync(dir)) continue;
-          execFileSync("chmod", ["-R", "u+rwx", dir]); // an overlay's work dir is mode 000
-          rmSync(dir, { recursive: true, force: true, maxRetries: 2 });
-          log("closed task's workspace removed", { task: i.identifier, dir });
-        }
-      }
-      db.prepare("INSERT INTO swept (task, at) VALUES (?, ?) ON CONFLICT DO UPDATE SET at = excluded.at").run(task, last);
+    const pressure = used() >= PRESSURE;
+    const idleMs = (pressure ? 1 : IDLE_DAYS) * DAY, closedMs = pressure ? 0 : CLOSED_DAYS * DAY;
+    const byIdent = new Map<string, Use>(), byHome = new Map<string, Use>();
+    for (const r of db.prepare("SELECT agent, task, identifier, MAX(COALESCE(ended, at)) AS last FROM jobs GROUP BY agent, task, identifier").all() as { agent: string; task: string; identifier: string | null; last: number }[]) {
+      add(byIdent, r.identifier, r.agent, r.task, r.last);
+      add(byHome, homeName(r.agent, r.task), r.agent, r.task, r.last);
     }
+    const running = () => { try { return new Set((db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]).map((r) => checkAttempt(r.id, r.at))); } catch { return new Set<string>(); } };
+    const roots: { root: string; use: (name: string) => Use | undefined; busy: (name: string, u?: Use) => boolean; gone?: (u: Use) => void }[] = [
+      { root: join(workDir, "tasks"), use: (n) => byIdent.get(n), busy: liveIdent },
+      { root: join(workDir, ".cache-layers"), use: (n) => byIdent.get(n), busy: liveIdent },
+      { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
+      ...engines().map((kind) => ({
+        root: join(stateDir, kind), use: (n: string) => byHome.get(n), busy: (_: string, u?: Use) => livePair(u),
+        // Its session went with it: the next job starts fresh instead of resuming one that is gone (boxes.ts lastSession).
+        gone: (u: Use) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = ? AND NOT ${LIVE}`).run(agent, task, kind); },
+      })),
+    ];
+    let removed = 0;
+    for (const { root, use, busy, gone } of roots) {
+      const trash = join(root, ".trash");
+      let names: string[];
+      try { names = readdirSync(root); } catch { continue; }
+      for (const name of names) {
+        if (now() > until) break;
+        if (name.startsWith(".")) continue;
+        const dir = join(root, name);
+        // Synchronous from the check to the rename: no job is admitted in between.
+        let st;
+        try { st = lstatSync(dir); } catch { continue; }
+        if (!st.isDirectory()) continue;
+        const u = use(name);
+        if (busy(name, u)) continue;
+        const last = Math.max(u?.last ?? 0, st.mtimeMs);
+        const closed = (u?.pairs ?? []).map(({ task }) => closedAt(task));
+        const why = now() - last > idleMs ? "idle" : closed.length && closed.every((c) => c !== undefined && now() - c >= closedMs) ? "closed" : undefined;
+        if (!why) continue;
+        mkdirSync(trash, { recursive: true });
+        renameSync(dir, join(trash, `${name}-${now()}`));
+        if (u && gone) gone(u);
+        removed++;
+        log("unused folder removed", { dir, why, ...(pressure ? { pressure: true } : {}) });
+        await new Promise((ok) => setImmediate(ok));
+      }
+      // Off the event loop: chmod first (read-only Go module caches, an overlay's mode-000 work dir), then remove.
+      try { statSync(trash); } catch { continue; }
+      await execFileP("chmod", ["-R", "u+rwx", trash]).catch(() => {});
+      await rm(trash, { recursive: true, force: true, maxRetries: 2 }).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
+    }
+    return { removed, pressure };
   };
 }
 

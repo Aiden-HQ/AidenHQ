@@ -260,6 +260,8 @@ const fence = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/``
 const DDL = `CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY, module TEXT NOT NULL, repo TEXT NOT NULL, head TEXT NOT NULL, run TEXT NOT NULL, hash TEXT NOT NULL, spec TEXT NOT NULL,
   state TEXT NOT NULL, receipt TEXT, error TEXT, at INTEGER NOT NULL, ended INTEGER, result TEXT, cost_usd REAL, tries INTEGER NOT NULL DEFAULT 1, retry INTEGER NOT NULL DEFAULT 0, UNIQUE (module, repo, head, run, hash))`;
+/** A check attempt's folder name under <workDir>/checks (workspaces.ts keeps a running one's). */
+export const checkAttempt = (id: string, at: number) => `c-${createHash("sha256").update(`${id}:${at}`).digest("hex").slice(0, 16)}`;
 /** How many of a check's runs restarts may lose before it stays lost. */
 const MAX_LOST = 3;
 /** A token's run key in the gateway's ledger. */
@@ -478,7 +480,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const spec = JSON.parse(r.spec) as Record<string, string>;
     // This attempt's own folder, a direct child of checks/ named like a check id (the launcher's /check takes exactly that shape):
     // a re-run of the same check never shares it, and only this attempt removes it.
-    const attempt = `c-${createHash("sha256").update(`${id}:${r.at}`).digest("hex").slice(0, 16)}`;
+    const attempt = checkAttempt(id, r.at);
     const dir = join(workDir, "checks", attempt);
     const ids = { check: id, attempt, repo: r.repo, head: r.head, run: r.run };
     // Its end, tried again a few times (a busy database): a run that can't record its end stays `running` until a restart.
