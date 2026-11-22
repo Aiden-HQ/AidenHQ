@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { parseFeed } from "../src/zerowire.js";
 import { DDL, parseTargets, scanPass, type Batch } from "../src/scan.js";
 import type { SourceStore } from "../src/source-store.js";
 
@@ -262,4 +263,16 @@ it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on th
 it("src_security: the DDL adds the exploitation columns additively and the view exposes them", () => {
   for (const c of ["kev boolean", "kev_added date", "epss real", "epss_percentile real"]) expect(DDL).toContain(`ADD COLUMN IF NOT EXISTS ${c}`);
   expect(DDL).toContain("f.kev, f.kev_added, f.epss, f.epss_percentile");
+});
+
+it("zero wire: the feed's briefings become rows with their CVE ids and exploitation sentences", () => {
+  const item = (guid: string, title: string, body: string) =>
+    `<item><title>${title}</title><link>https://radar.cloudflare.com/zero-wire/${guid}</link><guid isPermaLink="false">${guid}</guid><pubDate>Thu, 19 Nov 2026 00:00:00 GMT</pubDate><description>Prioritize patching. It&apos;s bad.</description><content:encoded><![CDATA[${body}]]></content:encoded></item>`;
+  const xml = `<?xml version="1.0"?><rss version="2.0"><channel>${item("a@2026-11-19", "phpAfterShell", "<p>CVE-2026-126714 and CVE-2026-129289 affect PHP. CISA added CVE-2026-126714 to its Known Exploited Vulnerabilities catalog. Upgrade.</p>")}${item("b@2026-11-18", "WordPress flaw", "<p>No CVE has been assigned. No source reports exploitation in the wild.</p>")}</channel></rss>`;
+  const [a, b] = parseFeed(xml);
+  expect(a).toMatchObject({ guid: "a@2026-11-19", title: "phpAfterShell", summary: "Prioritize patching. It's bad.", cves: ["CVE-2026-126714", "CVE-2026-129289"], published: new Date("2026-11-19T00:00:00Z") });
+  expect(a!.exploitation).toContain("Known Exploited Vulnerabilities");
+  expect(b).toMatchObject({ cves: [], exploitation: "No source reports exploitation in the wild." });
+  expect(() => parseFeed("<html></html>")).toThrow("not RSS");
+  expect(DDL).toContain("src_security.zerowire");
 });

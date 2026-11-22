@@ -12,6 +12,7 @@ import YAML from "yaml";
 import { auditorClient, auditorPass } from "./auditor.js";
 import { DDL, parseTargets, scanPass, type Batch } from "./scan.js";
 import { SourceStore } from "./source-store.js";
+import { zerowirePass } from "./zerowire.js";
 
 const run = promisify(execFile);
 const env = (k: string, d = "") => process.env[k] || d;
@@ -97,6 +98,8 @@ async function pass(store: SourceStore): Promise<void> {
       return 0;
     });
   }
+  // Its own ingest_run row (scope zerowire); a feed outage never fails the CVE pass.
+  await zerowirePass(store).catch((err) => log("zero wire pass failed", { err: String(err) }));
   await store.saveScope("pass", started.toISOString(), true);
   log("pass done", { written });
   if (written > 0) await poke();

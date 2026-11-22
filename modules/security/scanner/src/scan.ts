@@ -14,6 +14,7 @@
 // resolves nothing.
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { ZEROWIRE_DDL } from "./zerowire.js";
 import { capText, tableDdl, type Row, type SourceStore, type Table } from "./source-store.js";
 
 export const FINDING: Table = {
@@ -58,7 +59,7 @@ COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one ro
 CREATE OR REPLACE VIEW src_security.changes AS
   SELECT seq, entity, entity_id, scope, field, old_value, new_value, url, observed_at, false AS baseline FROM src_security.change;
 COMMENT ON VIEW src_security.changes IS 'Finding changes after first sight: field severity, fixed_version, fix_state, kev or present (false = resolved, true = back). scope = the target; entity_id = target/package/version/vuln_id.';
-GRANT SELECT ON src_security.findings, src_security.changes TO agents_open;`;
+GRANT SELECT ON src_security.findings, src_security.changes TO agents_open;\n${ZEROWIRE_DDL}`;
 
 export const findingId = (target: string, pkg: string, version: string, vuln: string) =>
   createHash("sha256").update(`${target}|${pkg}|${version}|${vuln}`).digest("hex").slice(0, 16);
