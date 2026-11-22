@@ -103,3 +103,11 @@ test("a module that doesn't dispatch the agent â†’ 403; a wake it didn't claim â
   await assert.rejects(adm.admit("acme-other", req(wake("w2", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "wake-not-claimed");
 });
 
+
+test("the platform-engineer role holds only on a task no agent filed, a routine's run, or one the Architect filed", async () => {
+  const { adm, wake, origins } = setup();
+  const roles = async (key, task, origin) => { origins[task] = origin; return (await adm.admit("acme-dispatch", req(wake(key, task, "agent-4")))).authority.roles; };
+  assert.deepEqual(await roles("w7", "task-7", {}), ["platform-engineer"], "the owner's task");
+  assert.deepEqual(await roles("w8", "task-8", { createdByAgentId: "agent-5" }), ["platform-engineer"], "the Architect filed it");
+  assert.deepEqual(await roles("w9", "task-9", { createdByAgentId: "agent-1" }), [], "a crew agent filed it");
+});

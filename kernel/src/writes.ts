@@ -277,7 +277,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
     const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
     const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomyOf(requester), ownerSave });
-    if (t.state === "rejected") throw fail(422, String(t.rule), refused!.reason);
+    if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
     return { base, filed: { ...base, card: { ...card, reason: (t.cap ? capText(t.cap) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
@@ -629,7 +629,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null });
       // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
       const t = computeTier({ floor, refusal: refused?.code, priorVeto: floor > 0 && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
-      if (t.state === "rejected") throw fail(422, String(t.rule), refused!.reason);
+      if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
       if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
       // Where the call is aimed: its tool and the arguments that name an issue, a PR, a channel or a thread (never its text).

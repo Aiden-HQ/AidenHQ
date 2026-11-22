@@ -426,7 +426,7 @@ test("a Tier 0 GitHub reply carrying an instance host is refused by code", async
   const github = { module: "github", tools: { read: [], write: [], destructive: ["github_pr_thread_reply"], unreviewed: ["github_pr_thread_reply"] } };
   const writes = createWrites({ records, reviews: { request: async () => (reviewed++, OK) }, secret: () => "", resolver: createResolver(), connections: () => ({ github }), registry: () => ({}), replay: async () => ({ ok: true, text: "" }), onTask: { open: async () => true, notify: async () => {} } });
   const ada = { kind: "run", agent: "ag-ada", key: "ada", name: "Ada", roles: [], tools: {} };
-  await assert.rejects(writes.fileTool(ada, "github", "github_pr_thread_reply", { body: "the log is on 10.0.0.5" }, "TASK-1"), (e) => e.status === 422 && e.type === "instance_details");
+  await assert.rejects(writes.fileTool(ada, "github", "github_pr_thread_reply", { body: "the log is on 10.0.0.5" }, "TASK-1"), (e) => e.status === 422 && e.type === "refused" && e.code === "instance_details");
   assert.equal(reviewed, 0, "no reviewer call");
   assert.deepEqual(((r) => [r.tier, r.state])(await writes.fileTool(ada, "github", "github_pr_thread_reply", { body: "fixed" }, "TASK-1")), [0, "claimed"], "unreviewed: Tier 0");
 });
