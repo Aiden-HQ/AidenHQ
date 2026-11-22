@@ -143,7 +143,7 @@ test("task_list(mine) finds a handed-back chat whose marker was cut from the lis
   const full = { "chat-2": { ...chat, description: `the whole message\n\n<!-- aidenhq-chat-agent:me -->`, descriptionTruncated: false } };
   const { call } = bridge({ handler: issueBoard({ rows: [chat], full }), states: { "chat-2": noAttention("waiting") } });
   const out = parse(await call("task_list", { mine: true, limit: 5 }));
-  assert.deepEqual(out.out.tasks.map((t) => t.id), ["chat-2"]);
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-2"], JSON.stringify(out));
 });
 
 test("task_list pages overlap so a row pulled up by a task leaving the list is not skipped", async () => {

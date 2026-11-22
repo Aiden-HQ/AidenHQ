@@ -869,27 +869,29 @@ const SCAN_MS = 120_000;
  * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
  * empty page, or at repeated pages (a server that ignores `offset`, reported as stalled).
  */
-async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } = {}) {
+async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } = {}, ms?: () => number) {
   const seen = new Set<string>();
-  let repeats = 0;
+  let repeats = 0, last = "";
   for (let offset = 0; ; ) {
     const p = new URLSearchParams(q);
     p.set("limit", String(PAGE));
     p.set("offset", String(offset));
-    const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
+    const left = ms ? ms() : 20_000;
+    const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, left)) });
     if (!Array.isArray(page) || !page.length) return;
     // Advance by half of what came back, not by what was asked: a server capping its page size would otherwise leave a gap.
     offset += Math.max(1, Math.floor(page.length / 2));
-    const fresh = page.filter((i: Json) => !seen.has(i.id));
-    if (!fresh.length) {
-      // An overlap page with nothing new is normal; two in a row is a repeated page: the end, or a server ignoring `offset`.
-      if (++repeats > 1) {
-        progress.stalled = true;
-        return;
-      }
-      continue;
+    // A page whose ids are exactly the previous page's is a repeated page: the end, or a server ignoring `offset`. Overlapping
+    // tail pages share rows but never all of them, so they are not mistaken for it.
+    const ids = page.map((i: Json) => i.id).join(",");
+    if (ids === last && ++repeats > 1) {
+      progress.stalled = true;
+      return;
     }
-    repeats = 0;
+    repeats = ids === last ? repeats + 1 : 0;
+    last = ids;
+    const fresh = page.filter((i: Json) => !seen.has(i.id));
+    if (!fresh.length) continue;
     for (const i of fresh) seen.add(i.id);
     yield fresh;
     // A page shorter than asked for may be the list's end, or a server capping its page size: the next read decides (an
@@ -937,7 +939,7 @@ const TOOLS: Record<string, Tool> = {
       const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
       const { kinds, attention: one } = stateFilter(state, attention);
-      const max = Math.min(Number(limit) || 10, 25);
+      const max = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 25));
       const q = new URLSearchParams({ q: String(query).slice(0, 200), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state, attention));
       // as with task_list, the kernel kind/attention filter runs per page: search candidates are paged until `limit` matches
@@ -954,7 +956,7 @@ const TOOLS: Record<string, Tool> = {
         const p = new URLSearchParams(q);
         p.set("limit", String(PAGE));
         p.set("offset", String(offset));
-        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`).catch((err) => {
+        const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, deadline - Date.now())) }).catch((err) => {
           if (Date.now() > deadline) {
             stopped = true;
             return null;
@@ -1035,9 +1037,9 @@ const TOOLS: Record<string, Tool> = {
           return onEdge();
         }
       };
-      const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i, until = deadline) => {
+      const capped = async (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) => {
         const kept: (readonly [Json, Json])[] = [];
-        const pages = issuePages(query, progress)[Symbol.asyncIterator]();
+        const pages = issuePages(query, progress, () => until - Date.now())[Symbol.asyncIterator]();
         for (;;) {
           if (Date.now() > until) {
             complete = false;
@@ -1045,7 +1047,7 @@ const TOOLS: Record<string, Tool> = {
           }
           const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
           if (step.done) return kept;
-          const ready = (await atEdge(() => Promise.all(step.value.map(prepare)), () => [], until)).filter(Boolean) as Json[];
+          const ready = (await atEdge(() => Promise.all(step.value.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[];
           const matches = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > until) {
@@ -1081,11 +1083,13 @@ const TOOLS: Record<string, Tool> = {
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          const aChat = async (row: Json) => {
+          const aChat = async (row: Json, until: number) => {
             if (row.assigneeAgentId) return null;
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
-            const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`).catch((err) => { if (err?.status === 404) return null; throw err; }) : row;
+            const full = row.descriptionTruncated
+              ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, until - Date.now())) }).catch((err) => { if (err?.status === 404) return null; throw err; })
+              : row;
             // The full read also decides ownership again: a chat reassigned away since the list row is not ours.
             if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return null;
             return mark.test(full.description ?? "") ? full : null;
