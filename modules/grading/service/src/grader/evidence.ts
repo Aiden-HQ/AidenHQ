@@ -709,13 +709,16 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // owner/repo#N", in this repo or another), or that line.
   const by = closedBy(i)?.pull_request;
   const keywordPr = i.state === "CLOSED" && by?.merged ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
-  const trusted = Boolean(keywordPr) || lines.length > 0;
+  // A close with a reason (not planned, a duplicate) carries no PR: it counts when its closer, an owner, member or collaborator (the
+  // fleet acts as the owner), left a comment just before it saying why.
+  const reasoned = i.state === "CLOSED" && comments.some((c) => owned(c) && c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000);
+  const trusted = Boolean(keywordPr) || lines.length > 0 || reasoned;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (keywordPr) {
     merges.push(keywordPr.merge_commit_sha ?? "");
     facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.merge_commit_sha ? ` (merge commit ${keywordPr.merge_commit_sha})` : ""}`);
-  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: it was not closed by a merged PR, and no comment by an owner, member or collaborator carries a "Fixed by <owner>/<repo>#<n> (merge <sha>)" line, so the issue is treated as not resolved`);
+  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: it was not closed by a merged PR, and no comment by an owner, member or collaborator carries a "Fixed by <owner>/<repo>#<n> (merge <sha>)" line, and its closer left no comment of their own, so the issue is treated as not resolved`);
   else {
     const seen = new Set<string>();
     for (const l of lines) {

@@ -33,10 +33,10 @@ test("the Fixed-by line counts from an owner at any time, once the PR is merged 
 
 test("an unrelated link beside a valid line, or five lines with the valid one last, never masks it", async () => {
   const unrelated = await run({ comments: { nodes: [said("Related: https://github.com/acme/app/pull/4"), said(`See acme/app#5.\n${line()}`)] } }, (n) => (n === 9 ? merged : { state: "OPEN" }));
-  assert.match(e(unrelated), /pull\/9 merged at b{40}: merged at/);
+  assert.match(text(unrelated), /pull\/9 merged at b{40}: merged at/);
   assert.doesNotMatch(text(unrelated), /pull\/[45]/);
   const five = await run({ comments: { nodes: [1, 2, 3, 4, 5].map((n) => said(n === 5 ? line(9) : line(n, "e".repeat(40)))) } }, (n) => (n === 9 ? merged : { state: "OPEN" }));
-  assert.match(e(five), /pull\/9 merged at b{40}: merged at/);
+  assert.match(text(five), /pull\/9 merged at b{40}: merged at/);
 });
 
 test("a manual close with no line stays unresolved: a link, a non-owner's line and a missing comment all fail", async () => {
@@ -44,3 +44,9 @@ test("a manual close with no line stays unresolved: a link, a non-owner's line a
     assert.match(text(await run({ comments: { nodes: comments } })), /the close does not count/);
 });
 
+
+test("a not-planned close counts when its closer, an owner, said why just before it", async () => {
+  const closer = { author: { login: "someone" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "Not a bug: src/a.ts:3 shows it." };
+  assert.doesNotMatch(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [closer] } })), /does not count/);
+  assert.match(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [{ ...closer, authorAssociation: "NONE" }] } })), /does not count/);
+});
