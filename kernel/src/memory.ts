@@ -6,7 +6,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { redact } from "./jobs.ts";
 export { fillMemory } from "../sdk/src/fence.ts";
 
 export const MEMORY_MAX = 4096, FACT_MAX = 500, SOURCE_MAX = 300, WRITES_PER_JOB = 10;
@@ -23,6 +22,12 @@ const KEY = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const TASK_ID = /^([A-Z][A-Z0-9]{0,9}-\d{1,9}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const SHA = /^[0-9a-f]{7,40}$/;
+
+/** Text shaped like a credential (a vendor token prefix, a private key), the one list memory and a module share check. */
+export const SECRET_SHAPES = /\b(sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|ahq[a-z]?_[A-Za-z0-9]{16,})|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+/** A memory line with each credential-shaped value blanked (the shapes only: prose like "token budget" stays). */
+const redact = (t: string) => t.replace(new RegExp(SECRET_SHAPES.source, "g"), "[secret]").replace(/:\/\/[^/\s@]+@/g, "://…@")
+  .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…");
 
 /** A fact as compared for duplicates and tombstones: lower case, single spaces, no trailing punctuation. */
 export const norm = (fact: string) => fact.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!;,\s]+$/, "");

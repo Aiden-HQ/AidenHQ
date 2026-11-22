@@ -33,9 +33,12 @@ test("store: secrets stripped, duplicate, tombstone, cap, budget, digest, librar
   const tok = ["gh", "p_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("");
   memory.note("acme", { fact: `The deploy bot reads ${tok} from its own vault`, source: `https://example.com/runs?token=${tok}`, job: "j1" });
   const v = memory.view("acme");
-  assert.ok(!v.includes(tok) && v.includes("ghp_…") && v.includes("token=…"), v);
+  assert.ok(!v.includes(tok) && v.includes("[secret]") && v.includes("token=…"), v);
+  // Prose that only mentions a token stays as written.
+  memory.note("acme", { fact: "The token budget is 2M a day", source: TASK, job: "j1" });
+  assert.match(memory.view("acme"), /The token budget is 2M a day/);
   // A duplicate, and a fact forgotten, are refused.
-  assert.equal(status(() => memory.note("acme", { fact: "the deploy bot reads ghp_… from its own vault.", source: TASK, job: "j1" })), 409);
+  assert.equal(status(() => memory.note("acme", { fact: "the deploy bot reads [secret] from its own vault.", source: TASK, job: "j1" })), 409);
   memory.note("acme", { fact: "Staging restarts at 02:00 UTC", source: TASK, job: "j1" });
   assert.equal(memory.forget("acme", { match: "staging restarts", job: "j1" }).removed.length, 1);
   assert.equal(status(() => memory.note("acme", { fact: "Staging restarts at 02:00 UTC", source: TASK, job: "j1" })), 409);

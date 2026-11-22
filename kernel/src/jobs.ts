@@ -142,8 +142,7 @@ const clip = (s: unknown, n: number) => {
 // Steps show command lines on the board: blank the usual secret shapes first, whatever the engine sent.
 export const redact = (t: string) =>
   t
-    // Only a value shaped like a credential (12+ characters with a digit): prose like "token budget" or "basic setup" stays.
-    .replace(/\b(Bearer|Basic|token)\s+(?=[^\s'"]*\d)[^\s'"]{12,}/gi, "$1 …")
+    .replace(/(Bearer|Basic|token)\s+[^\s'"]+/gi, "$1 …")
     .replace(/:\/\/[^/\s@]+@/g, "://…@")
     .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…")
     .replace(/\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS)[A-Z0-9_]*)=[^\s'"]+/g, "$1=…")

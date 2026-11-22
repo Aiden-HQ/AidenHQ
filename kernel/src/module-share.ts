@@ -8,6 +8,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 import { digestOf } from "../../modules/github/service/src/share.ts";
+import { SECRET_SHAPES } from "./memory.ts";
 
 type Dict = Record<string, any>;
 export type Finding = { file: string; rule: "secret-value" | "setting-value" | "memory-fact" | "profile-fact" | "secret-shaped" | "local-reference" | "symlink" | "too-big"; detail: string };
@@ -27,7 +28,6 @@ export class ShareRefused extends Error { status = 422; }
 const MAX_FILES = 100, MAX_BYTES = 512 * 1024;
 /** A skill file's path, as a publish may write it (modules/github/schemas/publish_module.json). */
 const SKILL_PATH = /^skills\/[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
-const SECRET_SHAPES = /\b(sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|ahq[a-z]?_[A-Za-z0-9]{16,})|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 const git = (dir: string, args: string[]) => new Promise<Buffer>((ok, no) => execFile("git", ["-C", dir, ...args], { encoding: "buffer", maxBuffer: 64 << 20, env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" } }, (e, out) => (e ? no(e) : ok(out))));
 
