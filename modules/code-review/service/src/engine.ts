@@ -382,7 +382,7 @@ export function createEngine(d: EngineDeps) {
   /** No carry while the baseline still owes something: a finding answered after its rechecking run started (what that run
    * rechecked was read as it started, so the claim waits for a mandatory recheck), or its review's first post still being decided (the verdict waits on that post at its own head only). */
   const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > COALESCE((SELECT MAX(started) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done' AND recheck = 1), '')", r.repo, r.number, r.repo, r.number, from)
-    || !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND posted = 'pending' AND post_tries = 0", r.repo, r.number, from);
+    || reviewers(r.repo, r.number, from).some((x) => x.posted === "pending" && !x.post_tries);
   /** A bare rebase's run: done at no cost and nothing posted, its range from the baseline it carries (covered, and the PR's
    * baseline next). The PR's findings are the PR's, so they stay as they are. */
   function carry(r: RunRow, from: string, merge_base: string) {
