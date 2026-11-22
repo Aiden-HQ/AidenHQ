@@ -1100,7 +1100,8 @@ const TOOLS: Record<string, Tool> = {
         }
         const assigned = await capped(q, mineOnly);
         // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
-        out = deduped([...assigned, ...chats]).sort((a, b) => at(b) - at(a)).slice(0, max);
+        // A chat handed back to this agent between the two scans is in both: the assigned snapshot is the newer one.
+        out = deduped([...chats, ...assigned]).sort((a, b) => at(b) - at(a)).slice(0, max);
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
