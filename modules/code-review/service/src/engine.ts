@@ -379,13 +379,15 @@ export function createEngine(d: EngineDeps) {
       return false;
     }
   }
-  /** A finding answered on its thread since the baseline head's review: its claim waits for a mandatory recheck, so no carry. */
-  const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > (SELECT MAX(ended) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done')", r.repo, r.number, r.repo, r.number, from);
+  /** No carry while the baseline still owes something: a finding answered since its review (the claim waits for a mandatory
+   * recheck), or its review's first post still being decided (the verdict waits on that post at its own head only). */
+  const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > (SELECT MAX(ended) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done')", r.repo, r.number, r.repo, r.number, from)
+    || !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND posted = 'pending' AND post_tries = 0", r.repo, r.number, from);
   /** A bare rebase's run: done at no cost and nothing posted, its range from the baseline it carries (covered, and the PR's
    * baseline next). The PR's findings are the PR's, so they stay as they are. */
   function carry(r: RunRow, from: string, merge_base: string) {
     log("a bare rebase: the review carries", { run: r.id, from: from.slice(0, 12), head: r.head.slice(0, 12) });
-    run("UPDATE runs SET status = 'done', why = ?, incremental_from = ?, merge_base = ?, complete = 1, cost_usd = 0, ended = ?, duration_ms = 0 WHERE id = ?",
+    run("UPDATE runs SET status = 'done', posted = 'carried', why = ?, incremental_from = ?, merge_base = ?, complete = 1, cost_usd = 0, ended = ?, duration_ms = 0 WHERE id = ?",
       `carried: a bare rebase of ${from.slice(0, 12)} (the pull request's own change is the same)`, from, merge_base, iso(), r.id);
     const row = runRow(r.id)!;
     cover(row);
@@ -573,7 +575,7 @@ export function createEngine(d: EngineDeps) {
   function landed(r: RunRow) {
     // A delayed post of an older run never rolls the baseline back past one a newer run set.
     run(`UPDATE prs SET last_reviewed_head = ?, last_reviewed_base = ? WHERE repo = ? AND number = ?
-      AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.repo = prs.repo AND x.number = prs.number AND x.head = prs.last_reviewed_head AND x.posted = 'posted' AND x.created > ?)`, r.head, r.base, r.repo, r.number, r.created);
+      AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.repo = prs.repo AND x.number = prs.number AND x.head = prs.last_reviewed_head AND x.posted IN ('posted', 'carried') AND x.created > ?)`, r.head, r.base, r.repo, r.number, r.created);
   }
   /** A filed post's outcome, once the AI reviewer and the executor are done with it. */
   async function settle(r: RunRow) {
