@@ -486,6 +486,43 @@ test("a completed blocker on a task first seen in todo is not carried into a lat
   assert.equal(w.issues.t31.status, "blocked", "a park with no blockers of its own is not a deletion");
 });
 
+test("a blocker that comes back to the live list is judged afresh, not as a cached deletion", async () => {
+  const w = world();
+  const b = (id, status) => ({ id, identifier: `WOR-${id}`, status });
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("b10", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t32", { status: "blocked", blockedBy: [b("b9", "blocked"), b("b10", "blocked")] });
+  await w.wakes.poll();
+  w.tick();
+  delete w.issues.b9; // deleted: b9's relation drops and the task stays blocked on b10
+  w.issues.t32.blockedBy = [b("b10", "blocked")];
+  await w.wakes.poll();
+  assert.equal(w.issues.t32.status, "blocked");
+  w.tick();
+  w.issue("b9", { status: "in_progress", assigneeAgentId: OTHER }); // back, and blocking again
+  w.issues.t32.blockedBy = [b("b9", "in_progress"), b("b10", "blocked")];
+  await w.wakes.poll();
+  assert.equal(w.issues.t32.status, "blocked", "a listed blocker that is back is not a deletion");
+  w.tick();
+  w.issues.t32.blockedBy = [b("b9", "in_progress")];
+  await w.wakes.poll();
+  assert.equal(w.issues.t32.status, "blocked", "b10's deletion alone does not release while b9 is open");
+});
+
+test("a task that closed while blocked does not carry its blocker history into a later park", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t33", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  w.tick();
+  Object.assign(w.issues.t33, { status: "done", statusVersion: 2, updatedAt: iso(Date.now()) });
+  await w.wakes.poll();
+  const row = w.db.prepare("SELECT status, blocked, blocked_deleted FROM wake_tasks WHERE task = 't33'").get();
+  assert.equal(row.status, "done");
+  assert.equal(row.blocked, null, "a closed task keeps no blocker history");
+  assert.equal(row.blocked_deleted, null);
+});
+
 test("a released task a team route parks again with no blockers stays blocked", async () => {
   const w = world();
   w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });

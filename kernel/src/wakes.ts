@@ -143,13 +143,15 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   const covered = (w: { key: string; task: string }, job: string) => fact({ type: "wake.bound", subject: `wake:${w.key}`, version: `bound:${job}`, at: iso(now()), actor: "kernel", task: w.task, data: { job } });
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
   /**
-   * What a scan writes of a task's blockers, scoped to its current blocked period. A live list that dropped an id says
-   * nothing about which id it held (the blocker may be deleted, or the relation removed on purpose, which only a read can
-   * tell), so a blocked row keeps a remembered id until `unblock()` settles it: the live list is added, never replaces it.
-   * A row that leaves `blocked`, or enters it from outside, starts with this period's list only, so a completed blocker on a
-   * todo task or an earlier period is never mistaken for a deletion.
+   * What a scan writes of a task's blockers, scoped to its current blocked period. A dropped relation is the record of a
+   * deletion, so a blocked row keeps the ids it had (`blocked`) and what an issue read confirmed deleted
+   * (`blocked_deleted`) until `unblock()` releases the task: the live list is added, never replaces them. A task that a
+   * route parked or an owner unblocked keeps no blocker on the row either, so its `blocked` status without history is the
+   * park it is, not a deletion. A row that leaves `blocked`, or enters it from outside, starts with this period's list only,
+   * so a completed blocker on a todo task or an earlier period is never mistaken for a deletion.
    */
   const memory = (seen: { status: string | null; blocked: string | null; blocked_names: string | null; blocked_deleted: string | null } | undefined, status: string, issue: Issue) => {
+    // A done or cancelled task is before `blocked`, whatever its row still says.
     const carried = status === "blocked" && seen?.status === "blocked";
     if (status !== "blocked") return { blocked: null, names: null, deleted: null };
     const ids = new Set((carried ? (seen?.blocked ?? "").split(",") : []).filter(Boolean));
@@ -330,8 +332,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const parse = <T>(v: string | null | undefined, fallback: T): T => { try { return v ? (JSON.parse(v) as T) : fallback; } catch { return fallback; } };
     const remembered = (row?.blocked ?? "").split(",").filter(Boolean);
     let names = parse<Record<string, string>>(row?.blocked_names, {});
-    const gone = new Set<string>(parse<string[]>(row?.blocked_deleted, []));
     const live = blockers.map((b) => b.id);
+    // A confirmed deletion is only true while the relation stays gone: one that is listed again is an issue that came back,
+    // so its 404 is no longer evidence and it is judged afresh from the list.
+    const gone = new Set<string>(parse<string[]>(row?.blocked_deleted, []).filter((id) => !live.includes(id)));
     // The live list is the authority on what is still a relation: an id it dropped was deleted, and needs no read.
     for (const id of remembered) if (!live.includes(id)) gone.add(id);
     const had = [...new Set([...live, ...remembered, ...gone])];
@@ -613,7 +617,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             inTx(db, "task_gone", () => {
               fact({ type: "task.status_changed", subject: `task:${task}`, task, version: "missing", at: iso(now()), actor: "kernel", source: "poll", data: { from: str(lastFacts(task).get("task.status_changed")?.data.to), to: "cancelled" } });
               q("UPDATE task_facts_seen SET status = 'cancelled' WHERE task = ?").run(task);
-              q("UPDATE wake_tasks SET status = 'cancelled' WHERE task = ?").run(task);
+              // A closed task is before `blocked`: its blocker history must not outlive the period it was recorded for.
+              q("UPDATE wake_tasks SET status = 'cancelled', blocked = NULL, blocked_names = NULL, blocked_deleted = NULL WHERE task = ?").run(task);
               seen(task);
             });
             continue;
@@ -622,7 +627,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           if (r.status !== 200) { seen(task); log("wake reconcile failed", { task, err: `control plane GET issue → ${r.status}` }); continue; }
           const issue = r.json as Issue;
           taskFacts(issue, "poll", "unknown");
-          if (issue.status === "done" || issue.status === "cancelled") q("UPDATE wake_tasks SET status = ? WHERE task = ?").run(issue.status, task);
+          if (issue.status === "done" || issue.status === "cancelled") q("UPDATE wake_tasks SET status = ?, blocked = NULL, blocked_names = NULL, blocked_deleted = NULL WHERE task = ?").run(issue.status, task);
         } catch (e) { log("wake reconcile failed", { task, err: (e as Error).message }); }
       }
     },
