@@ -391,6 +391,10 @@ test("the CI runner unit template follows the applied checkout, only while runne
   assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template is the product's");
   assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /ops\/ci-runner-backoff\.sh %i/, "and carries the ExecStartPre backoff");
   assert.equal(readFileSync(join(units, "aidenhq-ci-runner@1.service"), "utf8"), "[Unit]\n", "the instance's own unit is untouched");
+  // The data dir the unit's scripts resolve (they read no .env themselves) comes from this env file, which the apply writes
+  // from the host's settings; the template reads it last, so it wins.
+  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
+  assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
   // Nothing changed: no rewrite, no reload.
   const before = w.calls();
   assert.equal((await w.run()).status, 0);

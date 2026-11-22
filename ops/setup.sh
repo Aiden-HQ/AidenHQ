@@ -621,6 +621,12 @@ if [ "$ci_n" -gt 0 ]; then
     say "CI runners: $ci_n"
     as_user cp "$REPO/ops/units/aidenhq-ci-runner@.service" "$H/.config/systemd/user/"
     as_user systemctl --user daemon-reload
+    # The data dir the runner's backoff marker goes under, from this host's .env: the unit starts ops/ci-runner.sh, which reads
+    # no settings file itself (ops/lib/data-dir.sh takes the environment only). A relative value is the checkout's.
+    runner_data="$(sed -n 's/^AIDENHQ_DATA_DIR=//p' "$ENVF" 2>/dev/null | tail -1 || true)"
+    runner_data="$(printf '%s\n' "$runner_data" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+    case "$runner_data" in '') runner_data="$REPO/data" ;; /*) ;; *) runner_data="$REPO/$runner_data" ;; esac
+    printf 'AIDENHQ_DATA_DIR=%s\n' "$runner_data" | write_user_file "$H/.config/aidenhq-ci-runner.env" 644
     for i in $(seq "$ci_n"); do as_user systemctl --user enable --now "aidenhq-ci-runner@$i"; done
   else say "CI runners: $ci_n once github_fleet_org is set and the ci module is on; then run setup again"; fi
 fi

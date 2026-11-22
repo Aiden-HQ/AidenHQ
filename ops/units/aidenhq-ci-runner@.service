@@ -6,6 +6,9 @@ After=network-online.target
 # The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).
 Environment=AIDENHQ_DIR=%h/aidenhq
 EnvironmentFile=-%h/.config/aidenhq-checkout.env
+# The data dir the backoff marker goes under, written by the apply from the host's settings: the unit starts scripts that read
+# the environment only (ops/lib/data-dir.sh), so the marker and the exporter that writes aidenhq_unit_backoff share the path.
+EnvironmentFile=-%h/.config/aidenhq-ci-runner.env
 # The vault holds ci_token, the ci module's key for the kernel's runner_token op; the CI network is a system unit (aidenhq-ci-net).
 ExecStartPre=/usr/bin/mountpoint -q %h/.config/aidenhq
 ExecStartPre=/usr/bin/docker network inspect aidenhq-ci

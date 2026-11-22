@@ -414,11 +414,11 @@ minute is a hard cap: a longer `ExecStartPre` wait would outlast systemd's 90-se
 clears the delay, and a marker more than 15 minutes old (a drain, an outage) is dropped rather than served, so a
 persistent refusal retries slowly rather than hot-looping while a clean job exit still starts the next runner
 immediately. Because the wait runs before `ExecStart`, a unit backing off is `activating` rather than `active`. The
-marker sits under the host's data dir, which `ops/lib/data-dir.sh` resolves one way for the runner and the exporter
-(the unit's `AIDENHQ_DATA_DIR`, else the checkout's `.env`, read there and never sourced; an `export` line counts, and
-the value is expanded as sourcing would -- a variable or a leading `~` outside single quotes, nothing inside them -- with
-a relative path taken from the checkout and a trailing slash dropped, a lone `/` staying the root), so the marker is the
-same file `ops/host-metrics.sh` exports its backoff series from. The missing permission also reaches the owner: a codehost op's `needs_owner` answer is recorded
+marker sits under the host's data dir, which `ops/lib/data-dir.sh` resolves from the unit environment alone -- the apply
+writes each unit's `EnvironmentFile=` (`~/.config/aidenhq-ci-runner.env`, `~/.config/aidenhq-host-metrics.env`) from the
+host's own `.env`, so the runner and the exporter never read a settings file themselves. A relative value is the
+checkout's and a leading `~` is the home directory, with a trailing slash dropped but a lone `/` kept, so the marker is
+the same file `ops/host-metrics.sh` exports its backoff series from. The missing permission also reaches the owner: a codehost op's `needs_owner` answer is recorded
 as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
 scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
 `CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat

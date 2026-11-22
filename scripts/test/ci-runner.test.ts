@@ -90,23 +90,23 @@ test("a refused token waits 1s, 2s, 4s before the next attempt; a token that min
   assert.deepEqual(retries(clean.calls), [], "a clean start does not sleep");
 });
 
-// A host that names its data dir in the checkout's .env (every install's .env.example does) gets the marker there, not under a
-// default `data` the unit never reads: the unit's environment carries no AIDENHQ_DATA_DIR, only the file names one.
-test("the checkout's .env names the data dir, and the marker goes there", async () => {
+// The unit's data dir comes from its environment, which the unit's EnvironmentFile= gives it (the apply writes that file from
+// the host's settings): the script itself never reads a `.env`. A value the environment names is where the marker goes.
+test("the unit's environment names the data dir, and the marker goes there", async () => {
   const dir = checkout();
   writeFileSync(join(dir, "fail"), "");
-  writeFileSync(join(dir, ".env"), "# the fleet's settings\nAIDENHQ_DATA_DIR=\"moved\"  # beside the checkout\nOTHER=1\n");
-  const first = await run(dir, "1", { AIDENHQ_DATA_DIR: "" });
+  const moved = join(dir, "moved");
+  const first = await run(dir, "1", { AIDENHQ_DATA_DIR: moved });
   assert.equal(first.status, 1, first.out);
-  const moved = join(dir, "moved/ci-runner/1.backoff");
-  assert.ok(existsSync(moved), `${first.out}\nexpected the marker under the .env data dir`);
-  assert.equal(readFileSync(moved, "utf8").trim(), "1");
+  const markerPath = join(moved, "ci-runner/1.backoff");
+  assert.ok(existsSync(markerPath), `${first.out}\nexpected the marker under the environment's data dir`);
+  assert.equal(readFileSync(markerPath, "utf8").trim(), "1");
   assert.equal(existsSync(marker(dir)), false, "nothing under the default data dir");
   rmSync(join(dir, "fail"));
-  const minted = await run(dir, "1", { AIDENHQ_DATA_DIR: "" });
+  const minted = await run(dir, "1", { AIDENHQ_DATA_DIR: moved });
   assert.equal(minted.status, 0, minted.out);
-  assert.deepEqual(retries(minted.calls), [1], "the wait is served from the .env marker");
-  assert.equal(existsSync(moved), false, "and clearing it removes that marker");
+  assert.deepEqual(retries(minted.calls), [1], "the wait is served from the marker the environment named");
+  assert.equal(existsSync(markerPath), false, "and clearing it removes that marker");
 });
 
 // A marker left before a drain or an outage is not a refusal that is still looping: once it is old, the runner starts at once

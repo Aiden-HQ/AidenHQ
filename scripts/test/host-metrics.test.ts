@@ -3,7 +3,7 @@
 // textfile section runs on the same fakes, so this also pins that an empty runner state writes no backoff line at all.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,36 +51,29 @@ test("a persisted runner backoff is a metric, and a stale or empty one is not", 
   assert.match(text, /^aidenhq_unit_active\{scope="user",unit="aidenhq-ci-runner@3\.service"\} /m);
 });
 
-// The resolver the runner's marker and this exporter share (ops/lib/data-dir.sh): a `.env` value reaches both the same way, so
-// the marker a unit writes is the file this reads. Quoting is honoured as sourcing would: `$HOME` expands in a double-quoted
-// or unquoted value and never inside single quotes, a leading `~` expands only unquoted, an `export NAME=` line counts, a
-// trailing slash (even a lone `/`) is kept meaningful, and a relative value is the checkout's.
+// The resolver the runner's marker and this exporter share (ops/lib/data-dir.sh) takes its value from the environment only:
+// the apply puts the host's data dir in each unit's EnvironmentFile, so ordinary ops code never reads a settings file. A
+// relative value is the checkout's, a leading `~` is the home directory, and a trailing slash (but a lone `/`) is dropped.
 test("one data dir: the runner's marker and this exporter resolve a value the same way", async () => {
   const dir = mkdtempSync(join(tmpdir(), "data-dir-"));
   mkdirSync(join(dir, "ops/lib"), { recursive: true });
   writeFileSync(join(dir, "ops/lib/data-dir.sh"), readFileSync(join(repo, "ops/lib/data-dir.sh"), "utf8"));
-  const ask = (value: string, home: string, line = `AIDENHQ_DATA_DIR=${value}`) => new Promise<string>((resolve, reject) => {
-    writeFileSync(join(dir, ".env"), `${line}\n`);
-    execFile("bash", ["-c", `. "${dir}/ops/lib/data-dir.sh"; aidenhq_data_dir`], { env: { PATH: "/usr/bin:/bin", HOME: home } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(out.trim())));
+  const ask = (value: string, home: string) => new Promise<string>((resolve, reject) => {
+    execFile("bash", ["-c", `. "${dir}/ops/lib/data-dir.sh"; aidenhq_data_dir`], { env: { PATH: "/usr/bin:/bin", HOME: home, ...(value === "" ? {} : { AIDENHQ_DATA_DIR: value }) } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(out.trim())));
   });
   const home = join(dir, "home");
-  assert.equal(await ask('"$HOME/aiden-data"', home), `${home}/aiden-data`, "a variable expands as sourcing it would");
-  assert.equal(await ask('"${HOME}/aiden-data"', home), `${home}/aiden-data`, "the braced form expands too");
-  assert.equal(await ask("'$HOME/aiden-data'", home), join(dir, "$HOME/aiden-data"), "single quotes keep the text literal, as the shell does");
-  assert.equal(await ask("~/aiden-data", home), `${home}/aiden-data`, "an unquoted ~ expands");
-  assert.equal(await ask('"~/aiden-data"', home), join(dir, "~/aiden-data"), "a ~ inside double quotes stays literal");
-  assert.equal(await ask('"$HOME/aiden-data" # the host', home), `${home}/aiden-data`, "a comment after a quoted value is not part of it");
-  assert.equal(await ask("/srv/aiden-data # the host", home), "/srv/aiden-data", "an unquoted value ends at a comment");
-  assert.equal(await ask('"\\$HOME/aiden-data"', home), join(dir, "$HOME/aiden-data"), "an escaped $ stays a $, as in the shell");
+  assert.equal(await ask("", home), join(dir, "data"), "no setting in the environment is the checkout's ./data");
+  assert.equal(await ask("/srv/aiden-data", home), "/srv/aiden-data", "an absolute value is used as given");
   assert.equal(await ask("./data", home), join(dir, "data"), "a relative value is the checkout's");
+  assert.equal(await ask("~/aiden-data", home), `${home}/aiden-data`, "a leading ~ is the home directory");
   assert.equal(await ask("/", home), "/", "a lone / stays the root");
   assert.equal(await ask("/srv/aidenhq/", home), "/srv/aidenhq", "a trailing slash is dropped, not the path");
-  assert.equal(await ask("", home, "export AIDENHQ_DATA_DIR=/srv/aidenhq-data"), "/srv/aidenhq-data", "an exported assignment counts");
 });
 
-// The exporter with no AIDENHQ_DATA_DIR in its environment at all: the checkout's `.env` names one through a variable, as
-// every install's does, and that is where the textfiles go (the runner's marker reads the same resolver, so it lands there too).
-test("the exporter reads a quoted \"$HOME\" data dir from the checkout's .env", async () => {
+// The exporter takes its data dir from the environment its unit's EnvironmentFile gives it (the apply writes that file, and
+// the CI runner's unit reads its own copy of the setting): ordinary ops code reads no `.env`, and a quoted value in one is
+// simply not consulted. The textfiles land under the environment's path.
+test("the exporter's data dir comes from the unit environment, not a checkout .env", async () => {
   const root = mkdtempSync(join(tmpdir(), "host-env-"));
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
@@ -90,13 +83,16 @@ test("the exporter reads a quoted \"$HOME\" data dir from the checkout's .env", 
   mkdirSync(join(root, "ops/lib"), { recursive: true });
   writeFileSync(join(root, "ops/host-metrics.sh"), readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"));
   writeFileSync(join(root, "ops/lib/data-dir.sh"), readFileSync(join(repo, "ops/lib/data-dir.sh"), "utf8"));
-  writeFileSync(join(root, ".env"), 'AIDENHQ_DATA_DIR="$HOME/aiden-data"\n');
+  // A .env that would point elsewhere: it must not be read.
+  writeFileSync(join(root, ".env"), 'AIDENHQ_DATA_DIR=/srv/elsewhere\n');
   const home = join(root, "home");
-  mkdirSync(join(home, "aiden-data/modules/monitoring/textfile"), { recursive: true });
+  const data = join(home, "aiden-data");
+  mkdirSync(join(data, "modules/monitoring/textfile"), { recursive: true });
   await new Promise<void>((resolve, reject) => {
-    execFile("bash", [join(root, "ops/host-metrics.sh")], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve()));
+    execFile("bash", [join(root, "ops/host-metrics.sh")], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, AIDENHQ_DATA_DIR: data } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve()));
   });
-  assert.match(readFileSync(join(home, "aiden-data/modules/monitoring/textfile/units.prom"), "utf8"), /^# TYPE aidenhq_unit_backoff gauge$/m, "written where .env points, expanded as sourcing would");
+  assert.match(readFileSync(join(data, "modules/monitoring/textfile/units.prom"), "utf8"), /^# TYPE aidenhq_unit_backoff gauge$/m, "written where the unit environment points");
+  assert.ok(!existsSync(join(root, "srv/elsewhere")), "the checkout's .env is not read");
 });
 
 test("no runner state writes a backoff metric with no series", async () => {

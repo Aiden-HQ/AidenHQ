@@ -13,9 +13,9 @@
 # written while the directory is missing (the module is off).
 set -uo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Host settings come from the environment, else the checkout's `.env` read by ops/lib/data-dir.sh (not sourced by this script
-# either): the same resolver the CI runner's backoff marker uses, so the unit's marker is the file this exports. It resolves
-# the data dir the way `.env` sourcing did (a variable's value, `~`, a relative path, a trailing slash).
+# The host's settings come from the environment the unit gives this script (its EnvironmentFile=, which the apply writes from
+# the host's settings): ops/lib/data-dir.sh is the same resolver the CI runner's backoff marker uses, so the unit's marker is
+# the file this exports. This script reads no `.env` itself; a relative value is the checkout's and `~` is the home dir.
 # shellcheck source=ops/lib/data-dir.sh
 . "$repo/ops/lib/data-dir.sh"
 data="$(aidenhq_data_dir)"
