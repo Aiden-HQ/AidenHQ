@@ -466,7 +466,8 @@ read it).
 
 CI health on demand (queue time, red rate, slow and failing jobs, merged-PR flakes, both repos): `node scripts/ci-report.ts [--hours 24]`.
 
-**Another org's repos.** `image-scan` builds nothing (a build would run a PR's RUN steps on our runner, and the runner has no Docker): the grype
+**The product repo's org.** The product workflows' heavy jobs can overflow to `[self-hosted, aidenhq]` (below).
+`image-scan` builds nothing (a build would run a PR's RUN steps on our runner, and the runner has no Docker): the grype
 baked into the runner image scans each changed image's directory (lock files) and the digest-pinned base images its
 Dockerfile names (`scripts/supply-chain/image-scan.ts` reads the Dockerfile as text), so packages RUN steps install are
 not covered there; the security module's scans of deployed images cover them. A base image's files a Dockerfile replaces
@@ -483,9 +484,24 @@ not the boundary: the org's runner group is. To serve the product org:
 3. On the VM: `systemctl --user enable --now aidenhq-ci-runner@<org>-1 aidenhq-ci-runner@<org>-2` (the org's login as
    in its URL, e.g. `aidenhq-ci-runner@acme-1`). Check: the group's runners list them idle.
 
-**The public Aiden-HQ repos (AidenHQ, aidenhq-distro).** Their CI runs on GitHub-hosted runners only (owner, 2026-11-22:
-the product's overflow routing to self-hosted runners was cut with the CI trim; fewer, shorter jobs fit the free plan's ~20
-at once). The self-hosted runners above serve other orgs' repos.
+**The public Aiden-HQ repos (AidenHQ, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
+In the product's ci.yml the first job (`checks`) counts the hosted jobs this repo's other runs hold (queued or running) and
+sends the heavy jobs (the packages shards and board) to `[self-hosted, aidenhq]` only when that count is 12 or
+more (the free plan runs ~20 at once), the repository variable `CI_SELF_HOSTED` is `true`, and the run is a push to main or
+a same-repo PR (never a merge train: it holds PRs that may come from forks); any API error keeps them hosted. That routing
+lives in the workflow file the run carries, so it is no boundary. The boundaries are: *Require approval for all outside
+collaborators* (a fork's workflow runs only after a maintainer approves it), the org runner group (only these repos), and
+the runner's job-started hook (modules/ci/runner/job-started.*, baked into the image read-only, run under `env -i`): it
+fails any job, before checkout, whose repository is not in the fleet org or the `ci_runner_repos` setting, or whose event
+is not a push or workflow_dispatch on the default branch, a schedule, or a pull_request from the same repository (no fork
+PRs, merge trains, merge_group, pull_request_target, issue_comment, workflow_run, release or repository_dispatch). The
+runner starts the hook with an environment of its own (the github and runner contexts), never the job's `env:`, so a
+job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
+Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
+`settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
+aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-6` (six run today, owner 2026-11-22); then the repo variables
+(Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 6). Unset it to go back to hosted only.
+aidenhq-distro can adopt the same routing in its ci.yml later.
 
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
 10 minutes on two runners. Jobs for one org never take another org's runners.

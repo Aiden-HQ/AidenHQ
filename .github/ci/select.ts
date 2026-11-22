@@ -64,9 +64,9 @@ function main() {
   const tests = map.suites
     .filter((s: Suite) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s: Suite) => ({ name: s.name, dir: s.name, run: s.run, secs: s.secs ?? 5, ...(s.job ? { job: s.job } : {}) }));
-  // The test jobs' shards.
+  // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
   const pk = shard(tests.filter((t) => t.job == null), 1), md = shard(tests.filter((t) => t.job === "modules"), 2);
-  const plan = { packages: pk, modules: md };
+  const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
   process.stdout.write(`${JSON.stringify({ tests, shards: plan })}\n`);
 }
 

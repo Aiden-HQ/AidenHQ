@@ -1,9 +1,14 @@
-# Tests and typechecks for every package, on pull requests and pushes to main, on GitHub-hosted runners. The test jobs run
-# their suites side by side, one per CPU (.github/ci/run-suites.sh), each with a timeout from its measured time (`secs` in
-# .github/ci/areas.json), in at most 3 shards (.github/ci/select.ts). Nothing is ever re-run: a flaky test is removed
-# (owner, 2026-11-20). Offline: no secrets are used, except the reviewer eval's model key (the `reviewer-eval` job, in its
-# one step). A pull request runs the suites its change touches (the map is read from the tested tree: agents are trusted);
-# the slow end-to-end ones (areas.json `main: true`: the SDK twin) run only on pushes to main.
+# Tests and typechecks for every package, on pull requests and pushes to main. The test jobs run their suites side by side,
+# one per CPU (.github/ci/run-suites.sh), each with a timeout from its measured time (`secs` in .github/ci/areas.json), in
+# at most 3 shards (.github/ci/select.ts). Nothing is ever re-run: a flaky test is removed (owner, 2026-11-20). Offline: no
+# secrets are used, except the reviewer eval's model key (the `reviewer-eval` job, in its one step). A pull request runs the
+# suites its change touches (the map is read from the tested tree: agents are trusted); the slow end-to-end ones (areas.json
+# `main: true`: the SDK twin) run only on pushes to main.
+# Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
+# once). The heavy jobs (packages, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
+# aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
+# 'true' (docs/operations.md) and the run is a push to main or a same-repo pull request. Fork PRs stay hosted, and the
+# runners' job-started hook refuses any job that is not a push or same-repo PR of a repo they serve.
 # The AI reviewer's exit test (modules/ai-reviewer/scripts/reviewer-eval.ts) runs here, in the `reviewer-eval` job, on a
 # same-repo PR or a push to main that touches REVIEWER_CODE (modules/github/service/src/evalgate.ts); nobody runs it by hand.
 name: ci
@@ -32,7 +37,7 @@ jobs:
     name: packages (${{ matrix.shard }})
     needs: checks
     if: needs.checks.outputs.packages != '[]'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 6
     strategy:
       fail-fast: false
@@ -215,7 +220,7 @@ jobs:
   board:
     needs: checks
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/board')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -231,7 +236,8 @@ jobs:
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
 
-  # The plan the jobs below wait for, kept to fast steps (~10-15 s): the suites to test and the images to scan. Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed
+  # The plan the jobs below wait for, kept to fast steps (~10-15 s): the suites to test, the images to scan and where the
+  # heavy jobs run. Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed
   # dependency manifest or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the
   # scan, never skips it.
   checks:
@@ -239,11 +245,13 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read # how busy hosted runners are
     outputs:
       dockerfiles: ${{ steps.find.outputs.dockerfiles }}
       tests: ${{ steps.tests.outputs.tests }}
       packages: ${{ steps.tests.outputs.packages }}
       modules: ${{ steps.tests.outputs.modules }}
+      runner: ${{ steps.runner.outputs.runner }}
       eval: ${{ steps.eval.outputs.eval }}
       eval_key: ${{ steps.eval.outputs.eval_key }}
     env:
@@ -275,6 +283,36 @@ jobs:
           # The test jobs' shards, by the suites' measured times (select.ts shard).
           echo "packages=$(jq -c .shards.packages <<< "$out")" >> "$GITHUB_OUTPUT"
           echo "modules=$(jq -c .shards.modules <<< "$out")" >> "$GITHUB_OUTPUT"
+          echo "heavy=$(jq -r .shards.heavy <<< "$out")" >> "$GITHUB_OUTPUT"
+
+      # Where the heavy jobs (the packages shards and board) run: GitHub-hosted, unless CI_SELF_HOSTED is 'true', the run is
+      # a push to main or a same-repo PR, this repo's other runs already hold BUSY+ hosted jobs (queued or running), and our
+      # self-hosted runners (CI_SELF_HOSTED_RUNNERS, default 1) have a free one for each heavy job: a job queued behind a
+      # busy self-hosted runner waits longer than one in GitHub's queue (2026-11-20: 10+ minutes behind the only runner).
+      # Any API error keeps them hosted. Fork PRs and merge trains never route there; the runners' job-started hook
+      # (modules/ci/runner) refuses them anyway.
+      - id: runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ENABLED: ${{ vars.CI_SELF_HOSTED == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.pull_request.head.repo.full_name == github.repository) }}
+          RUNNERS: ${{ vars.CI_SELF_HOSTED_RUNNERS || '1' }}
+          HEAVY: ${{ steps.tests.outputs.heavy }}
+        run: |
+          BUSY=12 # of the free plan's ~20 concurrent hosted jobs, leaving room for this run's own
+          runner='"ubuntu-latest"'
+          if [ "$ENABLED" = true ] && [ "${HEAVY:-0}" -gt 0 ] && counts=$(set -o pipefail; for status in queued in_progress; do
+              gh api "repos/$REPO/actions/runs?status=$status&per_page=100" --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id" || exit 1
+            done | while read -r id; do
+              gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" --jq '[.jobs[] | select(.status == "queued" or .status == "in_progress") | (.labels | index("self-hosted") != null)] | "\(map(select(. | not)) | length) \(map(select(.)) | length)"' || exit 1
+            done | awk '{h += $1; s += $2} END {print h + 0, s + 0}'); then
+            read -r hosted self <<< "$counts"
+            echo "other runs hold $hosted hosted and $self self-hosted jobs; this run has $HEAVY heavy jobs, $RUNNERS self-hosted runner(s)"
+            [ "$hosted" -ge "$BUSY" ] && [ $(( RUNNERS - self )) -ge "$HEAVY" ] && runner='["self-hosted","aidenhq"]'
+          fi
+          echo "heavy jobs run on $runner"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
 
       # Whether the change touches the AI reviewer's code (REVIEWER_CODE in evalgate.ts, the one list), read from the PR's
       # base (main for a merge train) so a PR can't take itself off it; a push to main reads its own.
