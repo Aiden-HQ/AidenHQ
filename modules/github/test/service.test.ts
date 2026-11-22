@@ -263,6 +263,25 @@ test("a new PR with a blank body still opens with the asking agent's footer", as
   assert.equal(post?.body.body.split("[AidenHQ](https://aidenhq.ai)").length - 1, 1, "the new PR carries one footer");
 });
 
+// The same head may have an open PR into another base (a release branch); that one is not what this publish planned, so a
+// publish into the default branch opens its own PR rather than editing the release PR.
+test("an open PR into another base is not reused by a publish into the default branch", async (t) => {
+  const url = "https://github.com/acme-agents/widget/pull/9";
+  const { sha, outcomes, ghCalls, call } = await setup(t, {
+    routes: (m, p) =>
+      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature"
+        ? { status: 200, body: [{ number: 6, html_url: "https://github.com/acme-agents/widget/pull/6", base: { ref: "release/1.x" } }] }
+        : m === "POST" && p === "/repos/acme-agents/widget/pulls" ? { status: 201, body: { number: 9, html_url: url, head: { sha } } }
+          : undefined,
+  });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }], text: { title: "fix(widget): main only", body: "Why." } };
+  await call("/aidenhq/v1/executor/execute", { id: "k-0000000000000124", kind: "github.pr", args, digest: "d", idempotency_key: "base" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false, "the release PR is left alone");
+  assert.equal(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme-agents/widget/pulls")?.body.base, "main");
+});
+
 // The CLI now sends `text` without `body` when there is no --body-file; the kernel's strict args schema must accept it, or
 // the fix would be refused before the service's guard ever runs.
 test("the pr args schema accepts a text without a body", () => {
