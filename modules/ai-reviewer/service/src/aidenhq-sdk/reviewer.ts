@@ -22,9 +22,21 @@ export interface ReviewCard { action: string; rule?: string; target?: string; se
  * can't read (binary); `changed`: the code host's own numstat of the change, read at filing: the reviewer checks the diff against it.
  */
 export interface Files { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }
+/**
+ * A connection tool call as the reviewer reads it: the connection, the tool, and the call's own argument object, every key as
+ * the tool takes it. Sent by the kernel in place of a diff for a `conn.tool` record; the reviewer renders it as TOOL_CALL.
+ */
+export interface ToolCall { connection: string; tool: string; arguments: Record<string, unknown>; unreadable?: string[] }
 /** One request as the reviewer reads it. Everything but `card.action` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
   card: ReviewCard; diff: string; files?: Files; chain?: string; requesterModel?: string;
+  /**
+   * A connection tool call's arguments, structured, as the reviewer reads them instead of a diff: code read them from the
+   * record (`args.connection`, `args.tool`, `args.arguments`), never parsed out of the card's prose. `arguments` is the call's
+   * own argument object, key for key as the tool takes them. `unreadable` names each argument code could not read (a value
+   * that isn't there), so the reviewer is told which field is missing rather than that the whole call is body-only.
+   */
+  tool_call?: ToolCall;
   /**
    * The task's comments as they stand, oldest first, rendered by the kernel: each under a label line code wrote (the owner's
    * own typed words, or an agent by its place in the request: the delegating agent, the chief of staff, the requesting agent,
@@ -36,6 +48,19 @@ export interface ReviewRequest {
 }
 export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string }
 /**
+ * The argument names whose value is a version by the tool's schema, and whether a quad could be one at all: a whole-string
+ * dotted quad (no room around it for prose) outside the ranges a LAN or tailnet is actually reached on. An address is never
+ * excused by what the requester's text says around it, nor by which argument it lands in.
+ */
+const VERSION_KEYS = /^(?:versions?|release|build|tag)$/i;
+const versionValue = (v: string) => {
+  const t = v.trim();
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(t)) return undefined;
+  const [a = 0, b = 0] = t.split(".").map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) ? undefined : t;
+};
+
+/**
  * Instance details in a GitHub write (a conn.tool card on the github connection: a comment, an issue, a review): a tailnet
  * host (*.ts.net), a home-directory path, or an IPv4 address other than loopback. A GitHub thread is outside the instance and
  * often public, and no issue or review needs these, so code refuses it itself: a model once approved a triage comment that
@@ -43,19 +68,83 @@ export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: s
  * comments when they are sent; this is the refusal before that, for every GitHub write.) The kernel runs it before it asks the
  * reviewer (review-loop.ts), so it never fails open; the reviewer runs it too (review.ts).
  */
-export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined) {
-  const text = String(diff ?? "");
-  if (card?.action !== "conn.tool" || !/^tool: github\./.test(text)) return [];
+export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined, toolCall?: ToolCall) {
+  if (card?.action !== "conn.tool") return [];
+  // A tool call's arguments arrive structured (`tool_call`), and the card's details text rides in `diff` for a provider that
+  // doesn't read `tool_call` yet. Both are read the same way, decoded: the details' JSON tail is parsed back and walked too, so
+  // an argument the schema names (`version`) is recognised in either form — never left to the JSON escaping, which once hid both
+  // a newline and the argument a value sat under. A details tail that isn't JSON (a truncated or older shape) is scanned as the
+  // text it is, so nothing is dropped.
+  const parts: string[] = [];
+  // The call's own version numbers, by argument name: the only dotted quads the scan may read as versions. A heading in the
+  // requester's text is never proof (`Build:` above an address is a copied build server's address, not a build number).
+  const versions = new Set<string>();
+  if (toolCall && toolCall.connection !== "github") return [];
+  if (toolCall) walkArguments(toolCall.arguments, parts, versions);
+  const details = String(diff ?? "");
+  if (!toolCall && !/^tool: github\./.test(details)) return [];
+  const tail = /^tool: github\.[^\n]*\narguments \(written by the requesting agent\): ([\s\S]*)$/.exec(details)?.[1];
+  let parsed: unknown;
+  try { parsed = tail === undefined ? undefined : JSON.parse(tail.trim()); } catch { parsed = undefined; }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    // The same arguments in both forms are read once; details that differ from the structured call are read too, never trusted.
+    if (!toolCall || JSON.stringify(parsed) !== JSON.stringify(toolCall.arguments)) walkArguments(parsed, parts, versions);
+  } else if (!toolCall) parts.push(details);
+  const text = parts.join("\n");
   const found = [
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
-    ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)].filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0])),
+    ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
+      .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !(versions.has(m[0]) && !addressShaped(text, m.index ?? 0, m[0].length))),
   ].map((m) => m[0].replace(/[`'"),.\\]+$/, ""));
   return [...new Set(found)];
 }
 
+/**
+ * One argument object's keys and string values, decoded, pushed into `parts`, and the value of a version-named argument into
+ * `versions`. Walked with an explicit stack, not recursion: this runs in the kernel before the reviewer's own depth check, and
+ * an argument object is the requester's to shape, so a deep one must not overflow the stack it is scanned on. A value seen
+ * twice (a shared reference, or a cycle only a direct caller could build) is read once. Each argument's value is read once, in
+ * bounded time: nothing here scans the text accumulated so far.
+ */
+function walkArguments(args: unknown, parts: string[], versions: Set<string>) {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [];
+  const open = (v: unknown) => {
+    if (!v || typeof v !== "object" || seen.has(v)) return;
+    seen.add(v);
+    for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
+      parts.push(k);
+      // The schema, not a line of the requester's prose, says which argument is a version: a dotted quad that is the whole
+      // value of `version` (or `versions`) is that report's version, wherever an agent's log quotes it back.
+      if (typeof child !== "string") stack.push(child);
+      else {
+        parts.push(child);
+        const version = VERSION_KEYS.test(k) ? versionValue(child) : undefined;
+        if (version) versions.add(version);
+      }
+    }
+  };
+  open(args);
+  while (stack.length) {
+    const v = stack.pop();
+    if (typeof v === "string") parts.push(v);
+    else open(v);
+  }
+}
+
+/**
+ * Whether a quad is used as an address rather than a number: a URL host, a host with a port, or a bare host after a scheme or
+ * `@`. A version argument's value is still refused when the text uses it to reach something, since a version never is one.
+ */
+function addressShaped(text: string, at: number, length: number): boolean {
+  const before = text.slice(Math.max(0, at - 8), at), after = text.slice(at + length, at + length + 2);
+  // A scheme or user part right before it (`https://`, `user@`), or a port right after it (`:8443`), means a host.
+  return /(?:\/\/|@)$/.test(before) || /^:\d/.test(after);
+}
+
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "requesterModel", "comments"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "tool_call", "files", "chain", "requesterModel", "comments"] as const;
 
 /** The module's reviewer: one request in, one verdict out. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string }) => Promise<Verdict>;

@@ -218,3 +218,59 @@ test("code refuses instance details in a GitHub write, and a diff the code host'
   assert.equal(mod.seen.length, 0, "no reviewer call");
   assert.deepEqual([k.records.get(m.id).state, k.records.get(m.id).review_code], ["rejected", "files_not_shown"]);
 });
+
+test("a structured tool call's arguments are scanned without recursion, so a deep or cyclic one is read, not a stack overflow", async () => {
+  const { instanceDetails } = await import("../sdk/src/reviewer.ts");
+  let deep: Record<string, unknown> = { host: "agents.acme.ts.net" };
+  for (let i = 0; i < 100_000; i++) deep = { next: deep };
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: deep }), ["agents.acme.ts.net"]);
+  const cyclic: Record<string, unknown> = { host: "/home/sam/logs" };
+  cyclic.self = cyclic;
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: cyclic }), ["/home/sam/logs"]);
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "t", arguments: { ok: "plain" } }), []);
+});
+
+test("a report's own version argument is not an instance address, while a real one still is", async () => {
+  const { instanceDetails } = await import("../sdk/src/reviewer.ts");
+  const scan = (log: string, version = "1.2.3.4") => instanceDetails({ action: "conn.tool" }, "", { connection: "github", tool: "github_product_issue", arguments: { title: "t", fingerprint: "f", evidence: { module: "m", version, reproduction: "r", log } } });
+  // The schema says `version` is a version: its own value is not an address, wherever the log quotes it back.
+  assert.deepEqual(scan("Affected versions:\n1.2.3.4"), [], "a version quoted back under its heading");
+  assert.deepEqual(scan("Affected versions: 1.2.3.4"), [], "a version quoted back on the heading's line");
+  assert.deepEqual(scan("the agent ran on 10.0.0.7"), ["10.0.0.7"], "a real address is still refused");
+  assert.deepEqual(scan("Affected versions: 1.2.3.4, seen on 10.0.0.7"), ["10.0.0.7"], "the address beside a version too");
+  // A heading in the requester's own text is never proof: an address under `Build:` is still an address.
+  assert.deepEqual(scan("Build:\n192.168.1.10"), ["192.168.1.10"], "an address under a Build heading");
+  assert.deepEqual(scan("build: 100.101.102.103"), ["100.101.102.103"], "a tailnet address under a build heading");
+  assert.deepEqual(scan("release: 10.0.0.7"), ["10.0.0.7"], "a private address under a release heading");
+  // And the schema key does not excuse a LAN or tailnet address either: a real version is never one of those.
+  assert.deepEqual(scan("nothing", "192.168.1.10"), ["192.168.1.10"], "a private quad in the version argument");
+  assert.deepEqual(scan("nothing", "100.101.102.103"), ["100.101.102.103"], "a tailnet quad in the version argument");
+  assert.deepEqual(scan("nothing", "1.2.3.4"), [], "an ordinary version argument");
+  // A version argument's value is refused when the text uses it to reach something: that is an address, not a version.
+  assert.deepEqual(scan("ssh://1.2.3.4/x"), ["1.2.3.4"], "a version value used as a URL host");
+  assert.deepEqual(scan("the agent at 1.2.3.4:8443"), ["1.2.3.4"], "a version value used as a host and port");
+});
+
+test("the card's details text is read decoded too, so a report's version is not refused without a structured call", async () => {
+  // The reviewer eval harness and an older kernel pass only the details text (no tool_call). Its JSON tail must be parsed back
+  // and walked like structured arguments: the schema names `version`, so the value is a version there too, not an address.
+  const { instanceDetails } = await import("../sdk/src/reviewer.ts");
+  const args = { title: "t", fingerprint: "f", evidence: { module: "m", version: "1.2.3.4", reproduction: "r", log: "Affected versions:\n1.2.3.4" } };
+  const details = `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(args)}`;
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, details), [], "details only: the version argument is a version");
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, details, { connection: "github", tool: "github_product_issue", arguments: args }), [], "both forms, the same arguments");
+  // Details that differ from the structured call are still read, never trusted.
+  const other = { ...args, evidence: { ...args.evidence, log: "seen on 10.0.0.7" } };
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, `tool: github.t\narguments (written by the requesting agent): ${JSON.stringify(other)}`, { connection: "github", tool: "t", arguments: args }), ["10.0.0.7"], "details that differ are read");
+  // An address under a heading in free text is still refused on the details-only path.
+  const leak = { evidence: { log: "Build:\n192.168.1.10" } };
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, `tool: github.t\narguments (written by the requesting agent): ${JSON.stringify(leak)}`), ["192.168.1.10"], "an address under a heading, details only");
+  // A tail that isn't JSON is scanned as text, so nothing is dropped.
+  assert.deepEqual(instanceDetails({ action: "conn.tool" }, "tool: github.t\narguments (written by the requesting agent): {\"log\":\"10.0.0.7"), ["10.0.0.7"], "a truncated tail is scanned as text");
+  // And the scan is linear in the text: thousands of quads finish quickly (the old per-match split of the whole suffix did not).
+  const many = Array.from({ length: 3000 }, (_, i) => `10.0.${i % 256}.${i % 200}`).join(" ");
+  const big = `tool: github.t\narguments (written by the requesting agent): ${JSON.stringify({ evidence: { version: "9.9.9.9", log: many } })}`;
+  const started = Date.now();
+  assert.equal(instanceDetails({ action: "conn.tool" }, big).length, 3000, "each private-range quad is still refused");
+  assert.ok(Date.now() - started < 1000, `the scan is bounded (${Date.now() - started}ms)`);
+});

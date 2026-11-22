@@ -55,6 +55,7 @@ const REVIEW_WORDS: Record<string, string> = {
   fail_open: "The review didn't finish twice, so it was approved (fail open).",
   files_not_shown: "The diff didn't match the code host's own count of the change.",
   instance_details: "It would post this server's hosts, addresses or paths to GitHub.",
+  tool_call_unreadable: "The tool call's arguments couldn't be read or shown whole, so it went back to the agent.",
   code_review_owns: "Code approved it without an AI review: your setting leaves pushes and PRs on this repo to code review.",
   owner_veto: "You vetoed this action on this task: it is yours.",
   shadow: "Your autonomy is below full: the reviewer's verdict is only a note.",
