@@ -13,9 +13,9 @@
 # written while the directory is missing (the module is off).
 set -uo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -f "$repo/.env" ] && { set -a; . "$repo/.env"; set +a; }
-# The data dir as ops/lib/data-dir.sh resolves it, the same resolver the CI runner's backoff marker uses (there `.env` is read,
-# not sourced): one path, one meaning, so the unit's marker is the file this exports.
+# Host settings come from the environment, else the checkout's `.env` read by ops/lib/data-dir.sh (not sourced by this script
+# either): the same resolver the CI runner's backoff marker uses, so the unit's marker is the file this exports. It resolves
+# the data dir the way `.env` sourcing did (a variable's value, `~`, a relative path, a trailing slash).
 # shellcheck source=ops/lib/data-dir.sh
 . "$repo/ops/lib/data-dir.sh"
 data="$(aidenhq_data_dir)"
@@ -111,7 +111,13 @@ ids="$(docker ps -aq 2>/dev/null | sort -u)"
 } | write containers.prom
 
 # The newest finished apply (not an auto-revert's own line, not one still running). Rewritten every run, like the others.
-gens="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
+state="$(aidenhq_env_value AIDENHQ_STATE_DIR)"
+case "$state" in
+  "~") state="$HOME" ;; "~/"*) state="$HOME/${state#"~/"}" ;;
+esac
+state="${state//'${HOME}'/$HOME}"; state="${state//'$HOME'/$HOME}"
+[ -n "$state" ] || state="$HOME/.local/state/aidenhq"
+gens="$state/generations.jsonl"
 {
   echo "# HELP aidenhq_apply_failed 1 when the newest apply failed its health check (reverted to the last known good) or was refused at validation."
   echo "# TYPE aidenhq_apply_failed gauge"

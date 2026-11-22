@@ -13,26 +13,30 @@ aidenhq_data_root() {
   cd "$here/../.." && pwd
 }
 
+# One setting out of the environment, else the checkout's `.env` (parsed, never sourced): the value as written.
+aidenhq_env_value() {
+  local root value
+  if [ -n "${!1:-}" ]; then printf '%s\n' "${!1}"; return 0; fi
+  root="$(aidenhq_data_root 2>/dev/null || true)" || return 0
+  [ -n "$root" ] || root="$(pwd)"
+  [ -f "$root/.env" ] || return 0
+  value="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$root/.env" 2>/dev/null | tail -n 1)" || return 0
+  value="${value%$'\r'}"
+  case "$value" in
+    \"*) value="${value#\"}"; value="${value%%\"*}" ;;
+    \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+    *) value="${value%%[[:space:]]#*}" ;;
+  esac
+  printf '%s\n' "$value"
+}
+
 aidenhq_data_dir() {
   local root value
   root="$(aidenhq_data_root 2>/dev/null || true)" || return 0
   [ -n "$root" ] || root="$(pwd)"
-  if [ -n "${AIDENHQ_DATA_DIR:-}" ]; then
-    value="$AIDENHQ_DATA_DIR"
-  elif [ -f "$root/.env" ]; then
-    value="$(sed -n 's/^[[:space:]]*AIDENHQ_DATA_DIR[[:space:]]*=[[:space:]]*//p' "$root/.env" 2>/dev/null | tail -n 1)" || true
-    value="${value%$'\r'}"
-    # A quoted value ends at its closing quote (a trailing comment is not part of the path); an unquoted one ends at its
-    # first ` #`.
-    case "$value" in
-      \"*) value="${value#\"}"; value="${value%%\"*}" ;;
-      \'*) value="${value#\'}"; value="${value%%\'*}" ;;
-      *) value="${value%%[[:space:]]#*}" ;;
-    esac
-  else
-    value=data
-  fi
-  # The exporter sources `.env`, so `"$HOME/x"` there is a path: expand the forms a setting plausibly uses, without eval.
+  value="$(aidenhq_env_value AIDENHQ_DATA_DIR)"
+  [ -n "$value" ] || value=data
+  # The exporter sourced `.env`, so `"$HOME/x"` there was a path: expand the forms a setting plausibly uses, without eval.
   case "$value" in "~") value="$HOME" ;; "~/"*) value="$HOME/${value#"~/"}" ;; esac
   value="${value//'${HOME}'/$HOME}"
   value="${value//'$HOME'/$HOME}"

@@ -69,6 +69,27 @@ test("one data dir: the runner's marker and this exporter resolve a value the sa
   assert.equal(await ask("/srv/aidenhq/", home), "/srv/aidenhq", "a trailing slash is dropped, not the path");
 });
 
+// The exporter with no AIDENHQ_DATA_DIR in its environment at all: the checkout's `.env` names one through a variable, as
+// every install's does, and that is where the textfiles go (the runner's marker reads the same resolver, so it lands there too).
+test("the exporter reads a quoted \"$HOME\" data dir from the checkout's .env", async () => {
+  const root = mkdtempSync(join(tmpdir(), "host-env-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
+  fake("systemctl", "exit 0");
+  fake("docker", "exit 0");
+  mkdirSync(join(root, "ops/lib"), { recursive: true });
+  writeFileSync(join(root, "ops/host-metrics.sh"), readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"));
+  writeFileSync(join(root, "ops/lib/data-dir.sh"), readFileSync(join(repo, "ops/lib/data-dir.sh"), "utf8"));
+  writeFileSync(join(root, ".env"), 'AIDENHQ_DATA_DIR="$HOME/aiden-data"\n');
+  const home = join(root, "home");
+  mkdirSync(join(home, "aiden-data/modules/monitoring/textfile"), { recursive: true });
+  await new Promise<void>((resolve, reject) => {
+    execFile("bash", [join(root, "ops/host-metrics.sh")], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve()));
+  });
+  assert.match(readFileSync(join(home, "aiden-data/modules/monitoring/textfile/units.prom"), "utf8"), /^# TYPE aidenhq_unit_backoff gauge$/m, "written where .env points, expanded as sourcing would");
+});
+
 test("no runner state writes a backoff metric with no series", async () => {
   const h = host();
   const text = await run(h);
