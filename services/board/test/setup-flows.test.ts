@@ -102,6 +102,12 @@ describe("setup flows", () => {
   const other = as({ id: "u-3", email: "o@example.com", name: "O", role: "admin", owner: false });
   const user = as({ id: "u-2", email: "u@example.com", name: "U", role: "user", owner: false });
 
+  it("lists the flows in order and never the pair token", async () => {
+    const r = await admin("GET", "/api/setup-flows");
+    expect(r.json.flows.map((f: { module: string }) => f.module)).toEqual(["phone", "plain", "vaultless", "secrets", "docs", "hub"]);
+    expect(JSON.stringify(r.json)).not.toMatch(/pair-secret|phone_pair_token/);
+  });
+
   it("a secret saves as the signed-in admin, and the kernel's refusal comes back inline", async () => {
     expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "other", value: "x" })).status).toBe(400);
     const bad = await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "bad" });
@@ -109,6 +115,49 @@ describe("setup flows", () => {
     expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json).toMatchObject({ ok: true });
     const save = kernel.calls.filter((c) => c.path === "/v1/accounts/save_secret").at(-1)!;
     expect(save.body).toMatchObject({ module: "phone", secret: "phone_bot_token", value: "123:abc", token: expect.stringMatching(/^ahqu_/) });
+  });
+
+  it("a sign-in's own value saves through the kernel as a ready admin, and only a value it declares", async () => {
+    expect((await admin("POST", "/api/sign-ins/site/secret", { secret: "site_url", value: "https://site.example.com" })).json).toMatchObject({ ok: true });
+    expect(kernel.calls.filter((c) => c.path === "/v1/accounts/save_secret").at(-1)!.body).toMatchObject({ module: "site", secret: "site_url", value: "https://site.example.com" });
+    expect((await admin("POST", "/api/sign-ins/site/secret", { secret: "phone_bot_token", value: "123:abc" })).status).toBe(400);
+    expect((await user("POST", "/api/sign-ins/site/secret", { secret: "site_url", value: "https://site.example.com" })).status).toBe(403);
+  });
+
+  it("done needs the secrets, the sign-in and the pairing", async () => {
+    const get = async () => Object.fromEntries((await admin("GET", "/api/setup-flows")).json.flows.map((f: { module: string; done: boolean }) => [f.module, f.done]));
+    expect(await get()).toEqual({ phone: false, plain: false, vaultless: true, secrets: false, docs: false, hub: false }); // phone: secret saved but not paired; plain: no sign-in; vaultless: signed in with empty vault; secrets: secret missing
+    paired = true;
+    googleOk = true;
+    expect(await get()).toEqual({ phone: true, plain: false, vaultless: true, secrets: false, docs: true, hub: false });
+    expect((await admin("GET", "/api/setup-flows/phone/pair")).json).toEqual({ paired: true, paired_at: "2026-11-17T10:00:00.000Z" });
+    paired = false;
+    googleOk = false;
+  });
+
+  it("{board_url} is where the connect path sends the sign-in back, and a bare-IP board still shows Google's steps", async () => {
+    const r = (await admin("GET", "/api/setup-flows")).json;
+    expect(r.board_url).toBe("https://192.0.2.10");
+    expect(r.named).toBeUndefined();
+    const docs = r.flows.find((f: { module: string }) => f.module === "docs");
+    expect(docs).toMatchObject({ connect_url: "/google/connect", steps: expect.stringContaining("callback") });
+    expect(docs.needs_name).toBeUndefined();
+    expect((await admin("GET", "/google/connect")).status).toBe(302);
+    expect(googleStarts.at(-1)).toBe(`${r.board_url}/google/callback`);
+  });
+
+  it("Connect opens the setup flow while its secrets are missing, then signs in", async () => {
+    expect(await admin("GET", "/hub/connect")).toMatchObject({ status: 302, location: "/#/setup/hub" });
+    expect(await admin("GET", "/plain/connect")).toMatchObject({ status: 302, location: "https://plain.example.com/authorize" }); // no secrets to ask for
+    await admin("POST", "/api/setup-flows/hub/secret", { secret: "hub_client_id", value: "client-1" });
+    expect(await admin("GET", "/hub/connect")).toMatchObject({ status: 302, location: "https://hub.example.com/authorize" });
+    expect(await admin("GET", "/hub/callback?state=s&code=c")).toMatchObject({ status: 302, location: "/#/settings/connections?connected=hub" }); // the tab Connect opened
+  });
+
+  it("dismissing is remembered", async () => {
+    await admin("POST", "/api/setup-flows/plain/dismiss");
+    const f = (await admin("GET", "/api/setup-flows")).json.flows;
+    expect(f.map((x: { dismissed: boolean }) => x.dismissed)).toEqual([false, true, false, false, false, false]);
   });
 
   it("a pairing read that fails is not broadcast as a revocation", async () => {
