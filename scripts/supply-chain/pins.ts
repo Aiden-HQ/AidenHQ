@@ -32,10 +32,12 @@ import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts"
 import type { Exception, FetchError } from "./best-version.ts";
 
 export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
-// `repos` holds the apt entries by sources.list.d file (key "" for a `deb` line naming no such file), so a stage that
-// extends another inherits the files it still has and an entry the parent rewrote or removed isn't carried over.
-interface State { repoAdded: boolean; repos: Map<string, string[]>; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
-const sources = (s: State) => [...s.repos.values()].flat();
+// Apt repository state: `files` are the source files the stage has (each used for dating, and whether it was removed),
+// `entries` the `deb` lines by source file (`undefined` for a line naming no file, which accumulates) and `added` whether
+// the stage has added any repository at all — a Deb822 `.sources` file adds one without a parseable `deb` line. A stage
+// extending another inherits the files it still has, never one the parent rewrote or removed.
+interface State { files: Map<string, string[]>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+const sources = (s: State) => [...s.entries.values()].flat();
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
@@ -126,30 +128,39 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       else pins.push({ kind: "pypi", name: p[1]!.replace(/\[.*\]$/, ""), package: p[1]!.replace(/\[.*\]$/, ""), version: p[2], at });
     }
   }
-  // Each `deb` line is filed under the sources.list.d file its own command writes, appends to or removes; one naming
-  // no file is kept apart. `rm` of a file (or of the whole directory) drops what it held.
-  for (const segment of cmd.split(/&&|\|\||;/)) {
-    const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
-    const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
-    const files = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
-    // A stage with no added repository left flags a later unpinned install again, as one that never added any does.
-    if (removes) { files.length ? files.forEach((f) => state.repos.delete(f)) : state.repos.clear(); state.repoAdded = state.repos.size > 0; continue; }
-    if (!debs.length) continue;
-    // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held.
-    const append = />>|\btee\b[^|;&]*\s-a\b/.test(segment);
-    for (const f of files.length ? files : [""]) state.repos.set(f, append ? [...(state.repos.get(f) ?? []), ...debs] : debs);
-    if (files.length) state.repoAdded = true;
-  }
   // Per-release arms: `case "$codename" in`, a label (`noble)`, `noble|resolute)`) then the arm's commands, `;;`, `esac`.
   if (/^\s*case\s+"?\$\{?(codename|VERSION_CODENAME)\b/.test(cmd)) state.releaseCase = true;
   else if (/^\s*esac\b/.test(cmd)) state.releaseCase = false;
   const label = state.releaseCase && /^\s*([a-z][a-z0-9]*(?:\|[a-z][a-z0-9]*)*)\)/.exec(cmd);
   if (label) { state.arm = label[1]!.split("|"); state.arm.forEach((r) => state.releases.add(r)); }
-  for (const m of cmd.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
-    for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
-      const [pkg, ver] = a.split("=") as [string, string | undefined];
-      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
-      else if (state.repoAdded) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
+  // Repository writes and apt installs are applied in the order the line runs them, so each install is checked against
+  // the repositories present at that point: adding a repository is what makes a later unpinned install a problem, and
+  // removing it before an install stops it being one. A `deb` line is filed under the source file its own command
+  // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
+  for (const segment of cmd.split(/&&|\|\||;|\|/)) {
+    const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
+    const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
+    const files = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
+    if (removes) {
+      if (files.length) files.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
+      else { state.files.clear(); state.entries.clear(); }
+      state.added = state.files.size > 0 || state.entries.has(undefined);
+    } else if (/(?:>>?|\btee\b)/.test(segment) && files.length) {
+      // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held. Any source file counts as added,
+      // Deb822 `.sources` included: its Types/URIs fields carry the repository a `deb` line would.
+      const append = />>|\btee\b[^|;&]*\s-a\b/.test(segment);
+      for (const f of files) {
+        state.files.set(f, append ? [...(state.files.get(f) ?? []), ...debs] : debs);
+        state.entries.set(f, append ? [...(state.entries.get(f) ?? []), ...debs] : debs);
+      }
+      state.added = true;
+    } else if (debs.length) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
+    for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
+      for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
+        const [pkg, ver] = a.split("=") as [string, string | undefined];
+        if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
+        else if (state.added) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
+      }
     }
   }
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
@@ -185,8 +196,8 @@ function hostPins(path: string, text: string): { pins: Pin[]; problems: string[]
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
-  const fresh = (): State => ({ repoAdded: false, repos: new Map(), releases: new Set() });
-  const clone = (s: State): State => ({ ...s, repos: new Map([...s.repos].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+  const fresh = (): State => ({ files: new Map(), entries: new Map(), added: false, releases: new Set() });
+  const clone = (s: State): State => ({ ...s, files: new Map([...s.files].map(([f, v]) => [f, [...v]])), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
   let state: State = fresh();
   const at = (n: number) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {

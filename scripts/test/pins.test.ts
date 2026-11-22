@@ -195,3 +195,42 @@ test("pins: a stage extending another keeps only the apt repositories it still h
     assert.equal(withUnpinned.problems.length, expected.length ? 1 : 0, why);
   }
 });
+
+test("pins: repository writes and apt installs are checked in the order a line runs them", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const write = `echo "deb [trusted=yes] https://repo.example/apt bookworm main" >/etc/apt/sources.list.d/vendor.list`;
+  // An install before the repository is added is fine; the same install after it must be pinned.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN apt-get install -y foo && ${write}\n`).problems, []);
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} && apt-get install -y foo\n`).problems.length, 1);
+  // Removing the repository later in the same line doesn't excuse an install that ran while it was there.
+  const removedAfter = scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} && apt-get install -y foo && rm /etc/apt/sources.list.d/vendor.list\n`).problems;
+  assert.equal(removedAfter.length, 1);
+  assert.match(removedAfter[0], /apt install foo/);
+  // A repository removed before an install is no longer one it must be pinned for.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write} && rm /etc/apt/sources.list.d/vendor.list && apt-get install -y foo\n`).problems, []);
+});
+
+test("pins: a Deb822 source file counts as an added repository, and untracked writes accumulate", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  // Deb822 carries the repository in Types/URIs rather than a `deb` line: still an added repository.
+  const deb822 = [`FROM debian:bookworm${d}`, `RUN tee /etc/apt/sources.list.d/vendor.sources <<'EOF'
+Types: deb
+URIs: https://repo.example/apt
+Suites: bookworm
+Components: main
+EOF`, "RUN apt-get install -y foo"].join("\n");
+  const r = scanFile("Dockerfile", deb822);
+  assert.equal(r.problems.length, 1);
+  assert.match(r.problems[0], /apt install foo/);
+  // A second source file doesn't replace the first's entries.
+  const two = [`FROM debian:bookworm${d}`,
+    'RUN echo "deb https://one.example/apt bookworm main" >/etc/apt/sources.list.d/a.list',
+    'RUN echo "deb https://two.example/apt bookworm main" >/etc/apt/sources.list.d/b.list',
+    "RUN apt-get install -y foo=1.0"].join("\n");
+  const [pin] = scanFile("Dockerfile", two).pins.filter((p) => p.kind === "apt");
+  assert.deepEqual(pin.sources, ["https://one.example/apt bookworm main", "https://two.example/apt bookworm main"]);
+  // A destination outside sources.list.d that the scanner can't attribute to a file keeps both deb lines.
+  const untracked = `FROM debian:bookworm${d}\nRUN echo "deb https://one.example/apt bookworm main" >/etc/apt/one.list && echo "deb https://two.example/apt bookworm main" >/etc/apt/two.list && apt-get install -y foo=1.0\n`;
+  const [untrackedPin] = scanFile("Dockerfile", untracked).pins.filter((p) => p.kind === "apt");
+  assert.deepEqual(untrackedPin.sources, ["https://one.example/apt bookworm main", "https://two.example/apt bookworm main"]);
+});
