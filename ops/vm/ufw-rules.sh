@@ -30,19 +30,25 @@ case "$status" in *"Status: active"*) ;; *) exit 0 ;; esac
 
 failed= conflict= front_failed= front_conflict=
 failed_cmds=()
-# The state ufw already lists for one rule's address, port and interface: allow (it permits the traffic from Anywhere),
+trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+# The state ufw already lists for one rule's address, port and interface: allow (an ALLOW IN from Anywhere, IPv4),
 # deny (an explicit DENY/LIMIT/REJECT, which must not be replaced), or none.
+# `status verbose` prints one rule per line in three padded columns (To, Action, From):
+#   10.231.0.1 3130/tcp on br+ ALLOW IN    Anywhere                   # AidenHQ containers to host services
+# The destination and source are compared whole: a rule on one interface, on IPv6 only ("443/tcp (v6)"), or from one
+# source is narrower than the unrestricted rule this script needs, and must not count as already present.
 state_of() {
-  local where="$1" line after
+  local where="$1" line action dir dest source
   while IFS= read -r line; do
-    case "$line" in "$where"*) ;; *) continue ;; esac
-    after="${line#"$where"}"
-    # The destination column ends at the action. A rule on one interface ("443/tcp on eth0") or IPv6 only
-    # ("443/tcp (v6)") is narrower than the rule this script needs, so it must not count as already present.
-    [[ "$after" =~ ^[[:space:]]+(ALLOW|DENY|LIMIT|REJECT)[[:space:]] ]] || continue
-    case "$after" in
-      *"ALLOW IN"*"Anywhere"*) echo allow; return 0 ;;
-      *"DENY IN"*|*"LIMIT IN"*|*"REJECT IN"*) echo deny; return 0 ;;
+    [[ "$line" =~ (ALLOW|DENY|LIMIT|REJECT)[[:space:]]+(IN|OUT|FWD)([[:space:]]|$) ]] || continue
+    action="${BASH_REMATCH[1]}"; dir="${BASH_REMATCH[2]}"
+    dest="$(trim "${line%%"${BASH_REMATCH[0]}"*}")"
+    [ "$dest" = "$where" ] && [ "$dir" = IN ] || continue
+    source="$(trim "${line#*"${BASH_REMATCH[0]}"}")"
+    source="$(trim "${source%%#*}")"
+    case "$action" in
+      DENY|LIMIT|REJECT) echo deny; return 0 ;;
+      ALLOW) [ "$source" = Anywhere ] && { echo allow; return 0; } ;;
     esac
   done <<<"$status"
   echo none

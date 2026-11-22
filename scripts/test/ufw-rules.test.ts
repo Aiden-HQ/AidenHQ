@@ -95,6 +95,10 @@ test("ufw-rules: the whole destination is matched, not a prefix or a narrower ru
   // An unrestricted front-door allow is still skipped.
   const listed = run({ mode: "public", status: verbose(["443/tcp ALLOW IN Anywhere"]) });
   assert.ok(!listed.calls.includes("allow 443/tcp"));
+  // An IPv6-only source ("Anywhere (v6)") does not cover IPv4 either, and a custom comment after the source is ignored.
+  const v6only = run({ mode: "public", status: verbose(["443/tcp ALLOW IN Anywhere (v6)", "8446/tcp ALLOW IN Anywhere    # custom"]) });
+  assert.ok(v6only.calls.includes("allow 443/tcp"));
+  assert.ok(!v6only.calls.includes("allow 8446/tcp"));
 });
 
 test("ufw-rules: a rule it can't add warns that sign-in will fail, with the commands", () => {
