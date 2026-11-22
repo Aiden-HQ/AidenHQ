@@ -295,3 +295,35 @@ describe("setup flows, MCP status", () => {
     emit.mockRestore();
   });
 });
+
+describe("setup flows, MCP status", () => {
+  it("records a pairing status confirms, so a later failed read keeps it", async () => {
+    const store = new Store(":memory:");
+    const emit = vi.spyOn(store.events, "emit");
+    const routes = setupFlowRoutes({
+      flows: [flows[0]!],
+      accounts: {} as never,
+      store,
+      signedIn: async () => true,
+      scopeChoice: async () => false,
+      connected: async () => undefined,
+      boardUrl: () => "http://localhost:3121",
+      redirectUrl: () => undefined,
+      settings: () => undefined,
+      file: async () => ({ identifier: "t-1" }),
+      onSetupChange: () => store.events.emit("setup"),
+      fetchImpl: fakePair,
+    });
+    // Status is the first to see the pairing: it is remembered, not just used for this one answer.
+    paired = true;
+    expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+    emit.mockClear();
+    // The module stops answering: status keeps the confirmed pairing rather than listing it as needing setup again.
+    pairDown = true;
+    expect(await routes.states()).toEqual([expect.objectContaining({ module: "phone", done: true })]);
+    expect(emit.mock.calls.filter((c) => c[0] === "setup")).toHaveLength(0);
+    pairDown = false;
+    paired = false;
+    emit.mockRestore();
+  });
+});
