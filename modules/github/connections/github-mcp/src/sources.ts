@@ -5,7 +5,7 @@
 //     assignees); items gone from a board are marked removed.
 // A first sync (an org's issues, a newly found board) is a baseline: rows marked baseline, no change log. No LLM.
 import type { Logger } from "pino";
-import type { Projects } from "./projects.js";
+import { isContentRefusal, type Projects } from "./projects.js";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 
 export const ISSUE: Table = {
@@ -95,7 +95,7 @@ const ITEMS = `query($org:String!,$number:Int!,$after:String){organization(login
   rateLimit{cost remaining}}`;
 
 /** A board item (GraphQL) as an item row; field values keyed by field name. */
-export function itemRow(project: string, n: any): Row {
+export function itemRow(project: string, n: any, refused = false): Row {
   const c = n.content ?? {};
   const fields: Record<string, unknown> = {};
   for (const v of n.fieldValues?.nodes ?? []) {
@@ -103,9 +103,9 @@ export function itemRow(project: string, n: any): Row {
     if (!name) continue;
     fields[name] = v.__typename.includes("Iteration") ? { title: v.title, start: v.startDate } : (v.name ?? v.date ?? capText(v.text).text ?? v.number ?? null);
   }
-  // No content at all: GitHub refused it (an issue of an org the sign-in can't read). Only the board's own columns are written,
-  // so what was stored for the item stays.
-  if (n.content == null) return { project, item_id: n.id, fields, archived: !!n.isArchived, removed: false, source_updated_at: n.updatedAt ?? null };
+  // GitHub refused this item's content (an issue of an org the sign-in can't read): only the board's own columns are written, so
+  // what was stored for the item stays. An item that simply has no content (a deleted issue) is written as returned.
+  if (refused) return { project, item_id: n.id, fields, archived: !!n.isArchived, removed: false, source_updated_at: n.updatedAt ?? null };
   return {
     project, item_id: n.id, content_type: c.__typename ?? null, title: capText(c.title ?? null).text, url: c.url ?? null, repo: c.repository?.nameWithOwner ?? null,
     number: c.number ?? null, state: c.state ?? null, assignees: logins(c.assignees?.nodes), labels: (c.labels?.nodes ?? []).map((l: any) => l.name).sort(),
@@ -175,9 +175,10 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
         const p = await gh.request(org, "POST", "/graphql", { query: ITEMS, variables: { org, number: b.number, after: cur } });
         const items = p.data?.organization?.projectV2?.items;
         cost += p.data?.rateLimit?.cost ?? 0;
-        for (const n of items?.nodes ?? []) {
+        const refused = new Set<number>((Array.isArray(p.errors) ? p.errors : []).filter(isContentRefusal).map((e: any) => e.path.at(-2)));
+        for (const [i, n] of (items?.nodes ?? []).entries()) {
           seen.add(n.id);
-          await put(ITEM, itemRow(project, n), !st.baselined);
+          await put(ITEM, itemRow(project, n, refused.has(i)), !st.baselined);
         }
         cur = items?.pageInfo?.hasNextPage ? items.pageInfo.endCursor : null;
       } while (cur);

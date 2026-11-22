@@ -6,8 +6,10 @@ import { withFooter } from "./aidenhq-sdk/attribution.js";
 import { scrubProblems, scrubText } from "./scrub.js";
 
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
-/** The errors of a GraphQL answer that lose the read: all but an item's own content refused (an issue of an org the sign-in can't see; the client records that need). */
-const fatalErrors = (errors: any): any[] => (Array.isArray(errors) ? errors : []).filter((e) => !(e?.type === "FORBIDDEN" && Array.isArray(e.path) && e.path.includes("content")));
+/** A GraphQL error that refuses one item's content (an issue of an org the sign-in can't read); the client records that need. */
+export const isContentRefusal = (e: any): boolean => e?.type === "FORBIDDEN" && Array.isArray(e.path) && e.path.at(-1) === "content";
+/** The errors of a GraphQL answer that lose the read: all but a content refusal. */
+const fatalErrors = (errors: any): any[] => (Array.isArray(errors) ? errors : []).filter((e) => !isContentRefusal(e));
 
 const QUERY = `query($org:String!,$number:Int!,$first:Int!,$after:String){organization(login:$org){projectV2(number:$number){
   title url closed

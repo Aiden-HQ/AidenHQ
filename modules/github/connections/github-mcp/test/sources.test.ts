@@ -59,6 +59,27 @@ it("src_github: an org's first sync is a baseline (issues, PRs, boards); later p
 });
 
 it("an item whose content GitHub refused writes only the board's own columns", () => {
-  const row = itemRow("acme/1", { id: "i1", content: null, updatedAt: "t", fieldValues: { nodes: [] } });
+  const row = itemRow("acme/1", { id: "i1", content: null, updatedAt: "t", fieldValues: { nodes: [] } }, true);
   expect(Object.keys(row).sort()).toEqual(["archived", "fields", "item_id", "project", "removed", "source_updated_at"]);
+});
+
+it("an item that simply has no content is written as returned", () => {
+  expect(itemRow("acme/1", { id: "i1", content: null, updatedAt: "t", fieldValues: { nodes: [] } })).toMatchObject({ title: null, url: null, state: null, labels: [] });
+});
+
+it("src_github: only the item whose own error is the content refusal keeps its stored details", async () => {
+  const { store, writes } = fakeStore();
+  const nodes = [{ id: "A", updatedAt: "t", content: null, fieldValues: { nodes: [] } }, { id: "B", updatedAt: "t", content: null, fieldValues: { nodes: [] } }];
+  const gh = {
+    account: async () => ({ user: false, projects: true }),
+    request: async (_o: string, _m: string, path: string, body?: any) => {
+      if (path.startsWith("/search/issues")) return { items: [] };
+      if (body.query.includes("projectsV2(")) return { data: { organization: { projectsV2: { pageInfo: { hasNextPage: false }, nodes: [{ number: 5, title: "R", url: "b", closed: false, updatedAt: "x" }] } } } };
+      return { data: { organization: { projectV2: { items: { pageInfo: { hasNextPage: false }, nodes } } } }, errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 1, "content"], message: "m" }] };
+    },
+  };
+  await syncOrg(store, gh as any, "o", Date.parse("2026-11-11T00:00:00Z"));
+  const rows = writes.filter((w) => w.table === "project_item").map((w) => w.row);
+  expect("title" in rows.find((r) => r.item_id === "A")!).toBe(true);
+  expect("title" in rows.find((r) => r.item_id === "B")!).toBe(false);
 });

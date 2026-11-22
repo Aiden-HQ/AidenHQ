@@ -202,10 +202,8 @@ export function createAccess(o: {
   let granted: string[] | undefined;
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
-  const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string }>();
-  /** The GraphQL request that set a problem: only that same request succeeding clears it (REST's per-org clear leaves it). */
-  const chains = new Map<string, { next: string | undefined; ok: boolean }>(); // a GraphQL read's page chain: the cursor expected next, and whether it is unbroken since page one
-  const read = new Map<string, Map<string, boolean>>(); // GraphQL read (query and variables, not the cursor) -> the orgs it was refused for, true when seen in the traversal under way
+  /** `at`: when a GraphQL refusal last came (those warnings expire, see PROBLEM_TTL_MS); REST's are cleared by an org call that works. */
+  const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string; at?: number }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
@@ -218,8 +216,8 @@ export function createAccess(o: {
     return t;
   }
 
-  function fail(n: Need): never {
-    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}) });
+  function fail(n: Need, refusedAt?: number): never {
+    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}), ...(refusedAt ? { at: refusedAt } : {}) });
     throw new GitHubNeed(n, (n.cause === "sso" || n.cause === "restricted") && n.message ? `${needText(n)}. GitHub said: ${n.message}` : undefined);
   }
 
@@ -402,7 +400,7 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && ![...read.values()].some((m) => m.has(ownerOf(path)!.toLowerCase()))) problems.delete(ownerOf(path)!.toLowerCase());
+    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && problems.get(ownerOf(path)!.toLowerCase())?.at === undefined) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -431,32 +429,11 @@ export function createAccess(o: {
       // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
       if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
       const org = typeof variables.org === "string" ? variables.org : "";
-      const key = JSON.stringify([query, { ...variables, after: undefined }]); // a board's pages are one read: the cursor isn't part of it
-      const refused = graphqlNeeds(body?.errors, org, o.clientId);
-      // A board is read page by page: its first page starts a traversal, and what was refused before and isn't again by the last page
-      // is recovered.
-      const seen = read.get(key) ?? new Map<string, boolean>();
-      const cursor = /"endCursor":"([^"]*)"/.exec(JSON.stringify(body))?.[1];
-      const chain = chains.get(key) ?? { next: undefined, ok: false };
-      if (!variables.after) { for (const k of seen.keys()) seen.set(k, false); chain.ok = true; } else if (variables.after !== chain.next) chain.ok = false;
-      chain.next = cursor;
-      chains.set(key, chain);
-      for (const { need, fatal } of refused) {
-        // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content
-        // (an issue of another org) is recorded but leaves the rest of the board readable.
-        seen.set(need.org.toLowerCase(), true);
-        read.set(key, seen);
-        if (fatal) fail(need);
-        problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}) });
-      }
-      // Only a last page of an unbroken chain from page one, with every error one of the classified refusals, recovers anything.
-      if (seen.size && chain.ok && body?.data && refused.length === (Array.isArray(body.errors) ? body.errors.length : 0) && !JSON.stringify(body).includes('"hasNextPage":true')) {
-        for (const [k, fresh] of [...seen]) {
-          if (fresh) continue;
-          seen.delete(k);
-          if (![...read.values()].some((m) => m.has(k))) problems.delete(k); // another refused read keeps the org's warning
-        }
-        if (!seen.size) read.delete(key);
+      // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content (an
+      // issue of another org) is recorded but leaves the rest of the board readable. The warning stays while refusals keep coming.
+      for (const { need, fatal } of graphqlNeeds(body?.errors, org, o.clientId)) {
+        if (fatal) fail(need, now());
+        problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
       }
       return body;
     },
@@ -473,7 +450,8 @@ export function createAccess(o: {
       const core = owner.rates.get("core");
       const have = scopes();
       const rate = core ? { remaining: core.remaining, limit: core.limit, reset: new Date(core.reset).toISOString() } : undefined;
-      const list = [...problems.values()];
+      for (const [k, p] of problems) if (p.at !== undefined && now() - p.at > PROBLEM_TTL_MS) problems.delete(k);
+      const list = [...problems.values()].map(({ at: _at, ...p }) => p);
       const env = o.env ?? process.env;
       return {
         ...(me ? { login: me.login } : {}),
@@ -506,6 +484,9 @@ function graphqlNeeds(errors: unknown, org: string, clientId?: string): { need: 
   }
   return out;
 }
+
+/** A GraphQL refusal's warning goes when its org has had none for this long (two sync intervals). */
+const PROBLEM_TTL_MS = 30 * 60_000;
 
 const RECONNECT = { label: "Reconnect", reconnect: true } as const;
 
