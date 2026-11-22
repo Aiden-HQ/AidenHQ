@@ -546,3 +546,10 @@ test("self-review prints a finding on a deleted file instead of dropping it", { 
     assert.match(out.stdout, /1 important finding/);
   } finally { model.close(); }
 });
+
+test("a regular file too large to read is not a deleted file or a link: its finding is dropped, not moved to line 1", () => {
+  const { repo, base: _base } = repoWith({ "big.txt": (v) => (v ? `${"x".repeat(9 << 20)}\n` : "a\n") });
+  const head = sh(repo, "rev-parse", "HEAD");
+  const f = { severity: "important" as const, path: "big.txt", line: 1, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "" };
+  assert.equal(place([f], repo, new Set(["big.txt"]), undefined, undefined, head).length, 0);
+});

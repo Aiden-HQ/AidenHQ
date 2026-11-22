@@ -55,12 +55,15 @@ export function guidePaths(paths: string[]) {
 }
 
 /** The head file's lines for a tracked regular file the review read (never a link out of the tree), else undefined. */
+/** The tree entry of `path` at commit `at` (ls-tree's line), "" when there is none. */
+function entryAt(root: string, at: string, path: string) {
+  try { return execFileSync("git", ["ls-tree", "-z", at, "--", `:(literal)${path}`], { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8"); } catch { return ""; }
+}
 /** A regular file's lines as commit `at` has it (never the work tree), else undefined. */
 function linesAt(root: string, at: string, path: string) {
   try {
-    const git = (...a: string[]) => execFileSync("git", a, { cwd: root, maxBuffer: 8 << 20, stdio: ["ignore", "pipe", "ignore"] });
-    if (!/^100(644|755) /.test(git("ls-tree", "-z", at, "--", `:(literal)${path}`).toString("utf8"))) return undefined;
-    return git("show", `${at}:${path}`).toString("utf8").split("\n");
+    if (!/^100(644|755) /.test(entryAt(root, at, path))) return undefined;
+    return execFileSync("git", ["show", `${at}:${path}`], { cwd: root, maxBuffer: 8 << 20, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8").split("\n");
   } catch { return undefined; }
 }
 function linesOf(root: string, path: string, reviewed: Set<string>, head?: string) {
@@ -83,7 +86,8 @@ export function place(findings: Cleaned[], root: string, reviewed: Set<string>, 
   for (const f of findings) {
     if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
     const lines = linesOf(root, f.path, reviewed, head);
-    if (!lines && reviewed.has(f.path)) {
+    // (A regular file at the commit that merely couldn't be read, too large say, is neither deleted nor a link: it is dropped below.)
+    if (!lines && reviewed.has(f.path) && !(head && /^100(644|755) /.test(entryAt(root, head, f.path)))) {
       // A file in the change with nothing to read at the head (the change deletes it, or it is a link: never read through one): a
       // file-level finding, anchored at line 1 (the post needs a line) and labelled. A path outside the change stays dropped.
       const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
