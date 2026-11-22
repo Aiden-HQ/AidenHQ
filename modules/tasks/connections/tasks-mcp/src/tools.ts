@@ -873,7 +873,7 @@ const STEP = PAGE / 2;
  * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
  * empty page, at the last partial page, or at a page with nothing new (a server that ignores `offset`).
  */
-async function* issuePages(q: URLSearchParams) {
+async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } = {}) {
   const seen = new Set<string>();
   let repeats = 0;
   for (let offset = 0; ; offset += STEP) {
@@ -886,7 +886,10 @@ async function* issuePages(q: URLSearchParams) {
     if (!fresh.length) {
       // An overlap page with nothing new is normal while pages overlap; a page that repeats past the overlap is the end,
       // or a server that ignores `offset`.
-      if (++repeats >= PAGE / STEP) return;
+      if (++repeats >= PAGE / STEP) {
+        progress.stalled = true;
+        return;
+      }
       continue;
     }
     repeats = 0;
@@ -971,10 +974,11 @@ const TOOLS: Record<string, Tool> = {
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
       // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
       const deadline = Date.now() + SCAN_MS;
+      const progress: { stalled?: boolean } = {};
       let complete = true;
       const capped = async (query: URLSearchParams, prepare: (i: Json) => Promise<Json | null> = async (i) => i) => {
         const kept: (readonly [Json, Json])[] = [];
-        for await (const page of issuePages(query)) {
+        for await (const page of issuePages(query, progress)) {
           if (Date.now() > deadline) {
             complete = false;
             return kept;
@@ -1014,7 +1018,9 @@ const TOOLS: Record<string, Tool> = {
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.
             const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`).catch((err) => { if (err?.status === 404) return null; throw err; }) : row;
-            return full && mark.test(full.description ?? "") ? full : null;
+            // The full read also decides ownership again: a chat reassigned away since the list row is not ours.
+            if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return null;
+            return mark.test(full.description ?? "") ? full : null;
           };
           chats.push(...(await capped(theirs, aChat)));
         }
@@ -1023,7 +1029,7 @@ const TOOLS: Record<string, Tool> = {
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
-        ...(complete ? {} : { incomplete: "the scan ran past its time budget; some older tasks were not read" }),
+        ...(complete && !progress.stalled ? {} : { incomplete: progress.stalled ? "the issues list stopped advancing through its pages; some tasks were not read" : "the scan ran past its time budget; some older tasks were not read" }),
       };
     },
   },

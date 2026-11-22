@@ -183,4 +183,5 @@ test("task_list stops when the issues endpoint ignores offset and repeats a page
   const { call } = bridge({ handler: ignores, states });
   const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
   assert.deepEqual(out.out.tasks, []);
+  assert.match(out.out.incomplete, /stopped advancing/, "a scan that could not page past its first page says so");
 });
