@@ -14,7 +14,7 @@ const dir = mkdtempSync(join(tmpdir(), "test-user-"));
 ensureIdentityKeys(dir);
 const keyFile = join(dir, "identity", "test.pem");
 const keysFile = join(dir, "identity", "keys.json");
-const gate = { test_user: { email: "Probe@Example.com", apps: ["roadmap"] }, apps: { roadmap: { host: "ROADMAP.example.com" } }, hosts: { "roadmap.example.com": { app: "roadmap" }, "other.example.com": { app: "other" } } };
+const gate = { test_user: { email: "Probe@Example.com", apps: ["roadmap"] }, test_port: 1, apps: { roadmap: { host: "ROADMAP.example.com" } }, hosts: { "roadmap.example.com": { app: "roadmap" }, "other.example.com": { app: "other" } } };
 
 test("test user: the owner's named app, the job's agent and task, a single-use session the agent never sees", async () => {
   const sent = [], logged = [];
@@ -76,21 +76,24 @@ test("test user: a response that ends mid-body is refused, not handed back as a 
   const broken = createServer((q, r) => { r.writeHead(200, { "content-type": "application/json", "content-length": "100" }); r.write("{\"ok\":"); setTimeout(() => r.destroy(), 20); });
   const port = await new Promise<number>((ok) => broken.listen(0, "127.0.0.1", () => ok((broken.address() as { port: number }).port)));
   try {
-    const t = createTestUser({ job: () => ({ agent: "a", task: "t" }), gate: () => gate, keyFile: () => keyFile, keysFile: () => keysFile, gatePort: port });
+    const t = createTestUser({ job: () => ({ agent: "a", task: "t" }), gate: () => ({ ...gate, test_port: port }), keyFile: () => keyFile, keysFile: () => keysFile });
     await assert.rejects(t.run("tok", { app: "roadmap", method: "GET", path: "/" }), /interrupted/);
   } finally { broken.close(); broken.closeAllConnections(); }
 });
 
-// The gate's own test_port comes from its config when it has one: a send double (as main.ts wires) sees no port, but the
-// real client goes there. Here: the config's port is where a second gate double listens, and the default is deaf.
+// The request goes to the gate's compiled test_port: a send double (as main.ts wires) sees no port, but the real client
+// goes there, and a config without one is refused rather than sent to a guessed default.
 test("test user: the request goes to the gate's compiled test_port, not the gate's main port", async () => {
   const hits = [];
   const srv = createServer((q, r) => { hits.push(q.headers.host); r.writeHead(200, { "content-type": "text/plain" }).end("ok"); });
   const port = await new Promise<number>((ok) => srv.listen(0, "127.0.0.1", () => ok((srv.address() as { port: number }).port)));
   try {
-    const t = createTestUser({ job: () => ({ agent: "a", task: "t" }), gate: () => ({ ...gate, test_port: port }), keyFile: () => keyFile, keysFile: () => keysFile, gatePort: 1 });
+    const t = createTestUser({ job: () => ({ agent: "a", task: "t" }), gate: () => ({ ...gate, test_port: port }), keyFile: () => keyFile, keysFile: () => keysFile });
     const out = await t.run("tok", { app: "roadmap", method: "GET", path: "/" });
     assert.equal(out.status, 200);
     assert.deepEqual(hits, ["roadmap.example.com"]);
   } finally { srv.close(); srv.closeAllConnections(); }
+  // No compiled test_port: the gate never opened its test listener, so the kernel refuses instead of trying a default.
+  const none = createTestUser({ job: () => ({ agent: "a", task: "t" }), gate: () => ({ ...gate, test_port: undefined }), keyFile: () => keyFile, keysFile: () => keysFile });
+  await assert.rejects(none.run("tok", { app: "roadmap", method: "GET", path: "/" }), /no test listener/);
 });

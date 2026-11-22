@@ -72,20 +72,19 @@ export interface RunRequest { app: string; method: string; path: string; body?: 
  * The kernel's test-user requests. `job` names the live kernel job (its agent and task) from its own token, `gate` reads the
  * compiled gate config, and `send` reaches the gate's kernel-only listener (a test double in the tests).
  */
-export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3132, now = Date.now, log, send }: {
+export function createTestUser({ job, gate, keyFile, keysFile, now = Date.now, log, send }: {
   job: (token: string) => { agent: string; task: string };
   gate: () => GateTestConfig | undefined;
   /** identity/test.pem (the kernel's signer) and identity/keys.json (the public half the gate mounts), as the vault holds them. */
   keyFile: () => string;
   keysFile: () => string;
-  gatePort?: number;
   now?: () => number;
   /** The kernel's log: each use names the agent, the task, the app and the route (never the session token or a query string). */
   log?: (o: object) => void;
   send?: (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>;
 }) {
   /** The gate's kernel-only listener (test_port) on 127.0.0.1, with the Host of the app's own host. */
-  const post = (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }, port = gatePort) => new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((ok, no) => {
+  const post = (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }, port: number) => new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((ok, no) => {
     const r = http.request({ host: "127.0.0.1", port, method: req.method, path: req.path, headers: { ...req.headers, host: req.host }, timeout: 30_000 }, (res) => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -151,9 +150,10 @@ export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3132, 
       const part = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
       const claims = `${part({ alg: "EdDSA", kid: signer.kid, typ: "JWT" })}.${part({ iss: "aidenhq-test", aud: host, app, sub: subOf(email), email, jti, iat, exp: iat + TTL_S })}`;
       headers["x-aidenhq-test-session"] = `${claims}.${sign(undefined, Buffer.from(claims), signer.key).toString("base64url")}`;
-      // The gate's own test_port when its config has one (an install whose gate listens elsewhere); 3132 otherwise.
-      const port = Number.isInteger(cfg?.test_port) ? (cfg!.test_port as number) : gatePort;
-      const answer = await (send ?? ((r) => post(r, port)))({ host, method, path, headers, ...(body !== undefined ? { body } : {}) });
+      // The gate's own compiled test_port, and nothing else: without it this listener was never opened, so a request would
+      // only ever reach whatever else holds the default port. A test user the gate doesn't know where to find fails closed.
+      if (!Number.isInteger(cfg?.test_port)) throw new TestUserError(503, "no-test-listener", "the gate has no test listener (test_port): add settings.edge.test_user and apply it");
+      const answer = await (send ?? ((r) => post(r, cfg!.test_port as number)))({ host, method, path, headers, ...(body !== undefined ? { body } : {}) });
       // The route only: a query string is the caller's data and can carry a token, so it never reaches the log.
       log?.({ msg: "test sign-in", agent: who.agent, task: who.task, app, host, method, route: path.split("?")[0], status: answer.status });
       const keep = ["content-type", "retry-after", "location", "cache-control", "www-authenticate", "allow"];

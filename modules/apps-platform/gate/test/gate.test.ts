@@ -812,6 +812,9 @@ test("test user: a kernel-signed session for a named app signs in as that member
     // An app the owner did not name, and the my-apps host, are refused even with a correct signature.
     cfg.test_user = { email, apps: ["roadmap"] };
     assert.equal((await send({ "x-aidenhq-test-session": session({ app: "other", aud: "other.example.com", jti: "1".repeat(32) }) })).status, 403);
+    // The test listener serves test sessions only: a request with no test header is refused there, never proxied.
+    const bare = await new Promise((resolve) => request({ host: "127.0.0.1", port, path: "/intake", method: "POST", headers: { host: "roadmap.example.com", origin: "https://roadmap.example.com", "content-type": "application/json" } }, (r) => { r.resume(); resolve(r.statusCode); }).end("{}"));
+    assert.equal(bare, 403);
     // The same header on a listener that is not the loopback one (the front door's) is not an identity: 401 from the front door.
     const front = createGate({ config: () => ({ ...cfg, identity: { ...cfg.identity, jwks_url: "http://127.0.0.1:1/jwks" } }), log: () => {} });
     const frontPort = await listen(front);

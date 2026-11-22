@@ -625,6 +625,9 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     if (!site && !mine) return { status: 404, msg: "not found" };
     const url = String(req.url ?? "");
     if (!url.startsWith("/")) return { status: 400, msg: "bad request" };
+    // The test listener is the kernel's alone: without a test session there is nothing it serves, so a request that lacks
+    // one is refused here rather than proxied as an anonymous visitor. It is not a second way into any app.
+    if (testSessions && req.headers[TEST_SESSION_HEADER] === undefined) return { status: 403, msg: "forbidden: test sessions only" };
     const login = cfg.login ?? "access";
     if (!["access", "password", "header-jwt"].includes(login)) {
       log({ msg: "unknown login mode", login });

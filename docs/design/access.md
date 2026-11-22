@@ -284,8 +284,12 @@ not an answer. The test user is the one identity an agent may use, for the apps 
   (3132, loopback; `createGate({ testSessions: true })`). The listener the front door and the tunnel proxy to (and the
   cloudflared socket) never passes `testSessions`, so the same header there is not an identity (401/403/404 as any other
   unauthenticated request), and `test_port` is in no ingress rule, no app's reserved-port list and not `edge.front.port`
-  (`scripts/edge.ts` refuses all three). On that listener the gate verifies the token: EdDSA, a known `aidenhq-test` key,
-  `iss`/`aud`/`app`, a signature, 60 seconds, the configured email and its `sub`, one use per `jti` (a full replay cache
+  (`scripts/edge.ts` refuses all three). That listener serves nothing but a request carrying a valid test session: one
+  without the header gets a 403 rather than being proxied as an anonymous visitor, so it is not a second, ungated door to
+  any app. The kernel reads the port only from the compiled `gate.json`: with no `test_user` there is no `test_port`, and
+  `aidenhq test-request` refuses with `503 no-test-listener` rather than guessing a port. On that listener the gate
+  verifies the token: EdDSA, a known `aidenhq-test` key, `iss`/`aud`/`app`, a signature, 60 seconds, the configured email
+  and its `sub`, one use per `jti` (a full replay cache
   refuses a new session instead of evicting a live one, so a sign-in is never accepted twice). It then runs the same
   `authorize()` as a browser's session: the account must exist and be enabled, the role is the app's role resolution,
   `blocked` is 403, `sameOrigin` holds for writes, and the normal `X-AidenHQ-Identity` is minted. The configured email
