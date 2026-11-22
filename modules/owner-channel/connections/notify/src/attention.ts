@@ -72,7 +72,10 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   // simply absent. When the kernel can't be read, one line says so rather than hiding it. Not queue items: nothing to replay or clear.
   const asked = needs ? await needs().then((l) => l, () => undefined) : [];
   const extra = (text: string): Item => ({ id: `need:${text}`, agent: "AidenHQ", text, source: "kernel", kind: "fyi", told: true });
-  const items = [...q, ...(asked ?? (q.length ? ["couldn't check connections"] : [])).map(extra)];
+  // Lines of this slot a failed attempt already delivered are not sent again.
+  const done = JSON.parse(store.getKv("digest:needs-sent") || "{}") as { slot?: string; ids?: string[] };
+  const delivered = new Set(done.slot === slot ? done.ids : []);
+  const items = [...q, ...(asked ?? (q.length ? ["couldn't check connections"] : [])).map(extra).filter((i) => !delivered.has(i.id!))];
   const batches: Item[][] = [];
   for (const i of items) {
     const b = batches.at(-1);
@@ -85,11 +88,42 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
     if (out === false) return false;
     // Only what was sent goes: a notice queued during the send (or a trim that shifted the queue) stays for the next digest.
     const sent = new Set(b.map((i) => i.id));
+    store.setKv("digest:needs-sent", JSON.stringify({ slot, ids: [...delivered, ...b.filter((i) => i.id?.startsWith("need:")).map((i) => i.id)] }));
+    for (const i of b) if (i.id?.startsWith("need:")) delivered.add(i.id);
     store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
     if (out === true) for (const i of b) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
   }
   store.setKv("digest:slot", slot);
   return items.length > 0;
+}
+
+/**
+ * With no digest hours there is no digest to list the broken connections in: once a day, one message carries them, and an unchanged
+ * set is not sent again (a set that clears starts over).
+ */
+export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "digestHours">, send: (text: string) => Promise<boolean | "off">, now = Date.now(), needs?: () => Promise<string[]>): Promise<boolean> {
+  if (cfg.digestHours.length || !needs) return false;
+  const day = new Date(now).toISOString().slice(0, 10);
+  if (store.getKv("needs:day") === day) return false;
+  const lines = await needs().then((l) => l, () => undefined);
+  if (!lines) return false;
+  const sig = lines.join("\n");
+  if (!sig) {
+    store.setKv("needs:sig", "");
+    return false;
+  }
+  if (store.getKv("needs:sig") === sig) return false;
+  if ((await send(`Connections that need you:\n\n${lines.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
+  store.setKv("needs:sig", sig);
+  store.setKv("needs:day", day);
+  return true;
+}
+
+/** Digest lines the kernel's connection state used to queue (before the digest pulled them): dropped, so none repeats or goes stale. */
+export function dropQueuedNeeds(store: Store): void {
+  const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
+  const keep = q.filter((i) => !(i.source === "kernel" && / isn't connected \(.*\): https?:\/\//.test(i.text)));
+  if (keep.length !== q.length) store.setKv("digest:queue", JSON.stringify(keep));
 }
 
 /** The digest lines waiting for their slot, as ledger rows (not yet told: the digest hasn't gone). */

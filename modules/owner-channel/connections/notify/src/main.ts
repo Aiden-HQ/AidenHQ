@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { flushDigest } from "./attention.js";
+import { dropQueuedNeeds, flushDigest, flushNeeds } from "./attention.js";
 import { kernelClient } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { KINDS, notify, retry, sendDigest, type Deps, type Kind } from "./notify.js";
@@ -134,5 +134,9 @@ setInterval(() => void take(), 10_000).unref();
 void take();
 setInterval(() => void retry(d).catch((err) => log.warn({ err: String(err) }, "retry failed")), 30_000).unref();
 // The digest of routine crew messages: one message per slot.
-setInterval(() => void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()).catch(() => undefined), 5 * 60_000).unref();
+dropQueuedNeeds(store);
+setInterval(() => {
+  void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()).catch(() => undefined);
+  void flushNeeds(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()).catch(() => undefined);
+}, 5 * 60_000).unref();
 startWatch({ work: kernel.activity, api: (p) => kernel.read(p), store, notify: async (text, kind) => (await notify(d, { kind, text })).sent }, log);

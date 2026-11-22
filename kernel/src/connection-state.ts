@@ -37,8 +37,10 @@ const DAY = 864e5;
 const FULL_WAIT = 7 * DAY - 60_000;
 /** A need is confirmed (listed in the digest, told to agents) only once its row is this old. */
 const LASTING = 10 * 60_000;
-/** Confirmed: the owner was told (it stays until Connect or a success), or the row is at least LASTING old. Arg: now - LASTING. A success deletes the row, so a restart's blip never lasts. */
-const CONFIRMED = "(told = 1 OR since <= ?)";
+/** The owner was told directly and a task still waits on the need (alias `s`): it stays until Connect, a success or the wait's end. */
+const ASKED = "(s.told = 1 AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.module = s.module AND (w.account = '' OR w.account = s.account)))";
+/** Confirmed for the digest: asked (above), or a background row at least LASTING old. Arg: now - LASTING. A success deletes the row, so a restart's blip never lasts. */
+const CONFIRMED = `(${ASKED} OR (s.told = 0 AND s.since <= ?))`;
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
 const NAME = /^[\w.:/@-]{1,100}$/;
 
@@ -226,7 +228,7 @@ export function createConnectionState(o: {
       return Boolean(q(`SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired')${account ? " AND (account = ? OR account = '')" : ""} LIMIT 1`).get(...(account ? [connection, account] : [connection])));
     },
 
-    /** The agent's granted connections that has a confirmed full-cause row (an unconfirmed blip stays retryable): names, causes and dates only. */
+    /** The agent's granted connections the owner was told about directly while a task still waits (background needs never make routines skip: a success is what clears them): names, causes and dates only. */
     downFor(agent: string): Down[] {
       const granted = Object.keys(o.grants()[agent]?.tools ?? {});
       const conns = o.connections();
@@ -234,7 +236,7 @@ export function createConnectionState(o: {
       for (const connection of granted) {
         const module = conns[connection]?.module;
         if (!module) continue;
-        const rows = q(`SELECT cause, account, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') AND ${CONFIRMED} ORDER BY account != '', since`).all(connection, now() - LASTING) as { cause: Cause; account: string; since: number }[];
+        const rows = q(`SELECT cause, account, since FROM connection_state s WHERE module = ? AND cause IN ('not_connected', 'expired') AND ${ASKED} ORDER BY account != '', since`).all(connection) as { cause: Cause; account: string; since: number }[];
         // A need on the whole connection stands for every account; otherwise each confirmed account is listed.
         for (const r of rows[0]?.account === "" ? rows.slice(0, 1) : rows) out.push({ connection, module, cause: r.cause, ...(r.account ? { account: r.account } : {}), since: iso(r.since) });
       }
@@ -244,12 +246,12 @@ export function createConnectionState(o: {
     /** The owner's digest lines: every confirmed need on a connection that still exists (a recovered or removed one is simply absent). */
     needs(): string[] {
       const live = Object.keys(o.connections());
-      const rows = q(`SELECT * FROM connection_state WHERE ${CONFIRMED} AND module IN (${live.map(() => "?").join(", ")}) ORDER BY since`).all(now() - LASTING, ...live) as Row[];
+      const rows = q(`SELECT * FROM connection_state s WHERE ${CONFIRMED} AND module IN (${live.map(() => "?").join(", ")}) ORDER BY since`).all(now() - LASTING, ...live) as Row[];
       return rows.map((r) => {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
         const module = moduleOf(r.module);
-        return `${o.label(module)} isn't connected (${ownerWords(n)}): ${link(module, r.url)}`;
+        return `${o.label(module)}${r.account ? ` (${r.account})` : ""} isn't connected (${ownerWords(n)}): ${link(module, r.url)}`;
       });
     },
 

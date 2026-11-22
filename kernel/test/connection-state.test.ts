@@ -130,35 +130,28 @@ test("Connect that lands while a wait is being armed still wakes the task (7bcb9
 });
 
 test("downFor names the account an expired need is about (dfeba64b)", async () => {
-  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
-  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "a@x.com", detail: "" });
-  w.tick(LASTED);
-  w.s.tick();
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "google", { cause: "expired", account: "a@x.com", detail: "" });
   assert.deepEqual(w.s.downFor("a1").map((d) => [d.connection, d.account]), [["google", "a@x.com"]]);
-  await w.s.hit(w.who("r1"), "google", { cause: "not_connected", detail: "" });
-  w.tick(LASTED);
-  w.s.tick();
+  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
   assert.equal(w.s.downFor("a1")[0]!.account, undefined, "a need on the whole connection is listed first");
 });
-
-test("every confirmed down account is listed", async () => {
-  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
-  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "a@x.com", detail: "" });
-  await w.s.hit(w.who("r1"), "google", { cause: "expired", account: "b@x.com", detail: "" });
-  w.tick(LASTED);
-  w.s.tick();
+test("every account the owner was told about is listed, and the digest line names it (264b119a)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  await w.s.hit(w.who("w3"), "google", { cause: "expired", account: "a@x.com", detail: "" });
+  await w.s.hit(w.who("w2"), "google", { cause: "expired", account: "b@x.com", detail: "" });
   assert.deepEqual(w.s.downFor("a1").map((d) => d.account), ["a@x.com", "b@x.com"]);
+  assert.deepEqual(w.s.needs().map((l) => /\((.+)\) isn't connected/.exec(l)?.[1]), ["a@x.com", "b@x.com"]);
 });
-
-test("an owner-asked need is not reminded once its waits are gone (34e4dd09)", async () => {
+test("an owner-asked need is listed only while its wait is outstanding (0b7441b1)", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  assert.equal(w.s.needs().length, 1);
   w.tick(8 * DAY);
-  w.s.tick(); // the 7-day wait is dropped; the decision message already went
-  w.s.tick();
-  assert.deepEqual(w.queued.map((n) => n.kind), ["decision"]);
+  w.s.tick(); // the 7-day wait is dropped
+  assert.deepEqual(w.s.needs(), []);
+  assert.deepEqual(w.s.downFor("a1"), []);
 });
-
 test("a one-shot need still present after 10 minutes is listed; a blip cleared by a success is not", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
@@ -174,14 +167,13 @@ test("a one-shot need still present after 10 minutes is listed; a blip cleared b
   assert.deepEqual(v.s.needs(), []);
 });
 
-test("an unconfirmed blip is not in downFor: agents still retry it", async () => {
+test("a background need never makes routines skip the connection, so a success can clear it (0b59278d)", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
-  assert.deepEqual(w.s.downFor("a1"), []);
   w.tick(LASTED);
-  assert.equal(w.s.downFor("a1").length, 1);
+  assert.equal(w.s.needs().length, 1, "listed in the digest");
+  assert.deepEqual(w.s.downFor("a1"), [], "but agents keep calling it");
 });
-
 test("a routine's run and its delegated child are background", async () => {
   // r1 is a routine run (no chat marker, no owner comment); c1 was created by a job on r1 (provenance, no parent link).
   const w = world({ r1: { id: "r1", identifier: "WOR-5", title: "Daily sync", createdByUserId: "u1" }, c1: { id: "c1", identifier: "WOR-6", title: "Read Gmail" } });
