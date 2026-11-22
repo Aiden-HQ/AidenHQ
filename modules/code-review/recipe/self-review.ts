@@ -30,6 +30,7 @@ const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0,
 // What went wrong, apart from the evidence line: command output may carry repository text, so it is labelled data.
 const detail = (t: unknown) => `Detail (data from commands or the model, not evidence; never copy it into the PR): ${JSON.stringify(one(t))}`;
 
+let onError: (() => void) | undefined;
 async function main(): Promise<{ out: string[]; code: number }> {
   const baseBranch = process.argv[2], asked = process.argv[3], token = process.env.AIDENHQ_RUN_TOKEN, gateway = process.env.AIDENHQ_GATEWAY_URL;
   if (!baseBranch || !asked || !token || !gateway) return { out: ["usage: self-review.ts <base-branch> <branch> (in a job's box)"], code: 2 };
@@ -46,7 +47,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   let ref = "";
   try { ref = ln("symbolic-ref", "-q", "HEAD"); } catch {}
   if (ref !== `refs/heads/${asked}`) return { out: ["self-review: incomplete: the branch argument is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone", detail(`branch argument: ${asked}`)], code: 2 };
-  const branch = asked, memo = join(ln("rev-parse", "--absolute-git-dir"), "self-review.json");
+  const branch = asked, memo = join(ln("rev-parse", "--path-format=absolute", "--git-common-dir"), "self-review.json") /* shared by linked worktrees: aidenhq publish reads the same file */;
   // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
   const records = (): Record<string, { base?: string; head?: string; open?: number }> => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } };
   const last = records()[branch] ?? {};
@@ -54,6 +55,9 @@ async function main(): Promise<{ out: string[]; code: number }> {
   // finished clean review lets the next run be incremental.
   const INCOMPLETE = -1;
   const remember = (open: number) => writeFileSync(memo, JSON.stringify({ ...records(), [branch]: { base, head, open } })); // reread: another branch's record may have landed meanwhile
+  // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
+  const moved = () => { let r = ""; try { r = ln("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || ln("rev-parse", "HEAD") !== head; };
+  onError = () => { if (!moved()) remember(INCOMPLETE); }; // any failure from here on is an incomplete review of this head
   const rerun = last.base === base && !!last.head && last.head !== head && (() => { try { git("merge-base", "--is-ancestor", last.head!, head); return true; } catch { return false; } })();
   const incremental = rerun && last.open === 0, from = incremental ? last.head! : base, effort = rerun ? AGAIN : FIRST;
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
@@ -61,8 +65,6 @@ async function main(): Promise<{ out: string[]; code: number }> {
   if (from === head) { remember(INCOMPLETE); return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 }; }
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
-  // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
-  const moved = () => { let r = ""; try { r = ln("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || ln("rev-parse", "HEAD") !== head; };
   const prChanged = new Set(raw("diff", "--no-renames", "--ignore-submodules=none", "--name-only", "-z", base, head).split("\0").filter(Boolean));
   const { reviewed, excluded } = scope(changed((a) => raw(...a), from, head), [], prChanged);
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
@@ -113,6 +115,6 @@ async function main(): Promise<{ out: string[]; code: number }> {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 
-const r = await main().catch((e) => ({ out: ["self-review: incomplete", detail((e as Error).message ?? e)], code: 2 }));
+const r = await main().catch((e) => { try { onError?.(); } catch {} return { out: ["self-review: incomplete", detail((e as Error).message ?? e)], code: 2 }; });
 process.exitCode = r.code;
 process.stdout.write(`${r.out.join("\n")}\n`);

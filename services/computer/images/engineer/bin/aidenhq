@@ -136,7 +136,7 @@ const cloneOf = (repo) => {
  * A branch's commit in this workspace's clone of org/repo (cloneOf), the one the code host takes, with the branch's bundle
  * beside it (.aidenhq/bundles/<sha>.bundle): a host-side code host reads that one file, never the clone's .git.
  */
-const commitOf = (repo, branch) => {
+const shaOf = (repo, branch) => {
   const [org, name] = repo.split("/");
   const dir = cloneOf(repo).have;
   if (!dir) fail(`this workspace has no clone of ${repo} (${name} or ${org}--${name})`, 2);
@@ -146,22 +146,26 @@ const commitOf = (repo, branch) => {
   } catch {
     fail(`${repo} has no branch \`${branch}\` in ${dir}`, 2);
   }
-  mkdirSync(join(workspace, ".aidenhq", "bundles"), { recursive: true });
-  execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
   return sha;
 };
+const bundle = (repo, branch, sha) => {
+  const dir = cloneOf(repo).have;
+  mkdirSync(join(workspace, ".aidenhq", "bundles"), { recursive: true });
+  execFileSync("git", ["-C", dir, "bundle", "create", "--quiet", join(workspace, ".aidenhq", "bundles", `${sha}.bundle`), `refs/heads/${branch}`], { stdio: ["ignore", "ignore", "inherit"] });
+};
+const commitOf = (repo, branch) => { const sha = shaOf(repo, branch); bundle(repo, branch, sha); return sha; };
 /**
  * Publish asks for the record self-review.ts leaves in the clone's git dir (branch -> {base, head, open}) for the head it files:
  * a review ran on that commit, whatever it found (findings judged wrong still publish; the skill puts them in the PR body).
  */
-const checked = new Map(); // branch -> the sha that passed, so the write files that commit even if the branch moves meanwhile
+const checked = new Map(); // branch -> the sha that passed; filing refuses a branch that moved since (and bundles only then)
 const needSelfReview = (repo, branch) => {
   const dir = cloneOf(repo).have;
   if (!dir) fail(`this workspace has no clone of ${repo}`, 2);
-  const sha = commitOf(repo, branch);
+  const sha = shaOf(repo, branch);
   let seen;
   try {
-    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim(), "self-review.json"), "utf8"))[branch]?.head;
+    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), "self-review.json"), "utf8"))[branch]?.head;
   } catch {}
   checked.set(`${repo} ${branch}`, sha);
   if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);
@@ -215,8 +219,13 @@ if (command === "publish" || command === "review") {
   if (command === "publish") for (let i = 0; i < words.length; i += 2) needSelfReview(words[i], words[i + 1]); // every branch before any is filed
   for (let i = 0; i < words.length; i += 2) {
     const [repo, branch] = [words[i], words[i + 1]];
-    const sha = commitOf(repo, branch);
-    if (command === "publish" && checked.get(`${repo} ${branch}`) !== sha) fail(`${repo} ${branch} moved after its self-review check; run it again`, 2);
+    const sha = shaOf(repo, branch);
+    if (command === "publish" && checked.get(`${repo} ${branch}`) !== sha) { // moved while an earlier write ran: say so, keep the earlier results
+      bad.push(`${repo} ${branch}`);
+      lines.push(`${repo} ${branch}: not published; it moved after its self-review check, run self-review again`);
+      continue;
+    }
+    bundle(repo, branch, sha);
     // The PR title is a Conventional Commit (CI's pr-title check): --title, else the branch's first commit's subject.
     const title = flags.title ?? firstSubject(repo, branch);
     if (!CONVENTIONAL.test(title)) fail(`PR title ${JSON.stringify(title)} must be a Conventional Commit; set it with \`aidenhq ${command} --title 'fix(x): …'\` or reword the commit`, 2);
