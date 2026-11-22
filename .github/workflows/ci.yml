@@ -516,7 +516,9 @@ jobs:
   # runner): scripts/supply-chain/image-scan.ts reads each Dockerfile as text and passes grype only digest-pinned
   # references. Not covered: packages RUN steps install, so only base-image and lock-file changes are proven here. It is
   # the evidence for image and CVE work (Engineers have no Docker); skipped when no image could change. grype is
-  # installed below, at the version the security module pins.
+  # installed below, at the version the security module pins. Advisory (owner, 2026-11-22): it stays out of ci-required,
+  # and the code host's merge gate counts a finished scan as ok whatever it found (kernel/sdk/src/checks.ts IMAGE_SCAN_CHECK).
+  # Secrets (secrets.yml, gitleaks) and the 7-day rule (policy) stay blocking.
   image-scan:
     needs: checks
     if: needs.checks.outputs.dockerfiles != ''
@@ -633,13 +635,13 @@ jobs:
           path: .eval-state
           key: reviewer-eval-${{ needs.checks.outputs.eval_key }}
 
-  # The one result a merge waits for: every job above passed (packages, board and image-scan jobs may
-  # be skipped: not a pull request, or the change doesn't touch them). Jobs that
+  # The one result a merge waits for: every job above passed (packages, modules, board and reviewer-eval may be skipped:
+  # the change doesn't touch them). image-scan is advisory, so it is not here. Jobs that
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.ts withGate).
   ci-required:
     if: always()
-    needs: [checks, policy, packages, modules, board, image-scan, reviewer-eval]
+    needs: [checks, policy, packages, modules, board, reviewer-eval]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -647,7 +649,7 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["image-scan"], .["reviewer-eval"]] | all(.result | IN("success", "skipped")))' >/dev/null
+          echo "$RESULTS" | jq -e '(.checks.result == "success") and (.policy.result == "success") and ([.packages, .modules, .board, .["reviewer-eval"]] | all(.result | IN("success", "skipped")))' >/dev/null
       # A fork's PR gets no eval key, so its reviewer-eval is skipped: one that changes the reviewer's code fails here until
       # the maintainer pushes its branch to this repo, where the eval runs.
       - if: needs.checks.outputs.eval == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
