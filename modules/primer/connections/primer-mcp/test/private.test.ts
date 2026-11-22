@@ -9,7 +9,7 @@ const codeReview = { agent: "", key: "", name: "", roles: [], kind: "module", mo
 const args = (over: object = {}) => ({ title: "Repo review: acme/widgets", content: "# Verdict\n", format: "markdown", versionNote: "abc1234", private: true, repo_key: "acme/widgets", ...over });
 
 /** A Primer: documents with a visibility and collaborators, its tools, and what the executor asked of it. */
-function primer(o: { shared?: Set<string>; collaborators?: Record<string, string[]>; flaky?: boolean } = {}) {
+function primer(o: { shared?: Set<string>; collaborators?: Record<string, string[]>; flaky?: boolean; noVersion?: boolean } = {}) {
   const calls: [string, Record<string, unknown>][] = [];
   const privates: string[] = [];
   let n = 0;
@@ -20,7 +20,7 @@ function primer(o: { shared?: Set<string>; collaborators?: Record<string, string
     if (name === "primer_create_document") { const id = `doc-${++n}-aaaa`; docs.add(id); return { text: JSON.stringify({ documentId: id, url: `https://primer.example/d/${id}` }) }; }
     if (name === "primer_get_document") return o.flaky ? { text: "upstream timeout", isError: true } : { text: JSON.stringify({ document: { id: a.documentId, visibility: o.shared?.has(String(a.documentId)) ? "org" : "private" } }) };
     if (name === "primer_list_collaborators") return { text: JSON.stringify({ collaborators: o.collaborators?.[String(a.documentId)] ?? [] }) };
-    if (name === "primer_add_version") return { text: JSON.stringify({ versionNumber: calls.filter((c) => c[0] === "primer_add_version").length + 1, url: `https://primer.example/d/${a.documentId}` }) };
+    if (name === "primer_add_version") return o.noVersion ? { text: JSON.stringify({ reconciliation: { conflict: 1 } }) } : { text: JSON.stringify({ versionNumber: calls.filter((c) => c[0] === "primer_add_version").length + 1, url: `https://primer.example/d/${a.documentId}` }) };
     throw new Error(name);
   };
   const reports = memoryReports();
@@ -97,5 +97,12 @@ describe("a module's private report (primer.publish with private)", () => {
     expect(p.calls.filter((c) => c[0] === "primer_create_document")).toHaveLength(2);
     expect(p.calls.filter((c) => c[0] === "primer_add_version")).toHaveLength(3);
     expect(p.reports.get("acme/widgets")).toBe("doc-1-aaaa");
+  });
+
+  it("fails the filing when Primer applies no version, so a placeholder is never a done report", async () => {
+    const p = primer({ noVersion: true });
+    const out = await p.file(args(), "k-0000000000000099");
+    expect(out.ok).toBe(false);
+    expect(out.text).toMatch(/No new version on Primer[\s\S]*wasn't published/);
   });
 });

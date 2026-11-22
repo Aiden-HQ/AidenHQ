@@ -144,7 +144,7 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
       // private to the owner alone, else a new private document in its place; first publications on a repo_key are serialised.
       return serial(a.repo_key!.toLowerCase(), async () => {
         const known = priv.reports.get(a.repo_key!);
-        if (known !== undefined && (await ownerOnly(call, known))) return write({ ...a, documentId: known }, undefined);
+        if (known !== undefined && (await ownerOnly(call, known))) return applied(await write({ ...a, documentId: known }, undefined));
         // A new document: created with a placeholder, made private, and only then given the report, so the report is never
         // readable by the organization, not even for a moment.
         const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", description: undefined, title: NEUTRAL_TITLE }, undefined);
@@ -157,11 +157,16 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
           return { ok: false, text: `${made.text} (a placeholder), but it couldn't be made private (${(e as Error).message.slice(0, 200)}), so the report wasn't added` };
         }
         priv.reports.set(a.repo_key!, id);
-        const out = await write({ ...a, documentId: id }, undefined);
+        const out = applied(await write({ ...a, documentId: id }, undefined));
         return out.ok && known ? { ...out, text: `${out.text} (the earlier report ${known} is shared wider or gone, so this is a new private document)` } : out;
       });
     },
   };
+
+  /** A private report is published only when Primer made a version of it: "nothing was applied" is a failure, never a done write. */
+  function applied(r: { ok: boolean; text: string }) {
+    return r.ok && /^No new version on Primer/.test(r.text) ? { ok: false, text: `${r.text} So the report wasn't published.` } : r;
+  }
 
   async function write(a: Publish, by: Owner | undefined) {
     if (a.documentId) {
