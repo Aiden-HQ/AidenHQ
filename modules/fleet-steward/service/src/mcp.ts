@@ -14,9 +14,9 @@ export interface Tool {
 
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false };
 /** The routing change's nested shapes, published with them: a schema-typed client drops keys of a bare `{ type: "object" }`. The kernel's `routing-tune.ts` still judges the values. */
-const ROUTING_WEIGHTS = { type: "object", properties: { repo: { type: "number" }, continuity: { type: "number" }, load: { type: "number" } } };
+const ROUTING_WEIGHTS = { type: "object", properties: { repo: { type: "number" }, continuity: { type: "number" }, load: { type: "number" } }, additionalProperties: false };
 const ROUTING_REPOS = { type: "object", additionalProperties: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] } };
-const ROUTING_REVERT = { type: "object", properties: { metric: { type: "string", enum: ["reopen_rate", "cycle_hours", "blocked_rate"] }, min_sample: { type: "number" }, threshold: { type: "number" }, deadline_days: { type: "number" } } };
+const ROUTING_REVERT = { type: "object", properties: { metric: { type: "string", enum: ["reopen_rate", "cycle_hours", "blocked_rate"] }, min_sample: { type: "number" }, threshold: { type: "number" }, deadline_days: { type: "number" } }, required: ["metric", "min_sample", "threshold", "deadline_days"], additionalProperties: false };
 const text = (v: unknown, isError = false) => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }], ...(isError ? { isError: true } : {}) });
 
 export function createMcp(tools: Tool[]) {
