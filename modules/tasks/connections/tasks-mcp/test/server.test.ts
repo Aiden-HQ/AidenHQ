@@ -199,6 +199,41 @@ test("task_list pages overlap so a row pulled up by a task leaving the list is n
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["t-200"]);
 });
 
+test("task_list does not reread a short tail page it has already seen", async () => {
+  // 99 rows, fewer than a page: after the first read nothing behind it can exist, so the scan stops instead of halving its
+  // offset through the same rows again. A complete list is not worth a round trip per tail.
+  const rows = Array.from({ length: 99 }, (_, n) => ({ ...row(`open-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (99 - n) * 60_000).toISOString() }));
+  const board = issueBoard({ rows });
+  let reads = 0;
+  const handler = (req, res) => {
+    if ((req.url ?? "").includes("/issues?")) reads++;
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { limit: 100 }));
+  assert.equal(out.out?.tasks.length, 99);
+  assert.equal(out.out?.incomplete, undefined);
+  assert.ok(reads <= 2, `one page plus at most one confirming read, saw ${reads}`);
+});
+
+test("task_list says it is incomplete when the list shifts further than the overlap can follow", async () => {
+  // 120 tasks ahead of the next page leave the list between reads: more than the half-page overlap can absorb, so a task can
+  // slip past. The answer must say it may have missed some rather than report a complete list.
+  const rows = Array.from({ length: 400 }, (_, n) => ({ ...row(`t-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (400 - n) * 60_000).toISOString() }));
+  const board = issueBoard({ rows });
+  let reads = 0;
+  const handler = (req, res) => {
+    if ((req.url ?? "").includes("/issues?") && reads++ === 1) rows.splice(20, 120);
+    return board(req, res);
+  };
+  // Nothing matches on the first page, so the scan pages on: the shift is what it has to notice.
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "t-350" ? "waiting" : "working")]));
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { state: "waiting", limit: 200 }));
+  assert.match(String(out.out?.incomplete ?? ""), /shifted further/);
+});
+
 test("task_list stops when the issues endpoint ignores offset and repeats a page", async () => {
   const rows = Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo"));
   let reads = 0;

@@ -881,9 +881,9 @@ const PREPARE_AT_ONCE = 8;
  * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
  * empty page, or at repeated pages (a server that ignores `offset`, reported as stalled).
  */
-async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; expired?: boolean } = {}, ms?: () => number) {
+async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {}, ms?: () => number) {
   const seen = new Set<string>();
-  let repeats = 0, last = "";
+  let repeats = 0, last = "", asked: Json[] = [];
   for (let offset = 0; ; ) {
     // A page that adds nothing new does not yield, so the caller cannot check the clock: check it here too.
     if (ms && ms() <= 0) {
@@ -908,8 +908,22 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; ex
       }
     } else repeats = 0;
     last = ids;
+    // The next page starts inside this one, half a page back, so its first rows must be this page's tail. If they are not (an
+    // unseen first row, or a shared prefix that disagrees) the list was reordered between the reads: a row may have slipped
+    // past the overlap, so say so instead of claiming a complete scan.
+    if (asked.length) {
+      const j = asked.findIndex((i: Json) => i.id === page[0].id);
+      const shared = j < 0 ? 0 : Math.min(asked.length - j, page.length);
+      if (j < 0 || page.slice(0, shared).some((i: Json, n: number) => i.id !== asked[j + n].id)) progress.moved = true;
+    }
+    asked = page;
     const fresh = page.filter((i: Json) => !seen.has(i.id));
-    if (!fresh.length) continue;
+    // A short page with nothing new is the list's tail read again: the endpoint returned fewer rows than it was asked for, so
+    // there is nothing behind it. Reading on would only repeat the last rows, one round trip at a time.
+    if (!fresh.length) {
+      if (page.length < PAGE) return;
+      continue;
+    }
     for (const i of fresh) seen.add(i.id);
     yield fresh;
     // A page shorter than asked for may be the list's end, or a server capping its page size: the next read decides (an
@@ -1251,9 +1265,15 @@ const TOOLS: Record<string, Tool> = {
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
-        ...(complete && !progress.stalled && !progress.expired
+        ...(complete && !progress.stalled && !progress.expired && !progress.moved
           ? {}
-          : { incomplete: progress.stalled ? "the issues list stopped advancing through its pages; some tasks were not read" : "the scan ran past its time budget; some older tasks were not read" }),
+          : {
+              incomplete: progress.stalled
+                ? "the issues list stopped advancing through its pages; some tasks were not read"
+                : progress.moved
+                  ? "the issues list shifted further between pages than the scan can follow; some tasks may have been missed"
+                  : "the scan ran past its time budget; some older tasks were not read",
+            }),
       };
     },
   },
