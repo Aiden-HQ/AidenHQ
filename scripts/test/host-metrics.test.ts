@@ -41,7 +41,11 @@ exit 0`);
   mkdirSync(requires, { recursive: true });
   // systemd enables an instance by linking the template into a target's .wants (or .requires) dir; the instance has no unit
   // file of its own. $MASKED names the instances the fake's is-enabled reports masked.
-  writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "");
+  // The template has real content: systemd reads an empty unit file as masked, and a dependency link onto an empty file is
+  // one too (null_or_empty_path in src/core/load-dropin.c), so an empty file here would model a masked runner, not a live one.
+  writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=AidenHQ CI runner\n");
+  // A target whose dependency dirs systemd reads: the target itself must be a unit file.
+  writeFileSync(join(unitDir, "default.target"), "[Unit]\nDescription=default\n");
   const enable = (units) => {
     for (const entry of readdirSync(wants)) unlinkSync(join(wants, entry));
     for (const unit of units) symlinkSync(join(unitDir, "aidenhq-ci-runner@.service"), join(wants, `${unit}.service`));
