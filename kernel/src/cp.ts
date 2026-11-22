@@ -231,12 +231,14 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     if (extra.length) throw fail(400, "bad_request", `a task's change takes status, comment, ${PATCH.join(", ")}; not ${extra.join(", ")}`);
     // Setup's log tasks take comments only, even from the agent that holds them.
     if ((status !== undefined || Object.keys(patch).length) && isLogTask(t, logs)) throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
-    const scope = (await scopeOf(t)) ?? settleScope(t) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     // A settler acts as one on any task it may settle, its own and its delegations included.
     const settling = settleScope(t) === "settle";
+    const scope = (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     // On a task it holds by settling alone, a settler changes only what settling needs: the status, who holds it (an agent; never
     // handed to a person) and its blockers (a cycle broken); never its title, brief, priority or labels.
     if (scope === "settle") {
+      // Settling moves open work: a closed task (done or cancelled) stays closed; new work is a new task.
+      if ((status !== undefined || Object.keys(patch).length) && ["done", "cancelled"].includes(String(t.status))) throw fail(409, "refused", `${t.identifier ?? t.id} is ${t.status}: a settler moves open work only`);
       const beyond = Object.keys(patch).filter((k) => !["assigneeAgentId", "assigneeUserId", "blockedByIssueIds"].includes(k) || (k === "assigneeUserId" && patch[k] !== null));
       if (beyond.length) throw fail(403, "forbidden", `a settler changes another agent's task's status, holder (an agent) and blockers only; not ${beyond.join(", ")}`);
     }

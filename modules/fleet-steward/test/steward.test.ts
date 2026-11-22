@@ -442,9 +442,21 @@ test("a routine whose last 3 jobs failed is paused once and the chief of staff t
   assert.deepEqual((await w.c.routine()).map((i) => i.key), ["r1"]);
   assert.deepEqual([w.paused, w.sent], [["r1"], [["Routine paused: routine r1 failed 3 runs in a row (fleet_status names it). Resume it once its cause is fixed.", "routine-paused:r1"]]]);
   assert.match((await w.c.routine())[0].reason, /paused after repeated failures/);
+  assert.equal(w.sent.length, 1, "told once");
   assert.equal(w.paused.length, 1, "paused once");
   status.v = "active"; // resumed: only newer failures count
   assert.deepEqual(await w.c.routine(), []);
+  // A filing that failed (quiet start, the kernel down) is owed and told on a later check while the routine stays paused.
+  const late = world({ a1: [...bad, job("j0", "a1", "done", 50)], a2: [job("k1", "a2", "done", 5, null)] }, { v: "active" });
+  let down = true;
+  const sentLate = [];
+  const c2 = checks({ kernel: { read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : p.endsWith("/agents") ? [{ id: "a1", name: "a1" }, { id: "a2", name: "a2" }] : p.endsWith("/routines") ? [{ id: "r1", title: "Daily brief", status: late.paused.length ? "paused" : "active" }] : []), call: async (_m, p) => (p.startsWith("/v1/work?agent=a1") ? { jobs: [...bad, job("j0", "a1", "done", 50)] } : p.startsWith("/v1/work?agent=a2") ? { jobs: [job("k1", "a2", "done", 5, null)] } : { final: "" }) }, kv: late.kv, pause: async (r) => void late.paused.push(r), apps: async () => [], alerts: async () => [], openKeys: () => [], notify: async (text) => { if (down) throw new Error("quiet start"); sentLate.push(text); }, gradeFailures: async () => [], now: () => NOW });
+  await c2.routine();
+  assert.deepEqual([late.paused, sentLate], [["r1"], []]);
+  down = false;
+  await c2.routine();
+  await c2.routine();
+  assert.equal(sentLate.length, 1);
   // Fleet-wide: every agent failing, or a credits refusal, pauses nothing (the routine stays flagged).
   const every = world({ a1: bad, a2: [job("k1", "a2", "failed", 5, null)] }, { v: "active" });
   assert.equal((await every.c.routine()).length, 1);

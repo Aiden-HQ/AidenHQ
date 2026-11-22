@@ -575,6 +575,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
         fleetWide = /\b(401|402)\b|insufficient credits|invalid api key/i.test(final);
       }
       const since: Record<string, string> = JSON.parse(d.kv.get("routine_paused_at") ?? "{}");
+      const owed = (): Record<string, number> => JSON.parse(d.kv.get("routine_notice_owed") ?? "{}");
       const out: Incident[] = [];
       for (const { routine, failures } of failingRoutines(jobs, since)) {
         const row = rows.find((r) => r.id === routine);
@@ -585,15 +586,28 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
           await d.pause(routine);
           since[routine] = new Date(t).toISOString();
           d.kv.set("routine_paused_at", JSON.stringify(since));
-          // Its id only: a routine's title is an agent's words, and this text is the chief of staff's instruction.
-          await d.notify?.(`Routine paused: routine ${routine} failed ${failures} runs in a row (fleet_status names it). Resume it once its cause is fixed.`, `routine-paused:${routine}`).catch(() => {});
+          // Its id only: a routine's title is an agent's words, and this text is the chief of staff's instruction. Owed until told: a
+          // failed filing (quiet start, the kernel down) is tried again below on each check while it stays paused.
+          d.kv.set("routine_notice_owed", JSON.stringify({ ...owed(), [routine]: failures }));
         }
         out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
       }
       // Paused by this detector and still paused: the flag stays open until the owner resumes it (a resume clears it).
       for (const id of Object.keys(since)) {
         const row = rows.find((r) => r.id === id);
-        if (row?.status === "paused" && !out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
+        if (row?.status !== "paused") continue;
+        if (!out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
+      }
+      // The notices this detector owes (routines it paused), each told once; one no longer paused is owed nothing.
+      for (const [id, n] of Object.entries(owed())) {
+        const left = { ...owed() };
+        // Paused now: read so, or paused by this very check (the rows were read before it).
+        if (rows.find((r) => r.id === id)?.status === "paused" || since[id] === new Date(t).toISOString()) {
+          const ok = await d.notify?.(`Routine paused: routine ${id} failed ${n} runs in a row (fleet_status names it). Resume it once its cause is fixed.`, `routine-paused:${id}`).then(() => true, () => false);
+          if (!ok) continue;
+        }
+        delete left[id];
+        d.kv.set("routine_notice_owed", JSON.stringify(left));
       }
       return out;
     },
@@ -708,7 +722,11 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       let looked = 0;
       // By attention, not the representative reason: a task also running, queued or on a card still waits on the answer.
       const out: Incident[] = [];
-      for (const i of await openStates()) {
+      const states = await openStates();
+      // Kept only for tasks still open: a closed task's entries go.
+      const live = new Set(states.map((i) => i.task));
+      for (const m of [agentMade, unreadUntil]) for (const k of m.keys()) if (!live.has(k)) m.delete(k);
+      for (const i of states) {
         const why = i.attention.map((a) => a.why).find((w) => JUDGEMENTS[w] !== undefined);
         const since = i.wait_since ?? i.since;
         if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;

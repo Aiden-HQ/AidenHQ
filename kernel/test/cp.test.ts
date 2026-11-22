@@ -175,6 +175,8 @@ test("a fleet settler settles another agent's stuck task: answers its delegator 
   // A stale task of another agent: cancelled, as the settler, with its comment (the op tag wakes the task's agent).
   r = await act("settler", "PATCH", "/api/issues/WOR-2", { status: "cancelled", comment: "Superseded by WOR-1, which shipped the change." });
   assert.deepEqual([r.status, h.issues[OTHER].status, h.issues[OTHER].updatedBy], [200, "cancelled", SET]);
+  // A closed task stays closed: settling moves open work only.
+  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-2", { status: "todo", comment: "Again." })).status, 409);
   assert.equal(plugin.at(-1).scope, "settle");
   // A task an agent handed back to the owner goes back to work with the agent that does it (WOR-9318).
   r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "todo", assigneeAgentId: BO, assigneeUserId: null, comment: "Run the audit yourself: the engineer has the command." });

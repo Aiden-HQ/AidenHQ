@@ -73,9 +73,10 @@ through their own card or the chief of staff, never through you: log it as `owne
     as the spec. Only a sign-in or a credential the owner must create stays theirs: "The owner" below.
 - **A parked branch nobody moved** (`loop:<task>:<branch>`): the AI reviewer rejected the same branch until the kernel
   parked it, and nobody moved it since. Read the cards and the reviewer's notes (`task_approvals`, `task_comments`) and the
-  delegator's task, then rule: re-brief it (`task_route` to its agent with what the reviewer needs, or the diff narrowed to
-  the files the reviewer names), or close it (`task_finish` when the work already landed elsewhere, `task_cancel` and a
-  narrower task when the brief was wrong). You change the work, never the reviewer's verdict.
+  delegator's task, then rule. Only its delegator's or the chief of staff's decision lifts the park on that task, never your
+  comment, so you settle it by closing it: `task_finish` when the work already landed elsewhere, or `task_cancel` naming a
+  new, narrower task you file for the same agent (`task_delegate` to the Engineer) with what the reviewer needs or the diff
+  narrowed to the files the reviewer names. You change the work, never the reviewer's verdict.
 - **An answered wait that never resumed** (`unresumed:<task>`): `task_route` the task (no `to`) naming the answering comment
   and what is asked next. A task that still does not resume is a product bug (slug `answered-wait`) with the task, the wait's
   start and the answer's time.

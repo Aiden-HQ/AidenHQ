@@ -1394,8 +1394,11 @@ const TOOLS: Record<string, Tool> = {
         agent = hits[0].id;
       }
       if (!agent) throw new Error("this task is with the owner: name the agent it goes to (`to`)");
-      const leading = await postLeadingParts(issue, comment);
-      return brief(await patchIssue(issue, { status: "todo", assigneeAgentId: agent, assigneeUserId: null, ...(unblock ? { blockedByIssueIds: [] } : {}), comment: leading }));
+      // The move first, with the comment's first part: a refused move wakes nobody. A long comment's other parts follow it.
+      const [first, ...more] = commentParts(comment);
+      const moved = await brief(await patchIssue(issue, { status: "todo", assigneeAgentId: agent, assigneeUserId: null, ...(unblock ? { blockedByIssueIds: [] } : {}), comment: first ?? "" }));
+      for (const p of more) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: p });
+      return moved;
     },
   },
   task_comment: {
