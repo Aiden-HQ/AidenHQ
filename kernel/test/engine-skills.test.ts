@@ -149,6 +149,24 @@ test("a root with '..' is normalized once, so the path checked is the path writt
   assert.equal(statSync(other).mode & 0o777, 0o755);
 });
 
+test("the repaired root still names the directory it set up, not one swapped in after", () => {
+  const { dir } = setup();
+  const base = join(dir, "base");
+  mkdirSync(base, { recursive: true });
+  // Connected to the checks above: the path is re-read after the repair, so it must still be the directory that was opened.
+  const { root } = ensureStateDirs(base);
+  const named = lstatSync(root);
+  assert.ok(named.isDirectory());
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  // And a path that was replaced by a symlink before the call is refused, never repaired through.
+  const outside = join(dir, "outside");
+  mkdirSync(join(outside, "state"), { recursive: true });
+  chmodSync(join(outside, "state"), 0o755);
+  symlinkSync(outside, join(dir, "swap"));
+  assert.throws(() => ensureStateDirs(join(dir, "swap", "state")), /symlink, which is never followed/);
+  assert.equal(statSync(join(outside, "state")).mode & 0o777, 0o755);
+});
+
 test("an empty state_dir is rejected, never taken as the working directory", () => {
   const cwdMode = statSync(".").mode & 0o777;
   for (const value of ["", "   "]) {
