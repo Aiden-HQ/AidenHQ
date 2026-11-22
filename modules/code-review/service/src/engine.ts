@@ -343,7 +343,7 @@ export function createEngine(d: EngineDeps) {
       if (kind !== "auto") {
         // The same ask is the same run only when it asks the same question: a different focus (or none) is its own run, so a
         // one-off asked with a focus never reuses a queued run of another ask and drop that ask's focus.
-        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null);
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND recheck_only = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null, o.recheckOnly ? 1 : 0);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
@@ -733,7 +733,7 @@ export function createEngine(d: EngineDeps) {
         dispose(trusted, r, "fixed", "its fixed claim stood: the recheck did not find it still there", `run:${r.id}`);
       }
     });
-    if (!stale) cover(r);
+    if (!stale && !r.recheck_only) cover(r); // a claim recheck settles findings; it never stands for a review of the range
     // A run that posts says nothing here: afterPost writes its state, its reason and (when it is filed again) its retry deadline
     // together, once the post's outcome is known.
     const done = (status: Status, why: string | null) => {
