@@ -12,7 +12,7 @@ import type { Rec, Records, State } from "./records.ts";
 import { MALICE, priorDecisions, priorPart, requestKey, type Prior, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
-import { instanceDetails } from "../sdk/src/reviewer.ts";
+import { instanceDetails, type ToolCall } from "../sdk/src/reviewer.ts";
 import { sameChanges } from "../../services/shared/review-files.ts";
 
 /** A Paperclip task and comment, as far as the review reads them. */
@@ -164,6 +164,22 @@ export function cardDiff(action: string, details: string): string {
 }
 
 /**
+ * A `conn.tool` record as the reviewer reads it: the connection, the tool, and the call's own argument object, read from the
+ * record's args (writes.ts files `{ connection, tool, arguments }`), every key as the tool takes it. It never parses the
+ * card's prose; a record whose args it can't read is no tool call block (the card's details then reach the reviewer as
+ * before). `unreadable` names each argument code could not give as a value: the reviewer is told which field is missing,
+ * never that the whole call was body-only.
+ */
+export function toolCallOf(action: string, args: unknown): ToolCall | undefined {
+  if (action !== "conn.tool" || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const { connection, tool, arguments: call } = args as { connection?: unknown; tool?: unknown; arguments?: unknown };
+  if (typeof connection !== "string" || !connection || typeof tool !== "string" || !tool) return undefined;
+  const read = call && typeof call === "object" && !Array.isArray(call) ? (call as Record<string, unknown>) : {};
+  const unreadable = !call || typeof call !== "object" || Array.isArray(call) ? ["arguments"] : [];
+  return { connection, tool, arguments: read, ...(unreadable.length ? { unreadable } : {}) };
+}
+
+/**
  * What the reviewer reads of one record, or code's verdict in its place: the owner's veto on the task (his card), or content
  * the reviewer already rejected as malice (rejected again).
  */
@@ -174,7 +190,10 @@ export async function reviewInput(r: Rec, { records, task }: { records: Records;
   // Code's own refusals run before any review, so a failed review never approves past them: private data to an outside
   // thread, and a diff that differs from the code host's own count of the change (what is reviewed must be what runs).
   const diff = cardDiff(action, r.context?.diff ?? r.card.details);
-  const leaked = instanceDetails({ action }, diff);
+  const toolCall = toolCallOf(action, r.args);
+  // A conn.tool call's arguments are checked as arguments too: a nested map keyed by a host, or a value the details text's JSON
+  // escaping would hide from the refusals below, is caught by the same check the reviewer module runs (review.ts).
+  const leaked = instanceDetails({ action }, diff, toolCall);
   if (leaked.length) return { verdict: { decision: "reject", code: "instance_details", reason: `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, model: "kernel/code" }, request: {} };
   const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];
   if (differs.length) return { verdict: { decision: "reject", code: "files_not_shown", reason: `the diff sent for review differs from the code host's own count of the change, so it can't be reviewed. File the card again:\n${differs.slice(0, 40).map((d) => `- ${d}`).join("\n")}`, model: "kernel/code" }, request: {} };
@@ -186,8 +205,11 @@ export async function reviewInput(r: Rec, { records, task }: { records: Records;
   return {
     request: {
       card: { action, rule: r.rule ?? action, target: r.card.target ?? "", sentence: r.card.sentence, reason: r.card.reason ?? "" },
-      // A planned write's whole diff rides in its context (writes.ts, set by the kernel); a tool call's card details are its input.
+      // A planned write's whole diff rides in its context (writes.ts, set by the kernel). A conn.tool call also carries its
+      // arguments structured (tool_call): the reviewer reads them by name, never as a DIFF. `diff` keeps the card's details, so
+      // a reviewer provider that doesn't read tool_call yet still receives the call's evidence, as it did before.
       diff,
+      ...(toolCall ? { tool_call: toolCall } : {}),
       // The changed files at the reviewed head, as the code host's plan read them at filing.
       ...(r.context?.files ? { files: r.context.files } : {}),
       chain,

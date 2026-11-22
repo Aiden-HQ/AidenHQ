@@ -22,9 +22,21 @@ export interface ReviewCard { action: string; rule?: string; target?: string; se
  * can't read (binary); `changed`: the code host's own numstat of the change, read at filing: the reviewer checks the diff against it.
  */
 export interface Files { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }
+/**
+ * A connection tool call as the reviewer reads it: the connection, the tool, and the call's own argument object, every key as
+ * the tool takes it. Sent by the kernel in place of a diff for a `conn.tool` record; the reviewer renders it as TOOL_CALL.
+ */
+export interface ToolCall { connection: string; tool: string; arguments: Record<string, unknown>; unreadable?: string[] }
 /** One request as the reviewer reads it. Everything but `card.action` is data an agent or a stranger wrote. */
 export interface ReviewRequest {
   card: ReviewCard; diff: string; files?: Files; chain?: string; requesterModel?: string;
+  /**
+   * A connection tool call's arguments, structured, as the reviewer reads them instead of a diff: code read them from the
+   * record (`args.connection`, `args.tool`, `args.arguments`), never parsed out of the card's prose. `arguments` is the call's
+   * own argument object, key for key as the tool takes them. `unreadable` names each argument code could not read (a value
+   * that isn't there), so the reviewer is told which field is missing rather than that the whole call is body-only.
+   */
+  tool_call?: ToolCall;
   /**
    * The task's comments as they stand, oldest first, rendered by the kernel: each under a label line code wrote (the owner's
    * own typed words, or an agent by its place in the request: the delegating agent, the chief of staff, the requesting agent,
@@ -43,9 +55,23 @@ export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: s
  * comments when they are sent; this is the refusal before that, for every GitHub write.) The kernel runs it before it asks the
  * reviewer (review-loop.ts), so it never fails open; the reviewer runs it too (review.ts).
  */
-export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined) {
-  const text = String(diff ?? "");
-  if (card?.action !== "conn.tool" || !/^tool: github\./.test(text)) return [];
+export function instanceDetails(card: ReviewCard | undefined, diff: string | undefined, toolCall?: ToolCall) {
+  if (card?.action !== "conn.tool") return [];
+  // A tool call's arguments arrive structured (`tool_call`): check the arguments' own strings and keys, decoded, never their
+  // JSON encoding (a "\n" escape would hide a line start from the lookbehinds below). The card's details text still rides in
+  // `diff` for a reviewer provider that doesn't read `tool_call` yet, so it is scanned too, never trusted to agree with the
+  // arguments. A caller without a tool_call (an eval case, an older kernel) passes only the details text.
+  const parts: string[] = [];
+  if (toolCall) {
+    if (toolCall.connection !== "github") return [];
+    const walk = (v: unknown) => {
+      if (typeof v === "string") parts.push(v);
+      else if (v && typeof v === "object") for (const [k, child] of Object.entries(v as Record<string, unknown>)) { parts.push(k); walk(child); }
+    };
+    walk(toolCall.arguments);
+  } else if (!/^tool: github\./.test(String(diff ?? ""))) return [];
+  parts.push(String(diff ?? ""));
+  const text = parts.join("\n");
   const found = [
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
@@ -55,7 +81,7 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
 }
 
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "files", "chain", "requesterModel", "comments"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "tool_call", "files", "chain", "requesterModel", "comments"] as const;
 
 /** The module's reviewer: one request in, one verdict out. */
 export type Review = (req: ReviewRequest, ctx: { modelToken: string }) => Promise<Verdict>;
