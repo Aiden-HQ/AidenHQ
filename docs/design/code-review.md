@@ -90,10 +90,10 @@ PR state, not config.
 The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
-rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR's opening
-moment (`on_open`, or `aiden review`) completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
+rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR (but a one-off)
+completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
-retries by itself (a mandatory one up to three times, 1, 4 and 16 minutes later; any other once, a minute later), each retry on
+retries by itself a minute later (a mandatory one up to three times, any other once), each retry on
 what is left of its `run_usd`; a check that failed before it got a computer spent nothing. A run starts only while the day's real spend is under the
 repo's and the instance's day caps (checked in one transaction); a run whose PR moved on or closed while it ran is
 superseded and never posts (one that merged while it ran still posts; one closed unmerged does not). A skip is a run too, acknowledged once per PR and reason (a budget skip once per head), never
@@ -121,7 +121,7 @@ excluded, `incomplete` reason), `downgraded` (importants made nits, below) and t
 last reviewed head (only the PR's own files: main merged in is not the change); a force-push or rebase that drops it from the head's ancestry makes the run full; previous findings are rechecked. PR title,
 body (`spec.intent`, none for a fork), comments and code are fenced as data throughout.
 
-**What "important" means (owner, 2026-11-22).** One rubric, in the brief every engine reads: an important finding is a realistic
+**What "important" means (owner, 2026-11-22).** One rubric, in the brief (codex, Claude Code and codex review read it; codegenie and deepsec map their own fields): an important finding is a realistic
 failure with a concrete scenario (a specific input or state and the wrong result), old code and new alike; behaviour the PR's
 description states as intended is a design choice, not a finding, unless it fails concretely. The finder schema's
 `failure_scenario` is required for an important finding (codex review, which answers in its own format, writes a
@@ -196,6 +196,11 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   bare rebase"): the head is covered and the PR's open findings stay as they are. Anything GitHub can't fingerprint (a file
   without a patch, 300 files) is reviewed as usual. A non-mandatory combo never holds anything; its findings are
   advice.
+- **Posted first.** A finding gates only once a mandatory run that found it posted (its GitHub thread exists, so it can be fixed
+  or answered). While a head's mandatory review is still being posted the verdict waits on the post; a post refused by something
+  other than a decision (a rate limit, a restart, a failed call) is filed again 2, 4, 8, 16, then every 32 minutes while the PR is
+  open; one rejected never gates. A module's own write (the post, filed on the PR's review task) runs even when that task has
+  closed meanwhile: the kernel's closed-task rule ends an agent's leftover request only.
 - **Findings.** A finding stays open (`findings.outcome` null) until a mandatory run's recheck confirms it fixed, it is answered
   on its thread, or the owner dismisses it on the board. Old and new findings gate alike. Every new head's first mandatory run gets
   every open gating finding with its evidence (whatever the change touched; `spec.previous` fits 16 KB by shrinking texts first)

@@ -332,15 +332,15 @@ export const scenarioOf = (f: { failure_scenario?: unknown; why?: unknown }) => 
   return /\p{L}{2,}/u.test(s) ? cap(s, 1000).trim() : "";
 };
 
-/** The finders' raw findings, cleaned: known severity, a path and line, bounded text; paths made relative to the checkout. An
- * important finding's failure_scenario leads its why (what the post shows). */
+/** The finders' raw findings, cleaned: known severity, a path and line, bounded text; paths made relative to the checkout. A
+ * finding's failure_scenario leads its why (what the post shows). */
 export function clean(raw: unknown, root: string) {
   const out: (Cleaned & { same_as?: string })[] = [];
   for (const f of Array.isArray(raw) ? raw : []) {
     if (!f || !SEVERITIES.includes(f.severity) || typeof f.path !== "string" || !Number.isInteger(f.line) || f.line < 1 || typeof f.title !== "string" || !f.title.trim()) continue;
     const path = f.path.startsWith(`${root}/`) ? f.path.slice(root.length + 1) : f.path.replace(/^\.\//, "");
     if (!path || path.startsWith("/") || path.split("/").some((p: string) => p === ".." || p === "")) continue;
-    const scenario = f.severity === "important" && typeof f.failure_scenario === "string" ? scenarioOf(f) : "";
+    const scenario = typeof f.failure_scenario === "string" ? scenarioOf(f) : "";
     const why = scenario ? `${SCENARIO}${scenario}\n\n${String(f.why ?? "")}` : f.why;
     out.push({ severity: f.severity, path, line: f.line, ...(Number.isInteger(f.end_line) && f.end_line >= f.line ? { end_line: f.end_line } : {}), title: cap(f.title, 120).trim(), why: cap(why, 2500), evidence: cap(f.evidence, 1500), fix_brief: cap(f.fix_brief, 1000), ...(typeof f.same_as === "string" && /^[0-9a-f]{16}$/.test(f.same_as) ? { same_as: f.same_as } : {}) });
   }
@@ -358,11 +358,13 @@ function linesOf(root: string, path: string, reviewed: Set<string>) {
 /**
  * Every finding at a real place (an existing file, a line in range) with its stable id: hash(path, title, the anchor line's
  * text). Any line of a file the pull request changes counts, old code as much as new; a finding in a file it doesn't change
- * (`own`: the PR's files) is a nit: GitHub gives it no thread to fix or answer on.
+ * (`own`: the PR's files the scope keeps) is a nit: GitHub gives it no thread to fix or answer on; one in a file the scope leaves
+ * out (`left`) is dropped.
  */
-export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed) {
+export function place(findings: Cleaned[], root: string, reviewed: Set<string>, own: Set<string> = reviewed, left = new Set<string>()) {
   const out: Placed[] = [];
   for (const f of findings) {
+    if (left.has(f.path)) continue; // a file the scope leaves out (ignored, generated, a lockfile): no findings asked for
     const lines = linesOf(root, f.path, reviewed);
     if (!lines || f.line > lines.length) continue;
     const severity = f.severity === "important" && !own.has(f.path) ? "nit" : f.severity;
@@ -421,8 +423,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // What the PR changes against its merge base (not just since the last reviewed head): generated paths it touches are gaps.
   const prChanged = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
   // (A tree's files are all "changed": generated ones are left out, not a hiding place.)
-  // An incremental range from a head before main was merged in carries main's changes too: only the PR's own files are its change.
-  const { reviewed, excluded } = scope(changed(h.git, h.from).filter((f) => full || prChanged.has(f.path)), combo.ignore ?? [], tree ? new Set() : prChanged);
+  const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], tree ? new Set() : prChanged);
   const diff = reviewed.length ? h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", h.from, "HEAD", "--", ...reviewed.map((p) => `:(literal)${p}`)]) : "";
   const baseTree = existsSync(join(out, "base")) ? join(out, "base") : undefined;
   const guides = guidance(baseTree, reviewed);
@@ -526,12 +527,15 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const missed = covered && !tree ? reviewed.filter((p) => !covered.includes(p) && !deleted.has(p)) : [];
   if (missed.length) gaps.push(`${missed.length} reviewed file${missed.length > 1 ? "s" : ""} the engine didn't analyse (${missed.slice(0, 10).join(", ")}${missed.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
-  const reviewedSet = new Set(reviewed), own = tree ? reviewedSet : prChanged;
+  // The PR's own files a finding may gate on (all it changes but what the scope leaves out: ignored, generated, lockfiles) and
+  // the ones left out, where no finding is asked for.
+  const mine = tree ? { reviewed, excluded } : scope([...prChanged].map((path) => ({ path, added: 0, removed: 0, binary: false })), combo.ignore ?? [], prChanged);
+  const reviewedSet = new Set(reviewed), own = new Set(mine.reviewed), out_ = new Set([...excluded, ...mine.excluded].map((e) => e.path));
   // A finding that restates one already reported (the finder says so, or it has the same id) isn't reported again: it is still there.
   // An important finding without a failure scenario is a nit: code decides, never the model.
   const cleaned = good.filter(Boolean).flatMap((j) => clean(j.findings, root)).map((f) => (f.severity === "important" && !scenarioOf(f) ? (result.downgraded++, { ...f, severity: "nit" as const }) : f));
   const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
-  let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own));
+  let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
   for (const f of candidates) if (restates(f, f.id)) restated.add(f.id);
   candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
@@ -561,7 +565,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         confirmed.push({ ...f, severity, ...(Number.isInteger(c.line) && c.line >= 1 ? { line: c.line } : {}) });
       }
       // A moved line is checked again (and its id follows its new anchor).
-      candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own));
+      candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own, out_));
     }
   }
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);

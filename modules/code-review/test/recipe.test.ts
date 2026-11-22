@@ -75,8 +75,8 @@ test("a review: base guidance only, excluded files, finders fanned out, the veri
 });
 
 test("an important finding needs a failure scenario: without one code makes it a nit; old code in the PR's files counts the same; the PR's stated intent is fenced data", async () => {
-  const base = { "src/pay.js": "export const pay = (a) => a;\n", "src/old.js": "export const old = 1;\n" };
-  const head = { "src/pay.js": "export const pay = (a) => a;\nexport const refund = (a, b) => a + b;\n", "src/old.js": "export const old = 1;\n" };
+  const base = { "src/pay.js": "export const pay = (a) => a;\n", "src/old.js": "export const old = 1;\n", "docs/x.md": "a\n" };
+  const head = { "src/pay.js": "export const pay = (a) => a;\nexport const refund = (a, b) => a + b;\n", "src/old.js": "export const old = 1;\n", "docs/x.md": "b\n" };
   const { ws, out } = box({ head, base });
   let brief = "";
   const run = async (_e, o) => {
@@ -86,12 +86,15 @@ test("an important finding needs a failure scenario: without one code makes it a
       F({ line: 1, title: "pay drops negative amounts", failure_scenario: "  " }), // no scenario: a nit
       F({ line: 1, title: "pay keeps the sign", failure_scenario: undefined, why: "**Failure scenario:** pay(-1) returns -1 and the ledger goes negative" }), // codex review's own format
       F({ path: "src/old.js", line: 1, title: "old is wrong" }), // a file the PR doesn't change: no thread, so a nit
+      F({ path: "docs/x.md", line: 1, title: "doc is wrong" }), // a file the repo ignores: no findings asked for
+      F({ severity: "nit", line: 2, title: "pay is terse", failure_scenario: "pay(1) reads oddly", why: "names" }), // a nit keeps its text
     ] }) };
   };
   const r = await review({ spec: spec({ combo: combo({ effort: "low", max_nits: 5 }), intent: "Refunds add on purpose: see the design." }), ws, out, run });
   assert.deepEqual(r.findings.map((f) => [f.severity, f.path, f.line, f.title]).sort(), [
     ["important", "src/pay.js", 1, "pay keeps the sign"], ["important", "src/pay.js", 2, "Refund adds instead of subtracting"],
-    ["nit", "src/old.js", 1, "old is wrong"], ["nit", "src/pay.js", 1, "pay drops negative amounts"]].sort());
+    ["nit", "src/old.js", 1, "old is wrong"], ["nit", "src/pay.js", 1, "pay drops negative amounts"], ["nit", "src/pay.js", 2, "pay is terse"]].sort());
+  assert.equal(r.findings.find((f) => f.title === "pay is terse").why, "Failure scenario: pay(1) reads oddly\n\nnames");
   assert.equal(r.findings.find((f) => f.line === 2).why, "Failure scenario: refund(10, 5) returns 15\n\nw");
   assert.equal(r.downgraded, 1);
   assert.match(brief, /realistic failure/);

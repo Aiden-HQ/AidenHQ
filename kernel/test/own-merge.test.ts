@@ -58,3 +58,14 @@ test("no merge is filed for a head its task's PR record didn't push, an open mer
   assert.deepEqual(await c.writes.fileOwnMerge("github", ask(HEAD)), { skip: "closed" });
   assert.equal(c.records.list(["review", "owner", "approved", "claimed", "done"], 50, { kinds: ["github.merge"] }).length, 0);
 });
+
+test("an approved write on a closed task: an agent's leftover runs nothing, a module's own service write (code review's post) still runs", async (t) => {
+  const k = kernel(t);
+  const rec = (requester: Record<string, unknown>) => k.records.file({ kind: "github.pr", module: "github", args: { workspace: "ACME-1", only: [{ repo: "acme/app", branch: "agent/ACME-1/fix", sha: HEAD }], text: { title: "t", body: "b" } }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, panel: false, card, requester: requester as never, task: "closed-task", identifier: "ACME-1", state: "approved" });
+  const agent = rec({ ...ENGINEER, task: "closed-task" }), module = rec({ agent: "", key: "", name: "", roles: [], kind: "module", module: "github" });
+  await k.writes.run(agent.id); await k.writes.run(module.id);
+  assert.match(String(k.records.get(agent.id)!.outcome?.text), /the task is closed/);
+  // The module's record went on past the task check (to its executor's plan; this fake's policy makes it stale there).
+  assert.doesNotMatch(String(k.records.get(module.id)!.outcome?.text ?? ""), /the task is closed/);
+  assert.equal(k.records.get(module.id)!.state, "stale");
+});

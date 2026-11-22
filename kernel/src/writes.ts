@@ -342,7 +342,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * An approved record: revalidated, its task still open and (a module kind) planned again, then claimed once and executed.
    * Everything before the claim that fails transiently (the routine trace, the task read, the executor's plan) leaves the
    * record approved, to be run again with backoff capped at 15 minutes (retryApproved), for as long as its task is open: only a real
-   * 4xx, a stale record or a closed task ends it.
+   * 4xx, a stale record or a closed task (an agent's request; a module's own write runs regardless) ends it.
    * Never throws.
    */
   async function run(id: string): Promise<void> {
@@ -361,7 +361,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const k = pre.kind !== CONN_TOOL && !native[pre.kind] ? registry()[pre.kind] : undefined;
     try {
       if (!(await revalidate(pre))) return void runRetries.delete(id);
-      open = !pre.task || (await onTask.open(pre.task));
+      // A closed task ends an agent's leftover request; a module's own service write (code review's post, filed on a task that
+      // only holds its approvals) is no leftover: it runs whatever became of that task.
+      open = !pre.task || pre.requester?.kind === "module" || (await onTask.open(pre.task));
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
         // The same executor (module, address and code revision) and policy, or the record is stale (A9). An executor that
         // refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.

@@ -27,13 +27,15 @@ import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The recheck found the answer to this finding unsafe: its fix or reason hides the problem or adds one.\n\n" };
 
 export const DEBOUNCE = 60_000;
-/** A post refused by something other than a decision (stale after a restart, a failed GitHub call) is filed once more after this. */
+/** A post refused by something other than a decision (stale after a restart, a failed GitHub call, a rate limit) is filed again
+ * after this, doubling each time up to 16x, until it lands (while its PR is open). */
 export const POST_RETRY = 2 * 60_000;
 /** A failed run's retry waits this long (a deploy or restart that made it fail is usually over by then). */
 const RUN_RETRY = 60_000;
 /** A run that couldn't run is tried this many times in all, on the same reservation. */
 const ATTEMPTS = 2;
-/** A mandatory run is tried this many times in all, its retries further apart each time (RUN_RETRY x 4^n): the merge waits on it. */
+/** A mandatory run is tried this many times in all, each retry RUN_RETRY after the last (flat: a stream error or a restart is
+ * over by then, and the merge waits on it). */
 const MANDATORY_ATTEMPTS = 4;
 const WRITERS = new Set(["admin", "maintain", "write"]);
 
@@ -293,9 +295,11 @@ export function createEngine(d: EngineDeps) {
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
   type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; run: string };
-  /** The PR's findings still open (no outcome yet), whichever combo found them; `gating`: an important one a mandatory run found. */
+  /** The PR's findings still open (no outcome yet), whichever combo found them; `gating`: an important one a mandatory run found
+   * and posted. A finding with no GitHub thread yet (its post pending or refused) can't be fixed-and-answered on GitHub, so it
+   * never gates: the verdict waits on the post instead (verdict), never on a finding nobody can see. */
   const stillOpen = (repo: string, n: number) => all<Omit<Open, "severity"> & { rank: number }>(
-    `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1) gating, MAX(f.run) run
+    `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted') gating, MAX(f.run) run
      FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
@@ -331,8 +335,13 @@ export function createEngine(d: EngineDeps) {
       // The merge base is what a full review diffs against (the PR's own, not its stale base sha). The baseline counts only while it is still an
       // ancestor of the head (a force-push or rebase drops it): else, or when GitHub can't say, the review is full.
       const { merge_base } = await d.source.mergeBase(r.repo, r.number, r.head);
-      // A bare rebase (or main merged in): the PR's own change is the baseline's, so its review and verdict carry, unrun.
-      if (incremental_from && r.kind === "auto" && await sameChange(r, incremental_from, merge_base)) return carry(r, incremental_from, merge_base);
+      // The baseline counts only on the same merge base: a rebase, main merged in or a retarget moved it, and then the PR's own
+      // change is either the baseline's (a bare rebase: its review and verdict carry, unrun) or reviewed whole.
+      const was = incremental_from ? one<{ merge_base: string }>("SELECT merge_base FROM runs WHERE repo = ? AND number = ? AND head = ? AND merge_base IS NOT NULL AND status = 'done' ORDER BY created DESC LIMIT 1", r.repo, r.number, incremental_from)?.merge_base : undefined;
+      if (incremental_from && was !== merge_base) {
+        if (was && r.kind === "auto" && await sameChange(r, was, incremental_from, merge_base)) return carry(r, incremental_from, merge_base);
+        incremental_from = null;
+      }
       if (incremental_from) {
         const a = await d.source.compare(r.repo, incremental_from, r.head).catch(() => undefined);
         if (a?.status !== "ahead") incremental_from = null;
@@ -356,12 +365,9 @@ export function createEngine(d: EngineDeps) {
     }
   }
 
-  /** Whether the PR's own change at the run's head (from its merge base) is the one at `from` (from the merge base its review
-   * recorded): GitHub's fingerprint of each. Anything unknown (no recorded merge base, a fingerprint GitHub can't make, a failed
-   * read) is a change: reviewed as usual. */
-  async function sameChange(r: RunRow, from: string, merge_base: string) {
-    const was = one<{ merge_base: string }>("SELECT merge_base FROM runs WHERE repo = ? AND number = ? AND head = ? AND merge_base IS NOT NULL AND status = 'done' ORDER BY created DESC LIMIT 1", r.repo, r.number, from)?.merge_base;
-    if (!was) return false;
+  /** Whether the PR's own change at the run's head (from its merge base) is the one at `from` (from `was`, the merge base its
+   * review recorded): GitHub's fingerprint of each. Anything unknown (a fingerprint GitHub can't make, a failed read) is a change. */
+  async function sameChange(r: RunRow, was: string, from: string, merge_base: string) {
     try {
       const [a, b] = await Promise.all([d.source.patchId(r.repo, was, from), d.source.patchId(r.repo, merge_base, r.head)]);
       return !!a.id && a.id === b.id;
@@ -409,7 +415,7 @@ export function createEngine(d: EngineDeps) {
       const left = r.run_usd - r.billed_prior - (res.billed_usd ?? Infinity);
       if (r.attempts < (r.mandatory ? MANDATORY_ATTEMPTS : ATTEMPTS) && left >= 0.05 && !res.why.startsWith("couldn't start") && !res.why.startsWith("the review's result")) {
         log("review run failed, trying again on what is left of its run_usd", { run: r.id, attempt: r.attempts, why: res.why.slice(0, 200) });
-        run("UPDATE runs SET billed_prior = billed_prior + ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", res.billed_usd!, now() + RUN_RETRY * 4 ** (r.attempts - 1), r.id);
+        run("UPDATE runs SET billed_prior = billed_prior + ?, status = 'queued', started = NULL, check_job = NULL, due = ? WHERE id = ?", res.billed_usd!, now() + RUN_RETRY, r.id);
         return;
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
@@ -488,7 +494,7 @@ export function createEngine(d: EngineDeps) {
     done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null, posted.state);
     afterPost(runRow(r.id)!, posted);
   }
-  const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && !r.post_tries;
+  const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && (!r.post_tries || !!prRow(r.repo, r.number)?.open);
 
   /** Files the run's post (a Tier 1 write): its review, on the head it reviewed. */
   async function publish(r: RunRow, review: Review): Promise<Posted> {
@@ -511,7 +517,7 @@ export function createEngine(d: EngineDeps) {
     if (o.state === "pending") return;
     if (retries(r, o)) {
       log("review post refused; filing it once more", { run: r.id, why: String(o.why ?? "").slice(0, 200) });
-      return void run("UPDATE runs SET status = 'done', posted = 'retry', why = ?, post_tries = 1, post_due = ? WHERE id = ?", `posting again: ${String(o.why ?? "refused").slice(0, 300)}`, now() + POST_RETRY, r.id);
+      return void run("UPDATE runs SET status = 'done', posted = 'retry', why = ?, post_tries = post_tries + 1, post_due = ? WHERE id = ?", `posting again: ${String(o.why ?? "refused").slice(0, 300)}`, now() + POST_RETRY * 2 ** Math.min(r.post_tries, 4), r.id);
     }
     settled(r, o);
   }
@@ -923,8 +929,12 @@ export function createEngine(d: EngineDeps) {
     // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the next poll starts it.
     const latest = reviewers(repo, n, head);
     const busy = latest.filter((r) => r.status === "queued" || r.status === "running");
+    // A review whose post hasn't landed yet (the AI reviewer deciding, or filed again after a refusal): its findings gate once
+    // they have threads, so the merge waits for the post.
+    const posting = latest.filter((r) => r.status === "done" && (r.posted === "pending" || r.posted === "retry"));
     if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
+    else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n);
     if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
