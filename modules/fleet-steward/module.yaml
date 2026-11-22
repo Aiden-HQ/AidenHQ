@@ -27,11 +27,6 @@ settings:
   # (service/src/detector.ts).
   fleet_ops_interval_minutes:
     default: 10
-  # Repos whose open pull requests the detector's `pr` group never raises, as owner/name entries, matched case-insensitively
-  # (a throwaway or probe repo, or one whose PRs another process watches). Empty: every open PR is raised as before.
-  fleet_ops_ignored_repos:
-    default: []
-    pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
 agents:
   fleet-steward:
     department: platform
@@ -182,7 +177,6 @@ services:
         FLEET_STEWARD_TOKEN_FILE: ${secrets.fleet_steward_token}
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
         FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
-        FLEET_OPS_IGNORED_REPOS: "${settings.fleet_ops_ignored_repos}" # comma-separated; the pr group skips them
         # Under quiet start the detector keeps checking but files no check task until the owner turns the Steward on
         # (overrides.routines.fleet-ops-digest.status: active; service/src/detector.ts stewardOn).
         FLEET_STEWARD_QUIET_START: "${settings.quiet_start}"
