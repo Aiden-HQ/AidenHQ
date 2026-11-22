@@ -625,8 +625,10 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
         if (w.append && w.content === "empty") continue;
         // Each write has its own mode: `>>` adds to what the file held, a plain `>` replaces it — so a file written
-        // twice on one line takes only the last write's entries when that write replaces, whichever came first.
-        const prior = w.append ? (state.entries.get(w.file!) ?? []) : [];
+        // twice on one line takes only the last write's entries when that write replaces, whichever came first. An
+        // `unknown` write is a racing stage whose output we can't read: it may have left the earlier repository in
+        // place, so its entries are kept beside whatever this write brought rather than being cleared.
+        const prior = w.append || w.content === "unknown" ? (state.entries.get(w.file!) ?? []) : [];
         state.entries.set(w.file!, [...prior, ...written]);
         if (w.content === "empty") state.files.delete(w.file!);
         else state.files.add(w.file!);

@@ -634,6 +634,9 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
   ]) assert.equal(flagged(`RUN ${race}`), 1, race);
   // A replacing write does not inherit the entries of the write it replaced: the file takes the last command's output.
   assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${D} > ${src} > ${src}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // A racing write whose output we can't read may have left the earlier repository in place, so its URL is kept: the
+  // pin is still dated against the vendor repository the first stage wrote.
+  assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${D} > ${src} | true > ${src}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
 });
 
 test("pins: a removal's reach ends at each install, not at any later ||", () => {
