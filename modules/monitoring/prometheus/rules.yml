@@ -116,17 +116,17 @@ groups:
           summary: "CI runner unit {{ $labels.unit }} keeps restarting and isn't staying up: its registration token is probably refused"
       # The runner's own record of a refused token: aidenhq_unit_backoff is the wait ops/ci-runner.sh persisted before its last
       # attempt (seconds, absent once a token mints or the marker is stale), so a unit that is backing off reads as backing off
-      # however the active bit is sampled. Fires when the wait is at the 60s cap now and has been for 10 minutes: a short spike
-      # in the delay is a first refusal (1s, 2s, 4s: under five attempts), while a refusal that isn't clearing sits at the cap --
-      # and a runner that has since minted has no series, so a past spike cannot raise it. One unit among healthy ones, which
-      # CiRunnersDown cannot see. Gated like its neighbours: no planned drain, a fresh units.prom.
+      # however the active bit is sampled. The expression is the wait being at the 60s cap right now and the `for` is the ten
+      # minutes it must hold there: a first refusal (1s, 2s, 4s, ... growing to the cap) is short of it, a wait that drops below
+      # the cap or leaves units.prom breaks the condition and clears the alert, and a gap in the series cannot be counted as
+      # time at the cap the way a window function would. One unit among healthy ones, which CiRunnersDown cannot see. Gated
+      # like its neighbours: no planned drain, a fresh units.prom.
       - alert: CiRunnerBackoff
         expr: |
           aidenhq_unit_backoff{scope="user",unit=~"aidenhq-ci-runner@.+"} >= 60
-          and on (unit) min_over_time(aidenhq_unit_backoff{scope="user",unit=~"aidenhq-ci-runner@.+"}[10m]) >= 60
           and on() aidenhq_fleet_draining == 0
           and on() (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} < 180)
-        for: 5m
+        for: 10m
         labels: { severity: warning }
         annotations:
           summary: "CI runner unit {{ $labels.unit }} has been backing off a refused registration token for over 10 minutes: the sign-in may be missing admin:org, or the code host is refusing for another reason (rate limit, outage)"

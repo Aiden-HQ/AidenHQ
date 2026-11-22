@@ -224,6 +224,22 @@ tests:
         alertname: CiRunnerBackoff
         exp_alerts: []
 
+  # Eight minutes at the cap is short of the ten the rule waits for, even though the wait is still at the cap when it is
+  # checked: a sustained refusal does not alert before ten minutes of it (with a five-minute rule, this evaluation fires).
+  - name: eight minutes at the cap is not yet the ten-minute backoff
+    interval: 1m
+    input_series:
+      - series: 'aidenhq_unit_backoff{scope="user",unit="aidenhq-ci-runner@3.service"}'
+        values: '60x40'
+      - series: 'aidenhq_fleet_draining'
+        values: '0x40'
+      - series: 'node_textfile_mtime_seconds{file="/data/modules/monitoring/textfile/units.prom"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: CiRunnerBackoff
+        exp_alerts: []
+
   # The first refusals are a short delay (1s, 2s, 4s, ... below the cap): that is the backoff working, not a stuck sign-in.
   - name: a runner in the first seconds of backoff stays quiet
     interval: 1m

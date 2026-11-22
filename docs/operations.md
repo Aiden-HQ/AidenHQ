@@ -423,8 +423,8 @@ as connection state, so it lands in the owner's digest (the GitHub card's own ro
 scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
 `CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat
 at the one-minute cap for ten minutes, which the host-metrics timer writes as `aidenhq_unit_backoff` from the runner's
-own marker (the wait itself, so a scrape that misses the brief active intervals between backoffs still alerts; it needs
-the cap now, not only in the last ten minutes, so a wait that has since cleared raises nothing).
+own marker (the wait itself, so a scrape that misses the brief active intervals between backoffs still alerts; the rule
+holds while the wait is at the cap and its `for` is the ten minutes, so a wait that has since cleared raises nothing).
 
 Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
 sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI

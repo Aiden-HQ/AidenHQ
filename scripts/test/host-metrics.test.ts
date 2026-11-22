@@ -69,6 +69,9 @@ test("one data dir: the runner's marker and this exporter resolve a value the sa
   assert.equal(await ask("'$HOME/aiden-data'", home), join(dir, "$HOME/aiden-data"), "single quotes keep the text literal, as the shell does");
   assert.equal(await ask("~/aiden-data", home), `${home}/aiden-data`, "an unquoted ~ expands");
   assert.equal(await ask('"~/aiden-data"', home), join(dir, "~/aiden-data"), "a ~ inside double quotes stays literal");
+  assert.equal(await ask('"$HOME/aiden-data" # the host', home), `${home}/aiden-data`, "a comment after a quoted value is not part of it");
+  assert.equal(await ask("/srv/aiden-data # the host", home), "/srv/aiden-data", "an unquoted value ends at a comment");
+  assert.equal(await ask('"\\$HOME/aiden-data"', home), join(dir, "$HOME/aiden-data"), "an escaped $ stays a $, as in the shell");
   assert.equal(await ask("./data", home), join(dir, "data"), "a relative value is the checkout's");
   assert.equal(await ask("/", home), "/", "a lone / stays the root");
   assert.equal(await ask("/srv/aidenhq/", home), "/srv/aidenhq", "a trailing slash is dropped, not the path");
