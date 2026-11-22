@@ -14,7 +14,7 @@ const iso = (ms) => new Date(ms).toISOString();
 /** A fake control plane: issues and their comments, read with the owner's key. */
 function world() {
   let clock = Date.parse("2026-11-18T10:00:00Z");
-  const issues = {}, comments = {}, fail = { moves: 0 };
+  const issues = {}, comments = {}, fail = { moves: 0, get: {} }, reads = {};
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const owner = async (method, path, body) => {
@@ -40,7 +40,7 @@ function world() {
       if (body.comment) (comments[i.id] ??= []).push({ id: `c-p${(comments[i.id] ?? []).length}`, body: body.comment, authorAgentId: null, createdAt: iso(clock) });
       return { status: 200, json: i };
     }
-    if ((m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) return issues[m[1]] ? { status: 200, json: issues[m[1]] } : { status: 404, json: {} };
+    if ((m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) { if (method === "GET") reads[m[1]] = (reads[m[1]] ?? 0) + 1; const i = issues[m[1]]; if (fail.get[m[1]]) return { status: fail.get[m[1]], json: {} }; return i ? { status: 200, json: i.omitSingle ? { ...i, blockedBy: undefined } : i } : { status: 404, json: {} }; }
     return { status: 404, json: {} };
   };
   // Writes as the agent (outcomes.ts): recorded, and the status applied.
@@ -49,7 +49,7 @@ function world() {
   const facts = openFacts(db);
   const wakes = createWakes({ db, facts, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
   const w = {
-    db, wakes, issues, posts, facts, fail, comments,
+    db, wakes, issues, posts, facts, fail, comments, reads,
     tick: (ms = 1000) => (clock += ms),
     issue: (id, f = {}) => (issues[id] = { id, status: "todo", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1, ...issues[id], ...f }),
     comment: (task, id, f = {}) => { (comments[task] ??= []).push({ id, body: "hi", authorAgentId: null, createdAt: iso(clock), ...f }); issues[task].updatedAt = iso(clock); },
@@ -396,7 +396,7 @@ test("a task blocked on a deleted blocker is released, the relation dropped: one
   assert.equal(w.issues.t24.status, "blocked", "still there: not news");
   w.tick();
   delete w.issues.b9;
-  delete w.issues.t24.blockedBy;
+  w.issues.t24.blockedBy = [];
   await w.wakes.poll();
   assert.equal(w.issues.t24.status, "todo");
   assert.equal(w.rows("t24").filter((x) => x.startsWith("unblocked:")).length, 1, "one wake");
@@ -410,10 +410,7 @@ test("a task blocked on a deleted blocker is released when the relation is kept 
   const w = world();
   w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
   w.issue("t25", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
-  await w.wakes.poll();
-  w.tick();
-  w.issues.t25.blockedBy = [{ id: "b9", identifier: "WOR-b9", status: "blocked" }];
-  delete w.issues.b9;
+  delete w.issues.b9; // the relation is kept with a stale status; the blocker's read answers 404
   await w.wakes.poll();
   assert.equal(w.issues.t25.status, "todo", "a 404 for the listed blocker releases it");
   assert.deepEqual(w.issues.t25.blockedBy, [], "the deleted relation is cleared so the move takes");
@@ -465,7 +462,7 @@ test("a list row without blockers leaves the single read's blockers remembered",
   assert.equal(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't30'").get().blocked, "b9", "kept from the single read");
   w.tick();
   delete w.issues.b9;
-  delete w.issues.t30.blockedBy;
+  w.issues.t30.blockedBy = [];
   await w.wakes.poll();
   assert.equal(w.issues.t30.status, "todo");
   assert.match(w.rows("t30").join("\n"), /^unblocked:t30:b9:deleted open$/m);
@@ -480,7 +477,7 @@ test("a completed blocker on a task first seen in todo is not carried into a lat
   w.tick();
   delete w.issues.b9;
   Object.assign(w.issues.t31, { status: "blocked", statusVersion: 2, updatedAt: iso(Date.now()) });
-  delete w.issues.t31.blockedBy;
+  w.issues.t31.blockedBy = [];
   await w.wakes.poll();
   await w.wakes.poll();
   assert.equal(w.issues.t31.status, "blocked", "a park with no blockers of its own is not a deletion");
@@ -509,6 +506,88 @@ test("a blocker that comes back to the live list is judged afresh, not as a cach
   assert.equal(w.issues.t32.status, "blocked", "b10's deletion alone does not release while b9 is open");
 });
 
+test("a dropped relation whose blocker still answers 200 releases nothing, and is never read again", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t34", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  w.tick();
+  w.issues.t34.blockedBy = []; // the relation went, but b9 still exists: removed on purpose
+  await w.wakes.poll();
+  assert.equal(w.issues.t34.status, "blocked", "a removed relation is not a deleted blocker");
+  assert.equal(w.rows("t34").filter((x) => x.startsWith("unblocked:")).length, 0);
+  assert.equal(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't34'").get().blocked, null, "the id is forgotten");
+  const before = w.reads.b9;
+  for (let i = 0; i < 5; i++) { w.tick(); await w.wakes.poll(); }
+  assert.equal(w.reads.b9, before, "a settled verdict costs no further read");
+  assert.equal(w.issues.t34.status, "blocked");
+});
+
+test("a single-issue read that omits blockedBy concludes nothing", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t35", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  w.tick();
+  w.issues.t35.omitBlocked = true; // the list row and the single read both leave the relation out
+  w.issues.t35.omitSingle = true;
+  await w.wakes.poll();
+  assert.equal(w.issues.t35.status, "blocked", "an omitted relation is not an empty one");
+  assert.match(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't35'").get().blocked ?? "", /b9/, "memory untouched");
+});
+
+test("ten polls on one unresolved blocker cost one read of it", async () => {
+  const w = world();
+  w.issue("b9", { status: "in_progress", assigneeAgentId: OTHER });
+  w.issue("t36", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll(); // the first poll reads b9 once as a blocker, and once for its own facts
+  assert.equal(w.issues.t36.status, "blocked");
+  w.reads.b9 = 0;
+  for (let i = 0; i < 10; i++) { w.tick(); await w.wakes.poll(); }
+  assert.equal(w.issues.t36.status, "blocked");
+  assert.equal(w.reads.b9, 0, "ten polls, no read of the blocker: the 200 is cached");
+  assert.deepEqual(JSON.parse(w.db.prepare("SELECT blocked_exists FROM wake_tasks WHERE task = 't36'").get().blocked_exists), { b9: "listed" }, "the verdict is persisted for the state it was read in");
+});
+
+test("a listed blocker confirmed 404 is not read again while another blocker stays open", async () => {
+  const w = world();
+  const b = (id, status) => ({ id, identifier: `WOR-${id}`, status });
+  w.issue("b10", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t38", { status: "blocked", blockedBy: [b("b9", "blocked"), b("b10", "blocked")] });
+  w.issues.t38.blockedBy[0].id = "b9"; // b9 is listed with a stale status, and answers 404
+  await w.wakes.poll(); // b9: 404 (listed); b10: 200 (listed), still open
+  assert.equal(w.issues.t38.status, "blocked", "b10 still holds it");
+  const reads = w.reads.b9;
+  assert.equal(reads, 1);
+  for (let i = 0; i < 10; i++) { w.tick(); await w.wakes.poll(); }
+  assert.equal(w.reads.b9, reads, "the 404 is cached in the state it was read in");
+  assert.deepEqual(JSON.parse(w.db.prepare("SELECT blocked_deleted FROM wake_tasks WHERE task = 't38'").get().blocked_deleted), { b9: "listed" });
+  w.tick();
+  w.issues.t38.blockedBy = [b("b10", "done")];
+  await w.wakes.poll();
+  assert.equal(w.issues.t38.status, "todo");
+  assert.match(w.rows("t38").join("\n"), /^unblocked:t38:b10:done,b9:deleted open$/m);
+});
+
+test("a blocker read that fails releases nothing and is retried on the next poll", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t37", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  w.tick();
+  delete w.issues.b9;
+  w.issues.t37.blockedBy = []; // dropped, and the read cannot say whether the blocker went
+  w.fail.get.b9 = 500;
+  await w.wakes.poll();
+  assert.equal(w.issues.t37.status, "blocked", "an inconclusive read releases nothing");
+  assert.match(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't37'").get().blocked ?? "", /b9/, "memory kept for the retry");
+  w.tick();
+  delete w.fail.get.b9; // now it answers 404
+  await w.wakes.poll();
+  assert.equal(w.issues.t37.status, "todo", "the retry concludes the deletion");
+  assert.match(w.rows("t37").join("\n"), /^unblocked:t37:b9:deleted open$/m);
+});
+
 test("a task that closed while blocked does not carry its blocker history into a later park", async () => {
   const w = world();
   w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
@@ -529,7 +608,7 @@ test("a released task a team route parks again with no blockers stays blocked", 
   w.issue("t27", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
   await w.wakes.poll();
   w.tick();
-  delete w.issues.t27.blockedBy;
+  w.issues.t27.blockedBy = [];
   delete w.issues.b9;
   await w.wakes.poll();
   assert.equal(w.issues.t27.status, "todo", "released from the deleted blocker");
