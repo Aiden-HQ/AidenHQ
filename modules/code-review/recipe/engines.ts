@@ -530,7 +530,8 @@ async function codexNative({ instructions, model, effort, root, files, left = []
       const kept = clean(got, root), asked = downgrade(kept).findings.filter((f) => !left.includes(f.path));
       // Not "own" for the severity rule (a finding in a file the change doesn't touch is a nit in the check, not a drop).
       const placed = place(asked, root, new Set(files), new Set(asked.map((f) => f.path)));
-      const lost = important(got) - important(kept) + important(asked) - important(placed); // rejected as malformed, then not at a real place
+      const keptAt = new Set(kept.map((f) => `${f.path}\n${f.line}`)); // what clean() rejected as malformed counts when the failure-scenario rule would keep it important
+      const lost = important(downgrade(got.filter((f) => !keptAt.has(`${f.path}\n${f.line}`))).findings) + important(asked) - important(placed);
       if (lost > 0) failed.push(`part ${i + 1} of ${groups.length}: ${lost} important finding${lost === 1 ? "" : "s"} at a place that is not in the change`);
       if (v!.overall_correctness === "patch is incorrect" && !got.length) failed.push(`part ${i + 1} of ${groups.length}: the verdict says the patch is incorrect, with no finding that could be read`);
       else if (got.length < said) failed.push(`part ${i + 1} of ${groups.length}: ${said - got.length} finding${said - got.length === 1 ? "" : "s"} without a usable location`);

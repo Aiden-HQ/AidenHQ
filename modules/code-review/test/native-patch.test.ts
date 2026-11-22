@@ -208,6 +208,7 @@ test("an important finding in a file the scope leaves out (here a deleted lockfi
   try {
     const r = await review(repo, base, ["s.txt"], model, ["package-lock.json"]);
     if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    assert.equal(JSON.parse(r.message).findings[0].path, "package-lock.json", "the review came back with the finding");
     assert.equal(r.incomplete, undefined);
   } finally { model.close(); }
 });
