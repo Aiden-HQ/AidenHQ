@@ -297,6 +297,14 @@ it("src_security: DDL single-quoted literals stay closed (a bare apostrophe in t
     if (open) throw new Error(`unterminated single-quoted literal at line ${open.line}, offset ${open.offset} (column ${open.column})`);
   }
 
-  // The #1175 DDL ended with an unterminated literal here; the test fails on that text without depending on any wording.
   expect(() => assertLiteralsClosed(DDL)).not.toThrow();
+  // The case that broke migrate(): a quote escaped inside a literal by doubling it (VM''s) with the second quote removed, so
+  // the literal closes early. It is made from the DDL itself, so no wording is pinned. A doubled quote after nothing or a
+  // space is left out: '' as a whole value opens and closes one empty literal.
+  const escaped = [...DDL.matchAll(/([A-Za-z0-9])''/g)];
+  expect(escaped.length).toBeGreaterThan(0);
+  for (const m of escaped) {
+    const bare = DDL.slice(0, m.index! + 2) + DDL.slice(m.index! + 3);
+    expect(() => assertLiteralsClosed(bare)).toThrow(/unterminated single-quoted literal at line \d+, offset \d+/);
+  }
 });
