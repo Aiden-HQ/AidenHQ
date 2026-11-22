@@ -16,13 +16,14 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
   const state = {
     failQueue: false,
     onWait: undefined as undefined | (() => void),
+    failWait: false,
     onAgentName: undefined as undefined | (() => void),
     // A queue that can fail the way a failed owner_notify insert does: after the caller's marker, before its notice lands.
     queue: (n: any) => { if (state.failQueue) throw new Error("owner_notify is locked"); queued.push(n); },
   };
   const s = createConnectionState({
     db,
-    idle: { wait: async (caller: unknown, b: unknown) => (state.onWait?.(), waits.push({ caller, b }), {}) as never },
+    idle: { wait: async (caller: unknown, b: unknown) => (state.onWait?.(), state.failWait && (() => { throw new Error("paperclip is down"); })(), waits.push({ caller, b }), {}) as never },
     wakes: { open: (b: unknown) => void opened.push(b) },
     queue: state.queue,
     issue: async (id) => issues[id] as never,
@@ -90,6 +91,19 @@ test("a background hit only records and queues nothing; the digest pulls it once
   await w.s.hit({ kind: "module", module: "dispatch", roles: [], tools: {}, credential: "" }, "github", { cause: "not_connected", detail: "" });
   w.tick(LASTED);
   assert.ok(w.s.needs().some((l) => l.startsWith("Github isn't connected")));
+});
+
+test("a failed wait leaves no orphan registration (da3a0678)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  w.state.failWait = true;
+  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get() as { n: number }).n, 0);
+});
+
+test("tick never throws into the kernel when housekeeping fails (4929ca10)", async () => {
+  const w = world({});
+  w.db.close();
+  assert.doesNotThrow(() => w.s.tick());
 });
 
 test("an empty connections registry (an unreadable config) prunes nothing", async () => {

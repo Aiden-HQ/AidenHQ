@@ -189,6 +189,7 @@ export function createConnectionState(o: {
         await o.idle.wait({ agent: who.agent!, key: who.key ?? "", task: who.task! }, { reason: `waiting for the ${label} connection`, on: `${connection} connection`, ...(full ? { until: iso(t + FULL_WAIT) } : {}) });
       } catch (e) {
         log("connection need: the wait wasn't recorded", { connection, task: who.task, err: (e as Error).message });
+        q("DELETE FROM connection_waits WHERE module = ? AND account = ? AND task = ?").run(connection, n.account ?? "", who.task!); // no orphan registration
       }
       log("connection need", { connection, cause: n.cause, to: "owner", task: root.identifier ?? root.id });
       return `${label} isn't connected (${agentWords[n.cause]}): the owner has the link. Don't retry; this task is woken when it is connected. End your turn.`;
@@ -264,14 +265,19 @@ export function createConnectionState(o: {
 
     /** Housekeeping, on a timer: old waits and rows of connections that no longer exist. */
     tick(): void {
-      const t = now();
-      q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
-      const live = Object.keys(o.connections());
-      const gone = `module NOT IN (${live.map(() => "?").join(", ")})`;
-      // An empty registry may be an unreadable config, not a real one: prune only against a registry that has connections.
-      if (live.length) {
-        q(`DELETE FROM connection_state WHERE ${gone}`).run(...live);
-        q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
+      // Runs from a timer: an error (a locked database) is logged and the next tick tries again, never thrown into the kernel.
+      try {
+        const t = now();
+        q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
+        const live = Object.keys(o.connections());
+        const gone = `module NOT IN (${live.map(() => "?").join(", ")})`;
+        // An empty registry may be an unreadable config, not a real one: prune only against a registry that has connections.
+        if (live.length) {
+          q(`DELETE FROM connection_state WHERE ${gone}`).run(...live);
+          q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
+        }
+      } catch (e) {
+        log("connection state: housekeeping failed; the next tick retries", { err: (e as Error).message });
       }
     },
   };
