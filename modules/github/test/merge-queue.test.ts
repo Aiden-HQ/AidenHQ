@@ -597,6 +597,44 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.match(outcomes[0].text, /merged by someone else at/);
 });
 
+test("an unlinked PR already merged by its merge commit's message is evidence only when the message names the record's identifier", async (t) => {
+  // A PR the fleet never opened has no pr-tasks.json row, so nothing links it: the merge commit that landed on the default
+  // branch is what can credit it, and only when its message names this record's identifier as a whole token.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-merged-message-"));
+  const prs = {
+    "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: `Fix the widget\n\nWOR-9` },
+    "acme-agents/lib": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the lib\n\nNo task named here" },
+    "acme-agents/tool": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the tool\n\nWOR-95" },
+  };
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
+  await merge("k-00000000000000c9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.deepEqual(github.merges(), [], "it was already merged: the queue calls nothing");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/);
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the merge commit names WOR-9, so the PR is this task's evidence");
+  assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's, so it names no object as made here");
+
+  // A message naming no identifier: never this task's evidence.
+  outcomes.length = 0;
+  await merge("k-00000000000000ca", [{ repo: "acme-agents/lib", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, "still a no-op success: the PR did merge at its head");
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, JSON.stringify(outcomes[0].text));
+
+  // A longer identifier sharing the prefix (WOR-95 for WOR-9) names another task: a whole-token match, never a prefix one.
+  outcomes.length = 0;
+  await merge("k-00000000000000cc", [{ repo: "acme-agents/tool", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "WOR-95 is not WOR-9");
+});
+
 test("a queue persisted before the identifier was kept recovers it from the record, so its already-merged PR is still evidence", async (t) => {
   // A service upgraded mid-queue: merges.json holds the record's task id but not the task's identifier (the version before it
   // kept one), and a running queue is never handed execute again. The first poll reads the identifier from the record.
