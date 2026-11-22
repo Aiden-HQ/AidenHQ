@@ -303,7 +303,7 @@ async function githubOpenPrs(): Promise<OpenPr[]> {
   } catch (e) {
     log.warn({ err: String(e) }, "open-prs: no warehouse rows for the fleet's PRs, asking the code host");
   }
-  return (await recordedOpenPrs(ours, rows, (repo) => ops.read(repo, { kind: "prs" }))).map((x) => ({ ...x, ...previewOf(x.repo, x.number) }));
+  return (await recordedOpenPrs(ours, rows, (repo) => ops.read(repo, { kind: "prs" }), ops.pr)).map((x) => ({ ...x, ...previewOf(x.repo, x.number) }));
 }
 
 /** The URL of a running preview of `repo`'s change or PR `n`, as the board's open-PR rows show it. */

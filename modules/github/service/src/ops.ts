@@ -41,7 +41,7 @@ const slugOf = (repo: unknown) => {
 const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title body url state headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
+      number title body url state isDraft createdAt headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion externalId checkSuite { app { slug } } } ... on StatusContext { context state } } } } } } }
