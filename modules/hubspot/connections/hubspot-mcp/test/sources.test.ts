@@ -152,7 +152,9 @@ it("owners: every page of search_owners, active or not, by owner id (HubSpot sen
   await syncReference(store, call, ["contacts"], Date.now() - 1); // budget spent after page one: the offset is kept
   expect(writes.map((w) => w.row.user_id)).toEqual(["11", "12"]);
   expect((await store.scope("owners")).cursor).toBe("20");
+  seen.length = 0;
   await syncReference(store, call, ["contacts"]); // the next pass resumes there and, reaching the end, clears it
+  expect(seen).toEqual([20]);
   expect((await store.scope("owners")).cursor).toBe("");
   writes.length = 0;
   await syncReference(store, call, ["contacts"]);
