@@ -114,7 +114,8 @@ CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL
 -- a kernel that can't take it now is retried on a later tick and a settled summary is never sent twice. \`claim\` marks a send in
 -- flight: a crash mid-send leaves it set, and the next start clears it so the summary is tried again (at least once, never lost).
 CREATE TABLE IF NOT EXISTS askers (batch TEXT NOT NULL, task TEXT NOT NULL DEFAULT '', setkey TEXT NOT NULL DEFAULT '', requester TEXT NOT NULL,
-  runs TEXT NOT NULL DEFAULT '', text TEXT, pending TEXT, sent TEXT, claim TEXT, PRIMARY KEY (batch, task, setkey));`;
+  runs TEXT NOT NULL DEFAULT '', text TEXT, pending TEXT, sent TEXT, claim TEXT, PRIMARY KEY (batch, task, setkey));
+CREATE TABLE IF NOT EXISTS replies (repo TEXT NOT NULL, number INTEGER NOT NULL, finding TEXT NOT NULL, body TEXT NOT NULL, write TEXT, tries INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL, PRIMARY KEY (repo, number, finding));`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
  * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
 export const DATA_VERSION = 1;
@@ -502,8 +503,9 @@ export function createEngine(d: EngineDeps) {
         if (carried.has(f.id)) continue;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
-        const claimed = one<{ outcome: string; claim: string }>("SELECT outcome, claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id);
-        if (!claimed && run("UPDATE findings SET outcome = NULL, outcome_at = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
+        const claimed = one<{ outcome: string; claim: string }>("SELECT outcome, claim FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND (? = 0 OR outcome_at <= ?) ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id, r.mandatory ? 1 : 0, r.started ?? "");
+        // A claim recorded after this mandatory run started (its snapshot never held it) is not reviewed by it: reported again, the finding opens.
+        if (!claimed && run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
           dispose([f.id], r, "open", "reported again", `run:${r.id}`);
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed ? iso() : null, claimed?.claim ?? null);
       }
@@ -518,6 +520,8 @@ export function createEngine(d: EngineDeps) {
       for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
     });
+    // The replies already on a reopened finding's thread answered the claim that was just refused: never read as a new answer.
+    if (unsafe.length) for (const t of await d.source.threads(r.repo, r.number).catch(() => [])) if (t.finding && unsafe.includes(t.finding)) for (const x of t.replies) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", r.repo, `reply:${x.id}`);
     if (!stale) cover(r);
     const done = (status: Status, why: string | null, posted?: string) => {
       run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, posted ?? null, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
@@ -915,6 +919,7 @@ export function createEngine(d: EngineDeps) {
         errors.set(cfg.repo, msg);
       }
     }
+    await replies();
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
     for (const [write, t] of [...acking]) {
@@ -1038,10 +1043,65 @@ export function createEngine(d: EngineDeps) {
   const ANSWER = /^\s*(fixed|disputed|by design|won['’]?t fix)\b[\s:,.;\-–—]*([\s\S]*)$/i;
   /** The answer in a reply: its word and its reason, which must say something (letters, not only punctuation or a signature). */
   const answerOf = (body: string) => {
+    if (body.includes("<!-- aidenhq-")) return undefined; // our own posts (a mirrored answer, a review) never answer a finding
     const m = ANSWER.exec(body.split("\n").filter((l) => !/\]\(https:\/\/aidenhq\.ai\b/.test(l)).join("\n"));
     const reason = m?.[2]?.trim() ?? "";
     return m && /\p{L}{2,}/u.test(reason) ? { word: m[1]!, reason } : undefined;
   };
+  /** The one way an answer closes an open finding (fixed, else dismissed), whatever carried it (a thread reply, an agent's call): kept as the finding's claim. */
+  function answer(at: { repo: string; number: number; head: string }, id: string, word: string, reason: string, by: string, evidence: string | null, label: string) {
+    const w = word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
+    const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "fixed" : "dismissed";
+    const changed = tx(() => {
+      const c = run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", outcome, iso(), claim, at.repo, at.number, id).changes;
+      if (c) dispose([id], at, outcome, `${label}: ${claim}`, by, evidence);
+      return c;
+    });
+    if (changed) mirrorDue = true;
+    return changed;
+  }
+
+  /** An agent's answer to an open finding, recorded in the store with no GitHub write: the same words and reason a thread reply carries. */
+  function resolve(b: { repo?: unknown; number?: unknown; id?: unknown; word?: unknown; reason?: unknown; by?: unknown }) {
+    const repo = String(b.repo ?? "").toLowerCase(), n = Number(b.number), id = String(b.id ?? "");
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(n) || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new RequestError("give repo, number and the finding's id");
+    const word = String(b.word ?? "").trim(), reason = typeof b.reason === "string" ? b.reason.trim() : "";
+    if (!/^(fixed|disputed|by design|won['’]?t fix)$/i.test(word)) throw new RequestError("word is one of fixed, disputed, by design or won't fix");
+    if (!/\p{L}{2,}/u.test(reason) || reason.length > 1500) throw new RequestError("reason says what changed or why (letters, at most 1500 characters)");
+    const p = prRow(repo, n);
+    if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
+    const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
+    if (!answer(p, id, word, reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
+    // An important finding's answer is also replied on its thread (so it shows closed): queued here (a newer answer replaces an older queued one), posted by `replies` and never holding the outcome. A nit gets none.
+    if (severity === "important") run("INSERT OR REPLACE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't")}: ${reason}`.slice(0, 1600), now());
+    return { resolved: id };
+  }
+
+  /** The queued thread replies of recorded answers: filed once the finding's thread is known, their outcome read, a refusal filed again
+   * later (POST_RETRY doubling, POST_TRIES times) while the PR is open; then dropped. Nothing here ever changes a finding's outcome. */
+  async function replies() {
+    for (const q of all<{ repo: string; number: number; finding: string; body: string; write: string | null; tries: number }>("SELECT repo, number, finding, body, write, tries FROM replies WHERE due <= ?", now())) {
+      const key = [q.repo, q.number, q.finding];
+      const open = !!prRow(q.repo, q.number)?.open;
+      let o: Posted;
+      try {
+        if (q.write) o = await d.poster.outcome(q.write);
+        else {
+          const t = (await d.source.threads(q.repo, q.number)).find((x) => x.finding === q.finding);
+          if (!t) o = { state: "refused", why: "its thread isn't on the pull request (yet)", retry: true };
+          else o = await d.poster.reply({ repo: q.repo, number: q.number, head: prRow(q.repo, q.number)!.head, comment: t.comment, body: q.body });
+          if (o.write) run("UPDATE replies SET write = ? WHERE repo = ? AND number = ? AND finding = ?", o.write, ...key);
+        }
+      } catch (e) {
+        o = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
+      }
+      if (o.state === "pending") continue;
+      if (o.state === "posted" || !open || !o.retry || q.tries + 1 >= POST_TRIES) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
+      log("answer reply not posted; filing it once more", { repo: q.repo, pr: q.number, why: String(o.why ?? "").slice(0, 200) });
+      run("UPDATE replies SET write = NULL, tries = tries + 1, due = ? WHERE repo = ? AND number = ? AND finding = ?", now() + POST_RETRY * 2 ** Math.min(q.tries, 4), ...key);
+    }
+  }
+
   /**
    * A gated repo's open PRs with open gating findings: a reply on Aiden's own thread for one (the service recorded the thread's
    * first comment from its post, or from the marker of a thread posted before it recorded them) from the PR's author (not a fork's: an outsider) or someone with write access now, starting
@@ -1069,13 +1129,7 @@ export function createEngine(d: EngineDeps) {
           const may = !!m && ((r.author.toLowerCase() === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author)));
           if (m && !may) log("an answer from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
           if (m && may) {
-            const word = m.word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-            const claim = `${word}: ${m.reason}`.slice(0, 1500);
-            tx(() => {
-              if (run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", word === "fixed" ? "fixed" : "dismissed", iso(), claim, cfg.repo, p.number, t.finding).changes)
-                dispose([t.finding!], { repo: cfg.repo, number: p.number, head: p.head }, word === "fixed" ? "fixed" : "dismissed", `answered by ${r.author.slice(0, 40)}: ${claim}`, `reply:${r.author.slice(0, 40)}`, r.body);
-            });
-            mirrorDue = true;
+            answer({ repo: cfg.repo, number: p.number, head: p.head }, t.finding, m.word, m.reason, `reply:${r.author.slice(0, 40)}`, r.body, `answered by ${r.author.slice(0, 40)}`);
             open.delete(t.finding);
           }
           run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
@@ -1116,8 +1170,8 @@ export function createEngine(d: EngineDeps) {
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n);
-    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
-      unblock: `fix and push (the next review rechecks each), or reply on the finding's thread starting with fixed, disputed, by design or won't fix and the reason; the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
+      unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
@@ -1158,6 +1212,9 @@ export function createEngine(d: EngineDeps) {
     tick,
     verdict,
     dismiss,
+    resolve,
+    /** The PR's open important findings with their ids (what a merge wait's cut text may leave out). */
+    openFindings(repo: string, number: number) { return openGating(repo.toLowerCase(), number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 120) })); },
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) {
       const r = runRow(id);

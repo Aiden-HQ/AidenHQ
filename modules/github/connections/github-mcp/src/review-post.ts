@@ -12,8 +12,8 @@ import type { GitHubAccess } from "./client.js";
 import type { GitHubApp } from "./github-app.js";
 import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, type Ref } from "./github.js";
 import {
-  FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
-  renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type StatusArgs,
+  FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, ReplyArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
+  renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type ReplyArgs, type StatusArgs,
 } from "./review-render.js";
 
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
@@ -54,7 +54,7 @@ export interface Thread {
 }
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; viewerCanResolve: boolean; path: string; line: number | null; comments: { nodes: { databaseId: number; url: string; body: string; author: { __typename: string; login: string } | null }[] } };
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
-type Kind = "post" | "notice" | "status";
+type Kind = "post" | "notice" | "status" | "reply";
 
 /**
  * The AI reviewer's card for a post: the rendered review and every comment, at the largest text scale that fits CARD_MAX (every
@@ -258,6 +258,18 @@ export class ReviewPoster {
         targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
       };
     }
+    if (kind === "reply") {
+      const a = ReplyArgsSchema.parse(args);
+      return {
+        facts: {
+          target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
+          sentence: `Reply on a code review finding's thread on ${a.repo}#${a.pr}.`,
+          changes: "One reply on Aiden's own review thread, as code review's GitHub identity, signed by AidenHQ: the agent's answer to the finding (fixed, disputed, by design or won't fix, and why).",
+          details: a.body,
+        },
+        targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
+      };
+    }
     if (kind === "notice") {
       const n = NoticeArgsSchema.parse(args);
       return {
@@ -289,7 +301,18 @@ export class ReviewPoster {
   /** Posts what `preview` showed. Throws (a failed outcome) when the pull request is closed unmerged. */
   async execute(kind: Kind, args: unknown): Promise<{ ok: boolean; text: string; objects: string[] }> {
     if (kind === "status") return this.status(StatusArgsSchema.parse(args));
+    if (kind === "reply") return this.reply(ReplyArgsSchema.parse(args));
     return kind === "post" ? this.post(target(PostArgsSchema.parse(args))) : this.notice(NoticeArgsSchema.parse(args));
+  }
+
+  /** The reply goes only on a thread that is Aiden's own (its first comment carries our marker, by the posting identity), as code review's writer. */
+  private async reply(a: ReplyArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
+    const ref = { ...split(a.repo), number: a.pr };
+    const w = await this.writer(a.repo);
+    await this.pull(ref);
+    if (!(await this.threads(ref)).some((t) => t.comment === a.comment && t.ours)) throw new GitHubRefused(`comment ${a.comment} isn't the first comment of one of Aiden's own review threads on ${a.repo}#${a.pr}`);
+    const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(`<!-- aidenhq-mirror -->\n${a.body}`, AGENT) } });
+    return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, reply: r.html_url }), objects: [`${objectRef(ref)}/comment/${r.id}`] };
   }
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {

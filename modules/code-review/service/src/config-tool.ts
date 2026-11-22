@@ -110,8 +110,27 @@ export function configTools(d: {
   /** The service's own one-off review (POST /reviews), with the calling agent and its task (verified by the service) so its batch's one summary reaches them. */
   oneoff: (body: Dict, asker: { requester: string; task?: string }) => Promise<unknown>;
   runs: (q: { repo?: string; limit?: number }) => unknown[];
+  /** The engine's record of an agent's answer to a finding (no GitHub write). */
+  resolve: (b: Dict) => unknown;
+  /** A PR's open gating findings with ids. */
+  findings: (repo: string, number: number) => unknown;
 }): Tool[] {
   return [
+    {
+      name: "code_review_findings",
+      description: "A pull request's open important findings that hold its merge, each with the id code_review_resolve takes: { repo: owner/name, number }. The merge's wait reason lists ids too, but cuts long lists.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, number: { type: "integer" } }, required: ["repo", "number"], additionalProperties: false },
+      run: async (a) => {
+        if (typeof a.repo !== "string" || !REPO.test(a.repo) || !Number.isInteger(a.number)) throw new Error("repo is owner/name and number an integer");
+        return { findings: d.findings(a.repo, a.number as number) };
+      },
+    },
+    {
+      name: "code_review_resolve",
+      description: "Close an open code review finding in code review's own store, with no GitHub write: { repo: owner/name, number, id (the finding's id: in the merge's wait reason, or `finding` on Aiden's thread in github_pr_threads), word: fixed | disputed | by design | won't fix, reason }. Say `fixed` only once the fix is published on the PR's branch, with what changed; `disputed` with why the finding is wrong (file:line). The next mandatory review reads your reason and reopens the finding only if it finds the fix or the reason unsafe. No role is needed beyond the grant; the call is recorded with your agent key.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, number: { type: "integer" }, id: { type: "string" }, word: { type: "string", enum: ["fixed", "disputed", "by design", "won't fix"] }, reason: { type: "string" } }, required: ["repo", "number", "id", "word", "reason"], additionalProperties: false },
+      run: async (a, caller) => d.resolve({ ...a, by: `agent:${caller.agent}` }),
+    },
     {
       name: "code_review_run",
       roles: ["reviewer-manager"],
