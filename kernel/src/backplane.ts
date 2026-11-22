@@ -93,6 +93,11 @@
 //   POST /v1/memory/:op       (a module with role kernel.memory, serving a job's memory_<op> call in flight) note | forget | read |
 //                              rewrite on the job's own agent's memory (memory.ts); read and a removals-only rewrite of any agent's
 //                              for a librarian. GET /v1/memory/:key (the board, or role kernel.lane) {view, facts, updated}
+//   POST /v1/events            (a module with role kernel.events) one source event of a connection it serves (events.ts) -> {queued} |
+//                              {skipped} | {dropped}, always 200 unless it isn't that connection's module (403).
+//                              GET /v1/events/sources?connection= the resources its connection's routines subscribe to.
+//                              GET /v1/events/batch/:batch (role kernel.events, serving a job's routine_events call in flight) the
+//                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
 import { pipeline } from "node:stream/promises";
@@ -129,6 +134,7 @@ import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
 import type { ConnectionState } from "./connection-state.ts";
 import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
+import { EventsError, type Events } from "./events.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
@@ -221,6 +227,9 @@ export const ROUTES = [
   { method: "POST", path: "/v1/settings/agent", auth: "module+assertion" },
   { method: "POST", path: "/v1/memory/:op", auth: "module+assertion" },
   { method: "GET", path: "/v1/memory/:key", auth: "module|board" },
+  { method: "POST", path: "/v1/events", auth: "module" },
+  { method: "GET", path: "/v1/events/sources", auth: "module" },
+  { method: "GET", path: "/v1/events/batch/:batch", auth: "module+assertion" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/auth/mcp/:op", auth: "board" },
@@ -232,7 +241,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -288,7 +297,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, memory, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -358,6 +367,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   routing?: Routing;
   /** Agents' memory documents (memory.ts). */
   memory?: Memory;
+  /** The event router (events.ts). */
+  events?: Events;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
   boardApi?: BoardApi;
 }) {
@@ -661,6 +672,22 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         if (!Object.values(grantsFile().agents ?? {}).some((g) => g.key === key)) throw fail(404, "not_found", `no agent ${key.slice(0, 60)}`);
         const { doc } = memory.read(key);
         return send(res, 200, { view: memoryView(doc), facts: doc.facts, updated: memory.updated(key) ?? null });
+      }
+      if (hit?.path.startsWith("/v1/events")) {
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.events")) throw fail(403, "forbidden", `${w.module} may not reach the event router (role kernel.events)`);
+        if (!events) throw fail(503, "unavailable", "events are off");
+        try {
+          if (hit.path === "/v1/events") return send(res, 200, events.ingest(w.module!, await json(req, 64_000)));
+          if (hit.path === "/v1/events/sources") return send(res, 200, { resources: events.resources(w.module!, String(new URLSearchParams(q ?? "").get("connection") ?? "")) });
+          // A kernel job's routine_events call in flight: the job, its task, agent and routine from its own token and row.
+          const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+          const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+          if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reads a batch");
+          if (String(live.caller.tool ?? "").split(".").pop() !== "routine_events") throw fail(403, "forbidden", "a batch is routine_events's only");
+          const row = records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined;
+          return send(res, 200, await events.batch({ task: job.task, agent: job.agent!, routine: row?.routine }, m[0]!));
+        } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
       }
       if (hit?.path === "/v1/routing/:op") {
         // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from
