@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { alertIncidents, parseAlerts, receiveAlerts } from "../service/src/alerts.ts";
 import { dueList } from "../service/src/coach.ts";
-import { checks, detectorState, gateActivity, parseIgnoredRepos, QUIET_MS, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
+import { checks, detectorState, gateActivity, reviewStalls, stewardOn, tick } from "../service/src/detector.ts";
 import { createMcp, fleetTools } from "../service/src/mcp.ts";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -60,7 +60,7 @@ function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatL
   };
 }
 const task = (id, o = {}) => ({ id, identifier: `WOR-${id.toUpperCase()}`, title: `Work ${id}`, status: "todo", updatedAt: ago(1), ...o });
-const detect = (w, now = NOW, ignoredRepos) => checks({ kernel: w, kv: kvOf(), ignoredRepos, apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
+const detect = (w, now = NOW) => checks({ kernel: w, kv: kvOf(), apps: async (p) => (p === "/internal/open-prs" ? { prs: w.prs } : []), alerts: async () => [], openKeys: () => [], now: () => now });
 const minsAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 
 test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved for an hour is a loop; refiles refused as parked or aimed elsewhere move nothing; an approval on it, a re-brief or the owner's word does", async () => {
@@ -399,43 +399,11 @@ test("a review-stall flag's card carries its task, so its activity is checked li
   assert.deepEqual(await jamRun(kvFrom(state), NOW, async () => undefined), ["review-stall:card-1"]);
 });
 
-test("fleet_ops_ignored_repos: a listed repo's open PR is not raised, another repo's is, and the empty default raises both", async () => {
+test("the pr check raises a fleet-published PR past the allowance, not a young or draft one", async () => {
   const prs = [
-    { repo: "acme/probe", number: 2, opened_at: ago(2), draft: false },
     { repo: "acme/app", number: 7, opened_at: ago(2), draft: false },
+    { repo: "acme/app", number: 8, opened_at: ago(0.2), draft: false },
+    { repo: "acme/app", number: 9, opened_at: ago(2), draft: true },
   ];
-  const raised = async (ignoredRepos) => (await detect(world({ prs }), NOW, ignoredRepos).pr()).map((i) => i.key).sort();
-  assert.deepEqual(await raised(undefined), ["acme/app#7", "acme/probe#2"]);
-  assert.deepEqual(await raised([]), ["acme/app#7", "acme/probe#2"]);
-  assert.deepEqual(await raised(parseIgnoredRepos("Acme/Probe")), ["acme/app#7"]);
-  // The service reads the setting as comma-joined text: an empty value ignores nothing.
-  assert.deepEqual(parseIgnoredRepos(""), []);
-  assert.deepEqual(parseIgnoredRepos(" acme/probe , acme/other ,"), ["acme/probe", "acme/other"]);
-});
-
-test("an incident a setting now suppresses leaves the open set without a recovery note; a real recovery is still filed", async () => {
-  const kv = kvOf();
-  const pr = { key: "acme/probe#2", reason: "acme/probe#2 open 2 hours without merging" };
-  const other = { key: "acme/app#7", reason: "acme/app#7 open 2 hours without merging" };
-  const filed = [];
-  const file = async (b) => (filed.push(b), true);
-  const quietProbe = () => ["pr:acme/probe#2"];
-  const run = (rows, at, suppressed) => tick(kv, { pr: async () => rows }, file, async () => {}, new Date(at), QUIET_MS, true, undefined, undefined, suppressed);
-  await run([pr, other], NOW);
-  assert.deepEqual(filed.at(-1), { incidents: [{ key: "pr:acme/probe#2" }, { key: "pr:acme/app#7" }], recovered: [] });
-  // The repo is ignored while its PR is still open: its incident goes, with no recovery line.
-  await run([other], NOW + 31 * 60_000, quietProbe);
-  assert.equal(detectorState(kv).open["pr:acme/probe#2"], undefined);
-  assert.deepEqual(detectorState(kv).recovered, []);
-  assert.equal(filed.length, 1); // nothing new to file: no incident, and no recovery line for the suppressed PR
-  // An incident still in the quiet window and not yet filed: the setting drops it even when the check can't answer.
-  const kv2 = kvFrom(JSON.stringify({ open: { "pr:acme/probe#2": { reason: "r", at: new Date(NOW).toISOString(), fired: false } }, recovered: [] }));
-  const filed2 = [];
-  await tick(kv2, { pr: async () => { throw new Error("apps-mcp is not reachable"); } }, async (b) => (filed2.push(b), true), async () => {}, new Date(NOW), QUIET_MS, true, undefined, undefined, quietProbe);
-  assert.equal(detectorState(kv2).open["pr:acme/probe#2"], undefined);
-  assert.deepEqual(filed2, []);
-  // The other PR merges: its recovery is filed as before.
-  await run([], NOW + 62 * 60_000, quietProbe);
-  assert.deepEqual(detectorState(kv).recovered.map((r) => r.key), ["pr:acme/app#7"]);
-  assert.deepEqual(filed.at(-1), { incidents: [], recovered: [{ key: "pr:acme/app#7" }] });
+  assert.deepEqual((await detect(world({ prs })).pr()).map((i) => i.key), ["acme/app#7"]);
 });

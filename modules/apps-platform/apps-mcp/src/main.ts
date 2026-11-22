@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
+import { fleetOnly } from "./open-prs.js";
 import { startPeople } from "./people.js";
 import { buildServer, refreshRegistry, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
@@ -159,9 +160,10 @@ const http = createServer(async (req, res) => {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, { apps: p.qualityOf() });
     }
-    // Open pull requests in the fleet org's repos or any the kernel's records say the fleet opened (GET /v1/objects, in any repo), from
-    // the warehouse (src_github syncs every 15 minutes), and the open change requests of this server's repos (codehost-local), each with its preview's URL when one runs: the board's Fleet Ops
-    // detector raises the ones nobody has merged. Empty when there is neither.
+    // Open pull requests the fleet opened, in any repo: the kernel's records of them (GET /v1/objects, the code host's publishes and
+    // PR records) read from the warehouse (src_github syncs every 15 minutes), and the open change requests of this server's repos
+    // (codehost-local), each with its preview's URL when one runs: the Fleet Steward's detector raises the ones nobody has merged.
+    // A PR made by hand, in the fleet org or elsewhere, has no record and is not listed. Empty when there is neither.
     if (url.pathname === "/internal/open-prs" && req.method === "GET") {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       const local = codehost ? await localOpenPrs() : [];
@@ -171,9 +173,9 @@ const http = createServer(async (req, res) => {
       } catch {
         return send(res, 200, codehost ? { prs: local } : {});
       }
-      if (!agentsOrg) return send(res, 200, codehost ? { prs: local } : {});
-      const ours = await fleetPrs(kernelUrl, serviceKey).catch((e) => (log.warn({ err: String(e) }, "open-prs: the kernel's records of the fleet's PRs are unavailable, listing the fleet org only"), []));
-      const r = await d.pool.query("SELECT i.repo, i.number, i.created_at_src AS opened_at, i.draft FROM src_github.issues i WHERE i.kind = 'pr' AND i.state = 'open' AND (lower(i.repo) LIKE $1 OR EXISTS (SELECT 1 FROM unnest($2::text[], $3::int[]) AS o(repo, number) WHERE lower(i.repo) = o.repo AND i.number = o.number))", [`${agentsOrg.toLowerCase()}/%`, ours.map((o) => o.repo), ours.map((o) => o.number)]);
+      const ours = await fleetPrs(kernelUrl, serviceKey);
+      const r = await d.pool.query("SELECT i.repo, i.number, i.created_at_src AS opened_at, i.draft FROM src_github.issues i WHERE i.kind = 'pr' AND i.state = 'open' AND lower(i.repo) = ANY($1::text[])", [[...new Set(ours.map((o) => o.repo))]]);
+      r.rows = fleetOnly(r.rows, ours);
       return send(res, 200, { prs: [...r.rows.map((x: { repo: string; number: number }) => ({ ...x, ...previewOf(x.repo, x.number) })), ...local] });
     }
     // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake
