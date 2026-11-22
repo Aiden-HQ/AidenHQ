@@ -703,25 +703,36 @@ export async function resolveCitation(c: Citation, deps: any, repos: string[] = 
     const text = r.outcome_text ?? r.outcome?.text ?? "";
     return { citation: c, id: c.id, exists: true, state: String(r.state ?? "unknown"), outcome: { ...(typeof r.ok === "boolean" ? { ok: r.ok } : r.outcome?.ok !== undefined ? { ok: Boolean(r.outcome.ok) } : {}), text: String(text ?? "") } };
   }
-  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): the graded PRs' and report's repos
-  // are looked at first, and one whose name matches ignoring case and dashes is the real owner/name.
-  const flat = (r: string) => r.toLowerCase().replace(/[^a-z0-9/]/g, "");
-  const known = repos.find((r) => c.repo && flat(r) === flat(c.repo));
-  const candidates = c.repo ? [known ?? c.repo] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  // A cited repo is the report's own spelling ("AidenHQ/AidenHQ" for Aiden-HQ/AidenHQ): an exact (case-insensitive) match among
+  // the graded PRs' and report's repos wins; otherwise the one known repo that differs only by dashes and case is tried first, then
+  // the cited spelling itself (dashes can make two real repos equal, and a job id exists in one repo only).
+  const lower = (r: string) => r.toLowerCase();
+  const nodash = (r: string) => lower(r).replace(/-/g, "");
+  const exact = repos.find((r) => c.repo && lower(r) === lower(c.repo));
+  const variants = [...new Set(repos.filter((r) => c.repo && nodash(r) === nodash(c.repo)).map(lower))];
+  const known = exact ?? (variants.length === 1 ? repos.find((r) => lower(r) === variants[0]) : undefined);
+  const candidates = c.repo ? [...new Map([known ?? c.repo, c.repo].map((r) => [lower(r), r])).values()] : [...new Set(repos.map((r) => String(r).toLowerCase()))].slice(0, 3);
+  let refused: { repo: string; message: string } | undefined;
   for (const repo of candidates) {
     let j: any;
     try {
       j = await deps.citedJob(repo, c.id);
     } catch (err: any) {
-      // A 403 or 404 on a cited repo is a definite refusal (no grant, not owner/name, "Resource not accessible by integration",
-      // no such repo) that waiting never changes: the answer, shown once. A rate limit (message, x-ratelimit-remaining: 0 or a
-      // retry-after header) and any other failure are rethrown so the next look retries them.
-      if (c.repo && [403, 404].includes(Number(err?.status)) && !rateLimited(err)) return { citation: c, id: c.id, exists: false, unreadable: String(err.message ?? err), repo };
-      throw err;
+      // What the code host answers (modules/github ops.ts "job": GitHub's 404 for a job is a 200 with null, so "no such job" is
+      // null, never a status; the kernel's POST /v1/codehost/:op (codehost.ts) answers 403 for a missing grant and 404 for an
+      // unknown repo or no code host). So a 403 or 404 here is a refusal, never "no such job". A rate limit (message,
+      // x-ratelimit-remaining: 0 or a retry-after header) and any other failure are rethrown: the next look retries them.
+      const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status);
+      if (rateLimited(err) || ![403, 404].includes(status)) throw err;
+      // The first refusal is kept and the next candidate tried.
+      refused ??= { repo, message: String(err.message ?? err) };
+      continue;
     }
     if (!j) continue;
     return { citation: c, id: c.id, exists: true, state: String(j.state ?? j.status ?? "unknown"), conclusion: String(j.conclusion ?? ""), name: String(j.name ?? ""), repo };
   }
+  // Every candidate came back empty or refused: a refusal means the job may be in a repo the grader cannot read, so it is unverified, not "no such job".
+  if (refused) return { citation: c, id: c.id, exists: false, unreadable: refused.message, repo: refused.repo };
   return { citation: c, id: c.id, exists: false };
 }
 
@@ -757,7 +768,7 @@ export async function citedEvidence(citations: Citation[], deps: any, repos: str
     } else {
       const repo = r.repo ?? c.repo ?? "an unknown repo";
       const conclusion = r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : "";
-      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)}), so the repo is not one the report can cite`);
+      if (r.unreadable) facts.push(`cited id ${c.id}: its Actions job in ${repo} could not be read (${oneLine(r.unreadable, 160)})`);
       else facts.push(r.exists ? `cited Actions job ${c.id} in ${repo}: exists${state}${conclusion}; its name is in CITED_IDS` : `cited id ${c.id}: no such Actions job${c.repo ? ` in ${c.repo}` : ""}`);
       if (r.exists) lines.push(`${c.id} (Actions job in ${repo}): name ${oneLine(r.name, 120) || "(empty)"} (state ${oneLine(r.state, 40)}${r.conclusion ? `, conclusion ${oneLine(r.conclusion, 40)}` : ""})`);
     }

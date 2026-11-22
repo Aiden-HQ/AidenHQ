@@ -120,7 +120,8 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   if (b.kind === "job") {
     const r = await ctx.access.rest("GET", `/repos/${s.slug}/actions/jobs/${b.id}`);
     if (r.status === 404) return { status: 200, json: null };
-    if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
+    // A permission refusal (the access layer already types rate limits and sign-in problems) stays a 403: the caller may try another repo.
+    if (r.status >= 300) throw fail(r.status === 403 ? 403 : 502, `GitHub GET /repos/${s.slug}/actions/jobs/${b.id}: ${r.status}`);
     const j = r.body;
     return { status: 200, json: { id: j.id, name: j.name, state: j.status, conclusion: j.conclusion, run_id: j.run_id, url: j.html_url } };
   }
