@@ -461,6 +461,11 @@ function gitBy(deadline: number, root: string, args: string[], extraEnv: Record<
   try { return gitSafe(root, args, extraEnv, Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
 }
 
+/** A git call within the deadline that answers in bytes (a patch is decoded strictly, never lossily). */
+function gitBytes(deadline: number, root: string, args: string[]) {
+  try { return execFileSync("git", args, { cwd: root, timeout: Number.isFinite(deadline) ? Math.ceil(timeLeft(deadline)) : undefined, maxBuffer: 1 << 28, env: { ...process.env, ...gitEnv() }, stdio: ["ignore", "pipe", "ignore"] }); } catch (e) { if ((e as { code?: string }).code === "ETIMEDOUT") throw new Error(PREP_TIMEOUT); throw e; }
+}
+
 /** How many characters of patch one request carries. */
 const BUDGET = 150_000;
 
@@ -482,20 +487,26 @@ export function patchGroups(root: string, base: string, files: string[], budget 
   for (const path of files) {
     // The path's own patch, whatever git does to its name in a header (it quotes some): the files under it (a file that became a
     // directory) are left out by an exclude pathspec, never by reading headers.
-    const patch = gitBy(deadline, root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
+    const bytes = gitBytes(deadline, root, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", `:(literal)${path}`, `:(exclude,literal)${path}/`]);
+    let patch: string;
+    try { patch = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { oversize.push(`${path} (not valid UTF-8)`); continue; }
     if (!patch) { oversize.push(`${path} (no patch could be made for it)`); continue; }
-    if (patch.length <= budget) { add(patch.endsWith("\n") ? patch : `${patch}\n`, path); continue; }
-    const [header = "", ...hunks] = patch.split(/^(?=@@ )/m);
-    if (!hunks.length) { oversize.push(`${path} (a patch of ${patch.length} characters with no hunk to split at)`); continue; }
-    let part = header, any = false;
-    for (const h of hunks) {
-      if (header.length + h.length > budget) { oversize.push(`${path} (a hunk of ${h.length} characters)`); continue; }
-      if (any && part.length + h.length > budget) { groups.push({ text: part, files: [path] }); part = header; any = false; }
-      part += h.endsWith("\n") ? h : `${h}\n`;
-      any = true;
+    // A type change (a file that became a link) is two records of one path: each is packed or split on its own, with its own header.
+    for (const record of patch.split(/^(?=diff --git )/m).filter(Boolean)) {
+      const text = record.endsWith("\n") ? record : `${record}\n`;
+      if (text.length <= budget) { add(text, path); continue; }
+      const [header = "", ...hunks] = text.split(/^(?=@@ )/m);
+      if (!hunks.length) { oversize.push(`${path} (a patch of ${text.length} characters with no hunk to split at)`); continue; }
+      let part = header, any = false;
+      for (const h of hunks) {
+        if (header.length + h.length > budget) { oversize.push(`${path} (a hunk of ${h.length} characters)`); continue; }
+        if (any && part.length + h.length > budget) { groups.push({ text: part, files: [path] }); part = header; any = false; }
+        part += h;
+        any = true;
+      }
+      if (any) groups.push({ text: part, files: [path] });
+      cur = undefined; // a split record's parts stand alone
     }
-    if (any) groups.push({ text: part, files: [path] });
-    cur = undefined; // a split file's parts stand alone
   }
   return { groups, oversize };
 }

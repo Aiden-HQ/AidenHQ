@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -327,4 +327,28 @@ test("line 0: self-review does not print clean for an incorrect verdict whose on
     assert.match(out.stdout, /: incomplete$/m);
     assert.doesNotMatch(out.stdout, /: clean/);
   } finally { model.close(); }
+});
+
+test("a file that became a link is two records of one path: each is packed on its own, with its own header", () => {
+  const dir = mkdtempSync(join(tmpdir(), "native-type-")), repo = join(dir, "r");
+  mkdirSync(repo); sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t"); sh(repo, "config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "l"), Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n") + "\n"); sh(repo, "add", "."); sh(repo, "commit", "-qm", "a");
+  const base = sh(repo, "rev-parse", "HEAD");
+  rmSync(join(repo, "l")); symlinkSync("elsewhere", join(repo, "l")); sh(repo, "add", "."); sh(repo, "commit", "-qm", "b");
+  const records = patchOf(repo, base, "l").split(/^(?=diff --git )/m).filter(Boolean);
+  assert.equal(records.length, 2, "git gives a type change two records");
+  const together = patchGroups(repo, base, ["l"]);
+  assert.equal(together.groups.length, 1);
+  const apart = patchGroups(repo, base, ["l"], Math.max(...records.map((r) => r.length)));
+  assert.equal(apart.groups.length, 2);
+  for (const g of apart.groups) assert.equal((g.text.match(/^diff --git /gm) ?? []).length, 1, "one record, one header");
+  assert.ok(apart.groups.some((g) => g.text.includes("deleted file mode 100644")) && apart.groups.some((g) => g.text.includes("new file mode 120000")));
+});
+
+test("a patch that isn't valid UTF-8 is named, not sent in a lossy form", () => {
+  const { repo, base } = repoWith({ "x.txt": (v) => (v ? "a\n" : "b\n") });
+  writeFileSync(join(repo, "x.txt"), Buffer.from([0x61, 0xff, 0x0a])); sh(repo, "commit", "-qam", "bytes");
+  const g = patchGroups(repo, base, ["x.txt"]);
+  assert.deepEqual(g.groups, []);
+  assert.deepEqual(g.oversize, ["x.txt (not valid UTF-8)"]);
 });
