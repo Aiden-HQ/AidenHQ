@@ -14,13 +14,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.2.0",
     "pino": "^10.4.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^24.19.1",
-    "typescript": "^5.9.3",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }
 }
