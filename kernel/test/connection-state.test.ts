@@ -96,8 +96,9 @@ test("a background hit only records and queues nothing; the digest pulls it once
 test("a failed wait leaves no orphan registration (da3a0678)", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   w.state.failWait = true;
-  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
+  const said = await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
   assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get() as { n: number }).n, 0);
+  assert.match(said, /nothing will wake it/);
 });
 
 test("tick never throws into the kernel when housekeeping fails (4929ca10)", async () => {

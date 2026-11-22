@@ -190,6 +190,7 @@ export function createConnectionState(o: {
       } catch (e) {
         log("connection need: the wait wasn't recorded", { connection, task: who.task, err: (e as Error).message });
         q("DELETE FROM connection_waits WHERE module = ? AND account = ? AND task = ?").run(connection, n.account ?? "", who.task!); // no orphan registration
+        return `${label} isn't connected (${agentWords[n.cause]}): the owner has the link, but this task's wait couldn't be recorded, so nothing will wake it. Carry on with other work and try this source again later.`;
       }
       log("connection need", { connection, cause: n.cause, to: "owner", task: root.identifier ?? root.id });
       return `${label} isn't connected (${agentWords[n.cause]}): the owner has the link. Don't retry; this task is woken when it is connected. End your turn.`;
