@@ -271,6 +271,13 @@ unit_runs_applied() { # service, name
   [ "$script" = "$applied" ] || { echo "the unit runs $script, not $applied"; return 1; }
 }
 
+# The Docker prune runs ops/prune-docker.sh from the checkout the last apply applied (its last EnvironmentFile= names it),
+# not the one ~/.config/aidenhq-checkout.env recorded at install time.
+if [ -e "$HOME/.config/systemd/user/prune-docker.timer" ]; then
+  check "docker prune timer runs the applied checkout" unit_runs_applied prune-docker.service prune-docker
+else
+  printf '  skip  docker prune (timer not installed)\n'
+fi
 if module_on monitoring; then
   if [ -e "$HOME/.config/systemd/user/aidenhq-host-metrics.timer" ]; then
     check "host metrics timer runs the applied checkout" unit_runs_applied aidenhq-host-metrics.service host-metrics

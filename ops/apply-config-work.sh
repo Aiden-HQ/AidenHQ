@@ -698,8 +698,12 @@ switchOver() {
   stepRun warehouse warehouseInputs ops/warehouse-sources.sh # shared sources: roles, schemas, src_meta (skips while the warehouse isn't running)
   lap warehouse
 
-  # The daily Docker prune: setup installed it once, so a changed unit reaches the host here.
+  # The Docker prune (prune-docker.timer, every four hours): setup installed it once, so a changed unit reaches the host
+  # here. Its last EnvironmentFile= names the checkout this apply applied, written every apply like the host-metrics
+  # unit's: the script it runs (ops/prune-docker.sh) must be the one that was applied, not the one setup recorded.
   local u
+  local prune_env="$HOME/.config/aidenhq-prune-docker.env"
+  printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$prune_env.tmp" && mv -f "$prune_env.tmp" "$prune_env"
   for u in prune-docker; do
     if ! cmp -s "ops/units/$u.service" "$HOME/.config/systemd/user/$u.service" || ! cmp -s "ops/units/$u.timer" "$HOME/.config/systemd/user/$u.timer"; then
       cp "ops/units/$u.service" "ops/units/$u.timer" "$HOME/.config/systemd/user/" && systemctl --user daemon-reload \
@@ -773,15 +777,12 @@ switchOver() {
   # start (ops/ci-runner-units.sh).
   ops/ci-runner-units.sh "${AIDENHQ_DATA_DIR:-$PWD/data}"
   lap units
-  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling) and build cache behind: drop
-  # images older than 48 hours and cap the cache at 20 GB (least recently used first; prune-docker.service says why).
-  # Images a container uses and volumes are never touched. Each prune is independent (`|| true`, the shell's form of the
-  # unit's `-` prefix): a failing builder prune must not skip the image prune on every apply. The cache cap is attempted
-  # in both flag forms (`--max-used-space` is buildx's, `--keep-storage` the classic builder's): which one works depends
-  # on whether the buildx plugin is installed, and where one works the other is a no-op.
-  docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
-  docker builder prune -f --keep-storage 20GB >/dev/null 2>&1 || true
-  docker image prune -af --filter until=48h >/dev/null 2>&1 || true
+  # Apply-time rebuilds leave images nothing runs any more (content-tagged, so not dangling), build cache and disposable
+  # containers behind: the same reclaim prune-docker.timer runs, ops/prune-docker.sh (images unused for 48 h, the cache
+  # capped at 20 GB least recently used first in both builder flag forms, one-offs stopped over a day). It runs every step
+  # whatever the ones before did, so a failing builder prune never skips the image prune; `|| true` keeps a degraded
+  # reclaim from failing an apply that already switched over (the timer's own run is what pages through UnitFailed).
+  bash ops/prune-docker.sh || true
   lap prune
   echo "$product" > "$applied"
   echo "applied instance $(git -C "$inst" rev-parse --short HEAD) product $(git rev-parse --short HEAD)"

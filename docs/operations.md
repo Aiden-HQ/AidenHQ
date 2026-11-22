@@ -201,9 +201,14 @@ vault and the notes vault are not included. The backup holds `auth.secret`, so i
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
 Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
-knows depends on the buildx plugin); `prune-docker.timer` does the same every four hours on a host that hasn't applied, so the space peak between
-prunes stays under the alert line, and also drops containers that have been stopped for over a day (their writable
-layers are never otherwise reclaimed; no volume is touched). Apply installs changed prune units.
+knows depends on the buildx plugin) through `ops/prune-docker.sh`, which runs every step whatever the ones before it did and
+then fails the run if any of them did not do its work. `prune-docker.timer` runs it every four hours (not once a night: the
+peak between prunes is what crossed the alert line), so the space peak between prunes stays under the alert line. It also
+removes one-off containers — a container with no compose service and no `aidenhq.computer` label, the class a
+`docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
+`docker container prune --filter until=`, which filters on created time and so would delete a compose service that an
+apply's generation snapshot had just stopped, and its own check reads `State.FinishedAt`; no volume is touched (`docker rm`
+without `-v`). Apply installs changed prune units and runs the same script after its rebuilds.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

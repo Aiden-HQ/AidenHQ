@@ -5,6 +5,8 @@
 #                    list-units` and `list-unit-files` read them as the owner's user.
 #   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
 #                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
+#   docker.prom      Docker's own disk breakdown (images, containers, build cache, local volumes) and whether this run could
+#                    read it (aidenhq_docker_collect_ok), so DiskSpaceLow names its top consumer from a query.
 #   containers.prom  every container on the host (compose service, computer box or anything else) and its running state,
 #                    restart count, health and cgroup id, so cAdvisor's per-cgroup usage gets a name and a stopped service still
 #                    reads 0 (cAdvisor has no Docker socket: only apps-mcp holds one). A filter narrower than the host drops a
@@ -104,8 +106,11 @@ gens="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}/generations.jsonl"
 
 # Docker's own disk usage: which consumer is filling `/` (images, containers, build cache, local volumes), so DiskSpaceLow
 # can name it from a query instead of an inference. `docker system df` walks every image, container and volume, so it is
-# capped; when it errors or times out this run writes nothing and docker.prom goes stale (HostMetricsStale says the size
-# is unknown) rather than writing a zero that would read as "Docker holds nothing".
+# capped at 10 s; the file is rewritten every run either way. On success it carries `aidenhq_docker_collect_ok 1` and the
+# sizes. When the cap is hit or `docker system df` errors it carries `aidenhq_docker_collect_ok 0` and NO size series:
+# the last bytes must not stay on the scrape as if they were current, and a fresh install must still get a file (its
+# mtime is what HostMetricsStale reads) rather than no series at all. `collect_ok 0` means the breakdown is unknown, never
+# that Docker holds nothing (that is `_size_bytes 0`).
 # Each row is flat JSON ({"Active":...,"Reclaimable":...,"Size":...,"TotalCount":...,"Type":...}); one gauge per type.
 docker_sizes() { # the rows on stdin -> the gauges; a row it cannot read is skipped, never guessed
   awk '
@@ -143,9 +148,15 @@ docker_sizes() { # the rows on stdin -> the gauges; a row it cannot read is skip
       r = nbytes(field("Reclaimable")); if (r != "") printf "aidenhq_docker_%s_reclaimable_bytes %.0f\n", g, r
     }'
 }
-if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ] \
-  && gauges="$(printf '%s\n' "$df" | docker_sizes)" && [ -n "$gauges" ]; then
-  {
+gauges=""
+if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ]; then
+  gauges="$(printf '%s\n' "$df" | docker_sizes)"
+fi
+{
+  echo "# HELP aidenhq_docker_collect_ok 1 when this run read docker system df; 0 when it failed or timed out, in which case no size is reported at all (unknown, not zero)."
+  echo "# TYPE aidenhq_docker_collect_ok gauge"
+  echo "aidenhq_docker_collect_ok $([ -n "$gauges" ] && echo 1 || echo 0)"
+  if [ -n "$gauges" ]; then
     for g in images containers build_cache volumes; do
       case "$g" in images) what="Docker images" ;; containers) what="Docker containers' writable layers" ;; build_cache) what="the Docker build cache" ;; volumes) what="local Docker volumes" ;; esac
       echo "# HELP aidenhq_docker_${g}_size_bytes Disk used by $what (docker system df)."
@@ -154,5 +165,5 @@ if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n
       echo "# TYPE aidenhq_docker_${g}_reclaimable_bytes gauge"
     done
     printf '%s\n' "$gauges"
-  } | write docker.prom
-fi
+  fi
+} | write docker.prom

@@ -119,6 +119,31 @@ test("the security-sbom check passes when the unit runs this checkout's script",
   assert.match(r.out, /^  ok    security sbom timer runs the applied checkout$/m, r.out);
 });
 
+test("the docker prune check fails when the unit runs another checkout's script, naming both paths", { skip: NOT_LINUX }, async () => {
+  const dir = checkout({ name: "prune-docker", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  const other = join(dir, "old-checkout/ops/prune-docker.sh");
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, "#!/usr/bin/env bash\n");
+  // No per-apply file yet: ~/.config/aidenhq-checkout.env's checkout is what the unit resolves to.
+  writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
+  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/prune-docker.sh") + "\n");
+  const r = await run(dir);
+  const line = r.out.split("\n").find((l) => l.includes("docker prune timer runs the applied checkout"));
+  assert.ok(line, r.out);
+  assert.match(line, /^  FAIL  docker prune timer runs the applied checkout  /, line);
+  assert.ok(line.includes(realpathSync(other)), line);
+  assert.ok(line.includes(join(realpathSync(dir), "ops/prune-docker.sh")), line);
+});
+
+test("the docker prune check passes when the apply's per-unit file names this checkout", async () => {
+  const dir = checkout({ name: "prune-docker", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(dir, "home/.config/aidenhq-checkout.env"), `AIDENHQ_DIR=${join(dir, "old-checkout")}\n`);
+  writeFileSync(join(dir, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${dir}\n`);
+  writeFileSync(join(dir, "execstart"), execStart("${AIDENHQ_DIR}/ops/prune-docker.sh") + "\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout$/m, r.out);
+});
+
 const services = [
   { port: "8085", name: "glean", label: "Glean", check: "glean sign-in" },
   { port: "8087", name: "grafana", label: "Grafana", check: "grafana sign-in" },

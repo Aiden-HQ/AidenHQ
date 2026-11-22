@@ -57,8 +57,10 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   running, so `CiRunnerUnitMissing` ignores a retired unit), `aidenhq_fleet_draining`,
   `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`, `aidenhq_apply_failed{n,reason,log,health}`,
   the Docker disk breakdown `aidenhq_docker_{images,containers,build_cache,volumes}_{size,reclaimable}_bytes` (from
-  `docker system df`, capped at 10 s: no file that run rather than a zero when it errors, so a stale `docker.prom` reads as
-  unknown).
+  `docker system df`, capped at 10 s) and `aidenhq_docker_collect_ok`. On a timeout or an error the file is still rewritten,
+  with `aidenhq_docker_collect_ok 0` and no size series at all: the last bytes never stay on the scrape as if they were
+  current, a fresh install still gets a file whose mtime `HostMetricsStale` reads, and 0 means the breakdown is unknown,
+  never that Docker holds nothing (that would be a size of 0).
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
   maintenance. Both also need a fresh `units.prom` (written within 3 minutes), so a dead exporter is a freshness alert and
