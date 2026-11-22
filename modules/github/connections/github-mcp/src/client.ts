@@ -204,6 +204,7 @@ export function createAccess(o: {
   let grantedFor: string | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string }>();
   /** The GraphQL request that set a problem: only that same request succeeding clears it (REST's per-org clear leaves it). */
+  const chains = new Map<string, { next: string | undefined; ok: boolean }>(); // a GraphQL read's page chain: the cursor expected next, and whether it is unbroken since page one
   const read = new Map<string, Map<string, boolean>>(); // GraphQL read (query and variables, not the cursor) -> the orgs it was refused for, true when seen in the traversal under way
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
@@ -435,7 +436,11 @@ export function createAccess(o: {
       // A board is read page by page: its first page starts a traversal, and what was refused before and isn't again by the last page
       // is recovered.
       const seen = read.get(key) ?? new Map<string, boolean>();
-      if (!variables.after) for (const k of seen.keys()) seen.set(k, false);
+      const cursor = /"endCursor":"([^"]*)"/.exec(JSON.stringify(body))?.[1];
+      const chain = chains.get(key) ?? { next: undefined, ok: false };
+      if (!variables.after) { for (const k of seen.keys()) seen.set(k, false); chain.ok = true; } else if (variables.after !== chain.next) chain.ok = false;
+      chain.next = cursor;
+      chains.set(key, chain);
       for (const { need, fatal } of refused) {
         // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content
         // (an issue of another org) is recorded but leaves the rest of the board readable.
@@ -444,7 +449,8 @@ export function createAccess(o: {
         if (fatal) fail(need);
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}) });
       }
-      if (seen.size && body?.data && !JSON.stringify(body).includes('"hasNextPage":true')) {
+      // Only a last page of an unbroken chain from page one, with every error one of the classified refusals, recovers anything.
+      if (seen.size && chain.ok && body?.data && refused.length === (Array.isArray(body.errors) ? body.errors.length : 0) && !JSON.stringify(body).includes('"hasNextPage":true')) {
         for (const [k, fresh] of [...seen]) {
           if (fresh) continue;
           seen.delete(k);

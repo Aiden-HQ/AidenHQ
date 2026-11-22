@@ -559,7 +559,7 @@ it("attributes a restriction to the org GitHub names, keeps a refusal inside one
 it("keeps an org's warning while another refused request fails, and clears a board's only after its full traversal", async () => {
   const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
   const refused = (hasNext: boolean) => answer(200, { data: { items: { pageInfo: { hasNextPage: hasNext } } }, errors: [{ type: "FORBIDDEN", path: ["items", "nodes", 0, "content"], extensions: { saml_failure: false }, message: msg }] });
-  const clean = (hasNext: boolean) => answer(200, { data: { items: { pageInfo: { hasNextPage: hasNext } } } });
+  const clean = (hasNext: boolean) => answer(200, { data: { items: { pageInfo: { hasNextPage: hasNext, endCursor: "c" } } } });
   let page2 = refused(false);
   const a = createAccess({ auth: auth(), clientId: "cid", fetchImpl: async (_u, init) => (JSON.parse(String((init as RequestInit).body)).variables.after ? page2.clone() : clean(true)) });
   await a.graphql("q", { org: "acme", n: 1 }); // clean first page, refused last page
@@ -571,4 +571,24 @@ it("keeps an org's warning while another refused request fails, and clears a boa
   await a.graphql("q", { org: "acme", n: 1 });
   await a.graphql("q", { org: "acme", n: 1, after: "c" }); // a full clean traversal
   expect(a.status().problems).toHaveLength(0);
+});
+
+it("does not clear a warning from a last page that did not follow the chain from page one, or one carrying another error", async () => {
+  const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
+  const page = (extra: unknown[], hasNext: boolean) => answer(200, { data: { items: { pageInfo: { hasNextPage: hasNext, endCursor: "c1" } } }, errors: extra });
+  const refusal = { type: "FORBIDDEN", path: ["items", "nodes", 0, "content"], extensions: {}, message: msg };
+  let next = page([refusal], false);
+  const a = createAccess({ auth: auth(), fetchImpl: async () => next.clone() });
+  await a.graphql("q", { org: "acme", n: 2 });
+  expect(a.status().problems).toHaveLength(1);
+  next = page([], true);
+  await a.graphql("q", { org: "acme", n: 2 }); // first page only
+  next = page([], false);
+  await a.graphql("q", { org: "acme", n: 2, after: "saved" }); // a cursor that is not the chain's
+  expect(a.status().problems).toHaveLength(1);
+  next = page([], true);
+  await a.graphql("q", { org: "acme", n: 2 });
+  next = page([{ type: "NOT_FOUND", path: ["items"], message: "x" }], false);
+  await a.graphql("q", { org: "acme", n: 2, after: "c1" }); // the chain holds but another error rides along
+  expect(a.status().problems).toHaveLength(1);
 });
