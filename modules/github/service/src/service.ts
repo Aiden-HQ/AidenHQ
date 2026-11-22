@@ -411,9 +411,11 @@ export function createService(o: Options) {
             const named = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
             const title = named(a.text?.title), body = named(a.text?.body);
             const text = a.text ? { ...(title ? { title } : {}), ...(body ? { body: withFooter(body, asker?.requester.name || "AidenHQ") } : {}) } : undefined;
+            // A new PR still opens with the asking agent's footer alone, as before: the attribution is what it had.
+            const opened = a.text ? { ...text, body: withFooter(body ?? "", asker?.requester.name || "AidenHQ") } : undefined;
             const pr = open[0]
               ? (Object.keys(text ?? {}).length ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : open[0])
-              : await api("POST", `/repos/${s.slug}/pulls`, { ...text, head: b.branch, base: def });
+              : await api("POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
             if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it

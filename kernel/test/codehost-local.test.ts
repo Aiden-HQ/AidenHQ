@@ -81,6 +81,11 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   assert.deepEqual([pr.kind, pr.tier, pr.state, pr.rule], ["codehost-local.pr", 0, "done", null]);
   assert.equal(pr.args.workspace, "TASK-1", "the job's own workspace, stamped by the kernel");
   assert.match(pr.outcome.text, /codehost:local\/hello\/change\/1/);
+  // A republish with no --body-file names no body (`text: { title }`): the change keeps its description, as on GitHub.
+  const again = await file({ kind: "codehost.pr", args: { only: [{ repo: "local/hello", branch: "greet", sha: head }], text: { title: "Say hi" } } });
+  assert.equal(again.state, "done", again.outcome?.text);
+  const meta = JSON.parse(git(dir, "--git-dir", host.bare("local/hello"), "cat-file", "-p", "refs/changes/1/meta"));
+  assert.deepEqual([meta.title, meta.body], ["Say hi", "Why."], "a title-only republish keeps the body");
 
   // A head that isn't the change's is refused by code; the real one is local-merge, the AI reviewer's, with the diff on its card.
   await assert.rejects(writes.request(job, { kind: "codehost.merge", args: { prs: [{ repo: "local/hello", number: 1, head: "f".repeat(40) }] } }), /moved since it was asked for/);

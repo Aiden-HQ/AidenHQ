@@ -245,6 +245,24 @@ test("an open PR keeps its description when a republish sends a blank body; a re
   assert.equal(sent.body.split("[AidenHQ](https://aidenhq.ai)").length - 1, 1, "one footer");
 });
 
+// An open PR keeps its description, but a new PR still opens with the asking agent's footer alone: that is its attribution.
+test("a new PR with a blank body still opens with the asking agent's footer", async (t) => {
+  const url = "https://github.com/acme-agents/widget/pull/8";
+  const { sha, outcomes, ghCalls, call } = await setup(t, {
+    routes: (m, p) =>
+      m === "GET" && p === "/repos/acme-agents/widget/pulls?state=open&head=acme-agents%3Afeature" ? { status: 200, body: [] }
+        : m === "POST" && p === "/repos/acme-agents/widget/pulls" ? { status: 201, body: { number: 8, html_url: url, head: { sha } } }
+          : undefined,
+  });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }], text: { title: "fix(widget): new PR", body: "" } };
+  await call("/aidenhq/v1/executor/execute", { id: "k-0000000000000123", kind: "github.pr", args, digest: "d", idempotency_key: "new" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  const post = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme-agents/widget/pulls");
+  assert.equal(post?.body.title, "fix(widget): new PR");
+  assert.equal(post?.body.body.split("[AidenHQ](https://aidenhq.ai)").length - 1, 1, "the new PR carries one footer");
+});
+
 // The CLI now sends `text` without `body` when there is no --body-file; the kernel's strict args schema must accept it, or
 // the fix would be refused before the service's guard ever runs.
 test("the pr args schema accepts a text without a body", () => {
