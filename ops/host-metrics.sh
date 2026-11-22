@@ -154,16 +154,24 @@ cache="$data/modules/monitoring/docker-df.json"
 cache_secs="${AIDENHQ_DOCKER_DF_CACHE_S:-300}"
 now="$(date +%s)"
 age="$( [ -f "$cache" ] && echo $(( now - $(stat -c %Y "$cache") )) || echo "" )"
+gauges=""
+fresh=""
 if [ -z "$age" ] || [ "$age" -ge "$cache_secs" ]; then
   if df="$(timeout 10 docker system df --format '{{json .}}' 2>/dev/null)" && [ -n "$df" ]; then
-    mkdir -p "$(dirname "$cache")" && printf '%s\n' "$df" > "$cache.tmp" && mv -f "$cache.tmp" "$cache"
-    age=0
+    # A fresh read is current whatever happens to the cache: if the write fails (a read-only data dir, a full disk) this
+    # run still publishes the sample it just read instead of claiming unknown over an answer it has.
+    gauges="$(printf '%s\n' "$df" | docker_sizes)"
+    fresh=1
+    if mkdir -p "$(dirname "$cache")" && printf '%s\n' "$df" > "$cache.tmp" && mv -f "$cache.tmp" "$cache"; then
+      age=0
+    else
+      rm -f "$cache.tmp" 2>/dev/null
+    fi
   else
     age="" # this run could not read Docker: report unknown, not the bytes before it
   fi
 fi
-gauges=""
-[ -n "$age" ] && [ -f "$cache" ] && gauges="$(docker_sizes < "$cache")"
+[ -z "$fresh" ] && [ -n "$age" ] && [ -f "$cache" ] && gauges="$(docker_sizes < "$cache")"
 {
   echo "# HELP aidenhq_docker_collect_ok 1 when the sizes come from a docker system df read inside the cache window (5 min); 0 when the read failed or timed out, in which case no size is reported at all (unknown, not zero)."
   echo "# TYPE aidenhq_docker_collect_ok gauge"

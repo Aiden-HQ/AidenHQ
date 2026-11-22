@@ -231,7 +231,9 @@ unit_runs_applied() { # service, name [env]
   # script, whichever position it has, matched on the printed argument rather than on a path split by a space. A unit with
   # one line is unchanged.
   if [ "$(printf '%s\n' "$line" | grep -c 'argv\[\]=')" -gt 1 ]; then
-    line="$(printf '%s\n' "$line" | grep "argv\[\]=.*ops/$name\.sh\\(\"\| \\)\|argv\[\]=.*ops/$name\.sh\$" | head -1)"
+    # The script may be followed by arguments (the step wrapper takes the command to run), so match a path boundary, not
+    # only end of line or a closing quote.
+    line="$(printf '%s\n' "$line" | grep "argv\[\]=.*ops/$name\.sh\\(\"\| \|;\|$\\)\|argv\[\]=.*ops/$name\.sh\$" | head -1)"
     [ -n "$line" ] || { echo "$service runs no ops/$name.sh"; return 1; }
   fi
   # systemd prints the executable it starts and its argv. Check that argv[0] is that executable, not only a name in
@@ -246,10 +248,11 @@ unit_runs_applied() { # service, name [env]
     [ -z "$v" ] || dir="$v"
   done
   # Split the way systemd does, on unquoted whitespace, so a checkout whose path has a space ("/home/me/aiden hq") stays
-  # one argument. A quote only groups; nothing here is ever evaluated.
-  argv_text="${argv_text//\$\{AIDENHQ_DIR\}/$dir}"
+  # one argument. A quote only groups; nothing here is ever evaluated. The checkout is substituted AFTER the split: doing
+  # it before would let a space in it split the one argument systemd printed as a quoted word.
   argv=()
   split_argv "$argv_text"
+  for i in "${!argv[@]}"; do argv[i]="${argv[i]//\$\{AIDENHQ_DIR\}/$dir}"; done
   [ -n "$path" ] && [ "${#argv[@]}" -gt 0 ] || { echo "the unit's ExecStart has no executable or argv: $line"; return 1; }
   executable="$(realpath "$path" 2>/dev/null || printf '%s' "$path")"
   program="$(realpath "${argv[0]}" 2>/dev/null || command -v "${argv[0]}" 2>/dev/null || printf '%s' "${argv[0]}")"
@@ -303,6 +306,10 @@ unit_runs_applied() { # service, name [env]
 if [ -e "$HOME/.config/systemd/user/prune-docker.timer" ]; then
   check "docker prune timer runs the applied checkout's container step" unit_runs_applied prune-docker.service prune-docker-containers prune-docker
   check "docker prune timer runs the applied checkout's verification" unit_runs_applied prune-docker.service prune-docker-verify prune-docker
+  # The image and container steps are `-`-prefixed, so their failures reach the verification through the status
+  # ops/prune-docker-step.sh records. The wrapper is a script too, and a stale checkout's copy writes its records where the
+  # applied verification does not read them.
+  check "docker prune timer runs the applied checkout's step wrapper" unit_runs_applied prune-docker.service prune-docker-step prune-docker
 else
   printf '  skip  docker prune (timer not installed)\n'
 fi

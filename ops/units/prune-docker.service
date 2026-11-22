@@ -16,15 +16,18 @@ Description=AidenHQ Docker cleanup (build cache over 20 GB, images unused for tw
 # 20 GB and the other is a no-op (buildx's `--keep-storage` is its deprecated alias, a floor, never a wider retention).
 ExecStart=-/usr/bin/docker builder prune -f --max-used-space 20GB
 ExecStart=-/usr/bin/docker builder prune -f --keep-storage 20GB
-ExecStart=-/usr/bin/docker image prune -af --filter until=48h
+# The image prune goes through ops/prune-docker-step.sh, which records its status for the last step: the failure must not
+# skip the steps below, but it must still fail the unit, and running the same 48 h prune a second time in the verification
+# would double the work on a large host.
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune -af --filter until=48h
 # A one-off that dies without --rm keeps its whole writable layer forever, and nothing else prunes stopped containers. Only
 # containers that are stopped AND over a day old go; container prune never removes a volume, so no data is touched. The
 # script (ops/prune-docker-containers.sh) checks `State.FinishedAt` — `docker container prune --filter until=` filters on
 # created time, so it could remove a compose service an apply's generation snapshot had just stopped.
 ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
 # Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, cache under 20 GB,
-# no one-off stopped over a day still there — so a prune that did nothing at all is a failed unit (UnitFailed), not a
-# silent success, while each step above still ran whatever the ones before it did.
+# no one-off stopped over a day still there — and reads the image prune's recorded status, so a prune that did nothing at
+# all is a failed unit (UnitFailed), not a silent success, while each step above still ran whatever the ones before it did.
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-verify.sh
 
 # The product checkout: ~/aidenhq, or where ops/setup.sh recorded it (~/.config/aidenhq-checkout.env).

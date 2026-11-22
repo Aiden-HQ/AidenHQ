@@ -63,7 +63,8 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   the window times out or errors the file is still rewritten, with `aidenhq_docker_collect_ok 0` and no size series at
   all: the last bytes never stay on the scrape as if they were current, a fresh install still gets a file whose mtime
   `HostMetricsStale` reads, and 0 means the breakdown is unknown, never that Docker holds nothing (that would be a size of
-  0).
+  0). A read that succeeds still publishes even if writing the cache fails, and a successful read with no Build Cache row
+  is not a failure: nothing cached means the 20 GB cap holds.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
   maintenance. Both also need a fresh `units.prom` (written within 3 minutes), so a dead exporter is a freshness alert and

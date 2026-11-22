@@ -46,7 +46,9 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   // without the buildx plugin fails the first with "unknown flag"), and each is a no-op where the other works.
   assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --max-used-space 20GB"), `buildx cache cap: ${execs.join(" | ")}`);
   assert.ok(execs.some((e) => e === "-/usr/bin/docker builder prune -f --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
-  assert.ok(execs.some((e) => e === "-/usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
+  // The image and container prunes go through the step wrapper, which records their status for the verification: the `-`
+  // keeps a failure from skipping the next step, and the record is how it still fails the unit.
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
   assert.match(service, /^Environment=AIDENHQ_DIR=/m);
   assert.match(service, /^EnvironmentFile=-%h\/\.config\/aidenhq-prune-docker\.env$/m, "the applied checkout wins over the one setup recorded");
@@ -75,6 +77,10 @@ test("the container step removes only one-offs stopped over a day, and the verif
   assert.match(verify, /Build Cache/);
   assert.match(verify, /CAP_BYTES=.*20|21 \* 1000/);
   assert.match(verify, /State\.FinishedAt/);
+  // The image prune runs once, in its `-`-prefixed step, and the verification reads the status the step wrapper recorded:
+  // running the same 48 h prune a second time doubles the work on a large host.
+  assert.doesNotMatch(commands(verify), /"\$DOCKER" image prune|docker image prune/, "verify must not run a second image prune");
+  assert.match(verify, /prune-docker-step|step_status/);
   assert.match(verify, /exit 1/);
   assert.doesNotMatch(commands(verify), /rm -[a-z]*v|--volumes|volume prune|system prune|app-warehouse_pgdata/);
 });
@@ -94,7 +100,7 @@ test("the apply-time prunes are independent too, and keep the same retention", (
 // what the verification makes of the host afterwards.
 function fakeDocker({
   containers = [], cache = "10.52GB", daemonUp = true, cacheRow = true, imagePruneFails = false,
-  uninspectable = [], vanishOnRm = [], vanishOnInspect = [],
+  uninspectable = [], vanishOnRm = [], vanishOnInspect = [], relistFails = false, systemDfFails = false,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prune-docker-"));
   const bin = join(dir, "bin");
@@ -117,6 +123,7 @@ case "$1 $2" in
   "ps -aq")
     case "$*" in
       *"label="*) grep 'labelled$' "\${rows_file}" | cut -d'|' -f1 ;;
+      ${relistFails ? `*) [ "\${PRUNE_RELIST_FAIL:-0}" = 1 ] || exit 0; echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;` : ""}
       *) cut -d'|' -f1 "\${rows_file}" ;;
     esac
     exit 0 ;;
@@ -151,6 +158,7 @@ case "$1 $2" in
     esac
     exit 0 ;;
   "system df")
+    ${systemDfFails ? `echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;` : ""}
     ${cacheRow
       ? `printf '{"Size":"%s","Type":"Build Cache"}\\n' "${cache}"`
       : `printf '{"Size":"25.15GB","Type":"Images"}\\n'`}
@@ -162,8 +170,8 @@ exit 0
   chmodSync(join(bin, "docker"), 0o755);
   return {
     calls: () => readFileSync(calls, "utf8"),
-    run: (script) => {
-      const r = spawnSync("bash", [join(repo, script)], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker") }, encoding: "utf8" });
+    run: (script, extraEnv = {}) => {
+      const r = spawnSync("bash", [join(repo, script)], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker"), ...extraEnv }, encoding: "utf8" });
       return { status: r.status, out: `${r.stdout}${r.stderr}`, calls: readFileSync(calls, "utf8") };
     },
   };
@@ -229,20 +237,41 @@ test("the verification reads an absent Build Cache row and a failed image prune 
   // Own-store `docker system df` without a Build Cache row: the cap cannot be confirmed, so the unit must not read clean.
   let d = fakeDocker({ cacheRow: false });
   let r = d.run("ops/prune-docker-verify.sh");
-  assert.equal(r.status, 1, r.out);
+  // A store with no build cache at all may leave the row out; nothing cached means the cap holds, so this passes.
+  assert.equal(r.status, 0, r.out);
   assert.match(r.out, /no Build Cache row/);
-  // Every step is `-`-prefixed, so a failing `docker image prune` never reaches systemd by itself; the verification runs it
-  // again unprefixed, and its failure is what fails the unit.
-  d = fakeDocker({ imagePruneFails: true });
+  // A read that FAILED is not "no row": the cap cannot be confirmed and the unit fails.
+  d = fakeDocker({ cacheRow: false, systemDfFails: true });
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /image prune failed/);
-  assert.match(r.calls, /^image prune -af --filter until=48h$/m, r.calls);
+  assert.match(r.out, /docker system df failed/);
+  // Every step is `-`-prefixed, so a failing `docker image prune` never reaches systemd by itself. The step wrapper records
+  // its status for the verification, which reads it — and does NOT run the 48 h prune again.
+  const state = mkdtempSync(join(tmpdir(), "prune-state-"));
+  mkdirSync(join(state, "prune-docker"));
+  writeFileSync(join(state, "prune-docker/images.status"), "inv-1 1\n");
+  d = fakeDocker({ imagePruneFails: true });
+  r = d.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-1" });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /images prune step exited 1/);
+  assert.doesNotMatch(r.calls, /^image prune /m, `verify must not run a second image prune: ${r.calls}`);
+  // A missing status under systemd is unknown, not a pass; outside systemd (no INVOCATION_ID) it is not held against the run.
+  r = fakeDocker({}).run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-2" });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /left no status/);
+  r = fakeDocker({}).run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state });
+  assert.equal(r.status, 0, r.out);
   // A labelled container the daemon lists but cannot inspect is a cleanup that could not be checked: a failure.
   d = fakeDocker({ containers: [{ id: "ghost", running: "false", finished: "2", oneoff: true }], uninspectable: ["ghost"] });
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /cannot be inspected/);
+  // A re-list that FAILS is not a container that vanished: both are "not listed", but only the second is benign. The
+  // first leaves the cleanup unread, which is a failure.
+  d = fakeDocker({ containers: [{ id: "ghost", running: "false", finished: "2", oneoff: true }], uninspectable: ["ghost"], relistFails: true });
+  r = d.run("ops/prune-docker-verify.sh", { PRUNE_RELIST_FAIL: "1" });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /could not re-list the containers/);
 });
 
 test("a container that disappears between the listing and its inspect or removal is benign, not a failure", () => {
@@ -314,6 +343,31 @@ test("docker system df failing reports the breakdown as unknown, not as zero and
   assert.match(m.body, UNKNOWN);
   assert.doesNotMatch(m.body, /_size_bytes \d/m, m.body);
   assert.ok(existsSync(m.file), "the file is rewritten, so its mtime is current");
+});
+
+test("a failed cache write still publishes the sample this run just read", () => {
+  // A read-only data dir (or a full disk where the cache lives) must not turn a fresh answer into unknown: the bytes are
+  // current whatever happened to the file.
+  const dir = mkdtempSync(join(tmpdir(), "docker-prom-ro-"));
+  const data = join(dir, "data");
+  const cacheDir = join(data, "modules/monitoring");
+  mkdirSync(cacheDir, { recursive: true });
+  // The cache path is occupied by a directory, so the atomic rename onto it fails.
+  mkdirSync(join(cacheDir, "docker-df.json"));
+  const m = metrics({ dir, df: DF });
+  assert.match(m.body, /^aidenhq_docker_collect_ok 1$/m, m.body);
+  assert.match(m.body, /^aidenhq_docker_images_size_bytes 25150000000$/m, m.body);
+});
+
+test("the step wrapper runs the prune once and records its status for the verification", () => {
+  const state = mkdtempSync(join(tmpdir(), "prune-step-"));
+  const step = join(repo, "ops/prune-docker-step.sh");
+  let r = spawnSync("bash", [step, "images", "bash", "-c", "exit 0"], { env: { PATH: "/usr/bin:/bin", AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-a" }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(join(state, "prune-docker/images.status"), "utf8").trim(), "inv-a 0");
+  r = spawnSync("bash", [step, "images", "bash", "-c", "exit 7"], { env: { PATH: "/usr/bin:/bin", AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-b" }, encoding: "utf8" });
+  assert.equal(r.status, 7, "the step's own status still reaches the prefixed ExecStart");
+  assert.equal(readFileSync(join(state, "prune-docker/images.status"), "utf8").trim(), "inv-b 7");
 });
 
 test("docker.prom is cached for 5 minutes: the 30 s timer does not walk every image, container and volume each run", () => {

@@ -214,8 +214,9 @@ the opt-in label `aidenhq.oneoff=1` (the one `ops/security-sbom.sh` puts on its 
 started by hand is never removed, however old. No volume is touched (`docker rm` without `-v`). That step is
 `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its rebuilds.
 
-The verification step (`ops/prune-docker-verify.sh`, unprefixed) also re-runs the 48 h `docker image prune` so a failure
-there still fails the unit — each prune above is `-`-prefixed, so its own exit status is ignored by design.
+The image and container steps run through `ops/prune-docker-step.sh`, which records the step's exit status for the
+verification: the `-` prefix keeps a failure from skipping the next step, and the verification reads the record, so a
+failed image prune still fails the unit without running the same 48 h prune a second time.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

@@ -123,7 +123,7 @@ test("the security-sbom check passes when the unit runs this checkout's script",
 // that run the applied checkout's scripts.
 const pruneExecStart = (dir, { container, verify }) => [
   `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker builder prune -f --max-used-space 20GB ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
-  `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker image prune -af --filter until=48h ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${join(dir, "ops/prune-docker-step.sh")} images /usr/bin/docker image prune -af --filter until=48h ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
   `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${container} ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
   `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${verify} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
 ].join("\n") + "\n";
@@ -160,6 +160,24 @@ test("the docker prune check passes when both steps run this checkout, through t
   const r = await run(dir);
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's step wrapper$/m, r.out);
+});
+
+test("the image step's wrapper and the docker command it runs are both applied-checkout paths", { skip: NOT_LINUX }, async () => {
+  // The image prune is an `env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune ...`: the
+  // check must resolve the script after env and after splitting, not the trailing docker words as a script name.
+  const dir = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(dir, "ops/prune-docker-step.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(dir, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(dir, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${dir}\n`);
+  writeFileSync(join(dir, "execstart"), [
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune -af --filter until=48h ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-verify.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  ].join("\n") + "\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
 });
 
 test("a checkout path with a space is one argument, and still matches", { skip: NOT_LINUX }, async () => {
@@ -175,6 +193,25 @@ test("a checkout path with a space is one argument, and still matches", { skip: 
     `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker builder prune -f --max-used-space 20GB ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
     `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash "${spaced}/ops/prune-docker-containers.sh" ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
     `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash "${spaced}/ops/prune-docker-verify.sh" ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  ].join("\n") + "\n");
+  const r = await run(spaced);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's verification$/m, r.out);
+});
+
+test("an exec that names the checkout through ${AIDENHQ_DIR} expands after the split, so a spaced path still matches", { skip: NOT_LINUX }, async () => {
+  // The unit's own ExecStart uses ${AIDENHQ_DIR}, which systemd prints unexpanded. The check substitutes it, and must do so
+  // AFTER splitting: substituting first would let a space in the checkout split the one word systemd printed.
+  const base = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(base, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  const spaced = join(base, "aiden hq");
+  mkdirSync(spaced);
+  for (const e of ["scripts", "ops", "bin", "config", "home", "healthz", "execstart"]) renameSync(join(base, e), join(spaced, e));
+  writeFileSync(join(spaced, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${spaced}\n`);
+  writeFileSync(join(spaced, "execstart"), [
+    `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker builder prune -f --max-used-space 20GB ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-verify.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
   ].join("\n") + "\n");
   const r = await run(spaced);
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);

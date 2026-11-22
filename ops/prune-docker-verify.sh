@@ -5,12 +5,14 @@
 # and this is what keeps that from hiding a prune that did nothing at all: a daemon that is down, or a build cache still
 # far over its 20 GB cap because neither flag form was accepted, is a failed unit (UnitFailed) rather than a clean one.
 #
-# It checks three things, each one a way the reclaim can silently not happen:
+# It checks these, each one a way the reclaim can silently not happen:
 #   1. the daemon answers (`docker info`);
 #   2. the build cache is under the 20 GB cap (with 1 GB of slack for `docker system df`'s rounded sizes);
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
 #      should have removed it), and every container it lists can be read (an unreadable one is a cleanup it could not do,
-#      not a clean run).
+#      not a clean run);
+#   4. the image step's recorded exit status is 0 (its `-` prefix keeps a failure from skipping the next step, and this is
+#      how it still fails the unit).
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
@@ -22,10 +24,39 @@ bad=()
 echo "prune-docker: verify"
 "$DOCKER" info >/dev/null 2>&1 || bad+=("the Docker daemon does not answer, so no prune above could have run")
 
+# Each prune step runs through ops/prune-docker-step.sh, which records its exit status under this invocation
+# ($INVOCATION_ID). The `-` prefix in the unit keeps a failure from skipping the next step, and this is how the failure
+# still reaches systemd: the image and container prunes are read here instead of being run a second time (a second 48 h
+# image prune on a large host doubles the work and can outlast the unit's timeout). Under systemd a missing record means
+# the wrapper ran but could not record its result, which is unknown, not a pass; a run outside systemd (no INVOCATION_ID)
+# has no record to expect, and the direct checks below still apply. The two builder forms are alternatives — one is
+# expected to fail with `unknown flag` on a CLI that lacks the other — so their status is not read; the cache size is what
+# says whether the cap held.
+state="${AIDENHQ_STATE_DIR:-${HOME:-/nonexistent}/.local/state/aidenhq}/prune-docker"
+step_status() { # name -> the status of this invocation's step, or nothing
+  local f="$state/$1.status" run rc
+  [ -f "$f" ] || return 0
+  read -r run rc < "$f" || return 0
+  [ "$run" = "${INVOCATION_ID:-manual-$$}" ] && printf '%s' "$rc"
+  return 0
+}
+for name in images; do
+  rc="$(step_status "$name")"
+  case "$rc" in
+    # Under systemd every -prefixed step above ran, so a missing status means the wrapper could not record its result:
+    # that result is unknown, not a success.
+    "") [ -z "${INVOCATION_ID:-}" ] || bad+=("the $name prune step left no status, so its result is unknown") ;;
+    0) ;;
+    *) bad+=("the $name prune step exited $rc (see its journal line above)") ;;
+  esac
+done
+
 # The cache: the same rows host-metrics.sh publishes as the aidenhq_docker_* gauges, parsed by key (the JSON's field order
 # is not a contract).
+df_out="$(timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null)"; df_rc=$?
+[ "$df_rc" -eq 0 ] || bad+=("docker system df failed (exit $df_rc), so the build-cache cap cannot be confirmed")
 cache="$(
-  timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null | awk '
+  printf '%s\n' "$df_out" | awk '
     function field(key,  re, s) {
       re = "\"" key "\":\"([^\"]*)\""
       if (!match($0, re)) return ""
@@ -35,10 +66,12 @@ cache="$(
     }
     field("Type") == "Build Cache" { print field("Size"); exit }'
 )"
-# `docker system df` prints a Build Cache row even when the cache is empty ("0B"); no row at all is an unfinished or
-# truncated read, so the cap cannot be confirmed and this is a failure rather than a pass.
+# `docker system df` prints a Build Cache row even when the cache is empty ("0B"). Some stores leave the row out entirely
+# when there is no build cache at all: with nothing cached the 20 GB cap holds by definition, so the absence is not a
+# failure. A read that FAILED is a different thing (above), and so is a row whose size is unreadable. The check is only
+# reached with a successful read.
 case "$cache" in
-  "") bad+=("docker system df gave no Build Cache row, so the 20 GB cap cannot be confirmed") ;;
+  "") [ "$df_rc" -eq 0 ] && echo "prune-docker: no Build Cache row: nothing cached, so the 20 GB cap holds" ;;
   *)
     bytes="$(awk -v s="$cache" 'BEGIN {
       sub(/[[:space:]].*$/, "", s)
@@ -53,9 +86,16 @@ case "$cache" in
 esac
 
 # One-offs: what ops/prune-docker-containers.sh should have removed, and did not. A container that vanished between the
-# listing and its inspect is gone, which is the result we wanted, not a failure.
+# listing and its inspect is gone, which is the result we wanted, not a failure — but a re-list that *failed* is not a
+# vanished container: it is a cleanup this check could not read, so it fails.
 now="$(date +%s)"
 left="$("$DOCKER" ps -aq --filter "label=$LABEL" 2>/dev/null)" || bad+=("could not list the containers labelled $LABEL")
+listed() { # id -> 0 still there, 1 gone, 2 the daemon did not answer
+  local out
+  out="$("$DOCKER" ps -aq 2>/dev/null)" || return 2
+  grep -qxF -- "$1" <<< "$out" && return 0
+  return 1
+}
 # shellcheck disable=SC2086 # container ids, one word each
 for id in $left; do
   running="" finished="" service="" computer=""
@@ -63,7 +103,13 @@ for id in $left; do
     -f '{{.State.Running}}|{{.State.FinishedAt}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "aidenhq.computer"}}' \
     "$id" 2>/dev/null)"
   if [ -z "$running" ]; then
-    "$DOCKER" ps -aq 2>/dev/null | grep -qx -- "$id" || continue # removed since the listing
+    listed "$id"
+    case $? in
+      1) continue ;; # removed since the listing: the outcome we wanted
+      2) bad+=("could not re-list the containers, so whether $id (labelled $LABEL) went or is unreadable is unknown") ; continue ;;
+    esac
+    # Still listed after a successful re-list, but its state cannot be read: a cleanup that cannot be checked, so the unit
+    # does not read clean. (A re-list that FAILED is the case above, and is reported as itself.)
     bad+=("container $id is labelled $LABEL but cannot be inspected, so the cleanup could not check it")
     continue
   fi
@@ -72,12 +118,6 @@ for id in $left; do
   [ "$stopped" -gt 0 ] || continue
   [ $(( now - stopped )) -lt "$STOPPED_SECS" ] || bad+=("container $id is a one-off stopped over a day ago and still there")
 done
-
-# The image prune is prefixed with `-` in the unit, so its own failure never reached systemd. Run it again here, unprefixed:
-# it is idempotent (the second run of a clean host removes nothing), and if the step above could not remove the images
-# unused for 48 h, this fails and the unit with it — the reclaim's result is reported, not just attempted.
-"$DOCKER" image prune -af --filter until=48h >/dev/null 2>&1 \
-  || bad+=("images unused for 48 h could not be pruned (docker image prune failed)")
 
 if [ "${#bad[@]}" -gt 0 ]; then
   printf 'prune-docker: %s\n' "${bad[@]}" >&2
