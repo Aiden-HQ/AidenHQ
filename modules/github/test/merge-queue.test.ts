@@ -81,6 +81,8 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     if (m && taken.has(m[1])) return res.writeHead(409).end("{}");
     if (m) { taken.add(m[1]); outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
     const reply = checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
+    // A read that failed rather than answered: `{ __status: 503 }` makes the fake kernel answer that status (a restarting kernel).
+    if (reply?.__status) return res.writeHead(reply.__status).end(JSON.stringify({ error: { message: `fake kernel ${reply.__status}` } }));
     if (reply) return res.writeHead(200).end(JSON.stringify(reply));
     res.writeHead(404).end("{}");
   });
@@ -361,6 +363,35 @@ test("a queue persisted before the identifier was kept recovers it from the reco
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the upgraded queue found the identifier and kept the evidence");
+});
+
+test("a legacy queue waits out a failed identifier read instead of settling without the evidence", async (t) => {
+  // The kernel is briefly unavailable on the first poll after an upgrade, while the PR is already merged at its bound head. The
+  // failed read must not be taken for "the record has no identifier": the queue holds, retries, and only settles once the read
+  // answers, so the merge that landed is still credited rather than lost for good.
+  const mergeSha = "d".repeat(40);
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-upgrade-retry-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  mkdirSync(join(cacheDir, "merges"), { recursive: true });
+  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
+    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9",
+    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
+  } } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
+  let reads = 0;
+  const { handle, outcomes, settle } = await setup(t, {
+    prs, cacheDir,
+    // The first read fails (a 503 while the kernel restarts), the next answers: the queue must retry, not settle.
+    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9" }) : undefined),
+  });
+  await handle.stepMerges();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(outcomes.length, 0, "a failed identifier read must not settle the queue");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
+    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the retried read kept the merge as evidence");
 });
 
 test("an owner's merge at the bound head after an unanswered merge call stays skipped: it is no commit this queue made", async (t) => {

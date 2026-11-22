@@ -24,7 +24,7 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The one recovery read of the record's identifier was made (or tried): a queue written before taskIdentifier existed. */ recovered?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string };
+type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
@@ -347,14 +347,22 @@ export function createMerges(d: {
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
         // A queue written before this process kept the task's identifier has only the record's task id, and a running queue is
-        // never handed `execute` again: read the identifier once so an already-merged PR is still found to be this task's.
+        // never handed `execute` again: read the identifier from the record so an already-merged PR is still found to be this
+        // task's. A read that failed (kernel briefly unavailable) is not a record without an identifier: only keep `recovered`
+        // once the read answered, and until it has, hold the queue rather than settle it without the evidence.
         if (q.task && !q.taskIdentifier && !q.recovered && d.identifierOf) {
-          q.recovered = true;
-          const ident = await d.identifierOf(id).catch((e: Error) => { log("merge queue: task identifier not read", { record: id, err: says(e) }); return undefined; });
-          if (ident) { q.taskIdentifier = ident; save(); }
+          const r = await d.identifierOf(id).then((v) => ({ v }), (e: Error) => {
+            log("merge queue: task identifier not read (retrying)", { record: id, tries: (q.recoverTries ?? 0) + 1, err: says(e) });
+            return undefined;
+          });
+          if (r) { q.recovered = true; delete q.recoverTries; if (r.v) q.taskIdentifier = r.v; save(); }
+          else q.recoverTries = (q.recoverTries ?? 0) + 1;
         }
+        // The identifier an already-merged PR must be proven against is still unknown and its read failed: the PRs may be read,
+        // but the queue is not finished, so a poll that comes back after the kernel does can still credit the evidence.
+        const unrecovered = Boolean(q.task && !q.taskIdentifier && !q.recovered && d.identifierOf);
         for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(q, p, merged);
-        if (!q.prs.some((p) => p.status === "pending")) finish(id, q);
+        if (!q.prs.some((p) => p.status === "pending") && !unrecovered) finish(id, q);
       }
     } finally {
       for (const [id, q] of Object.entries(s.queues)) if (q.outcome && !q.reported && !delivering.has(id)) deliver(id, q);

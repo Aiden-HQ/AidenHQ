@@ -506,7 +506,7 @@ export function createService(o: Options) {
   async function kernel(method: "GET" | "POST", path: string, b?: unknown) {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, ...(b ? { "content-type": "application/json" } : {}) }, ...(b ? { body: JSON.stringify(b) } : {}), signal: AbortSignal.timeout(30_000) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`);
+    if (!r.ok) throw Object.assign(new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`), { status: r.status });
     return j;
   }
   // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
@@ -544,7 +544,9 @@ export function createService(o: Options) {
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
     identifierOf: async (record) => {
-      const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch(() => undefined);
+      // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the
+      // queue must retry it rather than settle a legacy queue without the evidence the identifier would have proven.
+      const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch((e: Error & { status?: number }) => { if (e.status === 404) return undefined; throw e; });
       const ident = String((r as { identifier?: unknown })?.identifier ?? "");
       return ident || undefined;
     },
