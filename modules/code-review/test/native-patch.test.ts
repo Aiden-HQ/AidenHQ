@@ -417,3 +417,28 @@ test("a file name that starts with a byte order mark keeps it in the change list
   assert.deepEqual(g.oversize, []);
   assert.ok(g.groups[0]!.text.includes("a/\ufeffbom.txt"), "the patch names the file with its mark");
 });
+
+test("a base given as revision syntax (main~1) is not a branch name: incomplete, nothing is resolved from it", async () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+  const run = (name: string) => new Promise<{ status: number | null; out: string }>((ok) => {
+    const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), name, branch], { cwd: repo, env: { ...process.env, AIDENHQ_GATEWAY_URL: "http://127.0.0.1:9", AIDENHQ_RUN_TOKEN: "t" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (out += d)); c.on("close", (status) => ok({ status, out }));
+  });
+  for (const bad of ["main~1", "main^", "main..main", "@{-1}", "ma:in"]) {
+    const r = await run(bad);
+    assert.equal(r.status, 2, bad);
+    assert.match(r.out, /is not a branch name with a remote-tracking ref/, bad);
+  }
+});
+
+test("the snapshot is a real isolated repository: detached at the head, clean, and the base is readable with git show", () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  const head = sh(repo, "rev-parse", "HEAD"), out = join(mkdtempSync(join(tmpdir(), "snap-repo-")), "r");
+  snapshot(repo, head, out);
+  assert.equal(sh(out, "rev-parse", "HEAD"), head);
+  assert.equal(sh(out, "status", "--porcelain"), "");
+  assert.equal(sh(out, "show", `${base}:a.txt`), "a0");
+  assert.equal(readFileSync(join(out, "a.txt"), "utf8"), "a1\n");
+});
