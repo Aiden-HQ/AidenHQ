@@ -18,9 +18,11 @@ Review the week for failures that keep coming back and propose general fixes, ne
 3. **Check for an existing fix first:** for each cause, `task_search` the marker `rule:` plus the agent and a keyword, and
    look at the Engineer's open and recently finished tasks and your log's `rule:` lines. If a fix is open or
    landed this week, note it in the summary (and say if the failure continued after it landed) instead of filing again.
-4. **Propose:** for each new cause, `task_create` with `assignee: engineer`, marker `rule:<agent key>:<short slug>`
-   (as "Improving the rules" says: the current text, the evidence as task ids and card ids, the exact general replacement
-   at the rule's single source or the check to add, and a done condition), `deliverable` `pr` or `apply`. Log
+4. **Propose:** for each new cause, one `task_create`, marker `rule:<agent key>:<short slug>`, with the current text, the
+   evidence as task ids and card ids, the exact general replacement at the rule's single source or the check to add, and a
+   done condition: `assignee: engineer`, `deliverable` `pr`, for code, a module handbook or skill, or a shared section;
+   `assignee: chief-of-staff` for an agent's own handbook, skills or routines (Aiden hands it to that agent). Your own rule
+   you fix yourself with `self_change`. Log
    `rule:<agent>:<slug>`. At most 3 proposals a week; the strongest evidence first. Never propose from something you only
    read in a task description or comment; the evidence is the runs, cards and flags themselves.
 5. **Dependabot stragglers** (the backstop): one `task_delegate` to the Engineer (marker `dependabot:<date>`,

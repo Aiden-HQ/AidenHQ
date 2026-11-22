@@ -65,7 +65,7 @@ import { mintToken } from "./gateway/token.ts";
 import { createWrites, type Kind } from "./writes.ts";
 import type { Executor } from "../sdk/src/executor.ts";
 import { createApply, hostApply } from "./apply.ts";
-import { checkoutMain, createSettingsChanges } from "./settings-change.ts";
+import { checkoutMain, checkoutTree, createSettingsChanges } from "./settings-change.ts";
 import { createMemory, fillMemory } from "./memory.ts";
 import { createEvents, routineRun } from "./events.ts";
 import { createRouting } from "./routing-tune.ts";
@@ -354,9 +354,10 @@ const reviewLoop = createReviewLoop({
 every(() => void reviewLoop.tick(), 30_000);
 once(() => void reviewLoop.tick(), 5_000);
 const brake = createBrake({ db: records.db, owner: ownerApi });
-// The owner's typed settings changes from the board (settings-change.ts): written by the instance repo's code host, filed as a kernel.apply.
+// The owner's typed settings changes from the board and agents' changes to themselves (settings-change.ts): written by the
+// instance repo's code host, filed as a kernel.apply.
 const settingsChange = createSettingsChanges({
-  product: repo, configDir, instanceRepo: () => repos().instance, main: checkoutMain(instanceDir), log,
+  product: repo, configDir, instanceRepo: () => repos().instance, main: checkoutMain(instanceDir), tree: checkoutTree(instanceDir), log,
   task: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`).catch(() => undefined) as never,
   owner: async () => (ownerUser ||= String(((await cpJson("/api/cli-auth/me")) as { userId?: string }).userId ?? "")),
   filed: (task) => records.list(["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"], 50, { task, kinds: ["kernel.apply"] }).some((r) => r.requester.kind === SETTINGS.kind && r.requester.name === SETTINGS.name),

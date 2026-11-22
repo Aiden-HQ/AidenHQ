@@ -159,7 +159,8 @@ type Delegator = { key?: string; roles?: string[]; profile?: string; reports_to?
 /**
  * The ids of the agents `agent` may hand a task to, the one place the rule lives: its `delegate_to` keys when it has them
  * (`key?` optional ones too; `app-owners` adds the keys of the apps' owners), else anyone in the company for the chief of staff
- * (role fleet-admin), else its direct reports (grants `reports_to`) and the Engineers (profile engineer). A team's key stands
+ * (role fleet-admin), else its direct reports (grants `reports_to`), the Engineers (profile engineer) and the chief of staff
+ * (what only it changes, the owner's profile among them, is asked of it). A team's key stands
  * for its record and every member (naming a member is the structured assignment); a member is never reached any other way.
  */
 export const delegateIds = async (agents: Record<string, Delegator> | undefined, agent: string, appOwners: () => Promise<string[]> = async () => []) => {
@@ -171,5 +172,5 @@ export const delegateIds = async (agents: Record<string, Delegator> | undefined,
     return all.filter(([, g]) => keys.has(g.key!) || (g.member_of !== undefined && keys.has(g.member_of))).map(([id]) => id);
   }
   if (heldRoles(agents, agent).includes("fleet-admin")) return all.map(([id]) => id);
-  return all.filter(([, g]) => g.profile === "engineer" || (me?.key !== undefined && g.reports_to === me.key)).map(([id]) => id);
+  return all.filter(([id, g]) => g.profile === "engineer" || (me?.key !== undefined && g.reports_to === me.key) || heldRoles(agents, id).includes("fleet-admin")).map(([id]) => id);
 };

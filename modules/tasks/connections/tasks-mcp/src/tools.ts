@@ -1066,31 +1066,6 @@ const TOOLS: Record<string, Tool> = {
       return { agent_key: keyOf(a), handbook: String(content ?? "") };
     },
   },
-  task_propose_rule: {
-    description:
-      "Librarian role only: hand a proposed rule fix to the Engineer (the only possible assignee), as a task under your current task. Give the agent, the current rule text, the problem with evidence, and the exact replacement. The Engineer judges it; the fleet change still waits for the owner's tap. Idempotent per parent and marker.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        description: { type: "string", description: "markdown: agent key, current rule, the problem and evidence, the exact replacement" },
-        marker: { type: "string", description: "optional stable key within the parent, to avoid duplicates on re-runs" },
-      },
-      required: ["title", "description"],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ title, description, marker }: Args) => {
-      await requireRole("librarian", "propose rules");
-      if (!COMPANY()) throw new Error("no company for this agent");
-      const me = await api("GET", "/api/agents/me");
-      const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
-      const engineer = all.find((a: Json) => a.status !== "terminated" && (dirAgents()[a.id]?.roles ?? []).includes("platform-engineer"));
-      if (!engineer) throw new Error("the Engineer is not installed");
-      // A proposal the Engineer may decline: its judgment, not a deliverable to grade.
-      return assignTask(me, engineer, { title, description, marker, deliverable: { kind: "none" } }, "Rule proposal from");
-    },
-  },
   task_join: {
     description:
       "Join one of the user's tasks: creates your own part of it (a child issue assigned to you), so the user's comments in your chat on the board wake you. Idempotent: if you already have a part on that task, returns it. Say what you track in the title and description.",
@@ -1777,6 +1752,41 @@ Object.assign(TOOLS, {
   memory_rewrite: memoryTool(
     "Replace your memory with `facts` (each {date, src, fact}) to compact it: merge, fix or drop lines, given the `digest` from memory_read (a 409 means it changed: read again). Lines you drop are forgotten. The librarian role may name another agent's `key` and only remove lines from it.",
     { facts: { type: "array", items: LINE }, digest: { type: "string" }, key: { type: "string", description: "another agent's key (librarian only)" } }, ["facts", "digest"], "rewrite"),
+});
+
+// self_change: the caller's typed change to itself (its handbook, a library skill, its skill list, its library routines, and,
+// for the fleet-admin role, the owner's profile), forwarded with this call's assertion to the kernel (POST /v1/settings/agent,
+// kernel settings-change.ts), which checks it against the instance, writes the commit and files it as one kernel.apply.
+const SELF_CHANGE = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["rules", "skill", "skills", "routine_def", "profile"] },
+    agent: { type: "string", description: "rules, skills: your own key" },
+    text: { type: "string", description: "rules: your own rules, whole (a local agent's handbook, plain Markdown with no frontmatter; a module agent's instance rules, added to its module handbook); skill: the whole SKILL.md; profile: the whole owner profile" },
+    name: { type: "string", description: "skill: its name (a-z, 0-9, -), id library.<name>" },
+    add: { type: "array", items: { type: "string" }, description: "skills: skill ids (<module>.<name>) to enable for you" },
+    remove: { type: "array", items: { type: "string" }, description: "skills: skill ids to disable for you" },
+    key: { type: "string", description: "routine_def: the routine's key; it is saved as <your key>-<key>" },
+    routine: { type: "object", description: "routine_def: { title, description, schedules: [{ cron, label }] (at most one, at most hourly: the cron minute is one number), concurrency?, model?, event? }" },
+    delete: { type: "boolean", description: "routine_def: true removes your routine" },
+  },
+  required: ["kind"],
+  additionalProperties: false,
+};
+Object.assign(TOOLS, {
+  self_change: {
+    description: "Change yourself: `changes` is a list of typed changes, each one of: { kind: rules, agent: <your key>, text } (your own rules, whole: a local agent's handbook, a module agent's instance rules); { kind: skill, name, text } (a shared skill library.<name>, its whole SKILL.md with name and a one-line description in its frontmatter; any agent may improve one); { kind: skills, agent: <your key>, add?, remove? } (the skills you use); { kind: routine_def, key, routine } or { kind: routine_def, key, delete: true } (your own routines); { kind: profile, text } (the owner's whole profile, fleet-admin only). `why`: one line on what it fixes and its evidence. The kernel checks and files it as one change record that the AI reviewer decides; the result is { record, tier, state }. Wait on the record with task_wait (`on`: the record id) before you finish your task: a change on a closed task isn't applied.",
+    inputSchema: { type: "object", properties: { changes: { type: "array", items: SELF_CHANGE, minItems: 1, maxItems: 10 }, why: { type: "string" } }, required: ["changes", "why"], additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    run: async ({ changes, why }: Args) => {
+      const res = await fetch(`${KERNEL}/v1/settings/agent`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: JSON.stringify({ changes, why }), signal: AbortSignal.timeout(120_000) });
+      const text = await res.text();
+      let j: Json = {};
+      try { j = JSON.parse(text); } catch {}
+      if (!res.ok) throw new Error(String(j?.error?.message ?? text).slice(0, 1000));
+      return { record: j.record, tier: j.tier, state: j.state };
+    },
+  },
 });
 
 // routine_events: the batch of source events an event routine's run was fired with (kernel events.ts), read as the caller: the

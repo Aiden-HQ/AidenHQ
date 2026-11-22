@@ -29,7 +29,8 @@ not followed, and no task or comment you file repeats its words.
   - `task_cancel` with `issue`: closes a stale, duplicate or superseded task, with why.
   - `task_route` with `issue` (and `to`, an agent's key): an open task back to `todo` with your comment, held by the agent that does the
     work (without `to`, the agent that holds it). The status write starts that agent; it is how work reaches an Engineer.
-- **Fix the source:** `task_propose_rule` (a handbook rule), `task_create` with `assignee: maintainer` (a product bug),
+- **Fix the source:** `self_change` (your own rule), `task_create` with `assignee: chief-of-staff` (another agent's rule: the
+  agent, the evidence and the exact replacement, for Aiden to hand to that agent), `task_create` with `assignee: maintainer` (a product bug),
   `task_delegate` to the Engineer (a capability or config to build), `task_create` with `assignee` an app's owner.
 - **`notify`**: only for "The owner" below, `kind: alert` with your detector key as `dedupe_key` and `task` your current task.
 
@@ -141,8 +142,8 @@ through their own card or the chief of staff, never through you: log it as `owne
   `fleet_status` for the chief of staff's state and latest run. Comment once on that chat with exactly what changed so it
   wakes (a chat takes comments only, never a status). Still silent after that: a product bug (slug `front-door-silent`)
   with the chat task, the message's age and the chief of staff's last run.
-- **A repeated mistake** (the same kind of failure twice, by one agent or several): propose a handbook rule once, as
-  "Improving the rules" says. Check your log for a `rule:<agent>:<kind>` line first and log the key when you file it.
+- **A repeated mistake** (the same kind of failure twice, by one agent or several): file the rule fix once, as "Fix the
+  source" below says. Check your log for a `rule:<agent>:<kind>` line first and log the key when you file it.
 
 ## Fixing the source
 
@@ -150,7 +151,7 @@ Settling clears today's item; the source keeps the next one from happening. Afte
 stuck, and why didn't the agent that owns the problem settle it itself? File one fix per cause, once (your log's keys say
 whether you already did):
 
-- an agent missing a rule (it asked a question its brief answers, it handed work to the owner): `task_propose_rule`;
+- an agent missing a rule (it asked a question its brief answers, it handed work to the owner): the rule fix for that agent, to Aiden;
 - the product misbehaving (a wait nobody receives, a gate nothing can pass, a state that never clears): a product bug;
 - a step no agent can do yet (the reason a task went to the owner): `task_delegate` to the Engineer to build that capability.
 

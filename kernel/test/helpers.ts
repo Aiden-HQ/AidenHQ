@@ -72,7 +72,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { alias: {id, name, task?} }: each alias stands for a running kernel job of that agent on its task (TASK-1 by default; its authority frozen from
  * its grants); `call`, `v1` and `token(alias)` turn the alias into the job's real token. grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, issues = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkResolver, checkJobs, localChanges, job, routing, graderToken = () => "", connect = false } = {}) {
+export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, issues = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkResolver, checkJobs, localChanges, job, routing, graderToken = () => "", connect = false, settingsChange, planners } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -120,7 +120,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const reviewed = [];
   const reviews = { request: async (request) => { reviewed.push(request); if (!reviewer) throw new Error("no reviewer module is installed"); return reviewer(request); } };
   // `checks` is the finish gate's table and the write.filed checks' too; the platform check's code runs in process, as main.ts wires it.
-  const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, repos: () => repos,
+  const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, planners, repos: () => repos,
     checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate },
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text, o) => { const to = o?.parent ? parents[task] : task; if (to && !closed.includes(to)) notices.push({ task: to, text }); },
       scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } } });
@@ -157,7 +157,8 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   }
   const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, kindOf: writes.kindOf, callAs: proxy.callAs, log: logf });
   const work = createWork({ db: records.db, records });
-  const backplane = createBackplane({ memory: createMemory({ dir: join(dir, "memory") }), connectionState, routing, work, graderToken, healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, admission, outcomes, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, once: createOnce(records.db), plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl: cpServer.url, checks, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
+  const memory = createMemory({ dir: join(dir, "memory") });
+  const backplane = createBackplane({ memory, settingsChange, connectionState, routing, work, graderToken, healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, admission, outcomes, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, once: createOnce(records.db), plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl: cpServer.url, checks, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const bp = await serve(backplane);
   t.after(() => { for (const s of [cpServer, bp]) { s.s.closeAllConnections?.(); s.s.close(); } });
@@ -167,7 +168,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   });
   /** The backplane's /v1/writes routes, with a bearer (the board's key by default). */
   const v1 = (method, path, body, token = "the-boards-key") => fetch(`${bp.url}${path}`, { method, headers: { authorization: `Bearer ${tokens[token] ?? token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, json: await r.json() }));
-  return { connectionState, taskStates, wakes, token, dir, url: bp.url, call, control, agentPosts, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1, boardCalls, reviewed, channels, grantsFile: join(dir, "grants.json") };
+  return { memory, connectionState, taskStates, wakes, token, dir, url: bp.url, call, control, agentPosts, log, asserter, asCaller, jwks: asserter.jwks, records, writes, notices, v1, boardCalls, reviewed, channels, grantsFile: join(dir, "grants.json") };
 }
 
 /** A module's MCP server: answers tools/list with `tools` and tools/call with `answer(msg, req)`; records what it saw. */

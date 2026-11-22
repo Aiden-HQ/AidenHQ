@@ -10,7 +10,6 @@
   "task_finish (say `issue: <id>` in text when it closes a task other than the run's)",
   "notify (the old handbooks call it notify_owner: use the name your handbook gives)",
   "coach_record",
-  "task_propose_rule",
   "person_identity_decide (put confirm or reject in status)",
   "meeting_note_correct",
   "github_app_issue"

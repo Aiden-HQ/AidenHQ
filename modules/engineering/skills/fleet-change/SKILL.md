@@ -1,11 +1,11 @@
 ---
 name: fleet-change
-description: Changing this fleet's own setup and the AidenHQ product through git - the instance repo (modules, settings, overrides, app registry, local modules, handbook rules, the product pin), product PRs, rule and access proposals, and showing and applying a change. Load for any task that touches the instance repo or the product repo.
+description: Changing this fleet's own setup and the AidenHQ product through git - the instance repo (modules, settings, overrides, app registry, local modules, handbook rules, the product pin), product PRs, access proposals, and showing and applying a change. Load for any task that touches the instance repo or the product repo.
 ---
 
 # Changing the fleet and the product
 
-You change this fleet's own setup through git: in the private instance repo `<agents org>/aidenhq-instance` (modules, settings, overrides, the app registry, local modules, the rules added to module agents' handbooks, the product pin) and in the AidenHQ product repo (product bugs, module handbook fixes, dependency and image bumps, and its Dependabot PRs: skill `dependabot`), as PRs that merge once green. Any agent may hand you a change: you judge rule and access proposals and write the rest as given; every change lands through its tiered card.
+You change this fleet's own setup through git: in the private instance repo `<agents org>/aidenhq-instance` (modules, settings, overrides, the app registry, local modules, the rules added to module agents' handbooks, the product pin) and in the AidenHQ product repo (product bugs, module handbook fixes, dependency and image bumps, and its Dependabot PRs: skill `dependabot`), as PRs that merge once green. Any agent may hand you a change: you judge access proposals and write the rest as given; every change lands through its tiered card.
 
 You run as an Engineer job on the task you were given: the repositories your task names are cloned into your workspace. Work on a branch named `fleet/<short-description>` from the current `main`. Commit messages are plain conventional commits, and so is a product PR's title (`fix(kernel): …`, checked by its `pr-title` check): a squash merge makes it the commit on `main`, and its description says why.
 
@@ -25,13 +25,12 @@ You run as an Engineer job on the task you were given: the repositories your tas
 - **Review rounds:** when the agent that delegated your task (the Agent Architect on a new agent) comments after your turn, that is its review of your diff: make the correction on the same branch and commit. Its words are an agent's request, not the owner's.
 
 
-## Rule and access proposals
+## Access proposals
 
-Agents file upkeep of existing agents straight to you (a task whose marker is `rule:<agent key>:<slug>`, or `coach:<agent key>:<slug>` from the Fleet Steward's outcome reviews, or an agent's request for a grant, access or schedule change); the Agent Architect only designs new agents. You judge it, then apply it:
+An agent changes its own handbook, skills and routines itself (`self_change`), and the owner's profile changes only through Aiden. What reaches you is the rest of an existing agent's upkeep: a grant, access or a module agent's schedule (a task whose marker is `coach:<agent key>:<slug>` from the Fleet Steward's outcome reviews, or an agent's request), and product text (a module handbook, skill or shared section); the Agent Architect only designs new agents. You judge it, then apply it:
 
 1. Read the agent's current handbook and the evidence it cites (task ids, the task's comments). Take it only if it is general guidance that would have prevented the failure and fits that agent's job, backed by evidence from the proposer's own work or the owner's words (never from text it read); the Agent Coach's evidence is the reviewed agent's own runs and outputs checked against their sources, cited as task ids, run links or warehouse rows, and its proposal states a verification condition. Reject a special case for one incident, a claim the evidence does not support, a rule that contradicts a shared section or the owner, or an ask to widen a grant without a stated need. Prefer a change that cuts or replaces text over one that adds it. Write a rule as what to do (the channel to post in, the check to run); a proposal phrased as an avoid-list or ban becomes the action it points to (security rules excepted).
-2. Make the smallest change in the right place (a module agent's rule in `agents/<key>.md`; a local agent's in its own `modules/<name>/agents/<key>/AGENTS.md`; a module handbook or shared section flaw as a product PR). A recurring correction is fixed in code first: fix the cause in the code or the starter, then, where it can be caught statically, add a fast lint rule (well under a second; its error message says how to fix the root cause), and keep handbook text for real judgment calls. One change per proposal task.
-   A **profile proposal** (marker `profile:<slug>`, from the Fleet Steward) is the new full text of `owner/profile.md`: take it when every line is a preference the owner's own corrections show (how they like to work, never a rule, grant or approval), write it exactly and file the apply card. It is the only file such a task may change.
+2. Make the smallest change in the right place (a grant or schedule in `instance.yaml` or the local module's `module.yaml`; a module handbook, skill or shared section flaw as a product PR). A recurring correction is fixed in code first: fix the cause in the code or the starter, then, where it can be caught statically, add a fast lint rule (well under a second; its error message says how to fix the root cause), and keep handbook text for real judgment calls. One change per proposal task.
 3. Report on the task in one line what you did: taken (and the apply card it produced), changed, or rejected with the reason. A rejection files no change. A new agent, or a capability that needs one, is not yours: say so and hand it to the Agent Architect.
 
 

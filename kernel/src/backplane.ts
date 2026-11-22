@@ -362,7 +362,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
-  settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
+  settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string, o?: { tool?: string; why?: unknown }) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
   /** Agents' memory documents (memory.ts). */
@@ -636,17 +636,21 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         }
       }
       if (hit?.path === "/v1/settings/agent") {
-        // A module holding kernel.settings, serving a kernel job's tool call in flight: the agent's typed setting change on its
-        // own task, for a setting whose module names one of the job's roles as a writer (settings-change.ts asAgent).
+        // A module holding kernel.settings, serving a kernel job's tool call in flight, on the job's own task: through the signed
+        // tool self_change, the agent's change to itself; through any other, a setting whose module names one of the agent's
+        // roles as a writer (settings-change.ts asAgent). The agent's key and roles are its live grants row's, never the assertion's.
         const w = await moduleOf(req);
         if (!w.roles.includes("kernel.settings")) throw fail(403, "forbidden", `${w.module} may not file settings changes (role kernel.settings)`);
         if (!settingsChange?.asAgent) throw fail(503, "unavailable", "settings changes are off");
         const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
         const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight changes settings");
-        const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
+        const row = grantsFile().agents?.[job.agent!];
+        if (!row?.key) throw fail(403, "forbidden", "the job's agent has no grants row");
+        const requester = { agent: job.agent ?? "", key: String(row.key), name: job.name ?? "", roles: [...(row.roles ?? [])], kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
         const b = await json(req, 400_000);
-        try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+        const tool = String(live.caller.tool ?? "").split(".").pop();
+        try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
       if (hit?.path === "/v1/memory/:op") {
         // A module holding kernel.memory, serving a kernel job's memory_<op> call in flight: the job is read from its own token

@@ -29,28 +29,28 @@ Every agent runs on its module handbook (`modules/<m>/agents/<key>/AGENTS.md`), 
 (`agents/<key>.md`, or a local agent's own `modules/<name>/agents/<key>/AGENTS.md`) and the shared sections setup appends
 (the kernel's Approvals, assembled by `scripts/handbook.ts`, then the modules' `prompts:`, `modules/<m>/prompts/<id>.md`). Its frontmatter `description:` (one line; a local agent's `description` in its `module.yaml`) is its routing contract: setup
 puts it in the agent directory, where `task_team` and `fleet_catalog` return it on demand, and compile fails
-when an agent has none. Agents never edit a handbook; changes flow through one owner, the Agent Architect:
+when an agent has none. An agent changes itself; product text changes through an Engineer PR:
 
 1. **Evidence.** The owner's "Not right" on a task (label `correction`, comment `Not right: …`), an agent's own repeated
    failure, the Knowledge Librarian's weekly lint (handbooks read with `handbook_read`: overlaps, contradictions,
    ungranted tools, unreachable delegations, and the week's corrections), and Fleet Ops' repeated-mistake findings.
-2. **Proposal.** The Librarian files `task_propose_rule`; any other agent with `task_create` files a task assigned to
-   `architect` (shared section "Improving the rules"); a local agent's "Improve <name>" routine does the same.
-   Each names the agent, the current text, the evidence and the exact replacement.
-3. **Decision.** The Architect judges it (general guidance only, never a special case for one incident), places it
-   (instance `agents/<key>.md` for a module agent, the local agent's own handbook, or a product PR when it is right for
-   every AidenHQ) and delegates it to the Engineer, then reviews the diff.
-4. **Approval.** The Engineer's commit becomes a fleet apply card tiered by code: an agent's handbook goes to the AI
-   reviewer, and a role-holding agent's (Aiden, the Architect, the
-   Engineer, any agent with roles) is the owner's tap. A product PR is merged by the owner.
+2. **The agent's own change.** `self_change` (shared section "Improving the rules"): its handbook (a local agent's
+   `AGENTS.md`, a module agent's instance rules `agents/<key>.md`), a shared `library` skill, its skill list
+   (`overrides.agents.<key>.skills`), its own `library` routines and, for Aiden (fleet-admin) alone, `owner/profile.md`.
+   The kernel checks it against the instance at the main it fetched, compiles that tree before and after, writes the
+   commit and files it as one `kernel.apply` with the agent as requester (`kernel/src/settings-change.ts`,
+   [design/settings-changes.md](design/settings-changes.md)). Another agent's fix goes to Aiden, who hands it to that
+   agent; a profile line goes to Aiden.
+3. **Approval.** The apply is Tier 1: the AI reviewer reads the diff and, for a skill, the agents that enable it.
+4. **Product text.** A module handbook, skill or shared section changes in the product repo: a task for the Engineer,
+   whose PR is merged on its review.
 
 The AI reviewer has its own loop: every false reject becomes a planted case in `modules/ai-reviewer/test/reviewer-cases/`,
 and `node modules/ai-reviewer/scripts/reviewer-eval.ts` must stay at 100%.
 
 Gaps: corrections are not yet turned into replayable eval cases for agents (only the reviewer has an eval set), and
 instance additions that prove general have no automatic path back into the module handbooks (the Architect proposes a
-product PR by hand). Agents without `task_create` (the Follow-up Tracker, the Meeting Librarian, the UI/UX Designer) can't propose a fix
-themselves; the Librarian's lint covers them.
+product PR by hand). An agent without `self_change` (a check or Engineer job) can't fix itself; the Librarian's lint covers it.
 
 ## Paperclip gives us
 

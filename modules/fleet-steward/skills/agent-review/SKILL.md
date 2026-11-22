@@ -74,7 +74,10 @@ Where each goes:
 
 - **A rule in a module handbook or a shared section** (product code): `task_create` with `assignee: engineer`,
   marker `coach:<agent key>:<slug>`, `deliverable` `pr` with `ref` the product repo, the finding in the format above.
-- **A rule under "Instance rules", a grant or a schedule:** the same `task_create` with `deliverable` `apply`.
+- **A rule in the agent's own handbook** (its "Instance rules", a local agent's `AGENTS.md`), a skill it uses or its own
+  routine: `task_create` with `assignee: chief-of-staff`, marker `coach:<agent key>:<slug>`, the finding in the format
+  above: Aiden hands it to the agent, which changes itself with `self_change`.
+- **A grant or a module agent's schedule:** `task_create` with `assignee: engineer`, `deliverable` `apply`.
 - **An agent's definition** (its mission, routines, skills or grants as a whole): `task_create` with `assignee: architect`
   when the Agent Architect is in `fleet_catalog`, else the Engineer, marker `coach:<agent key>:<slug>`.
 - **A product bug:** as the `fleet-check` skill says (a task for the Maintainer); name it in your review record.

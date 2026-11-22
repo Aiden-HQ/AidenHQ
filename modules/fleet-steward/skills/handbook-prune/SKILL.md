@@ -20,6 +20,7 @@ You edit no handbook yourself.
    owner decision. Keep a rule when the evidence is thin or the window is short for that agent.
 5. One `task_create` with `assignee: engineer`, marker `coach-prune:<date>`, `dedupe_closed: true`, `deliverable`
    `pr`, `ref` the product repo, titled `Prune dead handbook rules — <date>`. The body lists each deletion: file, the exact
-   rule text (one line), the reason and the evidence (the searches you ran and what they returned). Rules under "Instance
-   rules" go in the same task as a second list (the Engineer files them as an `apply`).
+   rule text (one line), the reason and the evidence (the searches you ran and what they returned). Rules in an agent's own
+   handbook (its "Instance rules", a local agent's `AGENTS.md`) go in one `task_create` with `assignee: chief-of-staff`,
+   marker `coach-prune-own:<date>`, listed the same way: Aiden hands each agent its deletions, which it makes with `self_change`.
 6. Nothing qualifies: `task_finish` with "nothing to prune" and what you checked. Otherwise `task_finish` with the task id.

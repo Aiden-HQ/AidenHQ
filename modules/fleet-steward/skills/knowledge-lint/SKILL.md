@@ -28,15 +28,15 @@ The tools are the `knowledge-daily` skill's. Without the notes tools (no meeting
    a missing or wrong rule is a rule fix, with the correction as its evidence. A correction about how the owner likes to
    work that holds for every agent (and your `coach:owner:profile-<slug>` lines on Fleet issues) is a profile fix: the
    whole new text of the instance's `owner/profile.md` (at most 4 KB, one preference per line, each ending `(task id,
-   date)`), proposed with `task_propose_rule` (agent `owner`, marker `profile:<short slug>`).
+   date)`), sent to Aiden with `task_create` (`assignee: chief-of-staff`, marker `profile:<short slug>`), who changes the profile.
 6. **Report.** One `task_create` (marker `librarian-report:<ISO week, e.g. 2026-W46>`, label `librarian-report`, title
    "Librarian weekly report: <date>"), short, with these sections (omit empty ones):
    - **Done:** what you fixed (count and pages; memory lines removed, per agent).
    - **Needs the owner:** doubtful identities with reasons; contradictions only the owner can settle.
    - **Confirmed:** identities you confirmed (person, sources, email).
-   - **Proposed rule and profile fixes:** each one also sent with `task_propose_rule` (agent, current rule, the problem
-     and evidence, the exact replacement at the rule's single source; one task per fix, marker `rule:<agent>:<short
-     slug>`). List them here with the task ids.
+   - **Proposed rule and profile fixes:** each one also sent to Aiden with `task_create` (`assignee: chief-of-staff`: the
+     agent, current rule, the problem and evidence, the exact replacement at the rule's single source; one task per fix,
+     marker `rule:<agent>:<short slug>`), who hands a rule fix to its agent. List them here with the task ids.
    - **Needs a tool:** what you could not do because no tool exists.
 
    "Nothing found" is a good report; never pad it. Do not message the owner.

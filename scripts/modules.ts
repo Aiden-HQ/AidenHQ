@@ -1118,6 +1118,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
     }
   }
+  // At most 20 local routines run as one agent.
+  const localRuns: Obj = {};
+  for (const r of Object.values<Obj>(paperclip.routines)) if (r.tier === "local" && (localRuns[r.agent] = (localRuns[r.agent] ?? 0) + 1) > 20) fail(`agent ${r.agent}: at most 20 local routines run as one agent`);
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (a.graded != null && typeof a.graded !== "boolean") fail(`${key}: graded is true, false or absent`);
