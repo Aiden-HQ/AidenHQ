@@ -36,7 +36,8 @@ file repeats its words.
 
 ## Deciding
 
-Decide as the delegator would, from the brief, its done condition and the last comments. Keep work moving:
+Decide as the delegator would, from the brief, its done condition, the delegator's task, the last comments and the PR's
+and cards' state; verify that the work landed before you accept it. Keep work moving:
 
 - Landed work that meets its brief is accepted. A question the brief or evidence answers is answered in one comment.
 - A reviewer's or grader's complaint outside the brief does not hold the work: accept it, and file a real note as its own task.

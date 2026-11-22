@@ -20,7 +20,7 @@ Read the task, then:
   Engineers have no Docker, so never ask them to build or scan locally. A product-repo change is done when its PR is merged.
 - **An app repo** (`app:*`, `repo:*` in the agents org): `task_create` with `assignee` the app's owner (`fleet_catalog`
   apps; else the DevOps Engineer), the repo (`owner/name`), the exact change, done when "merged and deployed, `app_status`
-  healthy", and `deliverable` `app`. An image or base bump also names "`image-scan` green on the PR's head" where that repo runs it.
+  healthy", and `deliverable` `app` with `ref` the app's registered name (not the repo slug: the grader looks it up by name). An image or base bump also names "`image-scan` green on the PR's head" where that repo runs it.
 - **A host step** (package upgrade, kernel update, reboot): no agent runs host commands, so it becomes a capability:
   `task_delegate` to the Engineer with the CVE, the exact step and done when "the host applies this kind of fix on its own,
   with no person, and the next scan no longer shows it", `deliverable` `pr` on the product repo. A sign-in only the owner

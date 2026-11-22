@@ -48,11 +48,13 @@ proposed fix as exact text at the rule's single source, and a verification condi
 Prefer prevent over detect over advise: an app writer rule (its API refuses the bad write), then a health check (the app's
 `/api/health` `checks`; a failing one reaches its owner as `quality:<app>:<check>`), then a handbook line (a change that cuts text beats one that adds).
 
-- Module handbook or shared section (product code): `task_create` `assignee: engineer`, marker `coach:<agent key>:<slug>`, `deliverable` `pr` with `ref` the product repo.
+Every fix task carries marker `coach:<agent key>:<slug>` (`coach_evidence` finds earlier fixes by it).
+
+- Module handbook or shared section (product code): `task_create` `assignee: engineer`, `deliverable` `pr` with `ref` the product repo.
 - "Instance rules", a grant or a schedule: the same with `deliverable` `apply`.
 - An agent's definition as a whole: `assignee: architect` when it is in `fleet_catalog`, else the Engineer.
 - A product bug: as `fleet-check` says; name it in the record.
-- An app writer rule or check: `assignee` the app's owner (the DevOps Engineer `app-maintainer` when none), `deliverable` `app`.
+- An app writer rule or check: `assignee` the app's owner (the DevOps Engineer `app-maintainer` when none), `deliverable` `app` with `ref` the app's registered name.
 - Memory (a fact it keeps getting wrong) or owner working style across agents: log on Fleet issues as
   `coach:<agent key>:memory-<slug>` or `coach:owner:profile-<slug>` with evidence; `knowledge-daily` and `knowledge-lint` propose it.
 - A question only the owner can answer goes in the weekly digest.
