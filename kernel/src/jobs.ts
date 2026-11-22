@@ -189,7 +189,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   onEnd?: (id: string) => void;
   db: DatabaseSync; cfg: SandboxConfig; cp: ControlPlane;
   /** The state root can't be made: the owner hears it once per episode (main.ts), not once per job. */
-  stateNeed?: (e: Error) => void;
+  stateNeed?: (e: Error, episode: string) => void;
   /** Whether this module dispatches this agent's jobs (compile: config/kernel/modules.json `dispatches`, by agent key). */
   mayDispatch: (module: string, agent: string) => boolean;
   log: (msg: string, fields?: Record<string, unknown>) => void;
@@ -497,9 +497,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     // The prompt a turn runs with when nothing resumes: the caller's full form, else what the row kept at admission, else its own.
     const firstTurn = fullPrompt ?? r.full_prompt ?? prompt;
     const at = Date.now();
-    ensureStateDirs(cfg.stateDir, stateNeed);
+    const { logs } = ensureStateDirs(cfg.stateDir, stateNeed);
     // A retry is another run of the same job in the same box: its log (and its .exit beside it) must not be the last run's.
-    const stem = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}`);
+    const stem = join(logs, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}`);
     let logPath = `${stem}.log`;
     for (let n = 2; existsSync(`${logPath}.exit`) || existsSync(logPath); n++) logPath = `${stem}-${n}.log`;
     const jobDir = newJobDir(box.outDir);

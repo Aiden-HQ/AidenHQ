@@ -244,8 +244,10 @@ const notify = createNotify({ db: records.db, modules: modulesFile, secret, reso
 // alert: something is wrong now (a page); done: a plain notice, never muted.
 const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
 // The runner's state root can't be made (a reclaim removed it, or another user owns it): one alert per episode, naming the
-// path, its owner and mode, and the uid the kernel runs as, so the owner can fix it instead of every job failing unseen.
-const warnStateNeed = (e: Error) => notify.queue({ kind: "alert", text: `Jobs on this host can't start: ${e.message}. Recreate it as this user (mode 0700) or fix its owner and mode.`, dedupe_key: `runner-state-dir:${sandbox.stateDir}` });
+// path, its owner and mode, and the uid the kernel runs as, so the owner can fix it instead of every job failing unseen. The
+// key names the episode: the owner channel drops an alert key it already sent within the hour, so a second outage an hour or
+// even a minute later must not reuse the first one's.
+const warnStateNeed = (e: Error, episode: string) => notify.queue({ kind: "alert", text: `Jobs on this host can't start: ${e.message}. Recreate it as this user (mode 0700) or fix its owner and mode.`, dedupe_key: `runner-state-dir:${episode}` });
 // A judgement a task can't make for itself (a parked target, an agent's wait on its delegator or the owner) reaches whoever
 // can make it, once (escalate.ts).
 // A task as the control plane has it now (undefined when gone; throws when it can't be read now): escalate and connection state.
@@ -412,7 +414,7 @@ const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
 // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 const jobs = createJobs({
-  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch, stateNeed: (e) => warnStateNeed(e),
+  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch, stateNeed: (e, episode) => warnStateNeed(e, episode),
   cp: {
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
   },
@@ -550,7 +552,7 @@ const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
-  stateNeed: (e) => warnStateNeed(e),
+  stateNeed: (e, episode) => warnStateNeed(e, episode),
   attachments: {
     list: async (task) => (await cpJson(`/api/issues/${encodeURIComponent(task)}/attachments`)) as { originalFilename?: string; byteSize?: number }[],
     add: async (task, name, type, data) => {

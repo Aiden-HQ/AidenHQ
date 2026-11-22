@@ -3,7 +3,7 @@
 // registry (config/engines.json), an engine's state folder and the job credentials are here too.
 import { createHash } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -50,11 +50,26 @@ function existing(p: string) {
   }
   return undefined;
 }
+/** The first symlink at or above `p` (or `p` itself), by its absolute name: a state root is never reached through one. */
+function symlinkOnPath(p: string) {
+  const abs = resolve(p);
+  let at: string = sep;
+  for (const part of abs.split(sep) as string[]) {
+    if (!part) continue;
+    at = join(at, part);
+    try {
+      const st = lstatSync(at, { throwIfNoEntry: false });
+      if (!st) return undefined;
+      if (st.isSymbolicLink()) return at;
+    } catch { return undefined; }
+  }
+  return undefined;
+}
 /** What stopped the state root, in one line the owner can act on: the absolute path, the owner and mode found, the uid we run as. */
 function stateRootFailure(p: string, why: string, cause: unknown) {
   const f = existing(p), who = typeof process.getuid === "function" ? `uid=${process.getuid()} gid=${process.getgid?.()}` : "an unknown uid";
   const found = f ? `${f.at === p ? "found" : `nearest existing ${f.at} is`} mode ${mode(f.st.mode)}, owner uid=${f.st.uid} gid=${f.st.gid}${f.st.isSymbolicLink() ? ", a symlink" : ""}` : "nothing exists above it";
-  return new Error(`runner state directory ${p} can't be used: ${why} (${found}; the kernel runs as ${who})`, { cause });
+  return new Error(`runner state directory ${resolve(p)} can't be used: ${why} (${found}; the kernel runs as ${who})`, { cause });
 }
 /** Removes `p` as itself: a symlink is unlinked, never followed (a recursive rm on one would empty its target). */
 function removeEntry(p: string) {
@@ -68,24 +83,32 @@ const because = (e: unknown) => { const err = e as NodeJS.ErrnoException; return
 
 /**
  * One unusable state root is one episode: the owner hears the first job's failure, not each job's while it stays broken. A
- * successful creation clears it, so a later break is a new need. Keyed by path: another root is its own need.
+ * successful creation clears it, so a later break is a new episode with its own alert (the owner channel drops an alert whose
+ * key it saw within the hour, so the key must name the episode, not only the path). Kept only once the report went out: a
+ * notice that couldn't be queued is retried by the next job.
  */
 const stateNeeds = new Map<string, string>();
-function reportNeed(p: string, err: Error, report?: (e: Error) => void) {
-  if (!report || stateNeeds.get(p) === err.message) return;
-  stateNeeds.set(p, err.message);
-  try { report(err); } catch { /* the launch's own error is the one that ends the job */ }
+let episodes = 0;
+function reportNeed(p: string, err: Error, report?: (e: Error, episode: string) => void) {
+  const key = resolve(p);
+  if (!report || stateNeeds.get(key) === err.message) return;
+  const episode = `${key}:${++episodes}`;
+  // A notice the kernel couldn't queue (the store busy) is not recorded: the next job reports the same outage again, and the
+  // job still fails with the state error, not the queue's.
+  try { report(err, episode); } catch { return; }
+  stateNeeds.set(key, err.message);
 }
 
 /**
- * `<p>` made 0700 (or confirmed usable), never through a symlink. A symlink, a non-directory, another user's directory or one
- * without owner write+execute is refused with the path, owner and mode found: `recursive: true` would otherwise fail deep
- * inside the per-engine folder, on every job, with a bare EACCES.
+ * `<p>` made 0700 (or confirmed usable). A symlink anywhere on the path, a non-directory, another user's directory or one
+ * without owner write+execute is refused with the absolute path, owner and mode found: `recursive: true` would otherwise fail
+ * deep inside the per-engine folder, on every job, with a bare EACCES, and a symlinked parent would have us chmod another tree.
  */
 function ensureStateDir(p: string) {
   try {
+    const link = symlinkOnPath(p);
+    if (link) throw new Error(link === resolve(p) ? "it is a symlink, which is never followed" : `its ancestor ${link} is a symlink, which is never followed`);
     const st = lstatSync(p, { throwIfNoEntry: false });
-    if (st?.isSymbolicLink()) throw new Error("it is a symlink, which is never followed");
     if (st && !st.isDirectory()) throw new Error("it is not a directory");
     if (st) {
       const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -93,8 +116,10 @@ function ensureStateDir(p: string) {
       if ((st.mode & 0o300) !== 0o300) throw new Error("it is not owner-writable and owner-searchable (mode has no 0300)");
       accessSync(p, constants.W_OK | constants.X_OK);
     } else mkdirSync(p, { recursive: true, mode: 0o700 });
-    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700.
+    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. The path is
+    // re-checked after the chmod: a directory swapped for a symlink in between is refused, never written through.
     chmodSync(p, 0o700);
+    if (symlinkOnPath(p) || !lstatSync(p).isDirectory()) throw new Error("it became a symlink or a non-directory while being set up");
   } catch (e) {
     throw stateRootFailure(p, because(e), e);
   }
@@ -103,10 +128,11 @@ function ensureStateDir(p: string) {
 /**
  * The engine state root and its logs dir, healed 0700 before any job folder. A disk reclaim that removed them (or a root
  * another user made) must not turn every launch into the same EACCES: a missing root is recreated, and one still unusable is
- * reported as one owner need (`report`) before it throws.
+ * reported as one need per episode (`report`, with the episode's key) before it throws. The root keeps the form it was
+ * configured in (a relative `state_dir` stays relative): the launcher compares it to `path.join(computers.json state_dir, …)`.
  */
-export function ensureStateDirs(stateDir: string, report?: (e: Error) => void) {
-  const root = resolve(stateDir), logs = join(root, "logs");
+export function ensureStateDirs(stateDir: string, report?: (e: Error, episode: string) => void) {
+  const root = stateDir, logs = join(root, "logs");
   try {
     ensureStateDir(root);
     ensureStateDir(logs);
@@ -115,7 +141,7 @@ export function ensureStateDirs(stateDir: string, report?: (e: Error) => void) {
     reportNeed(root, err, report);
     throw err;
   }
-  stateNeeds.delete(root);
+  stateNeeds.delete(resolve(root));
   return { root, logs };
 }
 
@@ -132,7 +158,7 @@ export function ensureStateDirs(stateDir: string, report?: (e: Error) => void) {
  * recreated on the next launch; a root that still can't be used throws naming its path, owner and mode, and `report` hears it
  * once per episode rather than on each job.
  */
-export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">, kind: string, task?: string, skills: Skill[] = [], report?: (e: Error) => void) {
+export function engineState(cfg: Pick<SandboxConfig, "enginesFile" | "stateDir">, kind: string, task?: string, skills: Skill[] = [], report?: (e: Error, episode: string) => void) {
   const e = engineEntry(cfg, kind);
   if (!e.state) return undefined;
   if (skills.length && e.state !== "task") throw new Error(`engine ${kind}: skills need a per-task state folder (state: task)`);
@@ -165,7 +191,6 @@ const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffe
  * mis-pinned skill is not read as a swap.
  */
 function buildSkills(root: string, skills: Skill[]) {
-  mkdirSync(root, { recursive: true, mode: 0o700 });
   for (let attempt = 1; ; attempt++) {
     try {
       return copySkills(root, skills);

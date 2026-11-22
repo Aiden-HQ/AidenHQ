@@ -94,7 +94,7 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   /** The kernel is draining (main.ts): a launch that got its box gives it back instead of starting the run. */
   stopping?: () => boolean;
   /** The state root can't be made (a removed or foreign-owned directory): the owner hears it once per episode, not per job. */
-  stateNeed?: (e: Error) => void;
+  stateNeed?: (e: Error, episode: string) => void;
 }) {
 
   /** admission.ts `launch`: the job's token, its engine home and workspace, its box, then the run. */

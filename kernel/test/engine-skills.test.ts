@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { engineState, ensureStateDirs } from "../src/sandbox.ts";
 
 function setup() {
@@ -67,7 +67,7 @@ test("an unusable state root throws once, naming the absolute path, its owner/mo
   chmodSync(root, 0o555); // present but not writable: what a reclaim left, or another user's directory
   const needs: string[] = [];
   try {
-    assert.throws(() => engineState(cfg, "codex", "task-1", [], (e) => needs.push(e.message)), (e: Error) => {
+    assert.throws(() => engineState(cfg, "codex", "task-1", [], (e, episode) => needs.push(`${episode}\n${e.message}`)), (e: Error) => {
       assert.match(e.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       assert.match(e.message, /mode 0555/, "the mode found is named");
       assert.match(e.message, /owner uid=\d+ gid=\d+/, "the owner found is named");
@@ -75,25 +75,58 @@ test("an unusable state root throws once, naming the absolute path, its owner/mo
       return true;
     });
     // Every job on the episode fails, but the owner is told once: the same failure again is the same need.
-    assert.throws(() => engineState(cfg, "codex", "task-2", [], (e) => needs.push(e.message)));
+    assert.throws(() => engineState(cfg, "codex", "task-2", [], (e, episode) => needs.push(`${episode}\n${e.message}`)));
     assert.equal(needs.length, 1);
     assert.match(needs[0]!, /runner state directory/);
-    // Healed, the episode clears: a later break is a new need.
+    // Healed, the episode clears: a later break is a new need with its own key, so the owner channel (which drops a repeated
+    // alert key within the hour) can't mistake it for the first outage's duplicate.
     chmodSync(root, 0o700);
-    ensureStateDirs(root, (e) => needs.push(e.message));
+    ensureStateDirs(root, (e, episode) => needs.push(`${episode}\n${e.message}`));
     chmodSync(root, 0o555);
-    assert.throws(() => engineState(cfg, "codex", "task-3", [], (e) => needs.push(e.message)));
+    assert.throws(() => engineState(cfg, "codex", "task-3", [], (e, episode) => needs.push(`${episode}\n${e.message}`)));
     assert.equal(needs.length, 2);
+    const [first, second] = needs.map((n) => n.split("\n")[0]!);
+    assert.ok(first.startsWith(`${root}:`), `the alert key names the root: ${first}`);
+    assert.notEqual(first, second);
+
+    // A report that couldn't be queued (the notice store busy) is not an episode: the next job tells the owner.
+    chmodSync(root, 0o700);
+    ensureStateDirs(root);
+    chmodSync(root, 0o555);
+    const told: string[] = [];
+    assert.throws(() => engineState(cfg, "codex", "task-4", [], () => { throw new Error("notice store busy"); }));
+    assert.throws(() => engineState(cfg, "codex", "task-5", [], (e) => told.push(e.message)));
+    assert.equal(told.length, 1);
   } finally {
     chmodSync(root, 0o700);
   }
 });
 
-test("a symlinked state root is refused, never followed", () => {
+test("a symlinked state root, or a symlinked ancestor of it, is refused and never followed", () => {
   const { cfg, dir } = setup();
   const outside = join(dir, "outside");
-  mkdirSync(outside, { recursive: true });
+  mkdirSync(join(outside, "state"), { recursive: true });
   symlinkSync(outside, join(dir, "state"));
   assert.throws(() => engineState(cfg, "codex", "task-1"), /symlink, which is never followed/);
-  assert.deepEqual(readdirSync(outside), []);
+  assert.deepEqual(readdirSync(join(outside, "state")), []);
+
+  // A symlinked parent must not have its target chmod'ed: the root inside it keeps the mode it had.
+  const tree = join(dir, "tree");
+  mkdirSync(join(tree, "state"), { recursive: true });
+  chmodSync(join(tree, "state"), 0o755);
+  symlinkSync(tree, join(dir, "linked"));
+  assert.throws(() => ensureStateDirs(join(dir, "linked", "state")), /ancestor .* is a symlink, which is never followed/);
+  assert.equal(statSync(join(tree, "state")).mode & 0o777, 0o755);
+});
+
+test("a relative state root keeps its form for the launcher's exact path comparison", () => {
+  const { dir } = setup();
+  const engines = join(dir, "engines.json");
+  const back = relative(process.cwd(), join(dir, "state"));
+  const { root, logs } = ensureStateDirs(back);
+  assert.equal(root, back);
+  assert.equal(logs, join(back, "logs"));
+  const dirPath = engineState({ enginesFile: engines, stateDir: back }, "codex", "task-1");
+  assert.equal(dirPath, join(back, "codex", "task-1"));
+  assert.ok(statSync(dirPath!).isDirectory());
 });
