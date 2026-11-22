@@ -56,7 +56,7 @@ const VERSION_KEYS = /^(?:versions?|release|build|tag)$/i;
 const versionValue = (v: string) => {
   const t = v.trim();
   if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(t)) return undefined;
-  const [a, , b = 0] = t.split(".").map(Number);
+  const [a = 0, b = 0] = t.split(".").map(Number);
   return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) ? undefined : t;
 };
 
