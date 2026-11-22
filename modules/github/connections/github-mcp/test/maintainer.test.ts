@@ -23,6 +23,10 @@ function fake(opts: {
   failIssue?: number[];
   /** Each issue's state as GitHub has it before this fake's writes; unset is open. */
   states?: Record<number, string>;
+  /** Each issue's close reason as GitHub has it; unset is null (no reason recorded). */
+  reasons?: Record<number, string>;
+  /** The ordinal of the first single-issue GET answered 200 with no issue body (`null`), as an intermediary might. */
+  emptyIssueFrom?: number;
   /** The ordinal of the first single-issue GET that fails (1 is assertTrusted's, 2 an issue-state re-read). */
   failIssueFrom?: number;
   longTimeline?: number;
@@ -61,7 +65,10 @@ function fake(opts: {
   const permissions: Record<string, string> = { owner1: "admin", ...(opts.permissions ?? {}) };
   // Each issue's state, as a reader sees it after the writes so far; `stamp` orders the timeline's events as GitHub does.
   const stateOf: Record<number, string> = {};
+  // Each issue's close reason, as a reader sees it after the writes so far.
+  const reasonOf: Record<number, string> = {};
   let singleReads = 0;
+  let emptyReads = 0;
   let stamp = 0;
   const nextAt = () => new Date(Date.parse("2026-01-02T00:00:00Z") + stamp++ * 1000).toISOString();
   const fetchFn = (async (url: string, init: RequestInit) => {
@@ -100,8 +107,17 @@ function fake(opts: {
       const n = Number(one[1]);
       if (opts.failIssue?.includes(n) || (opts.failIssueFrom !== undefined && ++singleReads >= opts.failIssueFrom)) return json(500, { message: "boom" });
       const i = (opts.issues ?? []).find((x) => x.number === n);
+      if (opts.emptyIssueFrom !== undefined && ++emptyReads >= opts.emptyIssueFrom) return json(200, null);
       // The issue's state is what the real API keeps: a landed PATCH changes it, and edits (reopen/close) land in the timeline.
-      return i ? json(200, { number: n, state: stateOf[n] ?? opts.states?.[n] ?? "open", labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })), ...(i.pr ? { pull_request: {} } : {}) }) : json(404, {});
+      return i
+        ? json(200, {
+            number: n,
+            state: stateOf[n] ?? opts.states?.[n] ?? "open",
+            state_reason: reasonOf[n] ?? opts.reasons?.[n] ?? null,
+            labels: (i.labels ?? ["agent-fix"]).map((name) => ({ name })),
+            ...(i.pr ? { pull_request: {} } : {}),
+          })
+        : json(404, {});
     }
     if (one && method === "PATCH") {
       if (opts.holdPatch) await opts.holdPatch();
@@ -115,8 +131,9 @@ function fake(opts: {
         const events = (opts.timelines ??= {});
         (events[n] ??= []).push({ event: body.state === "closed" ? "closed" : "reopened", created_at: at });
       }
+      if (body.state_reason) reasonOf[n] = body.state_reason;
       if (opts.losePatchAnswer) throw new TypeError("fetch failed");
-      return json(200, { state: body.state, state_reason: body.state_reason ?? null });
+      return json(200, { state: body.state ?? stateOf[n] ?? "open", state_reason: reasonOf[n] ?? null });
     }
     if (u.pathname.endsWith("/comments") && method === "POST") {
       const n = Number(u.pathname.match(/issues\/(\d+)\/comments$/)![1]);
@@ -377,6 +394,43 @@ it("a close with a note on an already-closed PR posts the note once and sends no
 it("a reopen of an issue that is already open sends no state PATCH", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   expect(await maintainer(f).state(PRODUCT, 1, "open")).toMatchObject({ number: 1, state: "open" });
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
+it("a close of an issue already closed with another reason still sends the PATCH, so the reason is recorded", async () => {
+  // A not_planned issue whose fix shipped: the caller asks for completed. GitHub accepts that reason change on an issue, so
+  // skipping it would report a resolution GitHub never recorded.
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    states: { 1: "closed" },
+    reasons: { 1: "not_planned" },
+  });
+  expect(await maintainer(f).state(PRODUCT, 1, "closed", "completed")).toMatchObject({ state: "closed", state_reason: "completed" });
+  expect(f.posted.filter((p) => p.path.endsWith("/issues/1")).map((p) => p.body)).toEqual([{ state: "closed", state_reason: "completed" }]);
+});
+
+it("a close of an issue already closed with the same reason sends no state PATCH", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] },
+    states: { 1: "closed" },
+    reasons: { 1: "completed" },
+  });
+  expect(await maintainer(f).state(PRODUCT, 1, "closed", "completed")).toMatchObject({ state: "closed", state_reason: "completed" });
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
+it("a closed PR with a different reason is still settled: its reason cannot be changed and the PATCH is the 403", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [], pr: true }], states: { 1: "closed" }, reasons: { 1: "completed" } });
+  expect(await maintainer(f).state(PRODUCT, 1, "closed", "not_planned")).toMatchObject({ state: "closed", state_reason: "completed" });
+  expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
+});
+
+it("a 200 with no issue state is refused, not read as open, so the PATCH is not sent", async () => {
+  // The label read is the first single-issue GET; the pre-PATCH state read is the second.
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [] }], emptyIssueFrom: 2 });
+  await expect(maintainer(f).state(PRODUCT, 1, "closed", "completed")).rejects.toThrow(/couldn't read acme\/product#1's state \(GitHub answered 200 without a state\)/);
   expect(f.calls.some((c) => c.method === "PATCH")).toBe(false);
 });
 

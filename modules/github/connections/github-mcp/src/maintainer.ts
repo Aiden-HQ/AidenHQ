@@ -576,17 +576,21 @@ export class Maintainer {
     }
   }
 
-  /** The issue as GitHub returns it. A read that fails throws: its state decides whether a note is reused and whether the state
-   * change is skipped, so guessing it could post a second note (or skip one). */
-  private async issue(r: MaintainedRepo, number: number): Promise<{ state?: string; state_reason?: string | null }> {
+  /** The issue as GitHub returns it. A read that fails throws, and so does a 200 whose body carries no usable state: that state
+   * decides whether a note is reused and whether the state change is skipped, so guessing it could post a second note, skip a
+   * needed close, or send the PATCH this change means to avoid. */
+  private async issue(r: MaintainedRepo, number: number): Promise<{ state: "open" | "closed"; state_reason?: string | null; pull_request?: unknown }> {
     const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number}'s state (GitHub said ${res.status})`);
-    return res.body ?? {};
+    const state = res.body?.state;
+    if (state !== "open" && state !== "closed")
+      throw new Error(`couldn't read ${r.repo}#${number}'s state (GitHub answered ${res.status} without a state)`);
+    return { ...res.body, state };
   }
 
   /** The issue's current state. */
   private async issueState(r: MaintainedRepo, number: number): Promise<string> {
-    return String((await this.issue(r, number)).state ?? "");
+    return (await this.issue(r, number)).state;
   }
 
   /** Every page of the issue's timeline, refusing one longer than the page cap: a part read could hide a reopen after the
@@ -643,8 +647,11 @@ export class Maintainer {
    * confirmed close is reused while the issue is still closed with no reopen since. Both decisions read the issue's state and
    * the timeline, and a failed read throws rather than guessing: guessing would post the note twice or skip a new one.
    *
-   * The state change itself reads the issue first and is skipped when it is already in the requested state (a PR the code host
-   * closed, an issue it reopened): the note is then the whole write, and the answer reports its id and URL. A failed read throws.
+   * The state change itself reads the issue first and is skipped when it is already in the requested state: a PR the code host
+   * closed, or an issue it reopened. A close on an already-closed issue also carries a reason, so it is skipped only when GitHub
+   * already records the requested one (a different one is PATCHed); a PR's reason cannot be changed, so a closed PR is settled
+   * whatever was asked. The note is then the whole write, and the answer reports its id and URL. A failed read, including a 200
+   * without a state, throws.
    */
   async state(repo: string | undefined, number: number, state: "open" | "closed", reason?: "completed" | "not_planned", note?: string, agent = "AidenHQ") {
     const r = this.target(repo);
@@ -796,8 +803,11 @@ export class Maintainer {
     }
     // Already where the caller asked it to be: a PR the code host closed, or an issue it reopened. The note is this call's whole
     // write; a PATCH would only be refused (GitHub rejects a state_reason on a closed PR with a 403) or undo an intervening
-    // change. Report the state as GitHub has it, unchanged.
-    if (String(cur.state ?? "") === state)
+    // change. Report the state as GitHub has it, unchanged. A close's `reason` is part of what is asked for, but only on an issue:
+    // GitHub accepts a reason change on an already-closed issue, so a different one still goes through the PATCH below. A PR's
+    // reason cannot be changed (that PATCH is the 403), so a closed PR is settled whatever reason was asked for.
+    const settled = cur.pull_request !== undefined || state === "open" || cur.state_reason === (reason ?? "completed");
+    if (cur.state === state && settled)
       return {
         repo: r.repo,
         number,

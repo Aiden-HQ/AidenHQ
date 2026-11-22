@@ -395,7 +395,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_issue_state",
     {
-      description: `Close a maintained repo's issue as completed or not_planned, or reopen it. A \`note\` is posted as a comment, signed by you (the AidenHQ footer), on the issue before the state change; reopening refuses one. An issue or pull request already in the requested state is not patched: the note is posted and the call reports it with the state unchanged. Refused when the issue's current label (${repoLabel}) is untrusted.`,
+      description: `Close a maintained repo's issue as completed or not_planned, or reopen it. A \`note\` is posted as a comment, signed by you (the AidenHQ footer), on the issue before the state change; reopening refuses one. An issue or pull request already in the requested state is not patched: the note is posted and the call reports it with the state unchanged. A closed pull request counts as already in that state whatever \`reason\` is asked (GitHub does not let its reason be changed); an issue already closed with a different \`reason\` is patched so the requested one is recorded. Refused when the issue's current label (${repoLabel}) is untrusted.`,
       inputSchema: {
         repo: appRepo,
         number: appIssue,
