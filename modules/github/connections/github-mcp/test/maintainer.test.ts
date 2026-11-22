@@ -46,6 +46,10 @@ function fake(opts: {
   holdPatch?: () => Promise<void>;
   /** Pages of 100 an issue's comment list answers before it looks truncated (more than the page cap is refused). */
   commentPages?: number;
+  /** The comment list answers 200 with a non-array body (a gateway answering something else). */
+  malformedComments?: boolean;
+  /** The comment list answers a secondary rate limit instead (a typed need on the reconciliation read). */
+  rateLimitComments?: boolean;
 }) {
   const calls: Call[] = [];
   const posted: { path: string; body: any }[] = [];
@@ -132,6 +136,8 @@ function fake(opts: {
     // The comments an earlier call posted: what a retry reads to see whether its note is already there. A test can make the
     // list longer than the page cap, so a scan stops at the cap instead of reaching every comment.
     if (u.pathname.endsWith("/comments") && method === "GET") {
+      if (opts.rateLimitComments) return json(403, { message: "You have exceeded a secondary rate limit." });
+      if (opts.malformedComments) return json(200, { message: "not a list" } as never);
       if (opts.commentPages !== undefined) return json(200, Array.from({ length: 100 }, (_, k) => ({ id: 10000 * Number(u.searchParams.get("page")) + k, html_url: `https://github.com/x#f${k}`, body: "filler", created_at: "2026-01-01T00:00:00Z" })).slice(0, opts.commentPages > 0 ? 100 : 0));
       return json(200, comments);
     }
@@ -729,6 +735,46 @@ it("a lost POST whose comment scan hits the page cap stays unresolved instead of
   const err = await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
   expect((err as Error).message).toMatch(/still unknown, and it can't be checked/);
   expect(f.comments).toHaveLength(1);
+});
+
+it("a reconciliation read that a rate limit blocks keeps its typed need, so the caller still gets the reset", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  // The note posts, then the answer is lost: the pending record stays and the retry reconciles by marker.
+  f.opts.loseCommentPost = true;
+  await m.state(PRODUCT, 1, "closed", "completed", note).catch(() => {});
+  expect(f.comments).toHaveLength(1);
+  // That reconciliation read now meets a secondary limit: the need must stay typed (cause and `until`), not become plain text.
+  f.opts.rateLimitComments = true;
+  const err = await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need.cause).toBe("rate_limited");
+  expect(typeof err.need.until).toBe("string");
+  expect((err as Error).message).toMatch(/still unknown/);
+  // The note is never posted a second time while its outcome is unresolved.
+  expect(f.comments).toHaveLength(1);
+});
+
+it("a comment page that isn't a list is refused, not read as \"no note\", so the note is not posted again", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  // GitHub saved the note and the POST answered 502, so the retry must reconcile.
+  f.opts.failCommentPost = true;
+  await m.state(PRODUCT, 1, "closed", "completed", note).catch(() => {});
+  expect(f.comments).toHaveLength(1);
+  // A gateway now answers 200 with something that isn't a list: treating it as an empty page would post a duplicate.
+  f.opts.failCommentPost = false;
+  f.opts.malformedComments = true;
+  const err = await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
+  expect((err as Error).message).toMatch(/still unknown, and it can't be checked/);
+  expect(f.comments).toHaveLength(1);
+  // Once the read is honest again the retry finds the note and sends only the state change.
+  f.opts.malformedComments = false;
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(f.comments).toHaveLength(1);
+  expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(0);
 });
 
 it("a close PATCH whose answer was lost says the outcome is unknown, not that the state did not change", async () => {

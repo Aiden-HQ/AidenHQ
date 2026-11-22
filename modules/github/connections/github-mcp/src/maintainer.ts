@@ -688,7 +688,10 @@ export class Maintainer {
     for (; page <= PAGE_CAP; page++) {
       const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}/comments?per_page=100&page=${page}`);
       if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number}'s comments (GitHub said ${res.status})`);
-      const items = (Array.isArray(res.body) ? res.body : []) as any[];
+      // A non-array body is not "no comments": a gateway's 200 with something else would otherwise prove the note absent and
+      // post it a second time. It cannot be read, so it throws like a failed read.
+      if (!Array.isArray(res.body)) throw new Error(`${r.repo}#${number}'s comments came back in a shape GitHub doesn't send, so whether the note is on the issue can't be read`);
+      const items = res.body as any[];
       out.push(...items);
       if (items.length < 100) break;
     }
@@ -748,6 +751,8 @@ export class Maintainer {
       known = await this.findByMarker(r, number, pending.marker);
     } catch (e) {
       // Without a complete read the note may be on the issue: posting again could duplicate it, so the outcome stays unresolved.
+      // A typed need keeps its cause and fields (a rate limit keeps its `until`), with the unknown outcome added to its text.
+      if (e instanceof GitHubNeed) throw new GitHubNeed(e.need, `${e.message}. Whether the earlier note posted is still unknown, and it can't be checked; read the issue's comments before retrying`);
       throw new Error(`whether the earlier note posted is still unknown, and it can't be checked (${(e as Error).message}); read the issue's comments before retrying`);
     }
     // A new POST attempt gets its own marker: the earlier attempt's was proven absent, and reusing it could match a comment
