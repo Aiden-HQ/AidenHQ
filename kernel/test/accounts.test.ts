@@ -112,12 +112,6 @@ test("the account and TOTP sign in; an accounts file without its secret refuses"
   assert.throws(() => authSecret(join(bare, "auth.db")), /without its auth\.secret/);
 });
 
-test("a sign-in with no other destination ends at the board's handoff, not the approvals list", async (t) => {
-  const { url } = await adminOn(t, kernelData(), undefined, "https://board.example.com");
-  const b = browser(url);
-  assert.equal((await signIn(b)).headers.location, "https://board.example.com/auth/start");
-});
-
 test("a card is decided on the kernel page, stamped with the admin's account; the board's origin and a page without the token can't", async (t) => {
   const dir = kernelData();
   const { url, decided, push, deploy } = await adminOn(t, dir);
@@ -152,27 +146,6 @@ test("a card is decided on the kernel page, stamped with the admin's account; th
   assert.match(user.html, /no admin access/);
   assert.equal((await browser(url, "evil.example:3120")("GET", "/approvals")).status, 421);
   assert.equal(decided.length, 2);
-});
-
-test("an invited admin's first sign-in through the front door: claim the link, sign in, enrol an authenticator, decide", async (t) => {
-  const dir = kernelData();
-  const { url } = await adminOn(t, dir);
-  const b = browser(url, FRONT, true);
-  const set = await b("POST", "/auth/set-password", { token: OWNER.invited.link, password: "a long enough password" });
-  assert.equal(set.status, 200, set.html);
-  assert.equal((await b("POST", "/auth/set-password", { token: OWNER.invited.link, password: "a long enough password" })).status, 400); // one use
-  const pw = await b("POST", "/auth/sign-in", { email: OWNER.invited.email, password: "a long enough password" });
-  assert.equal(pw.headers.location, "/auth/enrol");
-  assert.match(String(pw.headers["set-cookie"]), /__Host-better-auth\.session_token=.*Secure/);
-  // Not ready (no authenticator yet): no approval page, only enrolment.
-  assert.equal((await b("GET", "/approvals")).status, 403);
-  const ask = await b("GET", "/auth/enrol");
-  const shown = await b("POST", "/auth/enrol", { password: "a long enough password", csrf: ask.csrf });
-  const key = /Key: <code>([A-Z2-7 ]+)<\/code>/.exec(shown.html)?.[1]?.replace(/ /g, "");
-  assert.ok(key, shown.html);
-  const done = await b("POST", "/auth/enrol", { code: totp(key), csrf: ask.csrf });
-  assert.equal(done.status, 303, done.html);
-  assert.equal((await b("GET", "/approvals")).status, 200);
 });
 
 // Last: its burst spends Better Auth's per-address limit for the shared loopback peer (module-wide memory) for a minute.

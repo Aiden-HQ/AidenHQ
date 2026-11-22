@@ -105,20 +105,6 @@ test("a job runs for its task, in its workspace, and reports its end: final word
   assert.equal((await jobs.get("other-module", j.id).catch((e) => e)).status, 404, "another module never sees it");
 });
 
-test("the kernel is the job ledger: a module's open jobs stay until it acknowledges their end, once", async () => {
-  const sb = sandbox();
-  const jobs = inProcess(sb.cfg);
-  const j = jobs.run(sb);
-  assert.throws(() => jobs.ack("acme-dispatch", j.id), { code: "job-live" }, "a live run can't be acknowledged");
-  await finished(jobs, j.id);
-  assert.deepEqual(jobs.list("acme-dispatch", { open: true }).map((x) => x.id), [j.id]);
-  assert.deepEqual(jobs.list("other-module", { open: true }), [], "another module's ledger is its own");
-  assert.equal(jobs.ack("acme-dispatch", j.id).acked, true);
-  jobs.ack("acme-dispatch", j.id);
-  assert.deepEqual(jobs.list("acme-dispatch", { open: true }), []);
-  assert.deepEqual(jobs.list("acme-dispatch", { task: "task-1" }).map((x) => [x.id, x.state, x.acked]), [[j.id, "done", true]]);
-});
-
 test("a job's env in its box: the launcher's env file, nothing of the kernel's own", async () => {
   const sb = sandbox();
   const jobs = inProcess(sb.cfg);

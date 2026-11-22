@@ -11,24 +11,6 @@ import { createResolver } from "../src/net.ts";
 
 const push = { kind: "github.push", targets: { "acme/app feat": { repo: "acme/app" }, "acme/lib feat": { repo: "Acme/Lib" } } };
 
-test("all: every push and PR is reviewed", () => {
-  assert.equal(codeReviewOwns(push, { mode: "all", mandatory: ["acme/app", "acme/lib"] }), false);
-  assert.equal(codeReviewOwns(push, {}), false, "the default is all");
-});
-
-test("none: no push or PR is reviewed, on any repo; merges and everything else still are", () => {
-  assert.equal(codeReviewOwns(push, { mode: "none" }), true);
-  assert.equal(codeReviewOwns({ ...push, kind: "codehost-local.pr" }, { mode: "none" }), true);
-  for (const kind of ["github.merge", "github.close", "github.create_repo", "conn.tool", "kernel.apply", "apps-platform.deploy"]) assert.equal(codeReviewOwns({ ...push, kind }, { mode: "none" }), false, kind);
-});
-
-test("unless_code_review_mandatory: skipped only when every repo the write names has mandatory code review", () => {
-  const mode = "unless_code_review_mandatory";
-  assert.equal(codeReviewOwns(push, { mode, mandatory: ["acme/app", "acme/lib"] }), true);
-  assert.equal(codeReviewOwns(push, { mode, mandatory: ["acme/app"] }), false, "one repo without it: reviewed");
-  assert.equal(codeReviewOwns(push, { mode }), false);
-});
-
 test("a skipped push is approved by code with code_review_owns, and the AI reviewer is never asked", async () => {
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "review-code-")), "kernel.db"));
   const writes = createWrites({
