@@ -20,7 +20,7 @@
 // .github/supply-chain-exceptions.yaml read from the head, so a fix and its exception land in one PR and the code review
 // covers both (`ecosystem` docker, github-action, npm, pypi, apt or github-release; `package`, `version`, `advisory`,
 // `reason`). A pin that can't be dated (a registry with no push record, a lookup error, a Debian package: apt pins are
-// dated from Ubuntu's pockets) is a printed warning, never a failure: the gates fail open.
+// dated from Ubuntu's pockets) is a printed warning, not a failure (the gates fail open); a pin the registry contradicts (an action's tag is another commit) fails.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
@@ -226,6 +226,8 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
       if (exceptionFor(p, exceptions) || ownerApproved(p, exceptions, now)) continue;
       problems.push(`${label} was published ${(age / DAY).toFixed(1)} days ago (${via}, under 7): use an older version (best-version.ts), or add a security exception`);
     } catch (e) {
+      // Only a pin that can't be dated is let through; one the registry contradicts (an action's tag is another commit) fails.
+      if ((e as FetchError).mismatch) { problems.push(`${label}: ${(e as Error).message}`); continue; }
       warn(`warning: ${label}: could not be dated, not checked: ${(e as Error).message}`);
     }
   }

@@ -48,6 +48,8 @@ test("pins: unpinned images, actions, installs and apt after a repo fail; new pi
     assert.deepEqual(await checkAges({ pins: [img], date: async () => { throw err; }, now, warn: (l) => warned.push(l) }), []);
   }
   assert.equal(warned.length, 2);
+  const [act] = scanFile(".github/workflows/a.yml", `      - uses: o/r@${"a".repeat(40)} # v1.0.0\n`).pins;
+  assert.match((await checkAges({ pins: [act], date: async () => { throw Object.assign(new Error("tag is another commit"), { mismatch: true }); }, now }))[0], /tag is another commit/);
   assert.match(warned[1], /could not be dated, not checked: 503/);
   // An owner-approved exception covers a too-new pin only for its exact digest, and only until it expires (14 days at most).
   const fresh = async () => ({ published: day(2), via: "registry" });
