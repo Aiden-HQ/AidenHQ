@@ -339,20 +339,23 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
       const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
       const searched = (v.calls ?? []).some((c) => c.tool === "search");
-      if (j && Array.isArray(j.fixed)) {
+      // A malformed `still` is no usable answer (never read as "nothing is still there").
+      if (j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string")) {
+        const still: string[] = j.still;
+        // An answer that leaves an asked finding in neither `fixed` nor `still` is unfinished: it clears and fixes nothing (its `unsafe` verdicts still count).
+        const whole = ask.every((f) => f.claim || j.fixed.includes(f.id) || still.includes(f.id));
+        if (!whole) gaps.push("the recheck of earlier findings left some unanswered, so none is marked fixed or cleared");
         const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
-        for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !(j.still ?? []).includes(f.id) && seen(f)) fixed.push(f.id);
+        for (const f of ask) if (whole && !f.claim && j.fixed.includes(f.id) && !still.includes(f.id) && seen(f)) fixed.push(f.id);
         for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
         // Open findings it was asked about, looked at and didn't call still there: an agent's pending `fixed` claim on one of them stands.
         // And the ones it looked at and called still there: shown to the agent who claimed them fixed.
-        result.still = ask.filter((f) => !f.claim && (j.still ?? []).includes(f.id) && seen(f)).map((f) => f.id);
-        result.cleared = ask.filter((f) => !f.claim && !(j.still ?? []).includes(f.id) && seen(f)).map((f) => f.id);
+        result.still = ask.filter((f) => !f.claim && still.includes(f.id) && seen(f)).map((f) => f.id);
+        result.cleared = ask.filter((f) => whole && !f.claim && !still.includes(f.id) && seen(f)).map((f) => f.id);
       } else {
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
     }
-    // A finding this run's finders restated at the head is still there too.
-    result.still = [...new Set([...(result.still ?? []), ...previous.filter((f) => !f.claim && again.has(f.id)).map((f) => f.id)])];
     result.fixed = fixed;
     result.unsafe = unsafe;
   }
@@ -403,9 +406,11 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const down = downgrade(good.filter(Boolean).flatMap((j) => clean(j.findings, root)));
   result.downgraded += down.n;
   const cleaned = down.findings;
-  const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
+  // A finder's own `same_as` restatement counts as still there only at a line that exists at the head: placed under the earlier id.
+  const refound = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).filter((f) => !f.why.startsWith("[on a file this change deletes")).map((f) => f.id)); // a real line only
+  const restated = new Set(refound); // only a restatement at a real line skips that finding's recheck
   let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
-  for (const f of candidates) if (restates(f, f.id)) restated.add(f.id);
+  for (const f of candidates) if (restates(f, f.id) && !f.why.startsWith("[on a file this change deletes")) { restated.add(f.id); refound.add(f.id); }
   candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
 
@@ -447,6 +452,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
 
   // Previous findings: fixed only when confirmed gone (never merely missing from this run, never found again or restated now).
   await recheck(new Set([...kept.map((f) => f.id), ...restated]));
+  result.still = [...new Set([...(result.still ?? []), ...previous.filter((f) => !f.claim && refound.has(f.id)).map((f) => f.id)])];
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
   if (tree) {
     // The eligible files, apart from what was actually covered: the files the engine says it analysed, else those whose diff a

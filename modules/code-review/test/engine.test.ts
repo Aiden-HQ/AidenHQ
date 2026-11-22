@@ -1563,7 +1563,7 @@ test("a pending fixed the latest recheck called still there says so in the wait 
   assert.doesNotMatch(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /still there/, "no recheck yet: nothing to say");
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   w.finish(1, { findings: [], still: ["f1"] }); await w.tick();
-  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons[0].text, /the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
+  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons.at(-1).text, /id f1: the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
   assert.match(w.engine.openFindings(REPO, 2)[0].note, /still there/);
 });
 

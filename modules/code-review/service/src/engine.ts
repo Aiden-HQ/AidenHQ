@@ -442,7 +442,7 @@ export function createEngine(d: EngineDeps) {
   /** For an open finding carrying an agent's `fixed` claim that the PR's latest mandatory recheck called still there: what that says,
    * so the agent can tell whether to fix more or dispute (otherwise the finding just stays open with no reason). */
   const stillNote = (repo: string, n: number, head: string) => {
-    const v = one<{ head: string; json: string }>("SELECT r.head, v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.head = ? AND r.mandatory = 1 AND r.recheck = 1 AND r.status = 'done' ORDER BY r.ended DESC LIMIT 1", repo, n, head);
+    const v = one<{ head: string; json: string }>("SELECT r.head, v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.head = ? AND r.mandatory = 1 AND r.recheck = 1 ORDER BY r.ended DESC LIMIT 1", repo, n, head); // a stored review, whether or not its post was accepted
     const list = v ? (JSON.parse(v.json) as { still?: unknown }).still : undefined;
     const still = new Set<unknown>(Array.isArray(list) ? list : []);
     return (f: { id: string; pending: number }) => f.pending && still.has(f.id) ? `the recheck at ${v!.head.slice(0, 7)} says it is still there: fix it or answer disputed with the reason` : undefined;
@@ -1693,8 +1693,11 @@ export function createEngine(d: EngineDeps) {
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n), note = stillNote(repo, n, head);
-    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}${open.filter((f) => note(f)).map((f) => `; ${note(f)} (id ${f.id})`).join("")}`,
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
       unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+    // Its own reason, so the merge gate's cut of the findings list never drops it.
+    const noted = open.filter((f) => note(f));
+    if (noted.length) reasons.push({ code: "findings", text: `${noted.slice(0, 5).map((f) => `id ${f.id}`).join(", ")}: ${note(noted[0]!)}`, unblock: "fix and push, or answer disputed with the reason through code_review_resolve" });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
