@@ -131,7 +131,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}] } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], update = 202, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -154,7 +154,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, merges, watch, cacheDir, agentPr, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
@@ -435,4 +435,43 @@ test("more than 50 open PRs are all seen", async (t) => {
   const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": prs });
   await m.watch.tick();
   assert.equal(m.tasks.length, 60);
+});
+
+test("a green PR waiting on open review findings wakes its task once per head, 3 per tick oldest first; a running review wakes nobody", async (t) => {
+  const verdicts = { 1: { wait: "code review: 1 important finding open: x (a.ts:1)", findings: "code review: 1 important finding open: x (a.ts:1)" }, 9: { wait: "code review: the review is running" } };
+  const c = await rig(t, { reviewGate: async (_repo, n) => verdicts[n] ?? verdicts[1], merge: () => [200, { skip: "merging" }] });
+  c.set([5, 4, 3, 2, 1].map((n) => c.agentPr(n)));
+  await c.watch.tick();
+  assert.deepEqual(c.woke.map((w) => w.task), ["ACME-1", "ACME-2", "ACME-3"], "three per tick, oldest first");
+  assert.match(c.woke[0].text, /waiting on open important findings.*```text\ncode review: 1 important finding open.*fixed: <what changed, commit>.*disputed: <reason, file:line>/s);
+  assert.match(c.woke[0].text, /pull\/1/);
+  await c.watch.tick();
+  assert.deepEqual(c.woke.map((w) => w.task), ["ACME-1", "ACME-2", "ACME-3", "ACME-4", "ACME-5"], "the rest next tick, none twice");
+  await c.watch.tick();
+  assert.equal(c.woke.length, 5);
+  const running = await rig(t, { reviewGate: async () => verdicts[9], merge: () => [200, { skip: "merging" }] });
+  running.set([running.agentPr(6)]);
+  await running.watch.tick();
+  assert.equal(running.woke.length, 0);
+  let calls = 0;
+  const down = await rig(t, { reviewGate: async () => { calls++; return { wait: "code review is unreachable (x)", down: true }; }, merge: () => [200, { skip: "merging" }] });
+  down.set([3, 2, 1].map((n) => down.agentPr(n)));
+  await down.watch.tick();
+  assert.deepEqual([calls, down.woke.length], [1, 0], "an unreachable gate is asked once per pass, and wakes nobody");
+  const five = await rig(t, { reviewGate: async (_r, n) => n === 1 ? { wait: "code review is unreachable (it answered 500)" } : verdicts[1], merge: () => [200, { skip: "merging" }] });
+  five.set([2, 1].map((n) => five.agentPr(n)));
+  await five.watch.tick();
+  assert.deepEqual(five.woke.map((w) => w.task), ["ACME-2"], "an HTTP 500 about one PR doesn't stop the next PR's verdict");
+  let text = "code review: finding one (a.ts:1)";
+  const changing = await rig(t, { reviewGate: async () => ({ wait: text, findings: text, findingsKey: text }), merge: () => [200, { skip: "merging" }] });
+  changing.set([changing.agentPr(1)]);
+  await changing.watch.tick();
+  await changing.watch.tick();
+  assert.equal(changing.woke.length, 1, "the same findings at the same head wake once");
+  text = "code review: finding one (a.ts:1); finding two (b.ts:2)";
+  await changing.watch.tick();
+  assert.equal(changing.woke.length, 2, "new findings at the same head wake the task again");
+  text = `code review: ${"y".repeat(5000)}`;
+  await changing.watch.tick();
+  assert.ok(changing.woke[2].text.length <= 2000 && /disputed: <reason, file:line>.*Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
 });
