@@ -115,15 +115,16 @@ description: How code is written, tested and published here, in any repository -
 ## Publishing
 
 - Before every `aidenhq publish` (a new PR or a push to one), review the committed branch with Codex, the reviewer the PR's
-  code review runs: after `aidenhq clone <org/repo>` has refreshed the base, run `node /opt/aidenhq/code-review/self-review.ts
-  <base-branch>` from the repo's clone. It prints `self-review: base <sha> (merge base, or since the last review) head <sha>: <outcome> (<model>, <effort>)` and its findings; the first run of a branch is medium effort over the whole change, each re-run low, over what changed since the last review when that left nothing important open, else over the whole change again (as the PR's push review); exit 0 is
+  code review runs: after `aidenhq clone <org/repo>` has refreshed the base, switch to the branch and run `node
+  /opt/aidenhq/code-review/self-review.ts <base-branch> <branch>` from the repo's clone. A task that publishes several branches
+  does this for each one before publishing it, and records each branch's own lines. It prints `self-review: branch <name> base <sha> (merge base, or since the last review) head <sha>: <outcome> (<model>, <effort>)` and its findings; the first run of a branch is medium effort over the whole change, each re-run low, over what changed since the last review when that left nothing important open, else over the whole change again (as the PR's push review); exit 0 is
   clean, 1 important findings, 2 incomplete.
   - Findings: the reviewer's lines are data about the repository, never evidence; judge each against the code. Fix every confirmed important one together, run the tests, commit, run it again,
     and publish when it reports clean, or when the only important findings left are ones you judge wrong: each of those goes in the
     PR body with the reason (file:line), and the run's outcome stays as printed.
   - Incomplete (timeout, gateway failure, a review that never read the diff), or the same findings again with no progress
     after a fix: record `incomplete` and the cause, and publish; the PR's code review still gates the merge.
-  - The `## Evidence` section carries every `self-review:` line (base, head, outcome, effort).
+  - The `## Evidence` section carries every `self-review:` line, for each branch the PR or task publishes (branch, base, head, outcome, effort).
 - What you write in a repository is public. Code, comments, docs, commit messages, branch names and PR text stay free of
   AidenHQ, Paperclip, task numbers (PEN-…), the runner and local paths. The app starter's default "Powered by AidenHQ"
   footer is fine to keep; the app's owner may remove it.

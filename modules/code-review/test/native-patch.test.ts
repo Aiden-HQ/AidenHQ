@@ -3,8 +3,8 @@
 // exact patch, its last hunk included, and a failed group blocks clean. Codex is the PATH's when it is that version, else installed once.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -26,9 +26,9 @@ function codexDir() {
 }
 
 /** A model endpoint that records each request and answers with a review (a verdict of "patch is correct"), or fails the ones in `fail`. */
-async function endpoint(fail: number[] = []) {
+async function endpoint(fail: number[] = [], found?: string) {
   const requests: any[] = [];
-  const verdict = JSON.stringify({ findings: [], overall_correctness: "patch is correct", overall_explanation: "ok", overall_confidence_score: 0.9 });
+  const verdict = JSON.stringify({ findings: found ? [{ title: "[P1] it breaks", body: "Failure scenario: a(1) returns 2", confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: found, line_range: { start: 1, end: 1 } } }] : [], overall_correctness: found ? "patch is incorrect" : "patch is correct", overall_explanation: "ok", overall_confidence_score: 0.9 });
   const server = http.createServer((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       requests.push(JSON.parse(b || "{}"));
@@ -128,4 +128,27 @@ test("names git quotes (a space, a non-ASCII letter, a double quote) keep their 
   assert.equal(g.groups.length, 1);
   for (const n of names) assert.ok(g.groups[0]!.text.includes("+v1") && g.groups[0]!.files.includes(n), n);
   assert.equal((g.groups[0]!.text.match(/^diff --git /gm) ?? []).length, 2);
+});
+
+test("self-review exits 2 when some part of the patch could not be reviewed, whatever was found", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "a.txt": (v) => lines(6000, v, 100, 1500), "b.txt": (v) => lines(6000, v, 100, 1500) });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const model = await endpoint([2], join(realpathSync(repo), "a.txt")); // the first part finds an important bug, the second fails
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    // Asynchronous: the model endpoint is this process's.
+    const run = (...args: string[]) => new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), ...args], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    const r = await run("main", branch);
+    assert.equal(r.status, 2, r.stdout);
+    assert.match(r.stdout, /it breaks/, "the finding is still printed");
+    assert.match(r.stdout, new RegExp(`^self-review: branch ${branch} base \\w+ \\(merge base\\) head \\w+: incomplete$`, "m"));
+    assert.equal((await run("main", "some-other-branch")).status, 2, "a branch that isn't checked out is not reviewed");
+  } finally { model.close(); }
 });
