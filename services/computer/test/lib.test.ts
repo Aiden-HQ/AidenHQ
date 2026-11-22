@@ -31,6 +31,9 @@ test("the shared rule: a declared server is emitted only with tools, a connectio
   assert.deepEqual(unemittedServers(["toString"], {}, conns), ["toString"]);
   assert.deepEqual(unemittedServers(["constructor"], { constructor: ["x"] }, conns), ["constructor"]);
   assert.equal(emitsServer("toString", tools, conns), false);
+  // A null connection entry is no entry, exactly as `mcpBlock` treats it: the check and the renderer never disagree.
+  assert.deepEqual(unemittedServers(["slack"], { slack: ["search"] }, { slack: null }), ["slack"]);
+  assert.doesNotMatch(mcpBlock({ slack: ["search"] }, { slack: null }, "http://10.231.2.1:8200"), /\[mcp_servers\.slack\]/);
   assert.equal(emitsServer("apps", tools, conns), true);
   assert.equal(emitsServer("github", tools, conns), false);
   // The block and the rule agree: a server it lists is one the predicate calls emitted.

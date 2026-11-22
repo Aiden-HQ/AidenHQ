@@ -23,8 +23,9 @@ const toml = (v: unknown): string => (Array.isArray(v) ? `[${v.map(toml).join(",
  * refused by name, never silently dropped.
  */
 export function emitsServer(name: string, tools: Record<string, unknown> | undefined, connections: Record<string, unknown>) {
-  // Own entries only: a declared name like `toString` must not read Object.prototype and pass as present.
-  if (!tools || !Object.hasOwn(tools, name) || !Object.hasOwn(connections, name)) return false;
+  // Own entries only: a declared name like `toString` must not read Object.prototype and pass as present. A connection entry
+  // that is null/undefined is no entry, as `mcpBlock` treats it, so the check and the renderer agree on every server.
+  if (!tools || !Object.hasOwn(tools, name) || !Object.hasOwn(connections, name) || !connections[name]) return false;
   const list = tools[name];
   const hasTools = Array.isArray(list) ? list.length > 0 : list !== undefined && list !== null;
   return hasTools && /^[a-z0-9_]+$/.test(name);
