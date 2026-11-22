@@ -10,7 +10,6 @@
 // terminal state (closed, head moved, red checks on the head, changes requested).
 // A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
 // head, beside its checks; with no verdict in time it is asked once more, then the design review is advisory for that head.
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
@@ -23,8 +22,8 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** The merge call this poll may be looking at: a digest of the commit_message it sent (what an unanswered PUT may have made). */ mergeCall?: { proof: string; at: string }; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** The merge call this poll may be looking at: the token this record's commit_message carries (what an unanswered PUT may have made). */ mergeCall?: { token: string; at: string }; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
@@ -71,29 +70,32 @@ export function createMerges(d: {
     if (r.status >= 300 || r.body?.errors?.length) throw new Error(`GitHub GraphQL: ${r.body?.errors?.map((e: any) => e.message).join("; ") ?? `HTTP ${r.status}`}`);
     return withGate(r.body?.data);
   }
-  async function mergePut(repo: string, number: number, sha: string, method: string, body: string): Promise<string> {
+  async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
-    const message = method === "rebase" ? {} : { commit_message: withTrailer(body.trim(), "merge queue") };
+    const message = method === "rebase" ? {} : { commit_message: withTrailer(body.trim(), `merge queue ${token}`) };
     const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });
     if (r.status >= 300) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
     return r.body?.sha;
   }
   /**
-   * What this poll proves about who merged the PR: its sha only when the merge commit is exactly the one this queue's own merge
-   * call would make. A rebase merge makes no commit of its own (the PR's commits land as they are), so nothing tells this queue's
-   * merge from anyone else's and it is never counted as ours. For a squash or merge commit the message must be the whole
-   * commit_message this call sent (mergePut's own body with the queue's trailer): an owner's or auto-merge is not ours, and neither
-   * is a commit that merely carries an AidenHQ trailer from the PR's own commits. `call` (a PUT that went unanswered, kept while
-   * the poll may still see it) is the only source of that message, so what is proved is this call's, never another writer's.
+   * What this poll proves about who merged the PR: its sha only when the merge commit is the one this queue's own merge call made.
+   * A rebase merge makes no commit of its own (the PR's commits land as they are), so nothing tells this queue's merge from anyone
+   * else's and it is never counted as ours. A squash or merge commit carries the trailer this call put in its `commit_message`,
+   * naming this record's id: an owner's or auto-merge, or a commit that merely carries an AidenHQ trailer from the PR's own
+   * commits, does not. The token, not the whole message, is what is checked, because GitHub normalises a squash message
+   * (co-author lines, whitespace, a `(#N)` suffix) and an exact match would drop a merge the queue really made. `call` (a PUT that
+   * went unanswered, kept while the poll may still see it) is the only source of that token, so what is proved is this call's.
    */
-  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, call: { proof: string } | undefined): string | undefined {
+  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, call: { token: string } | undefined): string | undefined {
     if (!call || method === "rebase") return undefined;
-    // The queue's own merge this poll may see: only the commit_message this call sent, so a PR that happened to carry an AidenHQ
-    // trailer from its own commits (someone else's squash merge after our PUT timed out) is still no commit this queue made.
-    const message = String(mergeCommit?.message ?? "").trim();
-    const same = Boolean(message) && createHash("sha256").update(message).digest("hex") === call.proof;
-    return same ? sha : undefined;
+    return call.token && String(mergeCommit?.message ?? "").includes(call.token) ? sha : undefined;
   }
+
+  /**
+   * The token this record's merge commit carries in its trailer (`merge queue <id>`, mergePut's commit_message): the record id, so
+   * only this queue's own call is proved by it, and short enough to survive GitHub's normalisation of a squash message.
+   */
+  const mergeToken = (id: string) => `queue-${id}`;
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
   async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
@@ -190,12 +192,13 @@ export function createMerges(d: {
       }
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
-      // What this queue's merge call sends, kept before the call: a PUT that times out may have merged, and the next poll tells
-      // its commit from anyone else's by exactly this message (mergedBy).
+      // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
+      // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy).
       const body = String(pull?.body ?? "");
-      p.mergeCall = { proof: createHash("sha256").update(withTrailer(body.trim(), "merge queue")).digest("hex"), at: now().toISOString() };
+      const token = mergeToken(q.id);
+      p.mergeCall = { token, at: now().toISOString() };
       try {
-        p.sha = await mergePut(p.repo, p.number, p.head, method, body);
+        p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
         if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry");
@@ -293,7 +296,7 @@ export function createMerges(d: {
       if (had?.outcome) return Promise.resolve(had.outcome);
       if (!had) {
         const prs = args.prs.map((p) => ({ repo: p.repo, number: p.number, head: p.head, url: `https://github.com/${p.repo}/pull/${p.number}`, status: "pending" }));
-        s.queues[id] = { state: "running", startedAt: now().toISOString(), prs, said: [], ...(task ? { task } : {}) };
+        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], ...(task ? { task } : {}) };
         save();
         log("merges queued", { record: id, prs: prs.length });
       }

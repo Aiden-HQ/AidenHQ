@@ -46,8 +46,10 @@ function fakeGitHub(prs) {
         const p = prs[`${m[1]}#${m[2]}`] ?? prs[m[1]];
         p.state = "MERGED";
         p.merged = p.merged ?? "c".repeat(40);
-        // The merge commit carries the message GitHub made: the queue's commit_message (with its trailer) for a queue merge.
-        p.message = String(body?.commit_message ?? "");
+        // The merge commit carries the message GitHub made. GitHub normalises a squash message: it appends the PR number and keeps
+        // the trailer, so the token in the queue's commit_message is still in it, but not as the whole message.
+        const sent = String(body?.commit_message ?? "");
+        p.message = sent ? `${sent}\n\n(#${m[2]})` : "";
         return { status: 200, body: { sha: p.merged } };
       }
       return { status: 200, body: {} };
@@ -118,7 +120,7 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   prs["acme-agents/widget"].checks = "SUCCESS";
   await handle.stepMerges();
   await settle();
-  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: HEAD, commit_message: "Co-authored-by: AidenHQ merge queue <noreply@aidenhq.ai>" }]);
+  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: HEAD, commit_message: "Co-authored-by: AidenHQ merge queue queue-k-00000000000000a1 <noreply@aidenhq.ai>" }], "the trailer names the record, so only this record's merge is its own");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.match(outcomes[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/);
   const [line] = outcomes[0].text.split("\n");
@@ -206,7 +208,7 @@ test("a product PR that changes the reviewer merges on green checks at its bound
   await merge("k-00000000000000b4", [{ repo: "acme/aidenhq", number: 5, head }]);
   await handle.stepMerges();
   await settle();
-  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: head, commit_message: "Co-authored-by: AidenHQ merge queue <noreply@aidenhq.ai>" }], "merged at the bound head");
+  assert.deepEqual(github.merges().map((w) => w.body), [{ merge_method: "squash", sha: head, commit_message: "Co-authored-by: AidenHQ merge queue queue-k-00000000000000b4 <noreply@aidenhq.ai>" }], "merged at the bound head");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
 
   // A PR outside our repos: the App is PR-only there, whatever the record says.
@@ -418,6 +420,10 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   await tick();
   assert.equal(merges.status("k-00000000000000e1").state, "done");
   assert.match(reports[0].text, /^merged-prs: \[\{"repo":"acme-agents\/widget","number":1/, "listed as merged by this queue");
+  // GitHub normalised the squash message (the fake appends `(#1)`), so an exact-message check would have lost this: the record's
+  // token in the trailer is what proves the commit is this queue's, and the merge is credited to it.
+  assert.match(reports[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/);
+  assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"], "its own merge commit, named as made here");
   await merges.step(); // the kernel refused the first delivery: delivered again
   await tick();
   assert.equal(reports.length, 2);
