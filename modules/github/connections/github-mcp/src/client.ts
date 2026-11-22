@@ -1,7 +1,8 @@
 // GitHub as the owner (spec 2026-11-20-github-owner-identity §1, §9): the one client every GitHub call in this process goes
 // through, with the owner's sign-in. One rate limiter: a call issued interactively (from a tool) fails at once as a typed
 // `rate_limited` need when a limit blocks it, because a tool call can't sleep past its timeout; a background call (a job) waits
-// while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time, at least a second apart, and wait out
+// while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time per identity (the owner, or code
+// review's App installation, which `as` names: each has its own limits and queue), at least a second apart, and wait out
 // GitHub's secondary limit, as its guidance asks, but only inside the write's budget: the writes of one tool invocation share
 // one 240 s budget, fixed when the invocation starts so its own reads spend it too (below the kernel's 300 s allowance), and a
 // write that cannot start in what is left fails at once, `rate_limited` (with its `until`) or `write_busy` for a queue that is
@@ -62,10 +63,13 @@ export function needResult(e: GitHubNeed): { isError: true; content: { type: "te
   return needsOwner({ cause: n.cause, detail: e.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) });
 }
 
-/** One row of the board's sign-in card (what works, or what is wrong and its one fix). The board renders these as given. */
-/** A card row; `time` is an ISO instant the board shows after `value` in the viewer's local time; an `href` is GitHub's page or a
- * board path (`#/...`). */
-export type StatusLine = { label: string; value: string; time?: string; state: "ok" | "warn" | "error"; action?: { label: string; href?: string; reconnect?: true } };
+/**
+ * One row of the board's sign-in card (what works, or what is wrong and its one fix). The board renders these as given. `time` is
+ * an ISO instant the board shows after `value` in the viewer's local time; an `href` is GitHub's page or a board path (`#/...`),
+ * an `admin` path a page on the kernel's admin listener. A suggestion (`hint` and its action) carries a `dismiss` key: once the
+ * owner dismisses it, the board drops both from the row for good.
+ */
+export type StatusLine = { label: string; value: string; time?: string; state: "ok" | "warn" | "error"; hint?: string; dismiss?: string; action?: { label: string; href?: string; admin?: string; reconnect?: true } };
 
 export type GitHubStatus = {
   login?: string;
@@ -76,14 +80,24 @@ export type GitHubStatus = {
   lines: StatusLine[];
 };
 
+/** Another identity's calls (the code review App's installation): its own token, pacing and rate limits; never the sign-in's state. */
+export type Identity = {
+  key: string;
+  token(fresh?: boolean): Promise<string>;
+  /** Each write as it was answered: a refusal (its words) or a success (undefined), so its owner sees when it stops working. */
+  wrote?(refusal?: string): void;
+};
+type CallOpts = { background?: boolean; accept?: string; as?: Identity };
+
 export interface GitHubAccess {
   connected(): boolean;
   identity(): Promise<{ login: string; name: string; email: string }>;
   /** For git children inside this process only (credential env); never returned by any route. */
   token(): Promise<string>;
-  rest(method: string, path: string, body?: unknown, o?: { background?: boolean; accept?: string }): Promise<{ status: number; body: any; headers: Headers }>;
+  /** `as`: another identity than the owner's (the code review App's installation); everything else is the owner's sign-in. */
+  rest(method: string, path: string, body?: unknown, o?: CallOpts): Promise<{ status: number; body: any; headers: Headers }>;
   /** The whole GraphQL answer ({data, errors}). */
-  graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean }): Promise<any>;
+  graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean; as?: Identity }): Promise<any>;
   scopes(): string[];
   status(): GitHubStatus;
 }
@@ -103,6 +117,23 @@ const repoOf = (path: string) => /^\/repos\/([^/?#]+)\/([^/?#]+)(?:[?#].*)?$/.ex
 const ownerOf = (path: string) => /^\/(?:repos|orgs)\/([^/?#]+)/.exec(path)?.[1];
 
 type Rate = { remaining: number; limit: number; reset: number };
+/**
+ * One identity's limits (the owner, or one App installation): GitHub counts each separately, so each has its own rate limits,
+ * its own serial write queue and its own secondary-limit backoff; a new installation token keeps its identity's.
+ */
+type Pace = {
+  rates: Map<string, Rate>;
+  /** After a rate-limit refusal: no call goes before this (epoch ms). */
+  blockedUntil: number;
+  /** After a secondary-limit refusal: no content-creating call goes before this (epoch ms); reads are unaffected. */
+  writeBlockedUntil: number;
+  secondaryStreak: number;
+  lastWriteEnd: number;
+  writeTail: Promise<unknown>;
+  /** Content-creating writes sent this hour (the log's per-identity count). */
+  hour: { at: number; writes: number };
+};
+const newPace = (): Pace => ({ rates: new Map(), blockedUntil: 0, writeBlockedUntil: 0, secondaryStreak: 0, lastWriteEnd: 0, writeTail: Promise.resolve(), hour: { at: 0, writes: 0 } });
 type Sleep = (ms: number) => Promise<void>;
 /** Calls `fire` after `ms`; the returned function cancels it. */
 type Timer = (ms: number, fire: () => void) => () => void;
@@ -154,6 +185,8 @@ export function createAccess(o: {
   reserve?: number;
   /** GITHUB_FLEET_ORG and GITHUB_CI, for the status card. */
   env?: Record<string, string | undefined>;
+  /** Each content-creating write, by identity (how much of the owner's limit code review's App takes off it). */
+  log?: (msg: string, f: Record<string, unknown>) => void;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -163,14 +196,9 @@ export function createAccess(o: {
     return () => clearTimeout(t);
   });
   const reserve = o.reserve ?? 0.2;
-  const rates = new Map<string, Rate>();
-  /** After a rate-limit refusal: no call goes before this (epoch ms). */
-  let blockedUntil = 0;
-  /** After a secondary-limit refusal: no content-creating call goes before this (epoch ms); reads are unaffected. */
-  let writeBlockedUntil = 0;
-  let secondaryStreak = 0;
-  let lastWriteEnd = 0;
-  let writeTail: Promise<unknown> = Promise.resolve();
+  const paces = new Map<string, Pace>([["owner", newPace()]]);
+  const owner = paces.get("owner")!;
+  const paceOf = (as?: Identity) => { const k = as?.key ?? "owner"; let p = paces.get(k); if (!p) paces.set(k, (p = newPace())); return p; };
   let granted: string[] | undefined;
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
@@ -193,54 +221,58 @@ export function createAccess(o: {
   /** Waits out a rate-limit refusal (background), or refuses (interactive: a tool call can't sleep past its timeout).
    * A background call sleeps on the reserve and on a refusal alike, but only where a write can still see its attempt through
    * inside its budget; anything it cannot wait out is the same typed need as an interactive call's. */
-  async function admit(resource: string, background: boolean, deadline?: number): Promise<void> {
+  async function admit(p: Pace, resource: string, background: boolean, deadline?: number): Promise<void> {
     for (;;) {
       const t = now();
-      const r = rates.get(resource);
+      const r = p.rates.get(resource);
       const low = r && r.limit > 0 && r.remaining < r.limit * reserve && r.reset > t ? r.reset : 0;
-      const until = Math.max(blockedUntil > t ? blockedUntil : 0, background ? low : 0);
+      const until = Math.max(p.blockedUntil > t ? p.blockedUntil : 0, background ? low : 0);
       if (!until) return;
       if (!background || (deadline !== undefined && !fits(deadline, until))) fail({ cause: "rate_limited", until: new Date(until).toISOString() });
       await sleep(until - t);
     }
   }
 
-  function observe(res: Response): void {
+  function observe(p: Pace, res: Response): void {
     const s = res.headers.get("x-oauth-scopes");
-    if (s !== null) granted = split(s);
+    if (s !== null && p === owner) granted = split(s);
     const remaining = Number(res.headers.get("x-ratelimit-remaining"));
     const limit = Number(res.headers.get("x-ratelimit-limit"));
     const reset = Number(res.headers.get("x-ratelimit-reset"));
     if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0 && Number.isFinite(reset)) {
-      rates.set(res.headers.get("x-ratelimit-resource") ?? "core", { remaining, limit, reset: reset * 1000 });
+      p.rates.set(res.headers.get("x-ratelimit-resource") ?? "core", { remaining, limit, reset: reset * 1000 });
     }
   }
 
-  /** The need a refusal means, or undefined when the answer is just an answer. */
-  function classify(path: string, res: Response, body: any, hadToken: boolean): Need | undefined {
-    if (res.status === 401) return hadToken ? { cause: "expired" } : { cause: "not_connected" };
+  /**
+   * The need a refusal means, or undefined when the answer is just an answer. For another identity (`app`) only the rate limits
+   * are needs: its 401 and 403s are its own errors, never the owner's sign-in to fix.
+   */
+  function classify(p: Pace, path: string, res: Response, body: any, app: boolean): Need | undefined {
+    if (res.status === 401 && !app) return { cause: "expired" };
     if (res.status !== 403 && res.status !== 404 && res.status !== 429) return undefined;
+    const message = String(body?.message ?? "");
+    const retry = Number(res.headers.get("retry-after"));
+    if (res.status === 403 && SECONDARY.test(message)) {
+      const until = now() + (Number.isFinite(retry) && retry > 0 ? retry * 1000 : SECONDARY_BASE_MS * 2 ** Math.min(p.secondaryStreak, 6));
+      p.secondaryStreak++;
+      p.writeBlockedUntil = Math.max(p.writeBlockedUntil, until);
+      return { cause: "rate_limited", until: new Date(until).toISOString() };
+    }
+    if (res.status === 429 || (res.status === 403 && (Number.isFinite(retry) && retry > 0 || res.headers.get("x-ratelimit-remaining") === "0"))) {
+      const until = Number.isFinite(retry) && retry > 0 ? now() + retry * 1000 : Number(res.headers.get("x-ratelimit-reset")) * 1000 || now() + 60_000;
+      p.blockedUntil = Math.max(p.blockedUntil, until);
+      return { cause: "rate_limited", until: new Date(until).toISOString() };
+    }
+    if (app) return undefined;
     const sso = res.headers.get("x-github-sso") ?? "";
     const ssoUrl = /\burl=(\S+)/.exec(sso)?.[1];
     if (res.status === 403 && /^required/i.test(sso) && ssoUrl) {
       return { cause: "sso", org: /\/orgs\/([^/]+)\/sso/.exec(ssoUrl)?.[1] ?? ownerOf(path) ?? "", url: ssoUrl };
     }
-    const message = String(body?.message ?? "");
     if (res.status === 403 && /OAuth App access restrictions/i.test(message)) {
       const org = /the [`'"]?([A-Za-z0-9-]+)[`'"]? organization/i.exec(message)?.[1] ?? ownerOf(path) ?? "";
       return { cause: "restricted", org, url: `https://github.com/settings/connections/applications/${o.clientId ?? ""}` };
-    }
-    const retry = Number(res.headers.get("retry-after"));
-    if (res.status === 403 && SECONDARY.test(message)) {
-      const until = now() + (Number.isFinite(retry) && retry > 0 ? retry * 1000 : SECONDARY_BASE_MS * 2 ** Math.min(secondaryStreak, 6));
-      secondaryStreak++;
-      writeBlockedUntil = Math.max(writeBlockedUntil, until);
-      return { cause: "rate_limited", until: new Date(until).toISOString() };
-    }
-    if (res.status === 429 || (res.status === 403 && (Number.isFinite(retry) && retry > 0 || res.headers.get("x-ratelimit-remaining") === "0"))) {
-      const until = Number.isFinite(retry) && retry > 0 ? now() + retry * 1000 : Number(res.headers.get("x-ratelimit-reset")) * 1000 || now() + 60_000;
-      blockedUntil = Math.max(blockedUntil, until);
-      return { cause: "rate_limited", until: new Date(until).toISOString() };
     }
     const accepted = split(res.headers.get("x-accepted-oauth-scopes"));
     if (accepted.length && !accepted.some((a) => covers(scopes(), a))) return { cause: "scope", scope: accepted[0]! };
@@ -254,40 +286,41 @@ export function createAccess(o: {
   const fits = (deadline: number | undefined, at = now()) => deadline === undefined || at + ATTEMPT_TIMEOUT_MS <= deadline;
 
   /** Fails a write that cannot start in budget: the real limit when one blocks it, the queue when that is the reason. */
-  function noBudget(): never {
-    if (writeBlockedUntil > now()) fail({ cause: "rate_limited", until: new Date(writeBlockedUntil).toISOString() });
+  function noBudget(p: Pace): never {
+    if (p.writeBlockedUntil > now()) fail({ cause: "rate_limited", until: new Date(p.writeBlockedUntil).toISOString() });
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
-    if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity) {
+    const p = paceOf(as);
+    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, undefined, as);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
     // the patience it always had and waits a limit out, inside the queue like every other write.
     const deadline = background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS;
-    return queued(deadline, () => paced(deadline, () => attempt(method, path, body, resource, background, accept, deadline)));
+    return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as)));
   }
 
-  /** Runs a write behind the one queue: one at a time, a gap apart, and the whole queue waits out a refusal. A write that is
+  /** Runs a write behind its identity's queue: one at a time, a gap apart, and the whole queue waits out a refusal. A write that is
    * still queued at the deadline fails there and is marked dead (the pre-attempt check keeps it from being sent), so no write
    * lands after its caller was told it failed. Once the entry takes its turn, its own budget checks and its fetch's 30 s
    * timeout govern it: the timer never reports a failure for a request already in flight, which GitHub may have completed. */
-  function queued<T>(deadline: number | undefined, go: () => Promise<T>): Promise<T> {
+  function queued<T>(p: Pace, deadline: number | undefined, go: () => Promise<T>): Promise<T> {
     let expired = false;
     let cancel = () => {};
-    const run = writeTail.then(() => {
+    const run = p.writeTail.then(() => {
       cancel(); // its turn: the queue wait is over, so the queue timer cannot fire into the running request
-      if (expired || !fits(deadline)) noBudget();
+      if (expired || !fits(deadline)) noBudget(p);
       return go();
     });
-    writeTail = run.catch(() => {});
+    p.writeTail = run.catch(() => {});
     // A background write has no deadline, so nothing to expire it.
     if (deadline === undefined) return run.finally(() => cancel());
     const expiry = new Promise<never>((_, reject) => {
       cancel = timer(Math.max(deadline - now(), 0), () => {
         expired = true;
-        try { noBudget(); } catch (e) { reject(e); }
+        try { noBudget(p); } catch (e) { reject(e); }
       });
     });
     void expiry.catch(() => {});
@@ -295,50 +328,63 @@ export function createAccess(o: {
   }
 
 
-  async function paced<T>(deadline: number | undefined, go: () => Promise<T>): Promise<T> {
+  async function paced<T>(p: Pace, deadline: number | undefined, go: () => Promise<T>): Promise<T> {
     for (;;) {
-      const until = Math.max(lastWriteEnd + WRITE_GAP_MS, writeBlockedUntil);
+      const until = Math.max(p.lastWriteEnd + WRITE_GAP_MS, p.writeBlockedUntil);
       const wait = until - now();
       // The queue's wait counts against the call's budget: no sleeping into a moment where no attempt can start.
-      if (wait > 0 && !fits(deadline, until)) noBudget();
+      if (wait > 0 && !fits(deadline, until)) noBudget(p);
       if (wait > 0) await sleep(wait);
-      if (!fits(deadline)) noBudget();
+      if (!fits(deadline)) noBudget(p);
       try {
         const r = await go();
-        secondaryStreak = 0;
+        p.secondaryStreak = 0;
         return r;
       } catch (e) {
         if (!(e instanceof GitHubNeed) || e.need.cause !== "rate_limited") throw e;
         // Refused before it created anything: wait out the limit and send the same request again, inside the budget.
-        const retryAt = Math.max(Date.parse(e.need.until), blockedUntil, writeBlockedUntil);
+        const retryAt = Math.max(Date.parse(e.need.until), p.blockedUntil, p.writeBlockedUntil);
         if (!fits(deadline, retryAt)) fail({ cause: "rate_limited", until: new Date(retryAt).toISOString() });
         await sleep(Math.max(retryAt - now(), 0));
       } finally {
-        lastWriteEnd = now();
+        p.lastWriteEnd = now();
       }
     }
   }
 
-  async function attempt(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number) {
+  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
-    await admit(resource, background, deadline);
-    const t = await token();
+    await admit(p, resource, background, deadline);
+    const t = as ? await as.token(retried) : await token();
     // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.
-    if (deadline !== undefined && !fits(deadline)) noBudget();
+    if (deadline !== undefined && !fits(deadline)) noBudget(p);
     const res = await fetchImpl(`${API}${path}`, {
       method,
       signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       headers: { authorization: `Bearer ${t}`, accept: accept ?? "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    observe(res);
+    if (createsContent(method, path, body)) {
+      // Counted as sent, per identity: how much of the owner's write limit the App takes off it.
+      if (now() - p.hour.at >= 3_600_000) p.hour = { at: now(), writes: 0 };
+      p.hour.writes++;
+      o.log?.("github write", { identity: as ? "app" : "owner", key: as?.key ?? "owner", method, path: path.replace(/[0-9a-f]{40}/g, ":sha").replace(/\/[0-9]+/g, "/:n").split("?")[0], status: res.status, writes_this_hour: p.hour.writes });
+    }
+    observe(p, res);
     const text = await res.text();
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : {}; } catch { /* a non-JSON answer (a diff, a log) stays text */ }
-    const need = classify(path, res, parsed, true);
+    // Another identity's token GitHub refused (revoked, or the installation changed): once more with a new token.
+    if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true);
+    const need = classify(p, path, res, parsed, Boolean(as));
     if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
     if (need) fail(need);
+    if (as) {
+      // Its writes' answers are its health (a permission the installation hasn't granted is a 403 here, not at the token).
+      if (createsContent(method, path, body) && (res.ok || res.status === 401 || res.status === 403)) as.wrote?.(res.ok ? undefined : `GitHub refused ${method} ${path.split("?")[0]!.replace(/[0-9a-f]{40}/g, ":sha")}: ${res.status} ${String(parsed?.message ?? "").slice(0, 120)}`);
+      return { status: res.status, body: parsed, headers: res.headers };
+    }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
     if (res.ok && /^\/orgs\/([^/]+)/.test(path)) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
@@ -352,8 +398,8 @@ export function createAccess(o: {
     connected,
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept),
-    graphql: async (query, variables, opts = {}) => (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background))).body,
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as),
+    graphql: async (query, variables, opts = {}) => (await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as)).body,
     async identity() {
       const t = await token();
       if (me?.for === t) return { login: me.login, name: me.name, email: me.email };
@@ -364,7 +410,7 @@ export function createAccess(o: {
       return { login: me.login, name: me.name, email: me.email };
     },
     status() {
-      const core = rates.get("core");
+      const core = owner.rates.get("core");
       const have = scopes();
       const rate = core ? { remaining: core.remaining, limit: core.limit, reset: new Date(core.reset).toISOString() } : undefined;
       const list = [...problems.values()];

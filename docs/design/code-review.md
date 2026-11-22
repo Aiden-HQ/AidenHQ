@@ -80,7 +80,9 @@ Config is one authority: the board and Aiden write it through the normal setting
 is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
 Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): outside PRs or drafts reviewed
 automatically, a repo in a new org, any change to a moment's combos (another engine or model, one more combo)
-and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches. `always`, `stop` and `focus` are
+and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches, or, where the owner's optional
+GitHub App is installed on the PR's base repo, as that App (one review writer, its own write limit:
+`docs/superpowers/specs/2026-11-22-github-app-review-writer-design.md`). `always`, `stop` and `focus` are
 PR state, not config.
 
 ## Triggers
@@ -174,7 +176,9 @@ it changes (one writer). It is a mirror: the merge queue still asks the service,
 status out of the named checks, so it never becomes a second gate. It is advice for people and agents watching a PR, not a gate:
 a status belongs to a commit, not a PR, so a new PR at a head another PR already passed shows that pass until the next poll. A
 repo admin may still add `aidenhq/review` as a required status in a ruleset (the admin's choice per repo; AidenHQ never changes
-rulesets) knowing that; the merge queue's gate is the verdict.
+rulesets) knowing that; the merge queue's gate is the verdict. Such a required status must accept any source: the App and the
+owner both write it (a ruleset's check with no `integration_id`; classic protection's `app_id: -1`). Adding it in GitHub's UI
+after the App has posted it can pin it to the App, and then a repo without the App never passes.
 
 ## Mandatory reviewers (the merge gate)
 

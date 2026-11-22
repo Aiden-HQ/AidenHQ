@@ -251,6 +251,7 @@ export const api = {
   explain: (id: string) => call<{ explanation: Explanation }>("GET", `/api/approvals/${encodeURIComponent(id)}/explain`),
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),
+  signInDismiss: (id: string, key: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/dismiss`, { key }),
   signInFinish: (id: string, url: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/finish`, { url }),
   deviceStart: (id: string) => call<DeviceCode>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device`, {}),
   deviceProgress: (id: string) => call<DeviceProgress>("GET", `/api/sign-ins/${encodeURIComponent(id)}/device`),

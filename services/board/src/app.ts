@@ -40,7 +40,7 @@ import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { deviceRoutes } from "./device-signin.js";
-import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, vendorWords, type McpAuth } from "./mcpauth.js";
+import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, vendorWords, type McpAuth, type McpAuthStatus } from "./mcpauth.js";
 import { organisationRoutes, type OrganisationPoint } from "./organisations.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
@@ -1123,11 +1123,18 @@ export function createApp(opts: AppOptions): Server {
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources });
   }
 
+  /** A sign-in's card rows without the suggestions the owner dismissed (a row's `dismiss` key, kept for good in the store). */
+  const undismissed = (id: string, lines: NonNullable<McpAuthStatus["lines"]>) =>
+    lines.map((l) => (l.dismiss && store.meta(`dismissed:${id}:${l.dismiss}`) ? (({ hint: _h, action: _a, dismiss: _d, ...rest }) => rest)(l) : l));
+
   /**
    * Each module sign-in's state (McpAuth caches it for a minute; `fresh` asks again), undefined where the proxy can't be asked,
    * and whether its Connect offers a choice of scopes.
    */
-  const signInStates = (fresh = false) => Promise.all((opts.signIns ?? []).map(async (x) => ({ ...x, status: await x.auth.status(fresh ? 0 : undefined), offer: await x.auth.offers() })));
+  const signInStates = (fresh = false) => Promise.all((opts.signIns ?? []).map(async (x) => {
+    const status = await x.auth.status(fresh ? 0 : undefined);
+    return { ...x, status: status?.lines ? { ...status, lines: undismissed(x.id, status.lines) } : status, offer: await x.auth.offers() };
+  }));
 
   const routes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }[] = [
     // A sign-in's Connect dialog: its name and Connect path, whether it is set up (asked afresh: the dialog waits on it after a
@@ -1205,6 +1212,19 @@ export function createApp(opts: AppOptions): Server {
           throw err instanceof McpAuthFailed || err instanceof GoogleAuthFailed ? new HttpError(400, `Couldn't connect Google: ${err.message}`) : new HttpError(502, "Couldn't connect Google: google-workspace-mcp isn't answering");
         }
         connected("google");
+        return { ok: true };
+      },
+    },
+    // Dismissing a suggestion on a sign-in's card (a row's `dismiss` key, e.g. GitHub's "code review can post as its own App" for
+    // one org): kept for good; the row stays, without its suggestion.
+    {
+      method: "POST",
+      path: /^\/api\/sign-ins\/([a-z0-9-]{1,63})\/dismiss$/,
+      handle: async (m, body) => {
+        const s = (opts.signIns ?? []).find((x) => x.id === m[1]);
+        if (!s) throw new HttpError(404, "no such sign-in");
+        const { key } = parse(z.object({ key: z.string().regex(/^[\w.:/-]{1,120}$/) }).strict(), body);
+        store.setMeta(`dismissed:${s.id}:${key}`, new Date().toISOString());
         return { ok: true };
       },
     },

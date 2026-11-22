@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import path from "node:path";
 import { configDir, dataDir, env, repo, secret } from "./env.ts";
 import { createGateway, watched } from "./gateway/lib.ts";
+import { convert as convertGithubApp, removeApp as removeGithubApp, saveApp as saveGithubApp, type MadeApp } from "./github-app.ts";
 import { createAdmin, type SetupField } from "./admin.ts";
 import { createAuthApi, OPERATOR_KEY } from "./auth-api.ts";
 import { createModuleValidate } from "./module-validate.ts";
@@ -676,7 +677,17 @@ if (accounts) {
 }
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));
-const admin = accounts && createAdmin({ accounts, firstRun, model, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+// Code review's optional GitHub App (github-app.ts), made from the admin pages while the github module is on: its id and key go
+// into that module's own vault dir, which its process reads at /state.
+const githubVault = path.join(secretsDir, "modules", "github");
+const githubApp = Object.hasOwn(modulesFile().modules ?? {}, "github") ? {
+  name: () => { const i = /^([a-z0-9-]+)\.aidenhq\.ai$/.exec(String(modulesFile().commit_domain ?? ""))?.[1]; return `AidenHQ review${i ? ` ${i}` : ""}`.slice(0, 34); },
+  ready: () => existsSync(path.join(githubVault, "github-app", "key.pem")),
+  convert: (code: string) => convertGithubApp(code),
+  save: (app: MadeApp) => saveGithubApp(app, githubVault),
+  remove: () => removeGithubApp(githubVault),
+} : undefined;
+const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.

@@ -17,8 +17,14 @@ export interface SignInLine {
   /** An ISO instant shown after `value` in the viewer's local time (GitHub: when the rate limit resets). */
   time?: string;
   state: "ok" | "warn" | "error";
-  /** The one fix: a link (the vendor's https page, or a board path `#/...`), or Reconnect (the sign-in's Connect). */
-  action?: { label: string; href?: string; reconnect?: true };
+  /** A suggestion's words, shown under the row; with its action, gone once dismissed (`dismiss`, the key the board keeps). */
+  hint?: string;
+  dismiss?: string;
+  /**
+   * The one fix: a link (the vendor's https page, or a board path `#/...`), a page on the kernel's admin listener (`admin`,
+   * a path), or Reconnect (the sign-in's Connect).
+   */
+  action?: { label: string; href?: string; admin?: string; reconnect?: true };
 }
 export interface SignIn {
   state: string;
