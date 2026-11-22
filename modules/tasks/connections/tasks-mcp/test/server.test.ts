@@ -236,6 +236,48 @@ test("task_list(mine) does not yield an older chat while the assigned pages stil
   assert.deepEqual(out.out?.tasks.map((t) => t.id), ["waits-1"], JSON.stringify(out));
 });
 
+test("task_list(mine) does not read another page of a source its tail already rules out", async () => {
+  // The assigned task is newest, so the first owner page's tail already proves nothing behind it can come first: a page
+  // behind it is never requested.
+  const work = Array.from({ length: 200 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" }));
+  const newer = { ...row("newest-1", "todo"), assigneeAgentId: "me", createdAt: "2026-09-01T00:00:00Z" };
+  const others = Array.from({ length: 400 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z" }));
+  const board = issueBoard({ rows: [newer, ...work, ...others] });
+  let ownerPages = 0;
+  const handler = (req, res) => {
+    const url = new URL(req.url ?? "", "http://x");
+    if (url.pathname.endsWith("/issues") && url.searchParams.get("assigneeUserId")) ownerPages++;
+    return board(req, res);
+  };
+  const states = { "newest-1": noAttention("working") };
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { mine: true, limit: 1 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["newest-1"], JSON.stringify(out));
+  assert.equal(ownerPages, 1, "the owner history is not read past the page that already answers the query");
+});
+
+test("task_list(mine) reads truncated chats a few at a time, not a whole page at once", async () => {
+  // Every owner row needs a detail read. They are prepared in bounded chunks, so the endpoint never sees a whole page of
+  // requests in flight together.
+  const rows = Array.from({ length: 200 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", description: "no marker here", descriptionTruncated: true }));
+  const board = issueBoard({ rows });
+  let inFlight = 0, peak = 0;
+  const handler = async (req, res) => {
+    const chat = req.url?.startsWith("/api/issues/note-");
+    if (chat) {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+    }
+    return board(req, res);
+  };
+  const { call } = bridge({ handler, states: {} });
+  const out = parse(await call("task_list", { mine: true, limit: 1 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), [], "no row carries the handed-back marker");
+  assert.ok(peak <= 8, `at most a chunk of detail reads at once, saw ${peak}`);
+});
+
 test("task_list(mine) caps both sources on Paperclip's own createdAt order, the order it returns", async () => {
   // The chat is newer by createdAt and only touched later on the assigned one: the list is Paperclip's newest-first, so the
   // newer chat is the one `limit: 1` keeps.

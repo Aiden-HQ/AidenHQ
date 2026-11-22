@@ -860,6 +860,9 @@ async function withStates(list: Json[], state: unknown, attention: unknown) {
 const PAGE = 200;
 /** A whole task_list scan's wall-clock budget: past it the list says so instead of running into the tool timeout. */
 const SCAN_MS = 120_000;
+/** Rows of one page whose `prepare` reads run at once (a truncated chat is read again): enough to keep a page quick, few enough
+ * that a page of them cannot open a burst of requests or wait on all of them before the first row can be answered. */
+const PREPARE_AT_ONCE = 8;
 /**
  * A company's issues, newest first, one page at a time: Paperclip's `offset` paging, as scripts/modules.ts and the board
  * read it. Yields rows not seen yet.
@@ -1063,7 +1066,13 @@ const TOOLS: Record<string, Tool> = {
           const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
           if (step.done) return;
           const raw = step.value as Json[];
-          const ready = (await atEdge(() => Promise.all(raw.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[];
+          // A page's rows are prepared a few at a time: a `prepare` that reads the task again (a truncated chat) must not fire a
+          // whole page of requests at once, and one slow read must not hold up every other row's answer.
+          const ready: Json[] = [];
+          for (let n = 0; n < raw.length; n += PREPARE_AT_ONCE) {
+            const chunk = raw.slice(n, n + PREPARE_AT_ONCE);
+            ready.push(...((await atEdge(() => Promise.all(chunk.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[]));
+          }
           const rows = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > until) complete = false;
@@ -1085,38 +1094,45 @@ const TOOLS: Record<string, Tool> = {
         let ia = 0, ib = 0;
         const seen = new Set<string>();
         for (;;) {
-          // Fetch the next page of whichever source is used up, before comparing heads.
-          if (!pa.done && ia >= pa.value.rows.length) {
-            pa = await left.next();
-            ia = 0;
-          }
-          if (!pb.done && ib >= pb.value.rows.length) {
-            pb = await right.next();
-            ib = 0;
-          }
           if (pa.done && pb.done) return;
           const headA = pa.done ? undefined : pa.value.rows[ia];
           const headB = pb.done ? undefined : pb.value.rows[ib];
-          if (!headA && !headB) continue;
-          // A page can hold only candidates that failed the filter: it does not end its source. Its `tail` bounds every row
-          // still unread behind it, so the other head is yielded only when nothing unread can be newer; otherwise the empty
-          // side is read on, and a match there comes first.
-          const safeB = Boolean(headB) && (pa.done || at(headB!) >= pa.value.tail);
-          const safeA = Boolean(headA) && (pb.done || at(headA!) >= pb.value.tail);
           let row: readonly [Json, Json];
-          if (!headA) {
-            if (!safeB) continue;
-            row = headB!;
-            ib++;
-          } else if (!headB) {
-            if (!safeA) continue;
-            row = headA;
-            ia++;
-          } else {
-            // Both heads are known: a tie keeps the assigned (b) snapshot, the one read last.
+          if (headA && headB) {
+            // Both sources' newest unread rows are known: a tie keeps the assigned (b) snapshot, the one read last.
             const fromB = at(headB) >= at(headA);
             row = fromB ? headB : headA;
             if (fromB) ib++; else ia++;
+          } else if (headA) {
+            // The other source has no match on its page. The page does not end the source: its `tail` bounds every row still
+            // unread behind it, so this head comes first only when nothing unread can be newer; else that source is read on.
+            if (!pb.done && at(headA) < pb.value.tail) {
+              pb = await right.next();
+              ib = 0;
+              continue;
+            }
+            row = headA;
+            ia++;
+          } else if (headB) {
+            if (!pa.done && at(headB) < pa.value.tail) {
+              pa = await left.next();
+              ia = 0;
+              continue;
+            }
+            row = headB;
+            ib++;
+          } else {
+            // Neither page holds a match: read on in whichever source still has pages, without touching one it proves nothing
+            // about beyond its own tail (a page read at all can fail, so only read what can change the answer).
+            if (!pa.done) {
+              pa = await left.next();
+              ia = 0;
+            }
+            if (!pb.done) {
+              pb = await right.next();
+              ib = 0;
+            }
+            continue;
           }
           if (seen.has(row[0].id)) continue;
           seen.add(row[0].id);
