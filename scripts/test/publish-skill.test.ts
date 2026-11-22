@@ -15,6 +15,7 @@ test("the reply states the change, its evidence, what was left out and the non-b
 
 test("self-review is publish's first step, and its lines go in Evidence", () => {
   const publish = read("publish");
-  assert.ok(publish.indexOf("node /opt/aidenhq/code-review/self-review.ts <base-branch> <branch>") < publish.indexOf("**Title:**"), "self-review comes first");
+  const review = publish.indexOf("node /opt/aidenhq/code-review/self-review.ts <base-branch> <branch>"), title = publish.indexOf("**Title:**");
+  assert.ok(review !== -1 && title !== -1 && review < title, "self-review comes first");
   assert.match(publish, /every `self-review:` line, for each branch/);
 });

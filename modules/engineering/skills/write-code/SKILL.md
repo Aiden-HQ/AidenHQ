@@ -7,14 +7,16 @@ description: How code is changed here, in any repository - starting the branch, 
 
 ## Start
 
-- Before your first commit, refresh with `aidenhq clone <org/repo>` (the only fetch that works here). On a refresh, a
-  remote branch exists only if an `origin/<branch> is at …` line names it.
+- Before your first commit, refresh with `aidenhq clone <org/repo>` (the only fetch that works here). A first clone
+  (`cloned into`) holds exactly the code host's branches; on a refresh, a remote branch exists only if an
+  `origin/<branch> is at …` line names it.
   - The task's branch exists: `git switch --create <branch> --track origin/<branch>`, or fast-forward your local one
     (`git merge --ff-only origin/<branch>`).
   - It doesn't: start a new branch, or keep your local one as it is.
   - A failed clone or fast-forward: stop and report. Build on the branch's existing commits (rebasing is fine).
-- A PR stays under about 1,500 changed lines. Plan bigger work as stacked PRs: `references/large-changes.md`. App repos:
-  `references/apps.md`.
+- A PR stays under about 1,500 changed lines. Plan bigger work as stacked PRs: `references/large-changes.md`.
+- App repos: `references/apps.md`. Before app work, check the app's open PRs for a large rewrite holding your files
+  (`references/large-changes.md`).
 
 ## Build
 
@@ -50,5 +52,6 @@ description: How code is changed here, in any repository - starting the branch, 
   code that reads owner data, handles sign-in or identity, takes public input or payments, or sends messages out. Lines
   leave only when the task says so.
 - A data app (`database: warehouse`) migrates by adding: tables, nullable or defaulted columns, indexes. A replaced
-  column or table stays until a later release no longer reads it, so a deploy can roll back.
+  column or table is dropped only by a later release, once the deployed one already runs without it, so a deploy can
+  roll back.
 - A security fix carries the trailer `No-Auto-Rollback: security fix`.

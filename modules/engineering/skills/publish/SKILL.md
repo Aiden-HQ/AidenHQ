@@ -17,7 +17,8 @@ description: Load right before every `aidenhq publish` (a new PR or a push to on
      again. Publish when it is clean, or when each important finding left is one you judge wrong: put it in the PR body
      with the reason and `file:line`.
    - Exit 2, incomplete: when it names a setup step (clone, switch, commit), do it and run again. When the review itself
-     could not finish, or fixes make no progress, publish with the outcome and its cause.
+     could not finish, or fixes make no progress, publish with the outcome and its cause. Judge any
+     findings it printed as for exit 1; the outcome stays `incomplete`.
 
    `aidenhq publish` takes only a head self-review ran on, so run it after every new commit.
 2. **Title:** a Conventional Commit (`fix(scope): …`), from the branch's first commit or `--title`.
