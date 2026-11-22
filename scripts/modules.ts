@@ -82,8 +82,16 @@ function eventRoutine(key: string, r: Obj, paperclip: Obj) {
   const filter = e.filter;
   if (!filter || typeof filter !== "object" || Array.isArray(filter) || !Object.keys(filter).length) fail(`${at}.filter is required (what the routine wants from the stream)`);
   for (const f of Object.keys(filter)) if (!ev.filter.includes(f)) fail(`${at}.filter.${f} isn't a filter key of ${e.connection} (${ev.filter.join(", ")})`);
+  // The router's matches() reads each key's value as this shape (kernel/src/events.ts Filter).
+  const words = (v: unknown) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x.length > 0);
+  for (const [f, v] of Object.entries<unknown>(filter)) {
+    const ok = f === "bot" ? typeof v === "boolean" : f === "contains" ? words(v) : (typeof v === "string" && v.length > 0) || words(v);
+    if (!ok) fail(`${at}.filter.${f} is ${f === "bot" ? "true or false" : f === "contains" ? "a list of words" : "a value or a list of values"}`);
+  }
+  if ((r.schedules ?? []).length) fail(`${at}: an event routine runs on its events, never on a schedule (drop its schedules, an override's included)`);
   const held = paperclip.agents[r.agent]?.enabled_tools?.[e.connection] ?? [];
   if (!ev.reads.some((t: string) => held.includes(t))) fail(`${at}: agent ${r.agent} holds none of ${e.connection}'s ${ev.reads.join(", ")} (it can only subscribe to what it may read)`);
+  if (!(paperclip.agents[r.agent]?.enabled_tools?.paperclip_tasks ?? []).includes("routine_events")) fail(`${at}: agent ${r.agent} doesn't hold paperclip_tasks.routine_events, the one way a run reads its batch`);
   r.concurrency = "always_enqueue";
   r.description = `${String(r.description ?? "").trimEnd()}\n\n${EVENT_SUFFIX}`;
 }
@@ -1108,6 +1116,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const [key, fields] of Object.entries(entries ?? {})) {
       const target = paperclip[kind][key] ?? fail(`unknown ${kind.slice(0, -1)}: ${key}`);
       for (const [f, v] of Object.entries<any>(fields ?? {})) {
+        if (kind === "routines" && f === "status") fail(`override not allowed: routines.${key}.status: a routine's pause and resume are live (its module's page, or Aiden's fleet_control), never a file; delete it`);
         if (!OVERRIDABLE[kind as keyof typeof OVERRIDABLE].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
         if (kind === "agents" && (f === "connections" || f === "skills")) continue; // connections: merged before grants resolved, above; skills: effectiveSkills, below
         if (kind === "agents" && f === "handbook_fork") {
@@ -1142,9 +1151,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
     }
   }
-  // At most 20 local routines run as one agent.
-  const localRuns: Obj = {};
-  for (const r of Object.values<Obj>(paperclip.routines)) if (r.tier === "local" && (localRuns[r.agent] = (localRuns[r.agent] ?? 0) + 1) > 20) fail(`agent ${r.agent}: at most 20 local routines run as one agent`);
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     if (a.graded != null && typeof a.graded !== "boolean") fail(`${key}: graded is true, false or absent`);

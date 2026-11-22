@@ -1162,6 +1162,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
+  /** Setup's routine ids by key (grants.json `routine_keys`: Paperclip id -> compiled key); empty before the first apply. */
+  const routineKeys = (): Record<string, string> => { try { return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")).routine_keys ?? {}; } catch { return {}; } };
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
   async function settingsData() {
@@ -1781,8 +1783,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, activity, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
           ongoing,
           // Its routines: on or off as Paperclip runs them (setup creates one with its status; pause and resume are the live
-          // controls after that), else as compiled, and whose.
-          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const live = routines.find((x) => x.title === r?.title && x.status !== "archived"); return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", ...(live ? { id: live.id } : {}), on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
+          // controls after that), else as compiled, and whose. The live row is setup's for that key (grants.json routine_keys),
+          // never a title match: an owner's recurring task may share a title.
+          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const id = Object.entries(routineKeys()).find(([, k]) => k === key)?.[0]; const live = id ? routines.find((x) => x.id === id && x.status !== "archived") : undefined; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", ...(live ? { id: live.id } : {}), on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
           authority: moduleAuthority(text, module.name),
           neededBy: module.neededBy,
           requires: module.requires,

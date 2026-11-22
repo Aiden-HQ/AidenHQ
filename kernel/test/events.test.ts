@@ -160,3 +160,24 @@ test("the /run call: the key and variables in the body; only issue_created with 
   answer = { status: 202, json: { id: "run-2", status: "failed", failureReason: "x" } };
   assert.deepEqual(await run(R1, "b-2", { batch: "b-2", count: "1" }), { status: 202 });
 });
+
+test("a batch belongs to the subscription that accepted it; resources match in any case; a reply keeps its thread", async () => {
+  const r = rig();
+  const { events } = r;
+  r.grants.routine_events[R1]!.resource = "c1";
+  assert.deepEqual(events.ingest("slack", ev("t1", { thread: "1700000000.000100" })), { queued: 1 });
+  // The routine moves to another agent while the batch waits: the batch is dropped, never handed to the new assignee.
+  r.grants.routine_events[R1]!.agent = "a2";
+  r.routines[R1] = { status: "active", assignee: "a2" };
+  r.tick(60_000);
+  await events.drain();
+  assert.equal(r.runs.filter((x) => x.routine === R1).length, 0);
+  assert.ok(r.logs.some(([m, f]) => m === "events: batch dropped" && /subscription changed/.test(String(f?.why))));
+  // Under the new subscription the next event fires, and the reply's thread rides with it.
+  events.ingest("slack", ev("t2", { thread: "1700000000.000100" }));
+  r.tick(60_000);
+  await events.drain();
+  const run = r.runs.find((x) => x.routine === R1)!;
+  const got = await events.batch({ task: `issue-${run.key.slice(0, 8)}`, agent: "a2", routine: "slack-triage" }, run.key);
+  assert.ok("events" in got && got.events[0]!.thread === "1700000000.000100");
+});

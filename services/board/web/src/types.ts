@@ -722,6 +722,8 @@ export interface SharePreview {
   module: string; repo: string; ref: string; source: string; base: string; digest: string; private: boolean; conflict?: string;
   /** Each file whole (`text`) only when nothing blocks the share. */
   files: { path: string; bytes: number; text?: string }[];
+  /** Files in the destination's folder now that the publish deletes (the folder becomes exactly `files`). */
+  removes: string[];
   notShared: { path: string; why: string }[];
   findings: { file: string; rule: string; detail: string }[];
   isolation: "trusted" | "untrusted"; scripts: string[]; grants: Record<string, string[]>;

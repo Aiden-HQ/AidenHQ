@@ -14,7 +14,8 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Connection, Grant } from "./identity.ts";
 
-export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string };
+/** `thread`: the conversation an event replies in (a Slack reply's thread root ts), when it is a reply. */
+export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string };
 export type Filter = { kind?: string | string[]; author?: string | string[]; label?: string | string[]; contains?: string[]; bot?: boolean };
 export type Subscription = { key: string; agent: string; connection: string; resource: string; filter: Filter };
 export type GrantsTable = { agents?: Record<string, Grant>; routine_events?: Record<string, Subscription> };
@@ -49,13 +50,13 @@ const opt = (v: unknown, max: number) => v === undefined || str(v, max);
 function envelope(e: unknown): SourceEvent | string {
   const o = (e && typeof e === "object" && !Array.isArray(e) ? e : {}) as Record<string, unknown>;
   if (!str(o.connection, 100) || !str(o.resource, 200) || !str(o.id, 200) || !str(o.kind, 100)) return "connection, resource, id and kind are short strings";
-  if (!opt(o.author, 200) || !opt(o.url, 500) || (o.text !== undefined && typeof o.text !== "string")) return "author, url and text are strings";
+  if (!opt(o.author, 200) || !opt(o.url, 500) || !opt(o.thread, 200) || (o.text !== undefined && typeof o.text !== "string")) return "author, url, thread and text are strings";
   if (o.bot !== undefined && typeof o.bot !== "boolean") return "bot is true or false";
   if (o.labels !== undefined && (!Array.isArray(o.labels) || o.labels.length > LABELS_MAX || o.labels.some((l) => !str(l, 100)))) return `labels are at most ${LABELS_MAX} short strings`;
   return {
     connection: o.connection as string, resource: o.resource as string, id: o.id as string, kind: o.kind as string,
     ...(o.author !== undefined ? { author: o.author as string } : {}), ...(o.text !== undefined ? { text: (o.text as string).slice(0, TEXT_MAX) } : {}),
-    ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}),
+    ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}), ...(o.thread !== undefined ? { thread: o.thread as string } : {}),
   };
 }
 
@@ -81,11 +82,15 @@ export function createEvents(o: {
 }) {
   const { db } = o, now = o.now ?? Date.now, log = o.log ?? (() => {});
   db.exec(`CREATE TABLE IF NOT EXISTS event_queue (seq INTEGER PRIMARY KEY AUTOINCREMENT, routine TEXT NOT NULL, id TEXT NOT NULL, batch TEXT NOT NULL, body TEXT, at INTEGER NOT NULL, UNIQUE(routine, id));
-    CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
+    CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, sub TEXT NOT NULL, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
     CREATE INDEX IF NOT EXISTS event_queue_batch ON event_queue (batch);
     CREATE INDEX IF NOT EXISTS event_batches_state ON event_batches (state, routine);`);
-  type Batch = { id: string; routine: string; task: string | null; count: number; state: string; tries: number; opened_at: number; sealed_at: number | null; dispatched_at: number | null };
+  type Batch = { id: string; routine: string; sub: string; task: string | null; count: number; state: string; tries: number; opened_at: number; sealed_at: number | null; dispatched_at: number | null };
   const subs = () => o.grants().routine_events ?? {};
+  /** What a batch was accepted under: a routine that changes its source, resource, filter or agent starts afresh. */
+  const subOf = (s: Subscription) => JSON.stringify([s.key, s.agent, s.connection, s.resource, s.filter ?? {}]);
+  /** A resource as the router compares it: GitHub's repo slugs come lower-cased from its poller, a routine's as written. */
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   /** Whether `agent` holds one of the connection's declared `reads` tools. */
   const reads = (agent: string, connection: string) => {
     const tools = o.grants().agents?.[agent]?.tools?.[connection] ?? [];
@@ -108,7 +113,7 @@ export function createEvents(o: {
       ownerOf(module, String((e as { connection?: unknown } | null)?.connection ?? ""));
       const ev = envelope(e);
       if (typeof ev === "string") { log("events: skipped an invalid event", { module, why: ev }); return { skipped: "invalid", why: ev }; }
-      const targets = Object.entries(subs()).filter(([, s]) => s.connection === ev.connection && (s.resource === ev.resource || s.resource === "*") && reads(s.agent, s.connection) && matches(s.filter ?? {}, ev));
+      const targets = Object.entries(subs()).filter(([, s]) => s.connection === ev.connection && (s.resource === "*" || same(s.resource, ev.resource)) && reads(s.agent, s.connection) && matches(s.filter ?? {}, ev));
       if (!targets.length) return { queued: 0 };
       const pending = (db.prepare("SELECT count(*) AS n FROM event_queue q JOIN event_batches b ON b.id = q.batch WHERE b.state IN ('open', 'sealed', 'firing')").get() as { n: number }).n;
       // Only events not yet delivered count against intake; delivered bodies go with the 24 h retention.
@@ -116,11 +121,12 @@ export function createEvents(o: {
       const { connection: _c, ...body } = ev;
       const t = now();
       let queued = 0;
-      for (const [routine] of targets) {
+      for (const [routine, s] of targets) {
         // A repeated source id for this routine is dropped (its row is kept 7 days), before it could open an empty batch.
         if (db.prepare("SELECT 1 FROM event_queue WHERE routine = ? AND id = ?").get(routine, ev.id)) continue;
         let b = db.prepare("SELECT * FROM event_batches WHERE routine = ? AND state = 'open'").get(routine) as Batch | undefined;
-        if (!b) { const id = randomUUID(); db.prepare("INSERT INTO event_batches (id, routine, state, opened_at) VALUES (?, ?, 'open', ?)").run(id, routine, t); b = get(id)!; }
+        if (b && b.sub !== subOf(s)) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
+        if (!b) { const id = randomUUID(); db.prepare("INSERT INTO event_batches (id, routine, sub, state, opened_at) VALUES (?, ?, ?, 'open', ?)").run(id, routine, subOf(s), t); b = get(id)!; }
         db.prepare("INSERT INTO event_queue (routine, id, batch, body, at) VALUES (?, ?, ?, ?, ?)").run(routine, ev.id, b.id, JSON.stringify(body), t);
         queued++;
         db.prepare(`UPDATE event_batches SET count = count + 1${b.count + 1 >= BATCH_MAX ? ", state = 'sealed', sealed_at = ?" : ""} WHERE id = ?`).run(...(b.count + 1 >= BATCH_MAX ? [t, b.id] : [b.id]));
@@ -139,7 +145,7 @@ export function createEvents(o: {
      */
     async batch(job: { task: string; agent: string; routine?: string | null }, id: string): Promise<{ pending: true; retry_after_s: number } | { count: number; events: Omit<SourceEvent, "connection">[] }> {
       const b = get(id), s = b && subs()[b.routine];
-      const own = b && s && job.routine && s.key === job.routine && s.agent === job.agent && reads(s.agent, s.connection);
+      const own = b && s && job.routine && subOf(s) === b.sub && s.key === job.routine && s.agent === job.agent && reads(s.agent, s.connection);
       const r = own ? await o.routine(b.routine) : undefined;
       if (b && own && r?.status === "active" && r.assignee === job.agent) {
         if (b.state === "fired" && b.task === job.task) return { count: b.count, events: (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body)) };
@@ -158,6 +164,7 @@ export function createEvents(o: {
           if (b.state === "firing" && now() - b.sealed_at! > FIRING_MS) { drop(b, "Paperclip didn't take the run in 10 minutes"); continue; }
           const s = subs()[b.routine];
           if (!s || !reads(s.agent, s.connection)) { drop(b, "the subscription or its read grant is gone"); continue; }
+          if (subOf(s) !== b.sub) { drop(b, "the routine's subscription changed since these events were accepted"); continue; }
           let r: Awaited<ReturnType<typeof o.routine>>;
           try { r = await o.routine(b.routine); } catch (e) { log("events: routine lookup failed; retried next drain", { routine: b.routine, err: String((e as Error).message).slice(0, 200) }); continue; }
           if (r?.status !== "active" || r.assignee !== s.agent) { drop(b, r ? `the routine is ${r.status}` : "the routine is gone"); continue; }

@@ -311,7 +311,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
    * is private, and a folder or marketplace entry there that isn't this module's (module-share.ts preview). Throws the code
    * host's refusal (a missing repo or branch, GitHub signed out).
    */
-  async function publishTip(b: { repo: string; ref: string; module: string }): Promise<{ repo: string; base: string; private: boolean; conflict?: string }> {
+  async function publishTip(b: { repo: string; ref: string; module: string }): Promise<{ repo: string; base: string; private: boolean; conflict?: string; existing?: string[] }> {
     const k = kind(), key = k?.executor && secret(k.executor.auth_secret);
     if (!k?.executor || !key) throw fail(404, "sharing needs GitHub connected");
     const url = new URL("/aidenhq/v1/publish/tip", k.executor.url).toString();

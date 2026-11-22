@@ -146,7 +146,7 @@ export function createSharing(d: {
   instanceDir: string; configDir: string; instanceRepo: () => string | undefined;
   secrets: () => string[]; memory: () => string[];
   /** The code host's answer for a destination: its tip, whether it is private, and a folder or entry that isn't this module's. */
-  tip: (b: { repo: string; ref: string; module: string }) => Promise<{ repo: string; base: string; private: boolean; conflict?: string }>;
+  tip: (b: { repo: string; ref: string; module: string }) => Promise<{ repo: string; base: string; private: boolean; conflict?: string; existing?: string[] }>;
   ownerTask: (task: unknown, credential?: unknown) => Promise<{ issue: Dict; account?: string }>;
   /** Whether a share was filed on this task already. */
   filed: (task: string) => boolean;
@@ -180,6 +180,8 @@ export function createSharing(d: {
       return {
         module, repo: to.repo, ref, source: x.source, base: to.base, digest: x.digest, private: to.private, ...(to.conflict ? { conflict: to.conflict } : {}),
         files: Object.keys(x.files).sort().map((path) => ({ path, bytes: Buffer.byteLength(x.files[path]!), ...(clean ? { text: x.files[path] } : {}) })),
+        // What the publish deletes from the destination's folder (at the tip the save binds): the folder becomes exactly `files`.
+        removes: (to.existing ?? []).filter((p) => !Object.hasOwn(x.files, p)).sort(),
         notShared: x.notShared, findings: x.findings, isolation: x.isolation, scripts: x.scripts, grants: x.grants,
       };
     },

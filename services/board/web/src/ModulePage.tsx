@@ -334,6 +334,12 @@ function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
                 <dd>{tags(tools)}</dd>
               </Fragment>
             ))}
+            {p.removes.length > 0 && (
+              <>
+                <dt>Removes from {p.repo}</dt>
+                <dd><ul className="mod-share-list">{p.removes.map((r) => <li key={r}><code>{p.module}/{r}</code></li>)}</ul></dd>
+              </>
+            )}
             <dt>Not shared</dt>
             <dd>{p.notShared.length ? <ul className="mod-share-list">{p.notShared.map((n) => <li key={n.path}><code>{n.path}</code>: {n.why}</li>)}</ul> : <span className="mod-none">nothing left out</span>}</dd>
           </dl>

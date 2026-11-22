@@ -7,7 +7,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Projects, issueLink, parseProductRepo, productTarget, upstreamReport } from "./projects.js";
-import { originIds, ownerTerms } from "./scrub.js";
+import { originIds, ownerTerms, scrubText } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 import { createServer, type IncomingMessage } from "node:http";
@@ -507,7 +507,7 @@ function buildServer(caller?: Caller): McpServer {
     },
     run(
       "github_pr_thread_reply",
-      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, a.body, agent)),
+      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, scrubText(a.body, OWNER_TERMS), agent)),
     ),
   );
   server.registerTool(

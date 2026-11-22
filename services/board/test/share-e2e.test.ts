@@ -198,6 +198,7 @@ describe("sharing a local module (V4)", () => {
     expect(p.status).toBe(200);
     expect(p.body.findings).toEqual([]);
     expect(p.body.base).toBe(tip(market));
+    expect(p.body.removes).toEqual([]);
     expect(p.body.files.map((f: any) => f.path)).toEqual(["agents/chaser/AGENTS.md", "module.yaml", "skills/chase/SKILL.md"]);
     expect(p.body.notShared.map((n: any) => n.path).sort()).toEqual(["memory.md", "module.yaml agents.chaser.image", "module.yaml agents.chaser.reports_to", "module.yaml routines.digest-for-cos"]);
     expect([p.body.isolation, p.body.grants.chaser]).toEqual(["trusted", ["paperclip_tasks.task_comment", "paperclip_tasks.task_get"]]);

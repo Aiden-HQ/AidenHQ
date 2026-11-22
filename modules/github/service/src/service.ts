@@ -275,7 +275,8 @@ export function createService(o: Options) {
       if (d.private) throw fail(422, `${d.s.slug} is private: a module is shared to a public repo`);
       if (d.conflict) throw fail(422, d.conflict);
       if (d.tip !== a.base) throw fail(409, `${d.s.slug} \`${a.ref}\` moved since your preview: preview again`);
-      const shown = Object.keys(files).sort().map((p) => `--- ${a.module}/${p} (${Buffer.byteLength(files[p]!)} bytes)\n${files[p]}`).join("\n");
+      const removed = d.existing.filter((p) => !Object.hasOwn(files, p)).map((p) => `--- ${a.module}/${p} (removed)`);
+      const shown = [...Object.keys(files).sort().map((p) => `--- ${a.module}/${p} (${Buffer.byteLength(files[p]!)} bytes)\n${files[p]}`), ...removed].join("\n");
       return { state: { ...base, repo: d.s.slug, ref: String(a.ref), base: String(a.base) }, facts: { target: `${d.s.slug} ${a.ref}`, sentence: `Publish the ${a.module} module to ${d.s.slug} (\`${a.ref}\`), as previewed.`, diff: shown } };
     }
     if (kind.endsWith(".create_repo")) {
@@ -873,7 +874,8 @@ export function createService(o: Options) {
   }
   /**
    * Where a share lands (publish_module, docs/design/sharing.md): the repo as GitHub reports it (missing is refused), its
-   * branch's tip fetched into the ws cache, and why its `<module>/` folder or marketplace.json entry isn't this module's own.
+   * branch's tip fetched into the ws cache, why its `<module>/` folder or marketplace.json entry isn't this module's own, and
+   * the files that folder holds now (`existing`, relative to it): a publish replaces the folder, so the preview shows what goes.
    */
   async function destination(repo: string, ref: string, module: string) {
     const s = slugOf(repo);
@@ -888,7 +890,8 @@ export function createService(o: Options) {
     try { upsertMarketplace(listing, module); } catch (e) { conflict = `${s.slug}: ${(e as Error).message}`; }
     const listed = !conflict && listing !== undefined && upsertMarketplace(listing, module) === listing;
     if (!conflict && !listed && (await git(dir, ["ls-tree", tip, "--", module]))) conflict = `${s.slug} already has a ${module}/ folder its marketplace.json doesn't list as this module`;
-    return { s, tip, private: r.body?.private !== false, conflict };
+    const existing = (await git(dir, ["ls-tree", "-r", "-z", "--name-only", tip, "--", module])).split("\0").filter(Boolean).map((p) => p.slice(module.length + 1));
+    return { s, tip, private: r.body?.private !== false, conflict, existing };
   }
   /**
    * An approved share: the previewed files under `<module>/` (any other file there removed, so the folder is exactly the
@@ -977,7 +980,7 @@ export function createService(o: Options) {
         if (!access.connected()) return send(res, 503, { error: "GitHub isn't connected" });
         const b = await body(req);
         const d = await destination(String(b.repo ?? ""), String(b.ref ?? ""), String(b.module ?? ""));
-        return send(res, 200, { repo: d.s.slug, base: d.tip, private: d.private, ...(d.conflict ? { conflict: d.conflict } : {}) });
+        return send(res, 200, { repo: d.s.slug, base: d.tip, private: d.private, existing: d.existing, ...(d.conflict ? { conflict: d.conflict } : {}) });
       }
       const ap = /^\/aidenhq\/v1\/apply\/(read|land|write)$/.exec(String(req.url ?? ""));
       if (ap && req.method === "POST") {

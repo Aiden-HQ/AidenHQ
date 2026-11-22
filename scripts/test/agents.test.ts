@@ -121,7 +121,11 @@ test("event routines compile and the lints hold", () => {
   refuses(ev(slack, { webhook: true }), /routine x-watch: webhook isn't allowed/);
   refuses(ev({ ...slack, resource: "*" }), /event\.resource: \* is for product modules/);
   refuses(ev(slack, { tools: ["x"] }), /routine x-watch: tools isn't allowed/);
-  refuses(ev(slack, { schedules: [{ cron: "*/5 * * * *", label: "often" }] }), /cron minute is one number/);
+  refuses(ev(slack, { schedules: [{ cron: "*/5 * * * *", label: "often" }] }), /cron minute is one number|never on a schedule/);
+  refuses(ev(slack, { schedules: [{ cron: "5 * * * *", label: "hourly" }] }), /an event routine runs on its events, never on a schedule/);
+  refuses(ev({ ...slack, filter: { contains: "acme" } }), /event\.filter\.contains is a list of words/);
+  refuses(ev({ ...slack, filter: { bot: "no" } }), /event\.filter\.bot is true or false/);
+  refuses(ev(slack), /doesn't hold paperclip_tasks\.routine_events/, { connections: { slack: "read", paperclip_tasks: ["task_current"] }, profile: "engineer" });
   refuses(Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`x-w${i}`, { title: `W${i}`, agent: "x", description: "Go.", event: slack }])), /an agent has at most 20 local routines/);
   // The bundle's slack-triage is a product event routine: no webhook, no secrets.
   const bundle = compile(product, withAgents({}, ["slack", "open-loops"])).paperclip;

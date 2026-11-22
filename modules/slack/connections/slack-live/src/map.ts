@@ -9,7 +9,7 @@ export function permalink(channel: string, ts: string): string {
 }
 
 /** A routine's event (the kernel's event router, POST /v1/events). */
-export type SourceEvent = { connection: "slack"; resource: string; id: string; kind: string; author?: string; text: string; bot: boolean; url: string };
+export type SourceEvent = { connection: "slack"; resource: string; id: string; kind: string; author?: string; text: string; bot: boolean; url: string; thread?: string };
 // The envelope -> a routine's event: messages and mentions with text, bot posts flagged `bot` (a routine's filter decides), system
 // subtypes dropped. Its id is the message (channel and ts): one message delivered as a bot and a user event is one event.
 export function toSourceEvent(body: unknown): SourceEvent | null {
@@ -19,5 +19,7 @@ export function toSourceEvent(body: unknown): SourceEvent | null {
   const subtype = str(ev.subtype);
   if (subtype && SYSTEM_SUBTYPES.has(subtype)) return null;
   const author = str(ev.user) ?? str(ev.bot_id);
-  return { connection: "slack", resource: channel, id: `${channel}:${ts}`, kind, ...(author ? { author } : {}), text: text.slice(0, 2000), bot: subtype === "bot_message" || Boolean(str(ev.bot_id) || str(ev.app_id)), url: permalink(channel, ts) };
+  // A reply carries its thread's root ts: whom it addresses and which task it belongs to are the thread's.
+  const thread = str(ev.thread_ts);
+  return { connection: "slack", resource: channel, id: `${channel}:${ts}`, kind, ...(author ? { author } : {}), text: text.slice(0, 2000), bot: subtype === "bot_message" || Boolean(str(ev.bot_id) || str(ev.app_id)), url: permalink(channel, ts), ...(thread && thread !== ts ? { thread } : {}) };
 }
