@@ -14,8 +14,11 @@
 set -uo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$repo/.env" ] && { set -a; . "$repo/.env"; set +a; }
-data="${AIDENHQ_DATA_DIR:-data}"
-case "$data" in /*) ;; *) data="$repo/$data" ;; esac
+# The data dir as ops/lib/data-dir.sh resolves it, the same resolver the CI runner's backoff marker uses (there `.env` is read,
+# not sourced): one path, one meaning, so the unit's marker is the file this exports.
+# shellcheck source=ops/lib/data-dir.sh
+. "$repo/ops/lib/data-dir.sh"
+data="$(aidenhq_data_dir)"
 dir="$data/modules/monitoring/textfile"
 [ -d "$dir" ] || exit 0
 

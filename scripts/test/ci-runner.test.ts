@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The unit's scripts and the helper both source, at the paths they use in a checkout.
-const scripts = ["ci-runner.sh", "ci-runner-backoff.sh", "lib/ci-runner-backoff.sh"].map((name) => join(here, "../../ops", name));
+const scripts = ["ci-runner.sh", "ci-runner-backoff.sh", "lib/ci-runner-backoff.sh", "lib/data-dir.sh"].map((name) => join(here, "../../ops", name));
 
 // Every checkout goes when the file's tests do, so a run leaves no /tmp trees behind.
 const made: string[] = [];

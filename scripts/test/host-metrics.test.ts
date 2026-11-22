@@ -25,8 +25,8 @@ function host() {
   return { root, bin, data };
 }
 
-const run = (h) => new Promise<string>((resolve, reject) => {
-  execFile("bash", [join(repo, "ops/host-metrics.sh")], { env: { PATH: `${h.bin}:/usr/bin:/bin`, HOME: h.root, AIDENHQ_DATA_DIR: h.data } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(readFileSync(join(h.data, "modules/monitoring/textfile/units.prom"), "utf8"))));
+const run = (h, env = {}) => new Promise<string>((resolve, reject) => {
+  execFile("bash", [join(repo, "ops/host-metrics.sh")], { env: { PATH: `${h.bin}:/usr/bin:/bin`, HOME: h.root, AIDENHQ_DATA_DIR: h.data, ...env } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(readFileSync(join(h.data, "modules/monitoring/textfile/units.prom"), "utf8"))));
 });
 
 test("a persisted runner backoff is a metric, and a stale or empty one is not", async () => {
@@ -49,6 +49,24 @@ test("a persisted runner backoff is a metric, and a stale or empty one is not", 
   // The unit's own state reads alongside it (the fake's third column is its sub-state, not "running": the snapshot's active
   // bit follows systemd's second column, so this pins only that the backoff sits next to the unit's series).
   assert.match(text, /^aidenhq_unit_active\{scope="user",unit="aidenhq-ci-runner@3\.service"\} /m);
+});
+
+// The resolver the runner's marker and this exporter share (ops/lib/data-dir.sh): a `.env` value reaches both the same way, so
+// the marker a unit writes is the file this reads. `$HOME` expands as sourcing would, a trailing slash (even a lone `/`) is
+// kept meaningful, and a relative value is the checkout's.
+test("one data dir: the runner's marker and this exporter resolve a value the same way", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "data-dir-"));
+  mkdirSync(join(dir, "ops/lib"), { recursive: true });
+  writeFileSync(join(dir, "ops/lib/data-dir.sh"), readFileSync(join(repo, "ops/lib/data-dir.sh"), "utf8"));
+  const ask = (value: string, home: string) => new Promise<string>((resolve, reject) => {
+    writeFileSync(join(dir, ".env"), `AIDENHQ_DATA_DIR=${value}\n`);
+    execFile("bash", ["-c", `. "${dir}/ops/lib/data-dir.sh"; aidenhq_data_dir`], { env: { PATH: "/usr/bin:/bin", HOME: home } }, (e, out, err) => (e ? reject(new Error(`${out}${err}`)) : resolve(out.trim())));
+  });
+  const home = join(dir, "home");
+  assert.equal(await ask('"$HOME/aiden-data"', home), `${home}/aiden-data`, "a variable expands as sourcing it would");
+  assert.equal(await ask("./data", home), join(dir, "data"), "a relative value is the checkout's");
+  assert.equal(await ask("/", home), "/", "a lone / stays the root");
+  assert.equal(await ask("/srv/aidenhq/", home), "/srv/aidenhq", "a trailing slash is dropped, not the path");
 });
 
 test("no runner state writes a backoff metric with no series", async () => {
