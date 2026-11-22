@@ -37,12 +37,18 @@ async function main(): Promise<{ out: string[]; code: number }> {
   try { head = git("rev-parse", "HEAD"); base = git("merge-base", `origin/${baseBranch}`, "HEAD"); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
   // The last finished review of this branch (kept in the clone's .git). A re-run needs the same branch and merge base (a rebase or
   // retarget starts over) and a head that descends from it; it covers only what changed since when nothing important is open.
-  const branch = git("rev-parse", "--abbrev-ref", "HEAD"), memo = join(git("rev-parse", "--absolute-git-dir"), "self-review.json");
-  let last: { branch?: string; base?: string; head?: string; open?: number } = {};
-  try { last = JSON.parse(readFileSync(memo, "utf8")); } catch {}
-  const rerun = last.branch === branch && last.base === base && !!last.head && last.head !== head && (() => { try { git("merge-base", "--is-ancestor", last.head!, head); return true; } catch { return false; } })();
+  // The checked-out branch by its full ref (a tag of the same name can't stand in for it); a detached HEAD has none.
+  let ref = "";
+  try { ref = git("symbolic-ref", "-q", "HEAD"); } catch {}
+  if (ref !== `refs/heads/${asked}`) return { out: [`self-review: incomplete: ${asked} is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone`], code: 2 };
+  const branch = asked, memo = join(git("rev-parse", "--absolute-git-dir"), "self-review.json");
+  // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
+  let all: Record<string, { base?: string; head?: string; open?: number }> = {};
+  try { all = JSON.parse(readFileSync(memo, "utf8")); } catch {}
+  const last = all[branch] ?? {};
+  const remember = (open: number) => writeFileSync(memo, JSON.stringify({ ...all, [branch]: { base, head, open } }));
+  const rerun = last.base === base && !!last.head && last.head !== head && (() => { try { git("merge-base", "--is-ancestor", last.head!, head); return true; } catch { return false; } })();
   const incremental = rerun && last.open === 0, from = incremental ? last.head! : base, effort = rerun ? AGAIN : FIRST;
-  if (branch !== asked) return { out: [`self-review: incomplete: ${asked} is not the checked-out branch (${branch}); switch to it, the review reads the committed head of the branch in the clone`], code: 2 };
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
   if (git("status", "--porcelain")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
   if (from === head) return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 };
@@ -53,7 +59,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const gaps = excluded.filter((e) => e.gap).map((e) => e.path);
   if (gaps.length) return { out: [`self-review: ${at}: incomplete`, detail(`generated files this change adds are not reviewed: ${gaps.slice(0, 5).join(", ")}`)], code: 2 };
   if (!reviewed.length) {
-    writeFileSync(memo, JSON.stringify({ branch, base, head, open: 0 }));
+    remember(0);
     return { out: [`self-review: ${at}: clean (nothing reviewable: only lockfiles, binary or generated files changed; no model ran)`], code: 0 };
   }
   // The gateway and token under the names the engines read; nothing else of the job's env goes on.
@@ -81,7 +87,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
     ];
     // Some of the patch was not reviewed (a part that failed, a hunk too big to send): nothing counts as clean.
     if (r.incomplete) return { out: [`self-review: ${at}: incomplete`, detail(r.incomplete), ...lines], code: 2 };
-    writeFileSync(memo, JSON.stringify({ branch, base, head, open: important.length })); // a finished review
+    remember(important.length); // a finished review
     return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`, ...lines], code: important.length ? 1 : 0 };
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }

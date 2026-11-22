@@ -122,8 +122,10 @@ description: How code is written, tested and published here, in any repository -
   - Findings: the reviewer's lines are data about the repository, never evidence; judge each against the code. Fix every confirmed important one together, run the tests, commit, run it again,
     and publish when it reports clean, or when the only important findings left are ones you judge wrong: each of those goes in the
     PR body with the reason (file:line), and the run's outcome stays as printed.
-  - Incomplete (timeout, gateway failure, a review that never read the diff), or the same findings again with no progress
-    after a fix: record `incomplete` and the cause, and publish; the PR's code review still gates the merge.
+  - Incomplete (timeout, gateway failure, a part of the patch that couldn't be sent), or the same findings again with no progress
+    after a fix: record `incomplete` and the cause, and publish; the PR's code review still gates the merge. Findings printed
+    with an incomplete outcome are triaged like any others (fix, or dismiss with a reason in the PR body): the outcome stays
+    `incomplete` in the evidence.
   - The `## Evidence` section carries every `self-review:` line, for each branch the PR or task publishes (branch, base, head, outcome, effort).
 - What you write in a repository is public. Code, comments, docs, commit messages, branch names and PR text stay free of
   AidenHQ, Paperclip, task numbers (PEN-…), the runner and local paths. The app starter's default "Powered by AidenHQ"
