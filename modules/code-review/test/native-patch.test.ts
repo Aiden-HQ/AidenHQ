@@ -442,3 +442,24 @@ test("the snapshot is a real isolated repository: detached at the head, clean, a
   assert.equal(sh(out, "show", `${base}:a.txt`), "a0");
   assert.equal(readFileSync(join(out, "a.txt"), "utf8"), "a1\n");
 });
+
+test("self-review is incomplete, not clean, when redaction changes an important finding's path", { timeout: 240_000 }, async (t) => {
+  const name = "sk-abcdefghijklmnopqrstuv.json";
+  const { repo, base } = repoWith({ [name]: (v) => `v${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const model = await endpoint([], name);
+  try {
+    const dir = codexDir();
+    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
+    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
+      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
+      c.on("close", (status) => ok({ status, stdout }));
+    });
+    assert.equal(out.status, 2, out.stdout);
+    assert.match(out.stdout, /looks like a credential and was redacted/);
+    assert.doesNotMatch(out.stdout, /: clean/);
+  } finally { model.close(); }
+});

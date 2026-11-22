@@ -85,7 +85,10 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const scratch = mkdtempSync(join(tmpdir(), "self-review-"));
   try {
     const instructions = brief({ guides, checks, focus: "", excluded: [], incremental, addressed: false });
-    const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, head, left: [...left] }), [token]);
+    const ran = await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true, files: reviewed, head, left: [...left] });
+    const r = scrub(ran, [token]);
+    // Redaction changed the output (something credential-shaped, a file name included): what was validated is no longer what is shown.
+    if (r.message !== ran.message || r.cause !== ran.cause) return { out: [`self-review: ${at}: incomplete`, detail("the reviewer's output held something that looks like a credential and was redacted")], code: 2 };
     if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const down = downgrade(clean(JSON.parse(r.message).findings, root)), n = down.n;
     // What the PR check counts: findings at a real place in the files its scope keeps (a finding in a file the scope leaves out is dropped,
