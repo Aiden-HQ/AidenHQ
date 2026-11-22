@@ -77,3 +77,12 @@ test("a health probe feeds the connection state like a live call: a need is reco
   assert.equal((await probe()).ok, true);
   assert.deepEqual(rows(), []);
 });
+
+test("an unreachable connection service (a restart) is a retryable error: no needs_owner and no connection state", async (t) => {
+  const k = await kernel(t, { connect: true, agents: { run: { id: AGENT, task: "w9" } }, grants, connections: { google_workspace: conn("http://127.0.0.1:1") }, modules, secrets, issues, onControl });
+  const r = await k.call("google_workspace", "run", { method: "tools/call", params: { name: "gmail_search", arguments: { query: "in:inbox" } } });
+  assert.ok(r.status >= 500, `status ${r.status}`);
+  assert.ok(!(await r.text()).includes("needs_owner"));
+  assert.deepEqual(k.records.db.prepare("SELECT key FROM connection_state").all(), []);
+  assert.deepEqual((await k.v1("GET", "/v1/notify/take", undefined, "router-key")).json.messages, []);
+});

@@ -101,24 +101,7 @@ test("a removed connection's need is dropped by tick and never listed", async ()
   w.s.tick();
   assert.deepEqual((w.db.prepare("SELECT module FROM connection_state").all() as { module: string }[]).map((r) => r.module), ["github"]);
 });
-test("a stale row expires, so its old since never makes a new blip count as lasting (48d61d26)", async () => {
-  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
-  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
-  w.tick(25 * 60_000);
-  w.s.tick(); // nobody hit it for 25 minutes: gone
-  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
-  assert.deepEqual(w.s.needs(), [], "the new blip starts its own clock");
-  w.tick(LASTED);
-  assert.equal(w.s.needs().length, 1);
-});
-test("a stale need hit again before cleanup restarts its clock (a new blip is not lasting)", async () => {
-  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
-  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
-  w.tick(25 * 60_000); // no tick ran in between: the old row is still there
-  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
-  assert.deepEqual(w.s.needs(), []);
-});
-test("needs() lists only confirmed needs: old enough, still hit, until a success clears them", async () => {
+test("needs() lists only confirmed needs: old enough, until a success clears them", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
   assert.deepEqual(w.s.needs(), [], "unconfirmed");
@@ -128,7 +111,7 @@ test("needs() lists only confirmed needs: old enough, still hit, until a success
   assert.deepEqual(w.s.needs(), [], "recovered");
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
   w.tick(25 * 60_000);
-  assert.deepEqual(w.s.needs(), [], "nobody hit it lately");
+  assert.equal(w.s.needs().length, 1, "a sparse caller's outage stays listed until recovery");
 });
 
 test("a Connect that lands while the reads yield leaves no wait and no message on a healthy connection (7bcb9ba7)", async () => {
