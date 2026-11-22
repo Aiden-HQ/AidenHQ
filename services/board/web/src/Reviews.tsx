@@ -169,17 +169,15 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
     const t = setInterval(() => void loadFiled(), 5_000);
     return () => clearInterval(t);
   }, [applying, loadFiled, loadSetup]);
-  const ready = Boolean(setup?.module && setup.github.connected);
+  const moduleOn = Boolean(setup?.module);
+  const ready = Boolean(moduleOn && setup?.github.connected);
+  // The module alone shows the history and the engine catalog (a repo review reads its code host); GitHub's connection is for PR actions.
   useEffect(() => {
-    if (!ready) return;
+    if (!moduleOn) return;
     void loadRuns();
     void loadRepos();
-  }, [ready, loadRuns, loadRepos]);
-  // The engine catalog needs only the module: a repo review reads its code host, not GitHub's PR connection.
-  const moduleOn = Boolean(setup?.module);
-  useEffect(() => {
-    if (moduleOn) void loadEngines();
-  }, [moduleOn, loadEngines]);
+    void loadEngines();
+  }, [moduleOn, loadRuns, loadRepos, loadEngines]);
   // A run under way: the list follows it.
   const anyLive = (runs?.some(live) ?? false) || batches.some(live);
   useEffect(() => {
@@ -205,7 +203,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
   if ("create" in route) {
     if (engines) return <RepoReviewPage config={config} engines={engines} />;
-    const retry = () => { setError(""); void loadSetup(); if (moduleOn) void loadEngines(); if (ready) { void loadRuns(); void loadRepos(); } };
+    const retry = () => { setError(""); void loadSetup(); if (moduleOn) { void loadRuns(); void loadRepos(); void loadEngines(); } };
     return (
       <Page className="rv-page" label="New repo review">
         <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" />
@@ -262,9 +260,9 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         <EmptyState action={<LinkButton variant="primary" href="#/modules/code-review">Open the Code review module</LinkButton>}>
           Code review is off on this instance. Turn on the Code review module to get a review on every pull request. Nothing runs or spends until you pick a repo.
         </EmptyState>
-      ) : ready && runs === null ? (
+      ) : runs === null ? (
         !error && <div className="rv-loading" aria-busy="true" />
-      ) : !ready || (!config?.repos.length && !runs?.length && !batches.length) ? (
+      ) : !runs?.length && !batches.length && (!ready || !config?.repos.length) ? (
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
