@@ -249,7 +249,7 @@ function opening(data: string): boolean {
  * token each), what a failed stream's output is estimated from.
  */
 export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined; failure(): string | undefined; deltas(): number } {
-  let tail = "", body = "", last = "none", error: string | undefined, finished = false, final = false, deltas = 0, found: (Answer & { id: string; usage: UsageBlock }) | undefined;
+  let tail = "", body = "", event: string[] = [], held = 0, last = "none", error: string | undefined, finished = false, final = false, deltas = 0, found: (Answer & { id: string; usage: UsageBlock }) | undefined;
   const line = (data: string) => {
     if (data !== "[DONE]") last = eventType(data) ?? "chunk";
     if (/"delta"\s*:/.test(data)) deltas++;
@@ -259,6 +259,13 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
     const was = final;
     take(data);
     if (err) final = was; // a usage block on an error event is kept for billing, never taken as completion
+  };
+  const field = (l: string) => {
+    const d = sseData(l);
+    if (d !== undefined) { if ((held += d.length) <= MAX_BODY) event.push(d); return; }
+    if (l.replace(/\r$/, "") !== "") return;
+    if (event.length && held <= MAX_BODY) line(event.join("\n"));
+    event = []; held = 0;
   };
   const take = (text: string) => {
     if (!text.includes('"usage"')) return;
@@ -273,17 +280,18 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
   return {
     feed(text) {
       if (!sse) { if (body.length < MAX_BODY) body += text; return; }
-      // Whole events, as the peek reads them (an event's data fields joined).
-      const events = (tail + text).split(/\r?\n\r?\n/);
-      tail = events.pop()!;
-      for (const ev of events) { const d = eventData(ev); if (d) line(d); }
+      // Line by line, comments dropped; an event's data fields are joined at its blank line, as the peek reads them (held
+      // to MAX_BODY: past it the event is dropped).
+      const lines = (tail + text).split("\n");
+      tail = lines.pop()!;
+      for (const l of lines) field(l);
     },
     failure() {
       return finished || final ? undefined : (error ?? `no usage or finish; last event: ${last}`);
     },
     deltas: () => deltas,
     done() {
-      if (sse) { const d = eventData(tail); if (d) line(d); tail = ""; } else take(body);
+      if (sse) { field(tail); field(""); tail = ""; } else take(body);
       if (!found) return undefined;
       const u = found.usage;
       const anthropic = u.cache_read_input_tokens !== undefined || u.cache_creation_input_tokens !== undefined;
