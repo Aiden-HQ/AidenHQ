@@ -810,4 +810,19 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log 1>&3 | ${sink}\nRUN apt-get install -y foo\n`).problems.length, 1, sink);
   // Without the restore the file redirect keeps the stdout, so the file is empty and no pin is needed.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // Adjacent redirects are still two: the shell does not need whitespace to tell `1>/tmp/log` from a file named
+  // `1>/tmp/log`, so a duplication followed straight by a redirect is read the same as the spaced form.
+  for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1>/tmp/log 1>&3 | ${sink}\nRUN apt-get install -y foo\n`).problems.length, 1, sink);
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/tmp/log>/etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list>/tmp/log\nRUN apt-get install -y foo\n`).problems, []);
+  // Here `3>&1` captures vendor.list, not the pipe, so `1>&3` puts stdout back on it: the file holds the repository.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list 3>&1 >/tmp/log 1>&3\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // And with the restore dropped, stdout stays on the log: vendor.list is truncated but gets no bytes.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list >/tmp/log\nRUN apt-get install -y foo\n`).problems, []);
+  // Only the repository the writing command prints reaches its file: an earlier stage of the pipeline printing a
+  // different one is not credited to the copy, so it cannot be tried first when the pin is dated.
+  const apt = (line: string) => scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${line}\nRUN apt-get install -y foo=1.0\n`).pins.find((p) => p.kind === "apt")?.sources ?? [];
+  for (const sink of ["cat > /etc/apt/sources.list.d/vendor.list", "tee /etc/apt/sources.list.d/vendor.list"])
+    assert.deepEqual(apt(`echo 'deb https://a.example/apt bookworm main' | echo 'deb https://b.example/apt bookworm main' | ${sink}`), ["https://b.example/apt bookworm main"], sink);
 });
