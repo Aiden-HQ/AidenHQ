@@ -339,8 +339,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
       const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
       const searched = (v.calls ?? []).some((c) => c.tool === "search");
-      if (j && Array.isArray(j.fixed)) {
-        const still: unknown[] = Array.isArray(j.still) ? j.still : [];
+      // A `still` that isn't a list is no usable answer (never read as "nothing is still there").
+      if (j && Array.isArray(j.fixed) && (j.still === undefined || Array.isArray(j.still))) {
+        const still: unknown[] = j.still ?? [];
         const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
         for (const f of ask) if (!f.claim && j.fixed.includes(f.id) && !still.includes(f.id) && seen(f)) fixed.push(f.id);
         for (const f of ask) if (f.claim && Array.isArray(j.unsafe) && j.unsafe.includes(f.id) && seen(f)) unsafe.push(f.id);
@@ -403,8 +404,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   result.downgraded += down.n;
   const cleaned = down.findings;
   const restated = new Set(cleaned.flatMap((f) => (restates(f, f.same_as) ? [f.same_as!] : [])));
+  // A finder's own `same_as` restatement counts as still there only at a line that exists at the head: placed under the earlier id.
+  const refound = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).map((f) => f.id));
   let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
-  const refound = new Set<string>(); // restated at a line that exists at the head (placed): still there, as the agent is to be told
   for (const f of candidates) if (restates(f, f.id)) { restated.add(f.id); refound.add(f.id); }
   candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
