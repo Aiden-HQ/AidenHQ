@@ -281,18 +281,29 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // A `cat` reads its file operands (`-` names stdin) or, naming none, its stdin. Every operand counts: `/dev/null` adds
   // nothing, a file we can't read makes the output unknown, and the pipe's own bytes count when `-` reads it.
   const catContent = (piece: string, i: number): Pick<Written, "content" | "text"> => {
-    const ops = words(piece.replace(/^\s*cat\b/, "").replace(/(?<!\d)(?:\d+)?(?:<|>>?|>\|)\s*(?:&?-?\d+|\S+)|&>>?\s*\S+/g, " ")).map(unmask);
+    const args = words(piece.replace(/^\s*cat\b/, "").replace(/(?<!\d)(?:\d+)?(?:<|>>?|>\|)\s*(?:&?-?\d+|\S+)|&>>?\s*\S+/g, " ")).map(unmask);
+    // `-` alone names stdin and any other `-…` token is an option (`-n`, `-A`); `--` ends the options, so a name after it
+    // is a file even when it starts with `-`. Options are not operands, so `cat -n /dev/null` writes nothing.
+    const ops: string[] = [];
+    let literal = false;
+    for (const a of args) {
+      if (!literal && a === "--") { literal = true; continue; }
+      if (!literal && a !== "-" && a.startsWith("-")) continue;
+      ops.push(a);
+    }
     if (!ops.length) return stdinContent(piece, i);
     const inputs = ops.map((op) => op === "-" ? stdinContent(piece, i)
       : unmask(strip(op)) === "/dev/null" ? { content: "empty" as const } : { content: "unknown" as const });
+    // The output is empty only when every input is: `/dev/null` operands add nothing, and a `-` reads whatever stdin is.
     return inputs.find((x) => x.content === "deb")
-      ?? (inputs.some((x) => x.content === "unknown") ? { content: "unknown" as const } : { content: "empty" as const });
+      ?? inputs.find((x) => x.content === "unknown")
+      ?? { content: "empty" as const };
   };
   // What reaches pipeline element i's stdout: nothing when its own last command redirects it, and otherwise what that
   // command reads — a `cat` or `tee` passes its input through, and anything else writes its own `deb` line.
   const flow = (i: number): Pick<Written, "content" | "text"> => {
     if (i < 0 || parts[i]!.op !== "|") return { content: "empty" };
-    const piece = lastCommand(parts[i]!.text);
+    const piece = lastCommand(parts[i]!.text).replace(/^\s*(?:RUN|run)\s+/, "");
     // Its own stdout redirect sends the bytes elsewhere, whatever it reads: `tee /tmp/log >/dev/null | tee f` feeds f
     // nothing. Only fd 1 (a bare `>` or `1>`) takes it, though: `echo … 3> /tmp/log | tee f` still feeds f.
     if (!stdoutFeedsPipe(piece, unmask)) return { content: "empty" };
@@ -323,8 +334,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const [cStart, cEnd] = commandSpan(part, m.index!);
     const finalTarget = stdoutTarget(code.slice(cStart, cEnd), unmask);
     const takes = finalTarget !== "pipe" && cStart + finalTarget === m.index!;
-    const cmdText = lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)));
-    const whole = lastCommand(code.slice(cStart, cEnd));
+    // A Dockerfile `RUN` keeps its verb in the text: strip it so the command itself is what is classified.
+    const verb = (t: string) => t.replace(/^\s*(?:RUN|run)\s+/, "");
+    const cmdText = verb(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0))));
+    const whole = verb(lastCommand(code.slice(cStart, cEnd)));
     // What the command writes: a `cat`/`tee` passes its input through, and anything else writes its own `deb` line — its
     // own text, so another command on the same line logging a different repository is not credited to this file.
     const own = writtenKind(expand(cmdText));
@@ -338,7 +351,9 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const content = takes ? written : { content: stdoutFd ? (append ? "none" as const : "empty" as const) : "unknown" as const };
     return { path: unmask(strip(m[3]!)), append, takes, content };
   });
-  // Within one path a truncation comes before the write that takes stdout, whatever order the redirects were written.
+  // Within one path a truncation comes before the write that takes stdout, whatever order the redirects were written:
+  // the shell opens a pipeline's destinations for every stage before it runs any of them, so a later stage's truncation
+  // still precedes an earlier stage's write (`a > f | b > f > log` leaves a's line in f).
   const rank = (e: Entry) => (e.takes ? 2 : e.append ? 1 : 0);
   entries
     .map((e, i) => ({ e, i }))

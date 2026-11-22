@@ -843,8 +843,17 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
   // that file's content.
   for (const operands of ["-", "/dev/null /tmp/vendor.list", "/tmp/vendor.list /dev/null", "- /tmp/vendor.list"])
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat ${operands} > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1, operands);
-  // Only `/dev/null` as the sole operand writes nothing.
+  // `/dev/null` operands contribute nothing however many there are, so two of them write an empty file — a truncate-to-
+  // empty is not an added repository, and an install after it needs no pin.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat /dev/null /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // A `cat` option is not a file operand: `-n /dev/null` still writes nothing, while an unreadable file is still unknown.
+  for (const operands of ["-n /dev/null", "-A /dev/null", "--number /dev/null"])
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN cat ${operands} > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, [], operands);
+  // `-` names stdin even when its own `<` redirect makes that empty.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat - < /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // Two commands are not one: a second command's truncation follows the first command's write, so the file ends empty.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} > /etc/apt/sources.list.d/vendor.list && cat /dev/null > /etc/apt/sources.list.d/vendor.list > /tmp/log\nRUN apt-get install -y foo\n`).problems, []);
   // `-` reads stdin even beside a `/dev/null` operand, so the line still reaches the file.
   assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /dev/null - > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
   // A quoted descriptor operand is the same number: `1>&"3"` puts stdout back on the pipe, so the tee keeps the line.
