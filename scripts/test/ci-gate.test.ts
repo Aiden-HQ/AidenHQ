@@ -25,6 +25,7 @@ test("a malformed finding in a failed review is skipped; the valid ones still de
   const v = verdict(1, JSON.stringify({ findings: [null, finding("high", "Null deref")], health: { status: "failed" } }), "abcdef123");
   assert.equal(v.block, true);
   assert.match(v.body, /Null deref/);
+  assert.equal(verdict(0, review([null, finding("high", "X")]), "abcdef123").partial, true);
   assert.equal(verdict(1, JSON.stringify({ findings: [null], health: { status: "failed" } }), "abcdef123").block, false);
 });
 
