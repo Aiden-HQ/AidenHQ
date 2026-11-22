@@ -71,7 +71,7 @@ No secrets or ids in labels.
 ## Alerts and routing
 
 Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, or on course to fill in 24 h), `DiskNearlyFull`
-(over 95%, **critical**), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `HostMetricsExporterStale`, `ContainerRestarting`,
+(over 95%; a warning too: the kernel's disk sweep tightens itself over 80%, and disk never reaches the owner), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `HostMetricsExporterStale`, `ContainerRestarting`,
 `CoreServiceDown` (an aidenhq-project container other than `ci-runner`, the `aidenhq-runner` or `aidenhq-gateway` user unit, or
 the board not answering Prometheus, for 5 minutes, **critical**), `ApplyFailed` (the newest apply generation failed its health
 check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerRestartLooping` (a runner unit that
@@ -82,7 +82,7 @@ held it for ten minutes: the wait is the loop's own state, so it fires even when
 interval between backoffs, while a wait that has since cleared breaks the condition and raises nothing), `CiRunnerUnitMissing` (a runner unit seen in
 the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`, `CiReviewSpendNearCap` and `AppsCpuStarved` (an
 `app-*` container's own CPU pressure over 20% while the host's is over 15%; the alert names the app's project, and host
-pressure alone never fires it). Only `DiskNearlyFull`, `CoreServiceDown` and `ApplyFailed` are critical.
+pressure alone never fires it). Only `CoreServiceDown` and `ApplyFailed` are critical.
 
 The rules' test is `modules/monitoring/prometheus/rules.test.yml` (a host-only spike fires nothing, an `app-*` match carries its
 project, an app at its own limit with an idle host does not fire, a restart-looping runner fires and a steady one, one going

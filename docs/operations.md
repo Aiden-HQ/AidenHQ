@@ -181,8 +181,8 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   uncounted; per repo there is no cap); past it, the issue is held and triaged the tick a slot frees (the daily run has it after a day). A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
 
 - Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
-  Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `DiskNearlyFull`
-  and `CoreServiceDown` also send the owner one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
+  Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `CoreServiceDown`
+  and `ApplyFailed` also send the chief of staff one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
   `tailscale serve --bg --https=8444 http://127.0.0.1:3131` (no sudo: the user is tailscaled's operator) and set
   `grafana_root_url`. Sign in as `admin` with the vault's `grafana_admin_password`. Unit and container states come from the
   user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the gateway's from
@@ -208,7 +208,18 @@ built from a backup with `ops/setup.sh --restore`. Off-host, nightly: [operation
 
 Moving a running instance to another host (drain, cold copy, tailnet names, rollback): [operations/migrate-host.md](operations/migrate-host.md).
 
-## Task workspaces
+## Task workspaces and disk
+
+Every job of a task runs in `<work_dir>/tasks/<identifier>` (default `~/aidenhq-work`), with its build-cache overlays in
+`.cache-layers/<identifier>` and its engine home (the Codex home and sessions) in `<state_dir>/<engine>/<agent>_<task>`.
+`state_dir` (default `~/.local/state/aidenhq-runner`) is the **kernel's live job state** despite its old name: never delete it
+(deleting it on 2026-11-22 failed every Engineer job with EACCES until it was restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
+of those folders, and check folders a dead kernel left in `checks/`, once nothing live uses it (no running job, no box not yet released) and its task has been done or
+cancelled for a day, or it has been idle for 3 days whatever the task's state (a resumed task clones again and starts a fresh
+session). When a disk is over 80% used the limits drop to a day idle and closed at all. Docker is bounded by
+`prune-docker.timer` (Backups above); Paperclip's dumps, journald (its default cap), `~/checkpoints` (the last generations)
+and the skill runtimes are bounded where they are made. `DiskSpaceLow` (80%) and `DiskNearlyFull` (95%) file Fleet Ops
+tasks for the Fleet Steward; neither tells the owner.
 
 ## Host one-offs
 
