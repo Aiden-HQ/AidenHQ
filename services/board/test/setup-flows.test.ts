@@ -178,22 +178,26 @@ describe("setup flows", () => {
   it("a save that restarted the service marks the flow as restarting, also after a reload", async () => {
     store.delMeta("setup_restarting:phone");
     const flow = async () => (await admin("GET", "/api/setup-flows")).json.flows.find((f: { module: string }) => f.module === "phone");
-    expect(await flow()).toMatchObject({ restarting: false });
+    expect((await flow()).restarting).toBeUndefined();
     const saved = (await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json;
-    expect(saved).toMatchObject({ ok: true, restarted: ["phone"], restarting_until: expect.any(Number) });
-    expect(await flow()).toMatchObject({ restarting: true, restarting_until: saved.restarting_until, present: { phone_bot_token: true } });
+    // The answer says how long the wait has left, not when it ends: the page counts it down on its own clock.
+    expect(saved).toMatchObject({ ok: true, restarted: ["phone"], restarting_for: expect.any(Number) });
+    expect(saved.restarting_for).toBeGreaterThan(4 * 60_000);
+    expect(saved.restarting_for).toBeLessThanOrEqual(5 * 60_000);
+    expect(await flow()).toMatchObject({ restarting: true, present: { phone_bot_token: true } });
   });
 
   it("a save that restarted nothing does not clear another save's live restart marker", async () => {
     store.delMeta("setup_restarting:phone");
     // One field's paste restarts the service; another save for the same module (the kernel already started the recreate) reports none.
     const first = (await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json;
-    expect(first.restarting_until).toEqual(expect.any(Number));
+    expect(first.restarting_for).toEqual(expect.any(Number));
     kernel.restarted.services = [];
     try {
-      expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json.restarting_until).toBe(first.restarting_until);
+      // Still the first save's window: the second reports no restart and must not cut the wait short.
+      expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json.restarting_for).toBeGreaterThan(4 * 60_000);
       const flow = (await admin("GET", "/api/setup-flows")).json.flows.find((f: { module: string }) => f.module === "phone");
-      expect(flow).toMatchObject({ restarting: true, restarting_until: first.restarting_until });
+      expect(flow).toMatchObject({ restarting: true, restarting_for: expect.any(Number) });
     } finally {
       kernel.restarted.services = null;
     }
@@ -203,7 +207,7 @@ describe("setup flows", () => {
     store.setMeta("setup_restarting:phone", String(Date.now() - 1));
     kernel.restarted.services = [];
     try {
-      expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json.restarting_until).toBeUndefined();
+      expect((await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json.restarting_for).toBeUndefined();
       expect(store.meta("setup_restarting:phone")).toBeUndefined();
       // A pairing means the restart is over: a later 409 is a real conflict, not another five minutes of waiting.
       store.setMeta("setup_restarting:phone", String(Date.now() + 300_000));

@@ -200,9 +200,9 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
             const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
-            const restartingUntil = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
-            const restarting = restartingUntil > Date.now();
-            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module), restarting, ...(restarting ? { restarting_until: restartingUntil } : {}) };
+            // How long the wait has left, not when it ends: the page counts it down on its own clock, which need not agree with the board's.
+            const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
+            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -225,8 +225,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         const until = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
         if (saved.restarted?.length) d.store.setMeta(RESTARTING(f.module), String(Date.now() + RESTART_MS));
         else if (until <= Date.now()) d.store.delMeta(RESTARTING(f.module));
-        const restarting_until = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
-        return { ...saved, ...(restarting_until > Date.now() ? { restarting_until } : {}) };
+        const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
+        return { ...saved, ...(restarting_for > 0 ? { restarting_for } : {}) };
       },
     },
     {
@@ -275,11 +275,14 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         // minted_at (the board's clock, like the service's paired_at): a pairing after it is this code's, so a re-pair shows.
         const minted_at = Date.now();
         const f = flow(m[1]!);
+        // A save that lands while this request is out set the marker after the module answered: that restart is not over.
+        const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
         const { code, link, expires_in } = (await pairCall(f, "POST")) as { code?: string; link?: string; expires_in?: number };
         // How many seconds the code lives, as the channel keeps it: the page times its screen by this, not by a copy or a clock.
         const ttl = typeof expires_in === "number" && expires_in > 0 ? Math.round(expires_in) : PAIR_CODE_TTL_S;
-        // Paired: the restart this marker was waiting out is over, so it must not turn a later 409 into a five-minute wait.
-        d.store.delMeta(RESTARTING(f.module));
+        // Paired: the restart this marker was waiting out is over, so it must not turn a later 409 into a five-minute wait. Only
+        // the marker this call found goes, never one a concurrent save set meanwhile.
+        if (Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
         return { code, ...(link ? { link } : {}), minted_at, expires_in: ttl };
       },
     },
@@ -288,8 +291,9 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       path: /^\/api\/setup-flows\/([a-z0-9-]{1,63})\/pair$/,
       handle: async (m) => {
         const f = flow(m[1]!);
+        const before = Number(d.store.meta(RESTARTING(f.module)) ?? 0);
         const { paired, paired_at } = await pairCall(f, "GET");
-        if (paired) d.store.delMeta(RESTARTING(f.module));
+        if (paired && Number(d.store.meta(RESTARTING(f.module)) ?? 0) === before) d.store.delMeta(RESTARTING(f.module));
         return { paired: Boolean(paired), ...(paired_at != null ? { paired_at } : {}) };
       },
     },

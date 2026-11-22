@@ -136,8 +136,8 @@ export interface SetupFlowView {
   paired: boolean;
   /** A saved secret's services are being recreated: the Pair step waits rather than treating the module's 409 as an error. */
   restarting?: boolean;
-  /** Until when (ms) that restart is waited out: the board's own window, so the page doesn't keep a copy of it. */
-  restarting_until?: number;
+  /** How much of that restart is left (ms): the page counts it down on its own clock, which need not match the board's. */
+  restarting_for?: number;
   done: boolean;
   dismissed: boolean;
   /** A module with modes (board.setup_flows `choose`): what is live, what the owner picked, and the options. */
@@ -260,7 +260,7 @@ export const api = {
   organisationApply: (id: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, {}),
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string }>("GET", "/api/setup-flows"),
-  setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean; restarted?: string[]; restarting_until?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/secret`, { secret, value }),
+  setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean; restarted?: string[]; restarting_for?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/secret`, { secret, value }),
   setupChoose: (module: string, value: string, inputs: Record<string, string>) => call<{ ok: boolean; identifier?: string }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/choose`, { value, inputs }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/dismiss`, {}),
   setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number; expires_in?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/pair`, {}),
