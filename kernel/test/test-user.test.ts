@@ -19,12 +19,13 @@ test("test user: the owner's named app, the job's agent and task, a single-use s
   const sent = [], logged = [];
   const t = createTestUser({ job: () => ({ agent: "ag-1", task: "task-1" }), gate: () => gate, keyFile: () => keyFile, keysFile: () => keysFile, log: (o) => logged.push(o), send: async (r) => { sent.push(r); return { status: 201, headers: { "content-type": "application/json", "retry-after": "7", etag: "x" }, body: JSON.stringify({ ok: true }) }; } });
   const out = await t.run("job-token", { app: "roadmap", method: "POST", path: "/intake/feedback", body: { feedback: "x" } });
-  await t.run("job-token", { app: "roadmap", method: "GET", path: "/intake" });
+  await t.run("job-token", { app: "roadmap", method: "GET", path: "/intake?token=do-not-log-me" });
   assert.equal(out.status, 201);
   assert.equal(out.url, "https://roadmap.example.com/intake/feedback");
   assert.deepEqual(out.by, { agent: "ag-1", task: "task-1" });
   // Each use is attributable: the kernel's log names the agent, the task and the request, and never the token.
-  assert.deepEqual(logged, [{ msg: "test sign-in", agent: "ag-1", task: "task-1", app: "roadmap", host: "roadmap.example.com", method: "POST", path: "/intake/feedback", status: 201 }, { msg: "test sign-in", agent: "ag-1", task: "task-1", app: "roadmap", host: "roadmap.example.com", method: "GET", path: "/intake", status: 201 }]);
+  assert.deepEqual(logged, [{ msg: "test sign-in", agent: "ag-1", task: "task-1", app: "roadmap", host: "roadmap.example.com", method: "POST", route: "/intake/feedback", status: 201 }, { msg: "test sign-in", agent: "ag-1", task: "task-1", app: "roadmap", host: "roadmap.example.com", method: "GET", route: "/intake", status: 201 }]);
+  assert.equal(JSON.stringify(logged).includes("do-not-log-me"), false); // a query string never reaches the log
   assert.equal(JSON.stringify(logged).includes("x-aidenhq-test-session"), false);
   assert.deepEqual(out.headers, { "content-type": "application/json", "retry-after": "7" }); // only what a check needs
   assert.equal(JSON.stringify(out).includes("x-aidenhq-test-session"), false);

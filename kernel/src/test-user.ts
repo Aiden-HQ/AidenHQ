@@ -78,7 +78,7 @@ export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3130, 
   keysFile: () => string;
   gatePort?: number;
   now?: () => number;
-  /** The kernel's log: each use names the agent, the task, the app and the request (never the session token). */
+  /** The kernel's log: each use names the agent, the task, the app and the route (never the session token or a query string). */
   log?: (o: object) => void;
   send?: (req: { host: string; method: string; path: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>;
 }) {
@@ -137,7 +137,8 @@ export function createTestUser({ job, gate, keyFile, keysFile, gatePort = 3130, 
       const claims = `${part({ alg: "EdDSA", kid: signer.kid, typ: "JWT" })}.${part({ iss: "aidenhq-test", aud: host, app, sub: subOf(email), email, jti, iat, exp: iat + TTL_S })}`;
       headers["x-aidenhq-test-session"] = `${claims}.${sign(undefined, Buffer.from(claims), signer.key).toString("base64url")}`;
       const answer = await (send ?? post)({ host, method, path, headers, ...(body !== undefined ? { body } : {}) });
-      log?.({ msg: "test sign-in", agent: who.agent, task: who.task, app, host, method, path, status: answer.status });
+      // The route only: a query string is the caller's data and can carry a token, so it never reaches the log.
+      log?.({ msg: "test sign-in", agent: who.agent, task: who.task, app, host, method, route: path.split("?")[0], status: answer.status });
       const keep = ["content-type", "retry-after", "location", "cache-control", "www-authenticate", "allow"];
       const out = Object.fromEntries(keep.flatMap((k) => { const v = answer.headers[k]; return v === undefined ? [] : [[k, v]]; }));
       return { app, host, url: `https://${host}${path}`, status: answer.status, headers: out, body: answer.body.slice(0, BODY_CAP), truncated: answer.body.length > BODY_CAP, by: { agent: who.agent, task: who.task } };

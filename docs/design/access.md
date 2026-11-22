@@ -275,7 +275,8 @@ not an answer. The test user is the one identity an agent may use, for the apps 
   Ed25519 token bound to the app's host, the app name, the configured email and a random `jti`, and sends the request to
   the gate's loopback listener with `Host` set to the app's host. The token never reaches the agent: the answer carries
   the status, a few headers (`content-type`, `retry-after`, `location`, …) and a trimmed body. Each use is logged by the
-  kernel (agent, task, app, host, method, path) and by the gate (`test sign-in`, with the `jti`).
+  kernel (agent, task, app, host, method and the route, never its query string) and by the gate (`test sign-in`, with the
+  `jti`).
 - **What the gate does with it.** On the loopback listener only (`createGate({ testSessions: true })`; the front and
   tunnel listeners refuse it) the gate verifies the token: EdDSA, a known `aidenhq-test` key, `iss`/`aud`/`app`, a
   signature, 60 seconds, the configured email and its `sub`, one use per `jti`. It then runs the same `authorize()` as a
