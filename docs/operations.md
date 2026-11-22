@@ -400,9 +400,10 @@ exact email match only).
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
 runs pinned syft over the host packages, every running image variant (two containers on one multi-platform index — an
-amd64 service and an emulated arm64 one — are two targets; the variant on the daemon's own platform keeps the plain tag
-key and each other one is suffixed `@<platform>`, so a target's name does not move when a variant comes or goes and its
-findings are not filed under another's; each image is read from a `docker save` archive, never
+amd64 service and an emulated arm64 one — are two targets; the key is a function of the variant alone, never of which
+other variants run: the variant on the daemon's own platform always keeps the plain tag key and a variant on any other
+platform is always suffixed `@<platform>`, so a target's name does not move when a variant comes or goes and its findings
+are not filed under another's; each image is read from a `docker save` archive, never
 through a mutable tag: the archive is exported on the platform the container itself runs — its `ImageManifestDescriptor`,
 which on the containerd store names the platform manifest the container was created from, not the variant the daemon's own
 platform resolves — from an immutable id that holds that manifest, or from the tag itself only while it still names that
@@ -432,8 +433,8 @@ than 1.48 (which has no `image save --platform`) uses a plain save, sized as the
 save writes, and then reads the archive back under the same deadline: an `index.json` must name exactly one manifest, a
 descriptor that is itself an index is resolved into the blob it names (one platform manifest), and that manifest must be
 the platform manifest the container runs (or, on the classic image store, whose image id is the config digest, the sole
-manifest's `config.digest`); an archive with no `index.json` must have a single-image `manifest.json`, and an archive that
-cannot be read is a line. So the scan is always of the running variant, never of another platform or build
+manifest's `config.digest`); an archive with no `index.json` must have a `manifest.json` with exactly one image, whose
+`Config` digest is that same pin; an archive that cannot be read is a line. So the scan is always of the running variant, never of another platform or build
 under its target, and the fallback is also said on stderr.
 Its descriptor is the authority on what a container runs: the tag is a target only while it names that manifest, and the
 Compose label or the container's own id only answer for a daemon that reports none. A second pass started

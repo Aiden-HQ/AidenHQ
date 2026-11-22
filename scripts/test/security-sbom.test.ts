@@ -189,7 +189,10 @@ case "$1" in
                 { printf '{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":['; i=1
                   while [ "$i" -le 2 ]; do [ "$i" -gt 1 ] && printf ','; printf '{\"digest\":\"sha256:%064d\"}' "$i"; i=$((i + 1)); done
                   printf ']}\n'; } > "$d/blobs/sha256/0000000000000000000000000000000000000000000000000000000000000007" ;;
-              legacy) printf '[{\"Config\":\"blobs/sha256/%064d\",\"RepoTags\":[\"x:local\"]}]\n' 3 > "$d/manifest.json" ;;
+              legacy)
+                # A legacy save: one manifest.json entry naming selftest.json whose digest is the pin (the config id).
+                printf '[{\"Config\":\"%s.json\",\"RepoTags\":[\"x:local\"]}]\n' "\${pin#sha256:}" > "$d/manifest.json"
+                printf '{\"architecture\":\"amd64\",\"os\":\"linux\"}\n' > "$d/\${pin#sha256:}.json" ;;
             esac
             # Members at the archive root, as docker writes them (index.json, manifest.json, blobs/...).
             ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
@@ -744,7 +747,7 @@ test("security-sbom: a container's own platform is what is inspected and exporte
     held: ["sha256:index"],
   });
   assert.equal(status, 0, out);
-  const scanned = targets.find((t) => t[0] === "image:sha256:index");
+  const scanned = targets.find((t) => t[0] === "image:sha256:index@linux/arm64/v8");
   assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
   assert.notEqual(scanned[1], "-", `the running image was scanned: ${scanned[2]}`);
   const save = calls.find((c) => c.startsWith("save "));
@@ -769,7 +772,9 @@ test("security-sbom: a moved tag on an emulated container is a line unless the t
     held: ["sha256:some-other-index"],
   });
   assert.equal(status, 0, out);
-  const line = targets.find((t) => t[0] === "image:sha256:index");
+  // The only variant here runs off the daemon's platform, so its key carries the platform: the plain key belongs to the
+  // daemon's own platform alone, and a suffix that appears or goes with other variants would move the target's name.
+  const line = targets.find((t) => t[0] === "image:sha256:index@linux/arm64/v8");
   assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
   assert.equal(line[1], "-", "a different arm64 build was not scanned");
   assert.match(line[2], /No such image|did not resolve|moved/, line[2]);
@@ -869,8 +874,36 @@ test("security-sbom: a compose label that disagrees with the container's digest 
   // The tag names a different manifest than the one this container runs, so the target stays the container's own id and
   // the tag never appears as a target key for it.
   assert.equal(targets.find((t) => t[0] === "image:aidenhq/board:local"), undefined, `the tag took another manifest's target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  const own = targets.find((t) => t[0] === "image:sha256:index");
+  const own = targets.find((t) => t[0] === "image:sha256:aaaa@linux/arm64/v8");
   assert.ok(own, `the running variant keeps its own target:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+});
+
+test("security-sbom: a variant's key does not move when another variant appears", { skip: NOT_LINUX }, async () => {
+  // The same emulated arm64 container, alone and then beside an amd64 one. Its target name must be the same in both
+  // passes: the scanner reconciles findings by exact target name, so a name that depended on how many variants run would
+  // leave the first pass's findings unverified the moment a second variant started.
+  const arm = { digest: "sha256:a1a1", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  const amd64 = { digest: "sha256:b2b2", platform: { os: "linux", architecture: "amd64" } };
+  const fixture = (extra) => ({
+    containers: [extra, { id: "c9", image: "sha256:index", config: "board:local", descriptor: arm }].filter(Boolean),
+    tags: { "board:local": "sha256:b2b2" },
+    manifests: { "board:local": "sha256:b2b2" },
+    platformManifests: {
+      "board:local": { "linux/amd64": "sha256:b2b2", "linux/arm64/v8": "sha256:a1a1" },
+      "sha256:index": { "linux/amd64": "sha256:b2b2", "linux/arm64/v8": "sha256:a1a1" },
+    },
+    platformSizes: { "sha256:index": { "linux/amd64": 1024, "linux/arm64/v8": 1024 } },
+    held: ["sha256:index"],
+  });
+  const alone = await run({}, fixture(null));
+  assert.equal(alone.status, 0, alone.out);
+  const aloneKeys = alone.targets.filter((t) => t[0].startsWith("image:")).map((t) => t[0]);
+  assert.deepEqual(aloneKeys, ["image:board:local@linux/arm64/v8"], aloneKeys.join("\n"));
+
+  const beside = await run({}, fixture({ id: "c1", image: "sha256:index", config: "board:local", descriptor: amd64 }));
+  assert.equal(beside.status, 0, beside.out);
+  const besideKeys = beside.targets.filter((t) => t[0].startsWith("image:")).map((t) => t[0]).sort();
+  assert.deepEqual(besideKeys, ["image:board:local", "image:board:local@linux/arm64/v8"], besideKeys.join("\n"));
 });
 
 test("security-sbom: a daemon older than API 1.48 exports without --platform instead of failing every image", { skip: NOT_LINUX }, async () => {
@@ -973,13 +1006,15 @@ test("security-sbom: a pre-1.48 daemon does not treat an immutable index id as a
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: a pre-1.48 daemon accepts a legacy manifest.json archive with one image", { skip: NOT_LINUX }, async () => {
-  // A pre-containerd store's plain save has no index.json: its manifest.json has one entry per image. No index is not a
-  // failure, but it is also not proof: the manifest.json itself has to name one image.
-  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "legacy" }, {
+test("security-sbom: a pre-1.48 daemon accepts a legacy manifest.json archive of the running image", { skip: NOT_LINUX }, async () => {
+  // A pre-containerd store's plain save has no index.json: its manifest.json has one entry per image, naming that image's
+  // config. One entry is one image, but it still has to be the running one, so the entry's config digest is matched
+  // against the pin.
+  const config = `sha256:${"c".repeat(64)}`;
+  const { status, out, targets } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "legacy", FAKE_SAVE_PIN: config }, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
-    manifests: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": config },
     held: [],
     sizes: { "aidenhq/board:local": 1024 },
   });
@@ -987,6 +1022,23 @@ test("security-sbom: a pre-1.48 daemon accepts a legacy manifest.json archive wi
   const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
 });
+
+test("security-sbom: a legacy manifest.json archive of another image is a line", { skip: NOT_LINUX }, async () => {
+  // The single entry has to be the running image's config. Another build's config is a line, not a scan under this target.
+  const { status, out, targets } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "legacy", FAKE_SAVE_PIN: `sha256:${"d".repeat(64)}` }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": `sha256:${"c".repeat(64)}` },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "another image's archive was scanned");
+  assert.match(line[2], /not the running image/, line[2]);
+});
+
 
 test("security-sbom: a classic-store image id is matched as the manifest's config digest", { skip: NOT_LINUX }, async () => {
   // Docker's classic image store reports .Id as the *config* digest, while a plain save's index.json names the manifest

@@ -300,6 +300,15 @@ plain_archive_single() { # <tar> <pin>
   if [ -z "$legacy" ]; then archive_err="the archive has neither index.json nor manifest.json"; return 1; fi
   n="$(printf '%s' "$legacy" | grep -o '"Config": *"[^"]*"' | wc -l)"
   if [ "$n" -ne 1 ]; then archive_err="the archive's manifest.json holds $n images"; return 1; fi
+  # One entry is one image, but not necessarily the running one: the entry names its config, and on a store whose image
+  # id is the config digest (the classic store this shape comes from) that is what <pin> is.
+  config="$(printf '%s' "$legacy" | sed -n 's/.*"Config": *"[^"]*\/\([0-9a-f]\{64\}\)\(\.json\)\{0,1\}".*/sha256:\1/p' | tail -1)"
+  if [ -z "$config" ]; then
+    config="$(printf '%s' "$legacy" | sed -n 's/.*"Config": *"\([0-9a-f]\{64\}\)\(\.json\)\{0,1\}".*/sha256:\1/p' | tail -1)"
+  fi
+  if [ -z "$config" ] || [ "$config" != "$pin" ]; then
+    archive_err="the archive's manifest.json holds config ${config:-unknown}, not the running image $pin"; return 1
+  fi
   return 0
 }
 # Export the image <pin> to <dest> from <ref>, the reference resolved and sized under the lock. The ref is re-read first:
@@ -448,7 +457,6 @@ snapshot() {
     u_tag[$unit]="$config"
     [ -n "${u_pinned[$unit]:-}" ] || u_pinned[$unit]="$now"
   done <<< "$rows"
-  for unit in "${units[@]}"; do image="${u_image[$unit]}"; variant_count[$image]=$(( ${variant_count[$image]:-0} + 1 )); done
   [ "$nodesc" -eq 0 ] || echo "security-sbom: $nodesc container(s) report no platform manifest descriptor; read on the Docker server platform $platform" >&2
   plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=()
   # Every archive stays on disk until its scan, so the room a scan needs is not known until every image is sized: the
@@ -461,13 +469,13 @@ snapshot() {
     # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
     # recorded, else the container's own top-level id. The target stays `image:<container id>` when the tag has moved: the
     # store reconciles findings by target name, so keying the same image by its manifest id would leave the findings
-    # already held under its id unverified beside the new ones. Two containers on one index are different variants, so
-    # each is keyed by its own reference and platform instead of sharing the other's target.
-    # The variant on the daemon's own platform keeps the plain key (the tag, or the image id), so a target's name does not
-    # change when an emulated variant appears or goes away. Only the other variants are suffixed with their platform, and
-    # an image with a single variant is always plain. Findings reconcile by target name, so a stable name is what keeps
-    # them verified.
-    if [ "${variant_count[$image]:-0}" -le 1 ] || [ "$plat" = "$platform" ]; then key="${u_tag[$unit]:-$image}"
+    # already held under its id unverified beside the new ones.
+    # The key is a function of the variant alone, never of which other variants happen to run: the platform the daemon
+    # itself runs keeps the plain key (the tag, or the image id), and a variant on any other platform is always suffixed
+    # with its platform. Counting the variants first would rename a target the moment a second one appeared (an emulated
+    # container running alone is plain, then `@<platform>` once its own platform's container starts), and findings
+    # reconcile by exact target name, so the rename alone would leave the old name's findings unverified.
+    if [ "$plat" = "$platform" ]; then key="${u_tag[$unit]:-$image}"
     elif [ -n "${u_tag[$unit]:-}" ]; then key="${u_tag[$unit]}@${plat}"
     else key="${man:-$image}@${plat}"; fi
     want="${u_tag[$unit]:-${u_label[$unit]:-$image}}"
