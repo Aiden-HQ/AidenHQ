@@ -127,6 +127,7 @@ test("setup passes only the grant's paths, an aidenhq/ branch and the fields it 
   assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/../x/INFO.md": "x" } })).status, 403, "a glob star is one segment, never ..");
   assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/a/b/INFO.md": "x" } })).status, 403, "a glob star is one segment");
   assert.equal((await call("code-review", "setup", { ...body, branch: "main" })).status, 400, "only aidenhq/ branches");
+  assert.equal((await call("code-review", "setup", { ...body, branch: "aidenhq/a/b" })).status, 400, "the record's one-segment branch shape");
   assert.equal((await call("code-review", "setup", { ...body, expected_tip: "main" })).status, 400);
   assert.equal((await call("github", "setup", body)).status, 403, "no setup grant");
   assert.equal((await call("code-review", "setup", { ...body, task: undefined })).status, 400, "the task the approval belongs to");

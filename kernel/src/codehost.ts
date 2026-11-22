@@ -155,7 +155,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
   if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }) };
   if (op === "setup") {
     const branch = String(b.branch ?? ""), tip = b.expected_tip ?? null;
-    if (!REF.test(branch) || !branch.startsWith("aidenhq/")) throw fail(400, "branch is aidenhq/<name>");
+    if (!/^aidenhq\/[\w.-]{1,80}$/.test(branch)) throw fail(400, "branch is aidenhq/<name>");
     if (tip !== null && !/^[0-9a-f]{40}$/.test(String(tip))) throw fail(400, "expected_tip is a full commit sha, or null for a new branch");
     const entries = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? Object.entries(b.files as Record<string, unknown>) : [];
     if (!entries.length || entries.length > 8) throw fail(400, "files is 1 to 8 paths");
