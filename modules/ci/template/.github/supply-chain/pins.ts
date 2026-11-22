@@ -339,6 +339,20 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     // Only `/dev/null` (or files this command truncated) was read: the output is known empty.
     return { content: "empty" };
   };
+  // What a copier's stdout carries: the files it read, concatenated with what the pipe feeds it when it also reads
+  // stdin (`cat file -`, in a pipeline or before a redirect). An input either side can't read keeps the write unknown;
+  // with nothing named, `cat` is the pipe itself and `flow` supplies those bytes.
+  const mergeInputs = (
+    read: (Pick<Written, "content" | "entries"> & { readsPipe?: boolean }) | undefined,
+    upstream: Pick<Written, "content" | "text" | "entries">,
+  ): Pick<Written, "content" | "text" | "entries"> => {
+    if (!read) return upstream;
+    if (!read.readsPipe) return read;
+    if (read.content === "unknown" || upstream.content === "unknown") return { content: "unknown" };
+    const piped = upstream.content === "deb" ? (upstream.entries ?? repoEntries(upstream.text ?? "").repos) : [];
+    const all = [...(read.entries ?? []), ...piped];
+    return all.length ? { content: "deb", entries: all } : { content: "empty" };
+  };
   // What reaches pipeline element i's stdout: nothing when its own last command redirects it, known content from a
   // here-document, and otherwise the pipeline's earlier command — or, when that is a pass-through (`cat`, `tee`), what
   // feeds it. A redirect deeper in the pipeline therefore empties the file `tee` is actually fed by.
@@ -363,11 +377,10 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     // `cat` passes on what the pipe feeds it.
     // A redirect may touch the name (`cat</dev/null`), which is still `cat` reading /dev/null.
     if (/^\s*cat(?=[\s<]|$)/.test(piece)) {
-      // Its own input decides: `cat</dev/null > f` truncates f where the pipe fed it, so its empty output is reported
-      // rather than the upstream `deb` line's. Only a cat with nothing to read takes the pipe.
-      const input = catInput(piece);
-      if (input) return input;
-      return flow(i - 1);
+      // Its own input decides first: `cat</dev/null > f` truncates f where the pipe fed it, so its empty output is
+      // reported rather than the upstream `deb` line's. A `-` beside file operands concatenates the pipe with them, so
+      // both sets of repositories reach the next stage.
+      return mergeInputs(catInput(piece), flow(i - 1));
     }
     return { content: "deb", text: expand(piece) };
   };
@@ -417,20 +430,10 @@ function writtenFiles(segment: string, body?: string, knownSource?: (path: strin
     // pipe feeds it — `catInput` answers nothing only for that pass-through case.
     const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
     const catRead = passThrough ? catInput(catText) : undefined;
-    // `cat file -` concatenates the file with what the pipe feeds it, so both sets of repositories reach the file; an
-    // input either side can't read keeps the whole write `unknown`. Without a `-` (or with stdin redirected) only the
-    // file operands are read, and `cat` with no operand at all is just the pipe.
-    const piped = catRead?.readsPipe ? flow(part - 1) : undefined;
-    const combined = (): Pick<Written, "content" | "text" | "entries"> => {
-      if (!catRead) return flow(part - 1);
-      if (!piped) return catRead;
-      if (catRead.content === "unknown" || piped.content === "unknown") return { content: "unknown" };
-      const upstream = piped.content === "deb" ? (piped.entries ?? repoEntries(piped.text ?? "").repos) : [];
-      const all = [...(catRead.entries ?? []), ...upstream];
-      return all.length ? { content: "deb", entries: all } : { content: "empty" };
-    };
+    // `cat file -` concatenates the file with what the pipe feeds it, so both sets of repositories reach the file
+    // (`mergeInputs`); an input either side can't read keeps the whole write `unknown`.
     const through: Pick<Written, "content" | "text" | "entries"> | undefined = passThrough
-      ? combined()
+      ? mergeInputs(catRead, flow(part - 1))
       : own?.content === "deb" || own?.content === "unknown" ? own : undefined;
     const fed: Pick<Written, "content" | "text" | "entries"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with

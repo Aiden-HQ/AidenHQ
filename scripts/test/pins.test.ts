@@ -675,6 +675,12 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
     `RUN printf '%s\\n' 'deb https://second.example/apt bookworm main' | cat ${dir}/first.list - > ${dir}/combined.list`,
   ].join("\n");
   assert.deepEqual(scanFile("Dockerfile", `${base}\n${concat}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main", "https://second.example/apt bookworm main"]);
+  // The same concatenation happens when `cat file -` sits inside a pipeline instead of before a redirect.
+  const pipelineConcat = [
+    `RUN ${D} > ${dir}/first.list`,
+    `RUN printf '%s\\n' 'deb https://second.example/apt bookworm main' | cat ${dir}/first.list - | tee ${dir}/combined.list`,
+  ].join("\n");
+  assert.deepEqual(scanFile("Dockerfile", `${base}\n${pipelineConcat}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main", "https://second.example/apt bookworm main"]);
   // A `-` whose stdin is redirected reads that file, not the pipe, so only the tracked operand is the output.
   const redirected = [`RUN ${D} > ${dir}/first.list`, `RUN printf 'x' | cat ${dir}/first.list - </dev/null > ${dir}/combined.list`].join("\n");
   assert.deepEqual(scanFile("Dockerfile", `${base}\n${redirected}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
